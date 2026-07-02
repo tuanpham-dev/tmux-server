@@ -110,9 +110,12 @@ export async function killWindow(session: string, index: number): Promise<void> 
 }
 
 export async function createWindow(session: string): Promise<void> {
-  // No -c given: tmux defaults a new window's cwd to the session's current
-  // active pane path, which is the behavior users expect from "New Window".
-  await tmux(["new-window", "-t", `=${session}:`]);
+  // Without -c, tmux defaults a new window's cwd to the cwd of the process
+  // that ran this command — the server's own directory, not the session's —
+  // since it's invoked here via execFile rather than from inside a tmux
+  // pane. Look up the active pane's path explicitly and pass it as -c.
+  const cwd = await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"]);
+  await tmux(["new-window", "-t", `=${session}:`, "-c", cwd.trim()]);
 }
 
 export async function renameWindow(
@@ -171,22 +174,23 @@ export async function scrollTo(session: string, line: number): Promise<void> {
 interface PaneInfo {
   command: string;
   pid: number;
+  cwd: string;
 }
 
-// The foreground process and pid of a session's active pane. pane_pid is the
-// pane's original process (usually the login shell); pane_current_command is
-// whatever's currently in the foreground (the shell itself, or a program it
-// exec'd/forked, like nvim).
+// The foreground process, pid, and cwd of a session's active pane. pane_pid
+// is the pane's original process (usually the login shell); pane_current_command
+// is whatever's currently in the foreground (the shell itself, or a program
+// it exec'd/forked, like nvim).
 async function getActivePane(session: string): Promise<PaneInfo> {
   const out = await tmux([
     "display-message",
     "-t",
     `=${session}:`,
     "-p",
-    "#{pane_current_command}\t#{pane_pid}",
+    "#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}",
   ]);
-  const [command, pid] = out.trim().split("\t");
-  return { command, pid: Number(pid) };
+  const [command, pid, cwd] = out.trim().split("\t");
+  return { command, pid: Number(pid), cwd };
 }
 
 interface ProcInfo {
@@ -373,7 +377,10 @@ export async function openFileInWindow(session: string, filePath: string): Promi
     return;
   }
 
-  await tmux(["new-window", "-t", target, `nvim ${shellQuote(filePath)}`]);
+  // No -c given here would default the new window's cwd to the server
+  // process's own directory rather than the session's — same pitfall as
+  // createWindow above. Reuse the active pane's cwd we already fetched.
+  await tmux(["new-window", "-t", target, "-c", pane.cwd, `nvim ${shellQuote(filePath)}`]);
 }
 
 export async function applyTmuxOptions(): Promise<void> {
