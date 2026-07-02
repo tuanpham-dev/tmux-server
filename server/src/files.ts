@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access, mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import type { GitFileStatus } from "./git.js";
 
 const HOME = process.env.HOME ?? "";
 
@@ -13,6 +14,7 @@ export function expandHome(p: string): string {
 export interface FsEntry {
   name: string;
   dir: boolean;
+  gitStatus?: GitFileStatus;
 }
 
 export async function listDir(dirPath: string): Promise<FsEntry[]> {

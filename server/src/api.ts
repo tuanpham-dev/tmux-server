@@ -12,6 +12,7 @@ import {
   resolveDestination,
   uniquePath,
 } from "./files.js";
+import { getRepoStatuses, statusForEntry } from "./git.js";
 import {
   createSession,
   createWindow,
@@ -159,7 +160,16 @@ api.get("/fs", async (req, res) => {
       res.status(400).json({ error: "path is not a directory" });
       return;
     }
-    res.json({ path: dirPath, entries: await listDir(dirPath) });
+    const entries = await listDir(dirPath);
+    const repo = await getRepoStatuses(dirPath);
+    const withStatus = repo
+      ? entries.map((entry) => {
+          const relPath = path.relative(repo.root, path.join(dirPath, entry.name));
+          const gitStatus = statusForEntry(repo.statuses, relPath, entry.dir);
+          return gitStatus ? { ...entry, gitStatus } : entry;
+        })
+      : entries;
+    res.json({ path: dirPath, entries: withStatus, branch: repo?.branch ?? null });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

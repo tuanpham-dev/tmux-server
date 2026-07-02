@@ -95,6 +95,7 @@ export default function Sidebar({
   const [dropIndicator, setDropIndicator] = useState<{ id: PanelId; edge: "top" | "bottom" } | null>(
     null,
   );
+  const [filesBranch, setFilesBranch] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem("sidebarMode", mode);
@@ -300,6 +301,7 @@ export default function Sidebar({
         onDropFiles={onDropFiles}
         refreshKey={filesRefreshKey}
         onOpenFile={onOpenFile}
+        onBranchChange={setFilesBranch}
       />
     );
   };
@@ -409,6 +411,11 @@ export default function Sidebar({
             <span className="sidebar-title" title={id === "files" ? panelTitle(id) : undefined}>
               {panelTitle(id)}
             </span>
+            {id === "files" && filesBranch && (
+              <span className="branch-pill" title={`Branch: ${filesBranch}`}>
+                {filesBranch}
+              </span>
+            )}
             <div className="sidebar-actions" onClick={(e) => e.stopPropagation()}>
               {panelActions(id)}
             </div>

@@ -105,7 +105,7 @@ body.resizing {
 
 .sidebar-reopen {
   flex-shrink: 0;
-  width: 8px;
+  width: 4px;
   background: var(--panel-bg);
   border-right: 1px solid var(--border);
   cursor: pointer;
@@ -214,6 +214,8 @@ body.resizing-row {
 }
 
 .sidebar-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -222,6 +224,22 @@ body.resizing-row {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.branch-pill {
+  flex-shrink: 0;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--hover);
+  color: var(--fg-inactive);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .icon-button {
@@ -417,7 +435,7 @@ body.resizing-row {
 }
 
 .file-tree-file {
-  color: var(--fg-inactive);
+  color: var(--fg-bright);
 }
 
 .file-tree-file:hover {
@@ -428,6 +446,44 @@ body.resizing-row {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.file-tree-file .file-tree-name {
+  margin-left: 18px;
+}
+
+.file-tree-git-badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.file-tree-row.git-status-modified {
+  color: #e2c08d;
+}
+
+.file-tree-row.git-status-added,
+.file-tree-row.git-status-untracked {
+  color: #73c991;
+}
+
+.file-tree-row.git-status-deleted {
+  color: var(--error);
+}
+
+.file-tree-row.git-status-renamed {
+  color: #4fc1ff;
+}
+
+.file-tree-row.git-status-conflicted {
+  color: var(--button);
+}
+
+.file-tree-row.git-status-ignored {
+  color: var(--fg-inactive);
+  opacity: 0.6;
 }
 
 .file-tree-empty,

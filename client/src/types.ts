@@ -32,12 +32,23 @@ export interface MenuState {
   items: MenuItem[];
 }
 
+export type GitFileStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "untracked"
+  | "renamed"
+  | "conflicted"
+  | "ignored";
+
 export interface FsEntry {
   name: string;
   dir: boolean;
+  gitStatus?: GitFileStatus;
 }
 
 export interface FsListing {
   path: string;
   entries: FsEntry[];
+  branch: string | null;
 }

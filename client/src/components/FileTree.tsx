@@ -1,12 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
-import type { FsEntry } from "../types";
+import type { FsEntry, GitFileStatus } from "../types";
 
 interface Props {
   rootDir: string | null;
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
   refreshKey: number;
   onOpenFile: (path: string) => void;
+  onBranchChange: (branch: string | null) => void;
+}
+
+const GIT_STATUS_LABEL: Record<GitFileStatus, string> = {
+  modified: "M",
+  added: "A",
+  untracked: "U",
+  deleted: "D",
+  renamed: "R",
+  conflicted: "!",
+  ignored: "",
+};
+
+function GitStatusBadge({ status }: { status?: GitFileStatus }) {
+  // "ignored" is conveyed by dimming the row alone; a badge letter would be
+  // noise for something that's neither a change nor actionable.
+  if (!status || status === "ignored") return null;
+  return (
+    <span className="file-tree-git-badge" title={status}>
+      {GIT_STATUS_LABEL[status]}
+    </span>
+  );
 }
 
 interface DirState {
@@ -27,12 +49,20 @@ const DRAG_CLEAR_MS = 1800;
 // common file-manager / VS Code Explorer drag-hover-to-expand convention.
 const HOVER_EXPAND_MS = 1000;
 
-export default function FileTree({ rootDir, onDropFiles, refreshKey, onOpenFile }: Props) {
+export default function FileTree({
+  rootDir,
+  onDropFiles,
+  refreshKey,
+  onOpenFile,
+  onBranchChange,
+}: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Map<string, DirState>>(new Map());
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
   const dragClearTimer = useRef<number | undefined>(undefined);
   const expandTimer = useRef<{ path: string; timer: number } | null>(null);
+  const onBranchChangeRef = useRef(onBranchChange);
+  onBranchChangeRef.current = onBranchChange;
 
   const fetchDir = useCallback((dirPath: string) => {
     setDirCache((prev) => {
@@ -48,6 +78,9 @@ export default function FileTree({ rootDir, onDropFiles, refreshKey, onOpenFile 
           loading: false,
           error: null,
         }));
+        // Every "/api/fs" call reports the whole repo's branch, regardless
+        // of which directory was fetched, so any of them can update it.
+        onBranchChangeRef.current(listing.branch);
       })
       .catch((err) => {
         setDirCache((prev) => new Map(prev).set(dirPath, {
@@ -62,6 +95,7 @@ export default function FileTree({ rootDir, onDropFiles, refreshKey, onOpenFile 
   useEffect(() => {
     setExpanded(new Set());
     setDirCache(new Map());
+    onBranchChangeRef.current(null);
     if (rootDir) fetchDir(rootDir);
   }, [rootDir, fetchDir]);
 
@@ -184,6 +218,7 @@ export default function FileTree({ rootDir, onDropFiles, refreshKey, onOpenFile 
     }
     return state.entries.map((entry) => {
       const entryPath = `${dirPath}/${entry.name}`;
+      const gitClass = entry.gitStatus ? ` git-status-${entry.gitStatus}` : "";
       if (entry.dir) {
         const isExpanded = expanded.has(entryPath);
         return (
@@ -191,13 +226,14 @@ export default function FileTree({ rootDir, onDropFiles, refreshKey, onOpenFile 
             <button
               className={`file-tree-row file-tree-dir${
                 dragOverPath === entryPath ? " drag-over" : ""
-              }`}
+              }${gitClass}`}
               style={{ paddingLeft: 6 + depth * 14 }}
               title={entryPath}
               onClick={() => toggle(entryPath)}
             >
               <span className="chevron">{isExpanded ? "▾" : "▸"}</span>
               <span className="file-tree-name">{entry.name}</span>
+              <GitStatusBadge status={entry.gitStatus} />
             </button>
             {isExpanded && renderEntries(entryPath, depth + 1)}
           </div>
@@ -206,12 +242,13 @@ export default function FileTree({ rootDir, onDropFiles, refreshKey, onOpenFile 
       return (
         <button
           key={entryPath}
-          className="file-tree-row file-tree-file"
+          className={`file-tree-row file-tree-file${gitClass}`}
           style={{ paddingLeft: 6 + depth * 14 }}
           title={entry.name}
           onClick={() => onOpenFile(entryPath)}
         >
           <span className="file-tree-name">{entry.name}</span>
+          <GitStatusBadge status={entry.gitStatus} />
         </button>
       );
     });

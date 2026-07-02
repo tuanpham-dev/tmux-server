@@ -198,6 +198,10 @@ export default function App() {
     } catch (err) {
       showError(err);
     }
+    // Piggybacks on the session poll so git status badges in the FILES
+    // panel stay live (e.g. after a commit or save in the terminal)
+    // without a second timer.
+    setFilesRefreshKey((k) => k + 1);
   }, [showError]);
 
   useEffect(() => {
