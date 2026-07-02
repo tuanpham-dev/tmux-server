@@ -428,7 +428,7 @@ export default function Sidebar({
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="sidebar-topbar">
-        <button className="icon-button" title="Settings" onClick={onOpenSettings}>
+        <button className="icon-button settings-icon" title="Settings" onClick={onOpenSettings}>
           ⚙
         </button>
         <button className="icon-button" title="Hide sidebar (Ctrl+B)" onClick={onCollapse}>

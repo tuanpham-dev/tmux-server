@@ -94,6 +94,20 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
+  // Chrome/Firefox bind Ctrl+Shift+C to "inspect element", stealing it before
+  // it can be used as an in-app shortcut. Calling preventDefault in a capture
+  // listener suppresses that browser default (unlike F12, which can't be
+  // suppressed this way).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyC") return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
   // Only the FILES panel is a real drop target; it calls preventDefault +
   // stopPropagation on valid drops, so this never runs for those. Without it,
   // a file dropped anywhere else (terminal, tab bar, sidebar top bar) hits no
