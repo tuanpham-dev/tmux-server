@@ -8,6 +8,7 @@ import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
 import { loadSettings, saveSettings, type AppSettings } from "./settings";
 import type { MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
+import { collectDropped, uploadAll, type DroppedItems } from "./upload";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
@@ -93,6 +94,23 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
+  // Only the FILES panel is a real drop target; it calls preventDefault +
+  // stopPropagation on valid drops, so this never runs for those. Without it,
+  // a file dropped anywhere else (terminal, tab bar, sidebar top bar) hits no
+  // handler at all and the browser falls back to its default action —
+  // navigating the whole tab away to the dropped file.
+  useEffect(() => {
+    const blockStrayFileDrop = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+    };
+    window.addEventListener("dragover", blockStrayFileDrop);
+    window.addEventListener("drop", blockStrayFileDrop);
+    return () => {
+      window.removeEventListener("dragover", blockStrayFileDrop);
+      window.removeEventListener("drop", blockStrayFileDrop);
+    };
+  }, []);
+
   const [dialog, setDialog] = useState<DialogRequest | null>(null);
 
   const confirmDialog = useCallback(
@@ -127,6 +145,13 @@ export default function App() {
       }),
     [],
   );
+
+  const [uploadProgress, setUploadProgress] = useState<{
+    currentName: string;
+    loadedBytes: number;
+    totalBytes: number;
+  } | null>(null);
+  const [filesRefreshKey, setFilesRefreshKey] = useState(0);
 
   const startSidebarResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -348,6 +373,50 @@ export default function App() {
   );
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const activeSession = sessions.find((s) => s.name === activeTab?.sessionName) ?? null;
+  const filesRootDir = activeSession?.windows.find((w) => w.active)?.cwd ?? null;
+
+  const handleUpload = useCallback(
+    async (items: DroppedItems, destDir: string) => {
+      if (items.files.length === 0 && items.dirs.length === 0) return;
+      setUploadProgress({
+        currentName: "",
+        loadedBytes: 0,
+        totalBytes: items.files.reduce((sum, f) => sum + f.file.size, 0),
+      });
+      const result = await uploadAll(items, destDir, settingsRef.current.uploadConflict, {
+        onProgress: (loadedBytes, totalBytes, currentName) => {
+          setUploadProgress({ currentName, loadedBytes, totalBytes });
+        },
+        onConflict: (relativePath) =>
+          confirmDialog(`"${relativePath}" already exists. Overwrite?`, "Overwrite"),
+      });
+      setUploadProgress(null);
+      setFilesRefreshKey((k) => k + 1);
+      if (result.errors.length === 1) {
+        showError(`Upload failed: ${result.errors[0].relativePath} — ${result.errors[0].message}`);
+      } else if (result.errors.length > 1) {
+        showError(`${result.errors.length} files failed to upload`);
+      }
+    },
+    [confirmDialog, showError],
+  );
+
+  // Folder drops target a specific FILES-panel folder; the drop's DataTransfer
+  // is read synchronously (before any await) since browsers invalidate it once
+  // the event handler yields.
+  const handleFileTreeDrop = useCallback(
+    (destDir: string, dataTransfer: DataTransfer) => {
+      collectDropped(dataTransfer)
+        .then((items) => handleUpload(items, destDir))
+        .catch(showError);
+    },
+    [handleUpload, showError],
+  );
+
+  const handleFilesRefresh = useCallback(() => {
+    setFilesRefreshKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
     document.title = activeTab ? `${activeTab.sessionName} — tmux` : "tmux";
@@ -369,6 +438,10 @@ export default function App() {
             windowMenuItems={windowMenuItems}
             onOpenSettings={() => setShowSettings(true)}
             onCollapse={() => setSidebarVisible(false)}
+            filesRootDir={filesRootDir}
+            onDropFiles={handleFileTreeDrop}
+            filesRefreshKey={filesRefreshKey}
+            onFilesRefresh={handleFilesRefresh}
           />
           <div className="resize-handle" onMouseDown={startSidebarResize} />
         </>
@@ -413,6 +486,25 @@ export default function App() {
           onChange={setSettings}
           onClose={() => setShowSettings(false)}
         />
+      )}
+      {uploadProgress && (
+        <div className="upload-banner">
+          <div className="upload-banner-label">
+            Uploading{uploadProgress.currentName ? ` — ${uploadProgress.currentName}` : "…"}
+          </div>
+          <div className="upload-banner-track">
+            <div
+              className="upload-banner-fill"
+              style={{
+                width: `${
+                  uploadProgress.totalBytes > 0
+                    ? Math.min(100, (uploadProgress.loadedBytes / uploadProgress.totalBytes) * 100)
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        </div>
       )}
       {error && (
         <div className="error-banner" onClick={() => setError(null)}>

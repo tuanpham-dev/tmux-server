@@ -1,5 +1,47 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { MenuItem, SidebarMode, TmuxSession, TmuxWindow } from "../types";
+import FileTree from "./FileTree";
+
+type PanelId = "sessions" | "files";
+
+interface PanelState {
+  order: PanelId[];
+  collapsed: Record<PanelId, boolean>;
+  // Relative flex-grow weights for expanded panels. Values are seeded from
+  // measured pixel heights on resize, but any positive number works — flex
+  // only cares about the ratio between siblings, not the absolute value.
+  sizes: Record<PanelId, number>;
+}
+
+const PANEL_IDS: PanelId[] = ["sessions", "files"];
+const MIN_PANEL_HEIGHT = 60;
+const PANELS_KEY = "sidebarPanels";
+
+const DEFAULT_PANEL_STATE: PanelState = {
+  order: ["sessions", "files"],
+  collapsed: { sessions: false, files: false },
+  sizes: { sessions: 1, files: 1 },
+};
+
+function loadPanelState(): PanelState {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PANELS_KEY) ?? "null");
+    if (!parsed || typeof parsed !== "object") return { ...DEFAULT_PANEL_STATE };
+    const order =
+      Array.isArray(parsed.order) &&
+      parsed.order.length === PANEL_IDS.length &&
+      PANEL_IDS.every((id) => parsed.order.includes(id))
+        ? (parsed.order as PanelId[])
+        : DEFAULT_PANEL_STATE.order;
+    return {
+      order,
+      collapsed: { ...DEFAULT_PANEL_STATE.collapsed, ...parsed.collapsed },
+      sizes: { ...DEFAULT_PANEL_STATE.sizes, ...parsed.sizes },
+    };
+  } catch {
+    return { ...DEFAULT_PANEL_STATE };
+  }
+}
 
 interface Props {
   width: number;
@@ -13,6 +55,10 @@ interface Props {
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
   onOpenSettings: () => void;
   onCollapse: () => void;
+  filesRootDir: string | null;
+  onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
+  filesRefreshKey: number;
+  onFilesRefresh: () => void;
 }
 
 export default function Sidebar({
@@ -27,25 +73,60 @@ export default function Sidebar({
   windowMenuItems,
   onOpenSettings,
   onCollapse,
+  filesRootDir,
+  onDropFiles,
+  filesRefreshKey,
+  onFilesRefresh,
 }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [mode, setMode] = useState<SidebarMode>(
     () => (localStorage.getItem("sidebarMode") as SidebarMode) ?? "sessions",
   );
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsedWindows, setCollapsedWindows] = useState<Set<string>>(new Set());
+  const [panelState, setPanelState] = useState<PanelState>(loadPanelState);
+  const panelRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
+    sessions: null,
+    files: null,
+  });
+  const [dragPanelId, setDragPanelId] = useState<PanelId | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<{ id: PanelId; edge: "top" | "bottom" } | null>(
+    null,
+  );
 
   useEffect(() => {
     localStorage.setItem("sidebarMode", mode);
   }, [mode]);
 
-  const toggleCollapsed = (key: string) => {
-    setCollapsed((prev) => {
+  useEffect(() => {
+    localStorage.setItem(PANELS_KEY, JSON.stringify(panelState));
+  }, [panelState]);
+
+  const toggleWindowCollapsed = (key: string) => {
+    setCollapsedWindows((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
+  };
+
+  const togglePanelCollapsed = (id: PanelId) => {
+    setPanelState((prev) => ({
+      ...prev,
+      collapsed: { ...prev.collapsed, [id]: !prev.collapsed[id] },
+    }));
+  };
+
+  const startCreating = () => {
+    // A collapsed SESSIONS panel needs to expand for the inline input to be
+    // visible at all — mirrors code-server's "clicking an activity icon
+    // reveals its panel" behavior.
+    setPanelState((prev) => ({
+      ...prev,
+      collapsed: { ...prev.collapsed, sessions: false },
+    }));
+    setCreating(true);
   };
 
   const submitCreate = () => {
@@ -59,10 +140,10 @@ export default function Sidebar({
       className="chevron"
       onClick={(e) => {
         e.stopPropagation();
-        toggleCollapsed(key);
+        toggleWindowCollapsed(key);
       }}
     >
-      {collapsed.has(key) ? "▸" : "▾"}
+      {collapsedWindows.has(key) ? "▸" : "▾"}
     </span>
   );
 
@@ -103,7 +184,7 @@ export default function Sidebar({
               <span className="session-name">{s.name}</span>
               {activeWin && <span className="item-cwd">{activeWin.cwd}</span>}
             </button>
-            {!collapsed.has(s.name) &&
+            {!collapsedWindows.has(s.name) &&
               s.windows.map((w) => windowRow(s, w, `${w.index} ${w.name}`, true))}
           </li>
         );
@@ -128,12 +209,12 @@ export default function Sidebar({
           <button
             className="session-item dir-item"
             title={dir}
-            onClick={() => toggleCollapsed(dir)}
+            onClick={() => toggleWindowCollapsed(dir)}
           >
             {chevron(dir)}
             <span className="session-name">{dir}</span>
           </button>
-          {!collapsed.has(dir) &&
+          {!collapsedWindows.has(dir) &&
             dirGroups
               .get(dir)!
               .map(({ session, window }) =>
@@ -150,13 +231,15 @@ export default function Sidebar({
     </ul>
   );
 
-  return (
-    <aside className="sidebar" style={{ width }}>
-      <div className="sidebar-header">
-        <span className="sidebar-title">
-          {mode === "sessions" ? "Sessions" : "Directories"}
-        </span>
-        <div className="sidebar-actions">
+  const panelTitle = (id: PanelId): string => {
+    if (id === "sessions") return mode === "sessions" ? "Sessions" : "Directories";
+    return filesRootDir ?? "Files";
+  };
+
+  const panelActions = (id: PanelId) => {
+    if (id === "sessions") {
+      return (
+        <>
           <button
             className={`icon-button mode-button${mode === "sessions" ? " active" : ""}`}
             title="Group by session"
@@ -171,43 +254,181 @@ export default function Sidebar({
           >
             ▤
           </button>
-          <button
-            className="icon-button"
-            title="New session"
-            onClick={() => setCreating(true)}
-          >
+          <button className="icon-button" title="New session" onClick={startCreating}>
             +
           </button>
-          <button className="icon-button" title="Settings" onClick={onOpenSettings}>
-            ⚙
-          </button>
-          <button
-            className="icon-button"
-            title="Hide sidebar (Ctrl+B)"
-            onClick={onCollapse}
-          >
-            «
-          </button>
-        </div>
-      </div>
-      {creating && (
-        <input
-          autoFocus
-          className="new-session-input"
-          placeholder="session name (blank = auto)"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onBlur={submitCreate}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submitCreate();
-            if (e.key === "Escape") {
-              setCreating(false);
-              setNewName("");
-            }
+        </>
+      );
+    }
+    return (
+      <button className="icon-button" title="Refresh" onClick={onFilesRefresh}>
+        ↻
+      </button>
+    );
+  };
+
+  const panelContent = (id: PanelId) => {
+    if (id === "sessions") {
+      return (
+        <>
+          {creating && (
+            <input
+              autoFocus
+              className="new-session-input"
+              placeholder="session name (blank = auto)"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onBlur={submitCreate}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitCreate();
+                if (e.key === "Escape") {
+                  setCreating(false);
+                  setNewName("");
+                }
+              }}
+            />
+          )}
+          {mode === "sessions" ? sessionsTree : dirsTree}
+        </>
+      );
+    }
+    return <FileTree rootDir={filesRootDir} onDropFiles={onDropFiles} refreshKey={filesRefreshKey} />;
+  };
+
+  // Converts a pointer drag into flex-grow weights for the two panels
+  // straddling the splitter. Weights are seeded from measured pixel heights
+  // at drag start, clamped so neither panel shrinks below MIN_PANEL_HEIGHT;
+  // only these two panels' weights change, so any other expanded panel's
+  // share of the remaining space is undisturbed.
+  const startPanelResize = (e: React.PointerEvent, aId: PanelId, bId: PanelId) => {
+    e.preventDefault();
+    const aEl = panelRefs.current[aId];
+    const bEl = panelRefs.current[bId];
+    if (!aEl || !bEl) return;
+    const startHeightA = aEl.getBoundingClientRect().height;
+    const startHeightB = bEl.getBoundingClientRect().height;
+    const totalHeight = startHeightA + startHeightB;
+    const startY = e.clientY;
+
+    const onMove = (ev: PointerEvent) => {
+      const dy = ev.clientY - startY;
+      const newHeightA = Math.min(
+        totalHeight - MIN_PANEL_HEIGHT,
+        Math.max(MIN_PANEL_HEIGHT, startHeightA + dy),
+      );
+      const newHeightB = totalHeight - newHeightA;
+      setPanelState((prev) => ({
+        ...prev,
+        sizes: { ...prev.sizes, [aId]: newHeightA, [bId]: newHeightB },
+      }));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("resizing-row");
+    };
+    document.body.classList.add("resizing-row");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const PANEL_DRAG_TYPE = "application/x-tmux-panel";
+
+  const headerDragHandlers = (id: PanelId) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.setData(PANEL_DRAG_TYPE, id);
+      e.dataTransfer.effectAllowed = "move";
+      setDragPanelId(id);
+    },
+    onDragEnd: () => {
+      setDragPanelId(null);
+      setDropIndicator(null);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(PANEL_DRAG_TYPE) || !dragPanelId || dragPanelId === id) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const edge: "top" | "bottom" = e.clientY < rect.top + rect.height / 2 ? "top" : "bottom";
+      setDropIndicator({ id, edge });
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (e.currentTarget === e.target) setDropIndicator(null);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(PANEL_DRAG_TYPE)) return;
+      e.preventDefault();
+      const draggedId = e.dataTransfer.getData(PANEL_DRAG_TYPE) as PanelId;
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const edge: "top" | "bottom" = e.clientY < rect.top + rect.height / 2 ? "top" : "bottom";
+      setDropIndicator(null);
+      setDragPanelId(null);
+      if (!draggedId || draggedId === id) return;
+      setPanelState((prev) => {
+        const withoutDragged = prev.order.filter((p) => p !== draggedId);
+        const targetIdx = withoutDragged.indexOf(id);
+        const insertAt = edge === "top" ? targetIdx : targetIdx + 1;
+        const next = [...withoutDragged];
+        next.splice(insertAt, 0, draggedId);
+        return { ...prev, order: next };
+      });
+    },
+  });
+
+  const renderPanel = (id: PanelId, nextId: PanelId | null) => {
+    const isCollapsed = panelState.collapsed[id];
+    const showSplitterAfter = !isCollapsed && nextId !== null && !panelState.collapsed[nextId];
+    const indicatorClass =
+      dropIndicator?.id === id ? ` drop-indicator-${dropIndicator.edge}` : "";
+
+    return (
+      <Fragment key={id}>
+        <div
+          ref={(el) => {
+            panelRefs.current[id] = el;
           }}
-        />
-      )}
-      {mode === "sessions" ? sessionsTree : dirsTree}
+          className={`sidebar-panel${isCollapsed ? " collapsed" : ""}`}
+          style={isCollapsed ? undefined : { flex: `${panelState.sizes[id] ?? 1} 1 0px` }}
+        >
+          <div
+            className={`panel-header${indicatorClass}${dragPanelId === id ? " dragging" : ""}`}
+            onClick={() => togglePanelCollapsed(id)}
+            {...headerDragHandlers(id)}
+          >
+            <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
+            <span className="sidebar-title" title={id === "files" ? panelTitle(id) : undefined}>
+              {panelTitle(id)}
+            </span>
+            <div className="sidebar-actions" onClick={(e) => e.stopPropagation()}>
+              {panelActions(id)}
+            </div>
+          </div>
+          {!isCollapsed && <div className="panel-content">{panelContent(id)}</div>}
+        </div>
+        {showSplitterAfter && (
+          <div
+            className="panel-splitter"
+            onPointerDown={(e) => startPanelResize(e, id, nextId!)}
+          />
+        )}
+      </Fragment>
+    );
+  };
+
+  return (
+    <aside className="sidebar" style={{ width }}>
+      <div className="sidebar-topbar">
+        <button className="icon-button" title="Settings" onClick={onOpenSettings}>
+          ⚙
+        </button>
+        <button className="icon-button" title="Hide sidebar (Ctrl+B)" onClick={onCollapse}>
+          «
+        </button>
+      </div>
+      <div className="sidebar-panels">
+        {panelState.order.map((id, idx) => renderPanel(id, panelState.order[idx + 1] ?? null))}
+      </div>
     </aside>
   );
 }

@@ -1,4 +1,4 @@
-import type { TmuxSession } from "./types";
+import type { FsListing, TmuxSession } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -65,5 +65,68 @@ export function renameSession(name: string, newName: string): Promise<void> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: newName }),
+  });
+}
+
+export function listDir(dirPath: string): Promise<FsListing> {
+  return request(`/api/fs?path=${encodeURIComponent(dirPath)}`);
+}
+
+export function makeDir(destDir: string, relativePath: string): Promise<void> {
+  return request(
+    `/api/mkdir?dir=${encodeURIComponent(destDir)}&path=${encodeURIComponent(relativePath)}`,
+    { method: "POST" },
+  );
+}
+
+// Thrown when the server refuses to upload because the destination already
+// exists and the caller asked for "fail" conflict semantics (used to drive
+// the ask-before-overwrite flow).
+export class UploadConflictError extends Error {
+  constructor() {
+    super("file already exists");
+    this.name = "UploadConflictError";
+  }
+}
+
+// XHR, not fetch: only XHR exposes upload progress events, which the
+// byte-level progress banner needs.
+export function uploadFile(
+  destDir: string,
+  relativePath: string,
+  file: File | Blob,
+  conflict: "rename" | "overwrite" | "fail",
+  onProgress?: (loadedBytes: number) => void,
+): Promise<{ path: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const url =
+      `/api/upload?dir=${encodeURIComponent(destDir)}` +
+      `&path=${encodeURIComponent(relativePath)}&conflict=${conflict}`;
+    xhr.open("POST", url);
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded);
+    };
+    xhr.onload = () => {
+      if (xhr.status === 409) {
+        reject(new UploadConflictError());
+        return;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.responseText ? JSON.parse(xhr.responseText) : { path: "" });
+        return;
+      }
+      let message = `${xhr.status} ${xhr.statusText}`;
+      try {
+        const body = JSON.parse(xhr.responseText);
+        if (body?.error) message = body.error;
+      } catch {
+        // non-JSON error body; keep the status message
+      }
+      reject(new Error(message));
+    };
+    xhr.onerror = () => reject(new Error("network error during upload"));
+    xhr.send(file);
   });
 }

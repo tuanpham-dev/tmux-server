@@ -1,4 +1,16 @@
+import { createWriteStream } from "node:fs";
+import { unlink } from "node:fs/promises";
+import path from "node:path";
 import { Router } from "express";
+import {
+  ensureDir,
+  exists,
+  expandHome,
+  isDirectory,
+  listDir,
+  resolveDestination,
+  uniquePath,
+} from "./files.js";
 import {
   createSession,
   createWindow,
@@ -112,4 +124,80 @@ api.post("/sessions/:name/rename", async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }
+});
+
+api.get("/fs", async (req, res) => {
+  const raw = typeof req.query.path === "string" ? req.query.path : "";
+  if (!raw) {
+    res.status(400).json({ error: "path is required" });
+    return;
+  }
+  const dirPath = expandHome(raw);
+  try {
+    if (!(await isDirectory(dirPath))) {
+      res.status(400).json({ error: "path is not a directory" });
+      return;
+    }
+    res.json({ path: dirPath, entries: await listDir(dirPath) });
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/mkdir", async (req, res) => {
+  const dir = typeof req.query.dir === "string" ? req.query.dir : "";
+  const relPath = typeof req.query.path === "string" ? req.query.path : "";
+  if (!dir || !relPath) {
+    res.status(400).json({ error: "dir and path are required" });
+    return;
+  }
+  try {
+    const target = resolveDestination(expandHome(dir), relPath);
+    await ensureDir(target);
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/upload", async (req, res) => {
+  const dir = typeof req.query.dir === "string" ? req.query.dir : "";
+  const relPath = typeof req.query.path === "string" ? req.query.path : "";
+  const conflict = req.query.conflict === "overwrite" || req.query.conflict === "fail"
+    ? req.query.conflict
+    : "rename";
+  if (!dir || !relPath) {
+    res.status(400).json({ error: "dir and path are required" });
+    return;
+  }
+
+  let target: string;
+  try {
+    target = resolveDestination(expandHome(dir), relPath);
+    await ensureDir(path.dirname(target));
+    if (conflict === "rename") {
+      target = await uniquePath(target);
+    } else if (conflict === "fail" && (await exists(target))) {
+      res.status(409).json({ error: "file already exists" });
+      return;
+    }
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+    return;
+  }
+
+  const out = createWriteStream(target);
+  req.pipe(out);
+  out.on("finish", () => {
+    res.status(201).json({ path: target });
+  });
+  out.on("error", (err) => {
+    unlink(target).catch(() => {});
+    res.status(500).json({ error: errMessage(err) });
+  });
+  req.on("error", (err) => {
+    out.destroy();
+    unlink(target).catch(() => {});
+    if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
+  });
 });

@@ -5,6 +5,7 @@ export interface AppSettings {
   cursorStyle: "block" | "bar" | "underline";
   cursorBlink: boolean;
   ctrlBInTerminal: boolean;
+  uploadConflict: "rename" | "overwrite" | "ask";
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cursorStyle: "block",
   cursorBlink: true,
   ctrlBInTerminal: false,
+  uploadConflict: "rename",
 };
 
 const KEY = "settings";

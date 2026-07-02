@@ -31,3 +31,13 @@ export interface MenuState {
   y: number;
   items: MenuItem[];
 }
+
+export interface FsEntry {
+  name: string;
+  dir: boolean;
+}
+
+export interface FsListing {
+  path: string;
+  entries: FsEntry[];
+}

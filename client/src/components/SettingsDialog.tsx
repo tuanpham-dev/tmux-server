@@ -91,6 +91,21 @@ export default function SettingsDialog({ settings, onChange, onClose }: Props) {
           <span>Cursor blink</span>
         </label>
 
+        <label className="settings-row">
+          <span className="settings-label">On upload name conflict</span>
+          <select
+            className="dialog-input settings-select"
+            value={settings.uploadConflict}
+            onChange={(e) =>
+              set("uploadConflict", e.target.value as AppSettings["uploadConflict"])
+            }
+          >
+            <option value="rename">Keep both (rename new file)</option>
+            <option value="overwrite">Overwrite existing file</option>
+            <option value="ask">Ask every time</option>
+          </select>
+        </label>
+
         <label className="settings-row checkbox-row">
           <input
             type="checkbox"
