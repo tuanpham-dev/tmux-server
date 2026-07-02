@@ -6,13 +6,13 @@ import type { AppSettings } from "../settings";
 import { terminalTheme } from "../theme";
 
 interface Props {
-  sessionName: string;
+  attachName: string;
   active: boolean;
   settings: AppSettings;
   onExit: () => void;
 }
 
-export default function TerminalView({ sessionName, active, settings, onExit }: Props) {
+export default function TerminalView({ attachName, active, settings, onExit }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollTrackRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -21,7 +21,7 @@ export default function TerminalView({ sessionName, active, settings, onExit }: 
   onExitRef.current = onExit;
   // The WS attaches to the name the tab was opened with; a later rename only
   // changes the display title, the existing attachment survives it.
-  const sessionRef = useRef(sessionName);
+  const attachNameRef = useRef(attachName);
   const initialSettings = useRef(settings);
 
   useEffect(() => {
@@ -128,7 +128,7 @@ export default function TerminalView({ sessionName, active, settings, onExit }: 
 
       const connect = () => {
         ws = new WebSocket(
-          `${proto}://${location.host}/ws/attach?session=${encodeURIComponent(sessionRef.current)}`,
+          `${proto}://${location.host}/ws/attach?session=${encodeURIComponent(attachNameRef.current)}`,
         );
 
         ws.onopen = () => {

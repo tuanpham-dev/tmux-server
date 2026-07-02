@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+
+// Synthetic tmux sessions created for per-window tabs (see createWindowTab)
+// are grouped with a real session so they share its windows, but are never
+// shown as sessions in their own right — filtered out of listSessions().
+const WINDOW_TAB_PREFIX = "tmuxserver-view-";
 
 export interface TmuxWindow {
   index: number;
@@ -62,6 +68,7 @@ export async function listSessions(): Promise<TmuxSession[]> {
   const sessions = new Map<string, TmuxSession>();
   for (const line of sessionsOut.split("\n").filter(Boolean)) {
     const [name, created, attached] = line.split("\t");
+    if (name.startsWith(WINDOW_TAB_PREFIX)) continue;
     sessions.set(name, {
       name,
       created: Number(created),
@@ -116,6 +123,52 @@ export async function createWindow(session: string): Promise<void> {
   // pane. Look up the active pane's path explicitly and pass it as -c.
   const cwd = await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"]);
   await tmux(["new-window", "-t", `=${session}:`, "-c", cwd.trim()]);
+}
+
+// Creates a tmux session grouped with `session` (sharing its window list)
+// and points it at one specific window, giving that window an independently
+// trackable "current window" pointer — verified live that grouped sessions
+// diverge their curw independently once select-window runs on either side,
+// and that killing one member of a group leaves the shared windows alive as
+// long as another member remains. Returns the generated session's name,
+// which callers attach to instead of `session` itself.
+export async function createWindowTab(session: string, index: number): Promise<string> {
+  const generated = `${WINDOW_TAB_PREFIX}${randomUUID().slice(0, 8)}`;
+  // Note: unlike every other target in this file, new-session's *grouping*
+  // target rejects the "=" exact-match prefix ("not found") — verified live.
+  // Plain name only for this one call.
+  await tmux(["new-session", "-d", "-t", session, "-s", generated]);
+  await tmux(["select-window", "-t", `=${generated}:${index}`]);
+  return generated;
+}
+
+// Idempotent: closing a window-tab (or the idle sweep) may race a second
+// close request for the same synthetic session, which should be a no-op
+// rather than an error.
+export async function killWindowTab(attachName: string): Promise<void> {
+  try {
+    await tmux(["kill-session", "-t", `=${attachName}`]);
+  } catch (err) {
+    if (!/session not found/i.test((err as Error).message)) throw err;
+  }
+}
+
+// Attachment counts for every synthetic window-tab session, used by the
+// idle-orphan sweep to decide what's safe to clean up.
+export async function listWindowTabAttachment(): Promise<{ name: string; attached: number }[]> {
+  const out = await tmux([
+    "list-sessions",
+    "-F",
+    "#{session_name}\t#{session_attached}",
+  ]).catch(emptyIfNoServer);
+  return out
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [name, attached] = line.split("\t");
+      return { name, attached: Number(attached) };
+    })
+    .filter((s) => s.name.startsWith(WINDOW_TAB_PREFIX));
 }
 
 export async function renameWindow(
@@ -349,8 +402,10 @@ const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcs
 //    socket).
 //  - idle shell: clear any half-typed input (C-u) and type "nvim <path>".
 //  - anything else (a busy pane): never inject into it — open nvim in a new
-//    tmux window instead.
-export async function openFileInWindow(session: string, filePath: string): Promise<void> {
+//    tmux window instead, without switching to it (see -d below). Returns
+//    that new window's index so the caller can open a dedicated tab for it;
+//    every other path returns null (the file opened in an existing window).
+export async function openFileInWindow(session: string, filePath: string): Promise<number | null> {
   const pane = await getActivePane(session);
   // Login shells report their command with a leading "-" (e.g. "-zsh").
   const command = pane.command.replace(/^-/, "");
@@ -361,26 +416,46 @@ export async function openFileInWindow(session: string, filePath: string): Promi
       const socket = await findNvimSocket(pane.pid);
       if (socket) {
         await nvimRemoteOpen(socket, filePath);
-        return;
+        return null;
       }
     }
     await tmux(["send-keys", "-t", target, "Escape"]);
     await tmux(["send-keys", "-t", target, "-l", `:tabe ${escapeForVimCmdline(filePath)}`]);
     await tmux(["send-keys", "-t", target, "Enter"]);
-    return;
+    return null;
   }
 
   if (SHELL_COMMANDS.has(command)) {
     await tmux(["send-keys", "-t", target, "C-u"]);
     await tmux(["send-keys", "-t", target, "-l", `nvim ${shellQuote(filePath)}`]);
     await tmux(["send-keys", "-t", target, "Enter"]);
-    return;
+    return null;
   }
 
   // No -c given here would default the new window's cwd to the server
   // process's own directory rather than the session's — same pitfall as
   // createWindow above. Reuse the active pane's cwd we already fetched.
-  await tmux(["new-window", "-t", target, "-c", pane.cwd, `nvim ${shellQuote(filePath)}`]);
+  //
+  // -d matters: without it, tmux makes the new window current for `target`
+  // — but `session` here may be a window-tab's own synthetic grouped
+  // session, whose whole point is staying pinned to the window it was
+  // opened for. Without -d, opening a file from a busy window-tab would
+  // silently re-point that tab at the new nvim window instead of leaving it
+  // alone. The caller opens a proper dedicated tab for the new window
+  // instead, using the index -P/-F prints back.
+  const out = await tmux([
+    "new-window",
+    "-d",
+    "-P",
+    "-F",
+    "#{window_index}",
+    "-t",
+    target,
+    "-c",
+    pane.cwd,
+    `nvim ${shellQuote(filePath)}`,
+  ]);
+  return Number(out.trim());
 }
 
 export async function applyTmuxOptions(): Promise<void> {

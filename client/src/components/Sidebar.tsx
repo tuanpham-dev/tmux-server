@@ -48,6 +48,10 @@ interface Props {
   width: number;
   sessions: TmuxSession[];
   activeSessionName: string | null;
+  // The window a window-tab is pinned to, when the active tab is one — used
+  // to highlight that exact row instead of tmux's own (possibly diverged)
+  // active-window flag.
+  activeWindow: { sessionName: string; index: number } | null;
   onOpen: (name: string) => void;
   onOpenWindow: (session: string, index: number) => void;
   onCreate: (name?: string) => void;
@@ -70,6 +74,7 @@ export default function Sidebar({
   width,
   sessions,
   activeSessionName,
+  activeWindow,
   onOpen,
   onOpenWindow,
   onCreate,
@@ -159,22 +164,28 @@ export default function Sidebar({
     </span>
   );
 
-  const windowRow = (s: TmuxSession, w: TmuxWindow, label: string, showCwd: boolean) => (
-    <button
-      key={`${s.name}:${w.index}`}
-      className={`window-item${w.active ? " active-window" : ""}`}
-      title={`${s.name}:${w.index} ${w.name} — ${w.cwd}${w.activity ? " (new output)" : ""}`}
-      onClick={() => onOpenWindow(s.name, w.index)}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onShowMenu(e.clientX, e.clientY, windowMenuItems(s.name, w));
-      }}
-    >
-      {w.activity && <span className="activity-dot" />}
-      <span className="window-label">{label}</span>
-      {showCwd && <span className="item-cwd">{w.cwd}</span>}
-    </button>
-  );
+  const windowRow = (s: TmuxSession, w: TmuxWindow, label: string, showCwd: boolean) => {
+    const isActive =
+      activeWindow !== null
+        ? activeWindow.sessionName === s.name && activeWindow.index === w.index
+        : w.active;
+    return (
+      <button
+        key={`${s.name}:${w.index}`}
+        className={`window-item${isActive ? " active-window" : ""}`}
+        title={`${s.name}:${w.index} ${w.name} — ${w.cwd}${w.activity ? " (new output)" : ""}`}
+        onClick={() => onOpenWindow(s.name, w.index)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onShowMenu(e.clientX, e.clientY, windowMenuItems(s.name, w));
+        }}
+      >
+        {w.activity && <span className="activity-dot" />}
+        <span className="window-label">{label}</span>
+        {showCwd && <span className="item-cwd">{w.cwd}</span>}
+      </button>
+    );
+  };
 
   const sessionsTree = (
     <ul className="session-list">

@@ -17,7 +17,11 @@ const SIDEBAR_MAX = 500;
 function loadStoredTabs(): Tab[] {
   try {
     const parsed = JSON.parse(localStorage.getItem("tabs") ?? "[]");
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // Tabs stored before per-window tabs shipped won't have attachName —
+    // every tab back then was a whole-session tab, where it always equals
+    // sessionName.
+    return parsed.map((t) => ({ ...t, attachName: t.attachName ?? t.sessionName }));
   } catch {
     return [];
   }
@@ -197,9 +201,16 @@ export default function App() {
     return () => clearTimeout(t);
   }, [error]);
 
+  // Guards the window-tab cleanup effect below against the very first
+  // render, where `sessions` is still its initial [] — without this, every
+  // restored window-tab would look "gone" and get closed before the first
+  // fetch even completes.
+  const sessionsLoadedRef = useRef(false);
+
   const refresh = useCallback(async () => {
     try {
       setSessions(await api.fetchSessions());
+      sessionsLoadedRef.current = true;
     } catch (err) {
       showError(err);
     }
@@ -217,34 +228,89 @@ export default function App() {
 
   const openSession = useCallback((name: string) => {
     setTabs((prev) => {
-      const existing = prev.find((t) => t.sessionName === name);
+      // Only match a whole-session tab — a window-tab for this session
+      // shares the same sessionName but must never be treated as it.
+      const existing = prev.find((t) => t.sessionName === name && t.windowIndex === undefined);
       if (existing) {
         setActiveTabId(existing.id);
         return prev;
       }
-      const tab: Tab = { id: crypto.randomUUID(), sessionName: name };
+      const tab: Tab = { id: crypto.randomUUID(), sessionName: name, attachName: name };
       setActiveTabId(tab.id);
       return [...prev, tab];
     });
   }, []);
 
-  const closeTab = useCallback((id: string) => {
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.id === id);
-      const next = prev.filter((t) => t.id !== id);
-      setActiveTabId((current) => {
-        if (current !== id) return current;
-        const neighbor = next[Math.min(idx, next.length - 1)];
-        return neighbor ? neighbor.id : null;
-      });
-      return next;
-    });
-  }, []);
+  const openWindowTab = useCallback(
+    async (session: string, index: number) => {
+      const existing = tabs.find((t) => t.sessionName === session && t.windowIndex === index);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return;
+      }
+      try {
+        const { attachName } = await api.openWindowTab(session, index);
+        const tab: Tab = { id: crypto.randomUUID(), sessionName: session, attachName, windowIndex: index };
+        setTabs((prev) => [...prev, tab]);
+        setActiveTabId(tab.id);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [tabs, showError],
+  );
 
-  const closeOtherTabs = useCallback((id: string) => {
-    setTabs((prev) => prev.filter((t) => t.id === id));
-    setActiveTabId(id);
-  }, []);
+  const closeTab = useCallback(
+    (id: string) => {
+      const tab = tabs.find((t) => t.id === id);
+      if (tab?.windowIndex !== undefined) {
+        api.closeWindowTab(tab.attachName).catch(() => {});
+      }
+      setTabs((prev) => {
+        const idx = prev.findIndex((t) => t.id === id);
+        const next = prev.filter((t) => t.id !== id);
+        setActiveTabId((current) => {
+          if (current !== id) return current;
+          const neighbor = next[Math.min(idx, next.length - 1)];
+          return neighbor ? neighbor.id : null;
+        });
+        return next;
+      });
+    },
+    [tabs],
+  );
+
+  const closeOtherTabs = useCallback(
+    (id: string) => {
+      for (const t of tabs) {
+        if (t.id !== id && t.windowIndex !== undefined) {
+          api.closeWindowTab(t.attachName).catch(() => {});
+        }
+      }
+      setTabs((prev) => prev.filter((t) => t.id === id));
+      setActiveTabId(id);
+    },
+    [tabs],
+  );
+
+  // A window-tab's pinned window can disappear for reasons we can't
+  // explicitly intercept client-side — nvim exiting closes the window it
+  // was the sole command of, a shell's own "exit", someone killing it from
+  // a real terminal. Left alone, the tab would silently start showing
+  // whatever adjacent window tmux falls back to (same root cause as the
+  // explicit "Kill Window" cascade above, but for every other trigger).
+  // This is deliberately generic rather than another explicit cascade: it
+  // catches all of the above, including the vanished-real-session edge case
+  // noted in plans/per-window-tabs.md, from the poll we already run.
+  useEffect(() => {
+    if (!sessionsLoadedRef.current) return;
+    for (const tab of tabs) {
+      if (tab.windowIndex === undefined) continue;
+      const session = sessions.find((s) => s.name === tab.sessionName);
+      const stillExists = session?.windows.some((w) => w.index === tab.windowIndex) ?? false;
+      if (!stillExists) closeTab(tab.id);
+    }
+  }, [sessions, tabs, closeTab]);
 
   const createSession = useCallback(
     async (name?: string) => {
@@ -264,13 +330,18 @@ export default function App() {
       if (!(await confirmDialog(`Kill tmux session "${name}"?`, "Kill Session"))) return;
       try {
         await api.killSession(name);
+        for (const t of tabs) {
+          if (t.sessionName === name && t.windowIndex !== undefined) {
+            api.closeWindowTab(t.attachName).catch(() => {});
+          }
+        }
         setTabs((prev) => prev.filter((t) => t.sessionName !== name));
         await refresh();
       } catch (err) {
         showError(err);
       }
     },
-    [refresh, showError, confirmDialog],
+    [refresh, showError, confirmDialog, tabs],
   );
 
   const renameSession = useCallback(
@@ -306,7 +377,9 @@ export default function App() {
     [refresh, openSession, showError],
   );
 
-  const openWindow = useCallback(
+  // Switches which window the *shared* session tab follows (distinct from
+  // openWindowTab, which pins a dedicated tab to one specific window).
+  const selectWindowInSession = useCallback(
     async (session: string, index: number) => {
       try {
         await api.selectWindow(session, index);
@@ -344,12 +417,20 @@ export default function App() {
         return;
       try {
         await api.killWindow(session, index);
+        // The tab pinned to this exact window would otherwise silently
+        // start showing whatever adjacent window tmux falls back to.
+        // closeTab handles the window-tab cascade + neighbor-aware
+        // activeTabId update in one place.
+        const pinned = tabs.find(
+          (t) => t.sessionName === session && t.windowIndex === index,
+        );
+        if (pinned) closeTab(pinned.id);
         await refresh();
       } catch (err) {
         showError(err);
       }
     },
-    [refresh, showError, confirmDialog],
+    [refresh, showError, confirmDialog, tabs, closeTab],
   );
 
   const showMenu = useCallback((x: number, y: number, items: MenuItem[]) => {
@@ -368,7 +449,7 @@ export default function App() {
 
   const windowMenuItems = useCallback(
     (session: string, win: TmuxWindow): MenuItem[] => [
-      { label: "Select Window", onClick: () => openWindow(session, win.index) },
+      { label: "Select Window", onClick: () => selectWindowInSession(session, win.index) },
       { label: "New Window", onClick: () => createWindow(session) },
       { label: "Rename Window…", onClick: () => renameWindow(session, win) },
       {
@@ -377,7 +458,7 @@ export default function App() {
         onClick: () => killWindow(session, win.index),
       },
     ],
-    [openWindow, createWindow, renameWindow, killWindow],
+    [selectWindowInSession, createWindow, renameWindow, killWindow],
   );
 
   const tabMenuItems = useCallback(
@@ -522,7 +603,25 @@ export default function App() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeSession = sessions.find((s) => s.name === activeTab?.sessionName) ?? null;
-  const filesRootDir = activeSession?.windows.find((w) => w.active)?.cwd ?? null;
+  // A window-tab is pinned to a specific window, which may not be the
+  // session's own tmux-level active window (their current-window pointers
+  // diverge independently once a window-tab exists) — look it up by index
+  // rather than falling back to whatever the session considers active.
+  const activeWindow =
+    activeTab?.windowIndex !== undefined
+      ? activeSession?.windows.find((w) => w.index === activeTab.windowIndex)
+      : activeSession?.windows.find((w) => w.active);
+  const filesRootDir = activeWindow?.cwd ?? null;
+
+  const tabLabel = useCallback(
+    (tab: Tab): string => {
+      if (tab.windowIndex === undefined) return tab.sessionName;
+      const session = sessions.find((s) => s.name === tab.sessionName);
+      const win = session?.windows.find((w) => w.index === tab.windowIndex);
+      return `${tab.sessionName}:${win?.name ?? `window ${tab.windowIndex}`}`;
+    },
+    [sessions],
+  );
 
   const handleUpload = useCallback(
     async (items: DroppedItems, destDir: string) => {
@@ -570,17 +669,29 @@ export default function App() {
     async (filePath: string) => {
       if (!activeTab) return;
       try {
-        await api.openFile(activeTab.sessionName, filePath);
+        // attachName so a window-tab opens the file against the exact
+        // pinned window, not whichever window the real session's own
+        // (independently-diverged) current-window pointer happens to be on.
+        const { newWindowIndex } = await api.openFile(activeTab.attachName, filePath);
+        if (newWindowIndex !== null) {
+          // A busy pane got a fresh nvim window instead of being typed into
+          // — open it as its own tab automatically rather than leaving the
+          // user to hunt for it in the sidebar. activeTab.sessionName (the
+          // real session), not attachName, since that's what window-tabs
+          // are keyed on.
+          await refresh();
+          openWindowTab(activeTab.sessionName, newWindowIndex);
+        }
       } catch (err) {
         showError(err);
       }
     },
-    [activeTab, showError],
+    [activeTab, showError, refresh, openWindowTab],
   );
 
   useEffect(() => {
-    document.title = activeTab ? `${activeTab.sessionName} — tmux` : "tmux";
-  }, [activeTab]);
+    document.title = activeTab ? `${tabLabel(activeTab)} — tmux` : "tmux";
+  }, [activeTab, tabLabel]);
 
   return (
     <div className="app">
@@ -590,8 +701,13 @@ export default function App() {
             width={sidebarWidth}
             sessions={sessions}
             activeSessionName={activeTab?.sessionName ?? null}
+            activeWindow={
+              activeTab?.windowIndex !== undefined
+                ? { sessionName: activeTab.sessionName, index: activeTab.windowIndex }
+                : null
+            }
             onOpen={openSession}
-            onOpenWindow={openWindow}
+            onOpenWindow={openWindowTab}
             onCreate={createSession}
             onShowMenu={showMenu}
             sessionMenuItems={sessionMenuItems}
@@ -620,6 +736,7 @@ export default function App() {
         <TabBar
           tabs={tabs}
           activeTabId={activeTabId}
+          label={tabLabel}
           onActivate={setActiveTabId}
           onClose={closeTab}
           onShowMenu={showMenu}
@@ -629,7 +746,7 @@ export default function App() {
           {tabs.map((tab) => (
             <TerminalView
               key={tab.id}
-              sessionName={tab.sessionName}
+              attachName={tab.attachName}
               active={tab.id === activeTabId}
               settings={settings}
               onExit={() => closeTab(tab.id)}

@@ -22,8 +22,10 @@ import { listPorts } from "./ports.js";
 import {
   createSession,
   createWindow,
+  createWindowTab,
   killSession,
   killWindow,
+  killWindowTab,
   listSessions,
   openFileInWindow,
   renameSession,
@@ -96,6 +98,29 @@ api.post("/sessions/:name/windows/:index/select", async (req, res) => {
   }
 });
 
+api.post("/sessions/:name/windows/:index/open-tab", async (req, res) => {
+  const index = Number(req.params.index);
+  if (!Number.isInteger(index) || index < 0) {
+    res.status(400).json({ error: "invalid window index" });
+    return;
+  }
+  try {
+    const attachName = await createWindowTab(req.params.name, index);
+    res.status(201).json({ attachName });
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.delete("/window-views/:attachName", async (req, res) => {
+  try {
+    await killWindowTab(req.params.attachName);
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
 api.post("/sessions/:name/windows/:index/rename", async (req, res) => {
   const index = Number(req.params.index);
   if (!Number.isInteger(index) || index < 0) {
@@ -155,8 +180,8 @@ api.post("/sessions/:name/open-file", async (req, res) => {
       res.status(400).json({ error: "path is not a file" });
       return;
     }
-    await openFileInWindow(req.params.name, filePath);
-    res.status(204).end();
+    const newWindowIndex = await openFileInWindow(req.params.name, filePath);
+    res.status(200).json({ newWindowIndex });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

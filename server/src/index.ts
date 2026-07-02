@@ -4,6 +4,7 @@ import path from "node:path";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
+import { startViewSweeper } from "./viewSweeper.js";
 import { handleAttach } from "./wsAttach.js";
 import { handleTunnel } from "./wsTunnel.js";
 
@@ -48,3 +49,5 @@ server.on("upgrade", (req, socket, head) => {
 server.listen(PORT, HOST, () => {
   console.log(`tmux-server server listening on http://${HOST}:${PORT}`);
 });
+
+startViewSweeper();

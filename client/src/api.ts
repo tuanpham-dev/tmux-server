@@ -56,6 +56,17 @@ export function killWindow(name: string, index: number): Promise<void> {
   });
 }
 
+export function openWindowTab(name: string, index: number): Promise<{ attachName: string }> {
+  return request(
+    `/api/sessions/${encodeURIComponent(name)}/windows/${index}/open-tab`,
+    { method: "POST" },
+  );
+}
+
+export function closeWindowTab(attachName: string): Promise<void> {
+  return request(`/api/window-views/${encodeURIComponent(attachName)}`, { method: "DELETE" });
+}
+
 export function renameWindow(name: string, index: number, newName: string): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}/windows/${index}/rename`, {
     method: "POST",
@@ -76,7 +87,10 @@ export function listDir(dirPath: string): Promise<FsListing> {
   return request(`/api/fs?path=${encodeURIComponent(dirPath)}`);
 }
 
-export function openFile(session: string, filePath: string): Promise<void> {
+export function openFile(
+  session: string,
+  filePath: string,
+): Promise<{ newWindowIndex: number | null }> {
   return request(`/api/sessions/${encodeURIComponent(session)}/open-file`, {
     method: "POST",
     headers: { "content-type": "application/json" },

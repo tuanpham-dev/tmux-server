@@ -18,6 +18,12 @@ export type SidebarMode = "sessions" | "dirs";
 export interface Tab {
   id: string;
   sessionName: string;
+  // What's actually passed to tmux attach-session / the WS ?session= param.
+  // Equal to sessionName for a whole-session tab; a synthetic grouped
+  // session name for a window-tab.
+  attachName: string;
+  // Present only for a window-tab — the specific window it's pinned to.
+  windowIndex?: number;
 }
 
 export interface MenuItem {

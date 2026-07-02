@@ -3,6 +3,7 @@ import type { MenuItem, Tab } from "../types";
 interface Props {
   tabs: Tab[];
   activeTabId: string | null;
+  label: (tab: Tab) => string;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
@@ -12,6 +13,7 @@ interface Props {
 export default function TabBar({
   tabs,
   activeTabId,
+  label,
   onActivate,
   onClose,
   onShowMenu,
@@ -32,7 +34,7 @@ export default function TabBar({
             onShowMenu(e.clientX, e.clientY, tabMenuItems(tab));
           }}
         >
-          <span className="tab-title">{tab.sessionName}</span>
+          <span className="tab-title">{label(tab)}</span>
           <button
             className="tab-close"
             title="Close tab"
