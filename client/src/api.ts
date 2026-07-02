@@ -39,8 +39,12 @@ export function killSession(name: string): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
-export function createWindow(name: string): Promise<void> {
-  return request(`/api/sessions/${encodeURIComponent(name)}/windows`, { method: "POST" });
+export function createWindow(name: string, cwd?: string): Promise<void> {
+  return request(`/api/sessions/${encodeURIComponent(name)}/windows`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cwd }),
+  });
 }
 
 export function selectWindow(name: string, index: number): Promise<void> {

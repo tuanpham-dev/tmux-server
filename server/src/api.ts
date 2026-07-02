@@ -76,8 +76,11 @@ api.delete("/sessions/:name", async (req, res) => {
 });
 
 api.post("/sessions/:name/windows", async (req, res) => {
+  const cwd = typeof req.body?.cwd === "string" && req.body.cwd.trim() !== ""
+    ? req.body.cwd.trim()
+    : undefined;
   try {
-    await createWindow(req.params.name);
+    await createWindow(req.params.name, cwd);
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });

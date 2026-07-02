@@ -362,9 +362,9 @@ export default function App() {
   );
 
   const createWindow = useCallback(
-    async (session: string) => {
+    async (session: string, cwd?: string) => {
       try {
-        await api.createWindow(session);
+        await api.createWindow(session, cwd);
         await refresh();
       } catch (err) {
         showError(err);
@@ -613,6 +613,11 @@ export default function App() {
       : activeSession?.windows.find((w) => w.active);
   const filesRootDir = activeWindow?.cwd ?? null;
 
+  const newWindowInDir = (cwd: string) => {
+    if (!activeTab) return;
+    createWindow(activeTab.sessionName, cwd);
+  };
+
   const tabLabel = useCallback(
     (tab: Tab): string => {
       if (tab.windowIndex === undefined) return tab.sessionName;
@@ -710,6 +715,8 @@ export default function App() {
             onOpenWindow={openWindowTab}
             onCreate={createSession}
             onKillWindow={killWindow}
+            onNewWindowInSession={createWindow}
+            onNewWindowInDir={newWindowInDir}
             onShowMenu={showMenu}
             sessionMenuItems={sessionMenuItems}
             windowMenuItems={windowMenuItems}

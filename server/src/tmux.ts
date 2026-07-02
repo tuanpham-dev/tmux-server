@@ -116,13 +116,30 @@ export async function killWindow(session: string, index: number): Promise<void> 
   await tmux(["kill-window", "-t", `=${session}:${index}`]);
 }
 
-export async function createWindow(session: string): Promise<void> {
+// True for the synthetic per-window-tab sessions created by createWindowTab
+// below — the only ones whose attached client needs to watch for its pinned
+// window disappearing out from under it (see wsAttach's window-tab watcher).
+export function isWindowTabSession(name: string): boolean {
+  return name.startsWith(WINDOW_TAB_PREFIX);
+}
+
+// The stable id (e.g. "@12") of whatever window `session` currently has
+// selected — unlike #{window_index}, this survives window renumbering, so
+// it's safe to compare across polls to detect the window changing out from
+// under a pinned attach.
+export async function currentWindowId(session: string): Promise<string> {
+  return (
+    await tmux(["display-message", "-t", `=${session}:`, "-p", "#{window_id}"])
+  ).trim();
+}
+
+export async function createWindow(session: string, cwd?: string): Promise<void> {
   // Without -c, tmux defaults a new window's cwd to the cwd of the process
   // that ran this command — the server's own directory, not the session's —
   // since it's invoked here via execFile rather than from inside a tmux
   // pane. Look up the active pane's path explicitly and pass it as -c.
-  const cwd = await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"]);
-  await tmux(["new-window", "-t", `=${session}:`, "-c", cwd.trim()]);
+  const dir = cwd ?? (await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"])).trim();
+  await tmux(["new-window", "-t", `=${session}:`, "-c", dir]);
 }
 
 // Creates a tmux session grouped with `session` (sharing its window list)

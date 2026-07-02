@@ -1,7 +1,21 @@
 import type { IncomingMessage } from "node:http";
 import * as pty from "node-pty";
 import { WebSocket } from "ws";
-import { applyTmuxOptions, getScrollState, scrollTo } from "./tmux.js";
+import {
+  applyTmuxOptions,
+  currentWindowId,
+  getScrollState,
+  isWindowTabSession,
+  scrollTo,
+} from "./tmux.js";
+
+// How often a window-tab attach checks whether its pinned window is still
+// tmux's current one for that synthetic session. tmux falls back to an
+// adjacent window the instant the pinned one closes (shell exit, `nvim
+// :q`, etc.) rather than ending the session, so without this the tab would
+// silently start showing that fallback window instead of closing — this
+// notices the switch and closes the tab, same as an explicit "Kill Window".
+const WINDOW_PIN_CHECK_MS = 300;
 
 interface ClientMsg {
   type: "input" | "resize" | "scrollQuery" | "scrollTo";
@@ -38,7 +52,31 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
     }
   });
 
+  let pinWatcher: NodeJS.Timeout | null = null;
+  if (isWindowTabSession(session)) {
+    // select-window already ran (createWindowTab) before the client ever
+    // attaches, so whatever window is current right now is the pinned one.
+    currentWindowId(session)
+      .then((pinnedId) => {
+        pinWatcher = setInterval(() => {
+          currentWindowId(session)
+            .then((id) => {
+              if (id !== pinnedId) {
+                clearInterval(pinWatcher!);
+                pinWatcher = null;
+                term.kill();
+              }
+            })
+            .catch(() => {
+              // Session itself is gone — term.onExit below handles this.
+            });
+        }, WINDOW_PIN_CHECK_MS);
+      })
+      .catch(() => {});
+  }
+
   term.onExit(() => {
+    if (pinWatcher) clearInterval(pinWatcher);
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "exit" }));
       ws.close();

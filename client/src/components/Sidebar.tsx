@@ -57,6 +57,8 @@ interface Props {
   onOpenWindow: (session: string, index: number) => void;
   onCreate: (name?: string) => void;
   onKillWindow: (session: string, index: number) => void;
+  onNewWindowInSession: (session: string) => void;
+  onNewWindowInDir: (cwd: string) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   sessionMenuItems: (name: string) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
@@ -81,6 +83,8 @@ export default function Sidebar({
   onOpenWindow,
   onCreate,
   onKillWindow,
+  onNewWindowInSession,
+  onNewWindowInDir,
   onShowMenu,
   sessionMenuItems,
   windowMenuItems,
@@ -214,20 +218,29 @@ export default function Sidebar({
         const activeWin = s.windows.find((w) => w.active);
         return (
           <li key={s.name}>
-            <button
-              className={`session-item${s.name === activeSessionName ? " active" : ""}`}
-              title={activeWin ? activeWin.cwd : s.name}
-              onClick={() => onOpen(s.name)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                onShowMenu(e.clientX, e.clientY, sessionMenuItems(s.name));
-              }}
-            >
-              {chevron(s.name)}
-              <span className={`session-dot${s.attached > 0 ? " attached" : ""}`} />
-              <span className="session-name">{s.name}</span>
-              {activeWin && <span className="item-cwd">{activeWin.cwd}</span>}
-            </button>
+            <div className="session-row">
+              <button
+                className={`session-item${s.name === activeSessionName ? " active" : ""}`}
+                title={activeWin ? activeWin.cwd : s.name}
+                onClick={() => onOpen(s.name)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onShowMenu(e.clientX, e.clientY, sessionMenuItems(s.name));
+                }}
+              >
+                {chevron(s.name)}
+                <span className={`session-dot${s.attached > 0 ? " attached" : ""}`} />
+                <span className="session-name">{s.name}</span>
+                {activeWin && <span className="item-cwd">{activeWin.cwd}</span>}
+              </button>
+              <button
+                className="row-add-button"
+                title="New window"
+                onClick={() => onNewWindowInSession(s.name)}
+              >
+                <Icon name="add" />
+              </button>
+            </div>
             {!collapsedWindows.has(s.name) &&
               s.windows.map((w) => windowRow(s, w, `${w.index} ${w.name}`, true))}
           </li>
@@ -250,14 +263,23 @@ export default function Sidebar({
     <ul className="session-list">
       {[...dirGroups.keys()].sort().map((dir) => (
         <li key={dir}>
-          <button
-            className="session-item dir-item"
-            title={dir}
-            onClick={() => toggleWindowCollapsed(dir)}
-          >
-            {chevron(dir)}
-            <span className="session-name">{dir}</span>
-          </button>
+          <div className="session-row">
+            <button
+              className="session-item dir-item"
+              title={dir}
+              onClick={() => toggleWindowCollapsed(dir)}
+            >
+              {chevron(dir)}
+              <span className="session-name">{dir}</span>
+            </button>
+            <button
+              className="row-add-button"
+              title="New window in current session"
+              onClick={() => onNewWindowInDir(dir)}
+            >
+              <Icon name="add" />
+            </button>
+          </div>
           {!collapsedWindows.has(dir) &&
             dirGroups
               .get(dir)!
