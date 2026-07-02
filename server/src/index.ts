@@ -5,6 +5,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
 import { handleAttach } from "./wsAttach.js";
+import { handleTunnel } from "./wsTunnel.js";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT ?? 3001);
@@ -12,6 +13,11 @@ const PORT = Number(process.env.PORT ?? 3001);
 const app = express();
 app.use(express.json());
 app.use("/api", api);
+
+const tunnelCli = path.resolve(import.meta.dirname, "../../cli/tunnel.mjs");
+app.get("/tunnel.mjs", (_req, res) => {
+  res.type("text/javascript").sendFile(tunnelCli);
+});
 
 const clientDist = path.resolve(import.meta.dirname, "../../client/dist");
 if (existsSync(clientDist)) {
@@ -29,6 +35,10 @@ server.on("upgrade", (req, socket, head) => {
   if (pathname === "/ws/attach") {
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleAttach(ws, req);
+    });
+  } else if (pathname === "/ws/tunnel") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      handleTunnel(ws);
     });
   } else {
     socket.destroy();

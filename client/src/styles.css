@@ -873,6 +873,105 @@ body.scrollbar-dragging {
   transition: width 0.1s linear;
 }
 
+/* ---- Ports panel ---- */
+
+.ports-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.ports-error {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--error);
+}
+
+.port-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.port-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 12px;
+  background: none;
+  border: none;
+  color: var(--fg-bright);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.port-item:hover {
+  background: var(--hover);
+}
+
+.port-item.selected {
+  background: var(--selection);
+  color: #ffffff;
+}
+
+.port-number {
+  font-family: monospace;
+  min-width: 44px;
+}
+
+.port-process {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-inactive);
+}
+
+.port-address {
+  font-size: 11px;
+  color: var(--fg-inactive);
+}
+
+.port-command {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.port-command-box {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+  padding: 6px 8px;
+  background: var(--input-bg);
+  border-radius: 2px;
+  font-size: 11px;
+  color: var(--fg);
+}
+
+.port-copy-button {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  background: var(--accent);
+  border: none;
+  border-radius: 2px;
+  color: #ffffff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.port-copy-button:hover {
+  filter: brightness(1.1);
+}
+
 /* ---- Error banner ---- */
 
 .error-banner {

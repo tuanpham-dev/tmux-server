@@ -1,4 +1,4 @@
-import type { FsListing, TmuxSession } from "./types";
+import type { FsListing, ListeningPort, TmuxSession } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -21,6 +21,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchSessions(): Promise<TmuxSession[]> {
   return request("/api/sessions");
+}
+
+export function fetchPorts(): Promise<ListeningPort[]> {
+  return request("/api/ports");
 }
 
 export function createSession(name?: string): Promise<TmuxSession> {

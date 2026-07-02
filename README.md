@@ -62,11 +62,40 @@ location / {
 }
 ```
 
+## Port forwarding
+
+If something on the server listens on a port (a dev server, a database) and you want `localhost:PORT` on your own machine to reach it — like `ssh -L`, but without SSH access — download and run the tunnel CLI:
+
+```bash
+curl -O http://<host>:3001/tunnel.mjs
+node tunnel.mjs --url http://<host>:3001 3000
+```
+
+Now `http://localhost:3000` on your machine reaches `127.0.0.1:3000` on the server. Forward multiple ports in one command, and use `LOCAL:REMOTE` when you want a different local port:
+
+```bash
+node tunnel.mjs --url http://<host>:3001 3000 8080:80
+```
+
+`--url` defaults to `$TMUX_SERVER_URL`, then `http://127.0.0.1:3001`. All forwards share a single WebSocket connection, multiplexed per-connection — the CLI is a single dependency-free file (Node 20+, stdlib only), always served fresh from the server it's connecting to, so it never drifts out of sync with the server's protocol.
+
+The **PORTS** panel in the sidebar lists the server's listening ports, lets you select the ones you want, and builds this command for you — just copy it and run it locally.
+
+If tmux-server is fronted by a reverse proxy with auth, pass it through with URL credentials or headers:
+
+```bash
+node tunnel.mjs --url https://user:pass@myhost 3000
+node tunnel.mjs --url https://myhost --header 'Cookie: session=...' 3000
+```
+
+The nginx config above needs no changes — `/ws/tunnel` is covered by the same `location /` WebSocket proxy block as terminal sessions.
+
 ## Project layout
 
 ```
 server/   Express + ws + node-pty — REST API for tmux operations, WS bridge to a PTY running `tmux attach`
 client/   React + TypeScript + xterm.js — the browser UI
+cli/      tunnel.mjs — standalone port-forwarding client, served at GET /tunnel.mjs
 plans/    Design docs written during development
 ```
 

@@ -52,3 +52,10 @@ export interface FsListing {
   entries: FsEntry[];
   branch: string | null;
 }
+
+export interface ListeningPort {
+  port: number;
+  address: string;
+  process?: string;
+  pid?: number;
+}

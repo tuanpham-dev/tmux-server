@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { MenuItem, SidebarMode, TmuxSession, TmuxWindow } from "../types";
 import FileTree from "./FileTree";
+import PortsPanel from "./PortsPanel";
 
-type PanelId = "sessions" | "files";
+type PanelId = "sessions" | "files" | "ports";
 
 interface PanelState {
   order: PanelId[];
@@ -13,14 +14,14 @@ interface PanelState {
   sizes: Record<PanelId, number>;
 }
 
-const PANEL_IDS: PanelId[] = ["sessions", "files"];
+const PANEL_IDS: PanelId[] = ["sessions", "files", "ports"];
 const MIN_PANEL_HEIGHT = 60;
 const PANELS_KEY = "sidebarPanels";
 
 const DEFAULT_PANEL_STATE: PanelState = {
-  order: ["sessions", "files"],
-  collapsed: { sessions: false, files: false },
-  sizes: { sessions: 1, files: 1 },
+  order: ["sessions", "files", "ports"],
+  collapsed: { sessions: false, files: false, ports: true },
+  sizes: { sessions: 1, files: 1, ports: 1 },
 };
 
 function loadPanelState(): PanelState {
@@ -96,7 +97,9 @@ export default function Sidebar({
   const panelRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
     sessions: null,
     files: null,
+    ports: null,
   });
+  const [portsRefreshKey, setPortsRefreshKey] = useState(0);
   const [dragPanelId, setDragPanelId] = useState<PanelId | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ id: PanelId; edge: "top" | "bottom" } | null>(
     null,
@@ -242,6 +245,7 @@ export default function Sidebar({
 
   const panelTitle = (id: PanelId): string => {
     if (id === "sessions") return mode === "sessions" ? "Sessions" : "Directories";
+    if (id === "ports") return "Ports";
     return filesRootDir ?? "Files";
   };
 
@@ -267,6 +271,17 @@ export default function Sidebar({
             +
           </button>
         </>
+      );
+    }
+    if (id === "ports") {
+      return (
+        <button
+          className="icon-button"
+          title="Refresh"
+          onClick={() => setPortsRefreshKey((k) => k + 1)}
+        >
+          ↻
+        </button>
       );
     }
     return (
@@ -300,6 +315,9 @@ export default function Sidebar({
           {mode === "sessions" ? sessionsTree : dirsTree}
         </>
       );
+    }
+    if (id === "ports") {
+      return <PortsPanel refreshKey={portsRefreshKey} />;
     }
     return (
       <FileTree

@@ -18,6 +18,7 @@ import {
   uniquePath,
 } from "./files.js";
 import { getRepoStatuses, statusForEntry } from "./git.js";
+import { listPorts } from "./ports.js";
 import {
   createSession,
   createWindow,
@@ -158,6 +159,14 @@ api.post("/sessions/:name/open-file", async (req, res) => {
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.get("/ports", async (_req, res) => {
+  try {
+    res.json(await listPorts());
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
   }
 });
 
