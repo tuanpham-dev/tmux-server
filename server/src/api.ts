@@ -7,6 +7,7 @@ import {
   exists,
   expandHome,
   isDirectory,
+  isFile,
   listDir,
   resolveDestination,
   uniquePath,
@@ -17,6 +18,7 @@ import {
   killSession,
   killWindow,
   listSessions,
+  openFileInWindow,
   renameSession,
   renameWindow,
   selectWindow,
@@ -120,6 +122,25 @@ api.post("/sessions/:name/rename", async (req, res) => {
   }
   try {
     await renameSession(req.params.name, newName);
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/sessions/:name/open-file", async (req, res) => {
+  const raw = typeof req.body?.path === "string" ? req.body.path : "";
+  if (!raw) {
+    res.status(400).json({ error: "path is required" });
+    return;
+  }
+  const filePath = expandHome(raw);
+  try {
+    if (!(await isFile(filePath))) {
+      res.status(400).json({ error: "path is not a file" });
+      return;
+    }
+    await openFileInWindow(req.params.name, filePath);
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });

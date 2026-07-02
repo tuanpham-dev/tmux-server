@@ -6,6 +6,7 @@ interface Props {
   rootDir: string | null;
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
   refreshKey: number;
+  onOpenFile: (path: string) => void;
 }
 
 interface DirState {
@@ -26,7 +27,7 @@ const DRAG_CLEAR_MS = 1800;
 // common file-manager / VS Code Explorer drag-hover-to-expand convention.
 const HOVER_EXPAND_MS = 1000;
 
-export default function FileTree({ rootDir, onDropFiles, refreshKey }: Props) {
+export default function FileTree({ rootDir, onDropFiles, refreshKey, onOpenFile }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Map<string, DirState>>(new Map());
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
@@ -203,14 +204,15 @@ export default function FileTree({ rootDir, onDropFiles, refreshKey }: Props) {
         );
       }
       return (
-        <div
+        <button
           key={entryPath}
           className="file-tree-row file-tree-file"
           style={{ paddingLeft: 6 + depth * 14 }}
           title={entry.name}
+          onClick={() => onOpenFile(entryPath)}
         >
           <span className="file-tree-name">{entry.name}</span>
-        </div>
+        </button>
       );
     });
   };

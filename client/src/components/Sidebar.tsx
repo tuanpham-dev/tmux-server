@@ -59,6 +59,7 @@ interface Props {
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
   filesRefreshKey: number;
   onFilesRefresh: () => void;
+  onOpenFile: (path: string) => void;
 }
 
 export default function Sidebar({
@@ -77,6 +78,7 @@ export default function Sidebar({
   onDropFiles,
   filesRefreshKey,
   onFilesRefresh,
+  onOpenFile,
 }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -292,7 +294,14 @@ export default function Sidebar({
         </>
       );
     }
-    return <FileTree rootDir={filesRootDir} onDropFiles={onDropFiles} refreshKey={filesRefreshKey} />;
+    return (
+      <FileTree
+        rootDir={filesRootDir}
+        onDropFiles={onDropFiles}
+        refreshKey={filesRefreshKey}
+        onOpenFile={onOpenFile}
+      />
+    );
   };
 
   // Converts a pointer drag into flex-grow weights for the two panels

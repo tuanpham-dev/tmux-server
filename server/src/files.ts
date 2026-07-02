@@ -73,6 +73,14 @@ export async function isDirectory(p: string): Promise<boolean> {
   }
 }
 
+export async function isFile(p: string): Promise<boolean> {
+  try {
+    return (await stat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureDir(p: string): Promise<void> {
   await mkdir(p, { recursive: true });
 }

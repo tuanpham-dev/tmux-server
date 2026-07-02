@@ -72,6 +72,14 @@ export function listDir(dirPath: string): Promise<FsListing> {
   return request(`/api/fs?path=${encodeURIComponent(dirPath)}`);
 }
 
+export function openFile(session: string, filePath: string): Promise<void> {
+  return request(`/api/sessions/${encodeURIComponent(session)}/open-file`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: filePath }),
+  });
+}
+
 export function makeDir(destDir: string, relativePath: string): Promise<void> {
   return request(
     `/api/mkdir?dir=${encodeURIComponent(destDir)}&path=${encodeURIComponent(relativePath)}`,

@@ -413,8 +413,11 @@ body.resizing-row {
 }
 
 .file-tree-file {
-  cursor: default;
   color: var(--fg-inactive);
+}
+
+.file-tree-file:hover {
+  background: var(--hover);
 }
 
 .file-tree-name {

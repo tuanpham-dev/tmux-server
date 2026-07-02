@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readdir, readFile, readlink } from "node:fs/promises";
 
 export interface TmuxWindow {
   index: number;
@@ -165,6 +166,214 @@ export async function scrollTo(session: string, line: number): Promise<void> {
     "goto-line",
     String(Math.max(0, Math.trunc(line))),
   ]);
+}
+
+interface PaneInfo {
+  command: string;
+  pid: number;
+}
+
+// The foreground process and pid of a session's active pane. pane_pid is the
+// pane's original process (usually the login shell); pane_current_command is
+// whatever's currently in the foreground (the shell itself, or a program it
+// exec'd/forked, like nvim).
+async function getActivePane(session: string): Promise<PaneInfo> {
+  const out = await tmux([
+    "display-message",
+    "-t",
+    `=${session}:`,
+    "-p",
+    "#{pane_current_command}\t#{pane_pid}",
+  ]);
+  const [command, pid] = out.trim().split("\t");
+  return { command, pid: Number(pid) };
+}
+
+interface ProcInfo {
+  ppid: number;
+  comm: string;
+}
+
+// Scans /proc once for a ppid+comm map of every process on the host. Linux
+// only — callers must treat a failure (missing /proc, e.g. on macOS) as
+// "unknown" and fall back to the keystroke-injection path.
+async function buildProcessMap(): Promise<Map<number, ProcInfo>> {
+  const map = new Map<number, ProcInfo>();
+  let entries: string[];
+  try {
+    entries = await readdir("/proc");
+  } catch {
+    return map;
+  }
+  await Promise.all(
+    entries
+      .filter((name) => /^\d+$/.test(name))
+      .map(async (name) => {
+        try {
+          const raw = await readFile(`/proc/${name}/stat`, "utf8");
+          // Format: "pid (comm) state ppid ...". comm is parenthesized and
+          // may itself contain spaces/parens, so match up to the last ")".
+          const m = raw.match(/^\d+\s+\((.*)\)\s+\S+\s+(\d+)/);
+          if (!m) return;
+          map.set(Number(name), { comm: m[1], ppid: Number(m[2]) });
+        } catch {
+          // Process exited between readdir and read; ignore.
+        }
+      }),
+  );
+  return map;
+}
+
+// BFS down the process tree from rootPid (inclusive), collecting every
+// process matching predicate in shallowest-first order. Nvim can run as a
+// pair of same-named processes (a TUI host plus a nested core that actually
+// owns the RPC socket), so the caller needs every match, not just the first.
+function findDescendants(
+  rootPid: number,
+  map: Map<number, ProcInfo>,
+  predicate: (comm: string) => boolean,
+): number[] {
+  const childrenOf = new Map<number, number[]>();
+  for (const [pid, info] of map) {
+    const siblings = childrenOf.get(info.ppid) ?? [];
+    siblings.push(pid);
+    childrenOf.set(info.ppid, siblings);
+  }
+  const queue = [rootPid];
+  const seen = new Set<number>();
+  const matches: number[] = [];
+  while (queue.length > 0) {
+    const pid = queue.shift()!;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    const info = map.get(pid);
+    if (info && predicate(info.comm)) matches.push(pid);
+    queue.push(...(childrenOf.get(pid) ?? []));
+  }
+  return matches;
+}
+
+// Finds the unix-domain socket a running nvim process is listening on, by
+// cross-referencing its open socket fds (/proc/<pid>/fd) against the kernel's
+// socket table (/proc/net/unix), which lists the bound path alongside each
+// listening socket's inode. Returns null if nvim can't be located this way
+// (non-Linux host, sandboxed /proc, or nvim started with no default server).
+async function readNvimSocketPath(nvimPid: number): Promise<string | null> {
+  let fds: string[];
+  try {
+    fds = await readdir(`/proc/${nvimPid}/fd`);
+  } catch {
+    return null;
+  }
+  const inodes = new Set<string>();
+  await Promise.all(
+    fds.map(async (fd) => {
+      try {
+        const target = await readlink(`/proc/${nvimPid}/fd/${fd}`);
+        const m = target.match(/^socket:\[(\d+)\]$/);
+        if (m) inodes.add(m[1]);
+      } catch {
+        // fd closed between readdir and readlink; ignore.
+      }
+    }),
+  );
+  if (inodes.size === 0) return null;
+
+  let unixTable: string;
+  try {
+    unixTable = await readFile("/proc/net/unix", "utf8");
+  } catch {
+    return null;
+  }
+  for (const line of unixTable.split("\n").slice(1)) {
+    const cols = line.trim().split(/\s+/);
+    const inode = cols[6];
+    const socketPath = cols[7];
+    if (inode && inodes.has(inode) && socketPath?.includes("nvim")) {
+      return socketPath;
+    }
+  }
+  return null;
+}
+
+async function findNvimSocket(panePid: number): Promise<string | null> {
+  const map = await buildProcessMap();
+  const nvimPids = findDescendants(panePid, map, (comm) => comm === "nvim");
+  for (const pid of nvimPids) {
+    const socket = await readNvimSocketPath(pid);
+    if (socket) return socket;
+  }
+  return null;
+}
+
+// "--remote-tab" is "--remote" but opens the file with :tab-edit instead of
+// :edit, so it lands in a new tab rather than replacing the pane's current
+// buffer.
+function nvimRemoteOpen(socket: string, filePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "nvim",
+      ["--server", socket, "--remote-tab", filePath],
+      (err, _stdout, stderr) => {
+        if (err) reject(new Error(stderr.trim() || err.message));
+        else resolve();
+      },
+    );
+  });
+}
+
+// Backslash-escapes characters vim's cmdline treats specially, so a path with
+// spaces or one of these symbols is read as a single filename argument to
+// ":tabe" rather than being split or (for "%"/"#") expanded as the alternate
+// file.
+function escapeForVimCmdline(p: string): string {
+  return p.replace(/([ \\%#|"!<])/g, "\\$1");
+}
+
+function shellQuote(p: string): string {
+  return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+const EDITOR_COMMANDS = new Set(["nvim", "vim"]);
+const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
+
+// Opens filePath in the given session's active window, choosing behavior
+// from the active pane's current foreground process:
+//  - nvim/vim running: reuse it, opening the file in a new tab (RPC
+//    "--remote-tab" for nvim when its socket can be found, else Escape +
+//    ":tabe" keystrokes as a fallback for plain vim or an unreachable
+//    socket).
+//  - idle shell: clear any half-typed input (C-u) and type "nvim <path>".
+//  - anything else (a busy pane): never inject into it — open nvim in a new
+//    tmux window instead.
+export async function openFileInWindow(session: string, filePath: string): Promise<void> {
+  const pane = await getActivePane(session);
+  // Login shells report their command with a leading "-" (e.g. "-zsh").
+  const command = pane.command.replace(/^-/, "");
+  const target = `=${session}:`;
+
+  if (EDITOR_COMMANDS.has(command)) {
+    if (command === "nvim") {
+      const socket = await findNvimSocket(pane.pid);
+      if (socket) {
+        await nvimRemoteOpen(socket, filePath);
+        return;
+      }
+    }
+    await tmux(["send-keys", "-t", target, "Escape"]);
+    await tmux(["send-keys", "-t", target, "-l", `:tabe ${escapeForVimCmdline(filePath)}`]);
+    await tmux(["send-keys", "-t", target, "Enter"]);
+    return;
+  }
+
+  if (SHELL_COMMANDS.has(command)) {
+    await tmux(["send-keys", "-t", target, "C-u"]);
+    await tmux(["send-keys", "-t", target, "-l", `nvim ${shellQuote(filePath)}`]);
+    await tmux(["send-keys", "-t", target, "Enter"]);
+    return;
+  }
+
+  await tmux(["new-window", "-t", target, `nvim ${shellQuote(filePath)}`]);
 }
 
 export async function applyTmuxOptions(): Promise<void> {

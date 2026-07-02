@@ -418,6 +418,18 @@ export default function App() {
     setFilesRefreshKey((k) => k + 1);
   }, []);
 
+  const openFileInSession = useCallback(
+    async (filePath: string) => {
+      if (!activeTab) return;
+      try {
+        await api.openFile(activeTab.sessionName, filePath);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [activeTab, showError],
+  );
+
   useEffect(() => {
     document.title = activeTab ? `${activeTab.sessionName} — tmux` : "tmux";
   }, [activeTab]);
@@ -442,6 +454,7 @@ export default function App() {
             onDropFiles={handleFileTreeDrop}
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
+            onOpenFile={openFileInSession}
           />
           <div className="resize-handle" onMouseDown={startSidebarResize} />
         </>
