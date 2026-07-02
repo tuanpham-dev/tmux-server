@@ -87,6 +87,29 @@ export function makeDir(destDir: string, relativePath: string): Promise<void> {
   );
 }
 
+export function createFile(destDir: string, relativePath: string): Promise<{ path: string }> {
+  return request(
+    `/api/newfile?dir=${encodeURIComponent(destDir)}&path=${encodeURIComponent(relativePath)}`,
+    { method: "POST" },
+  );
+}
+
+export function renameEntry(targetPath: string, newName: string): Promise<{ path: string }> {
+  return request("/api/fs/rename", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: targetPath, newName }),
+  });
+}
+
+export function deleteEntry(targetPath: string): Promise<void> {
+  return request(`/api/fs?path=${encodeURIComponent(targetPath)}`, { method: "DELETE" });
+}
+
+export function downloadUrl(targetPath: string): string {
+  return `/api/download?path=${encodeURIComponent(targetPath)}`;
+}
+
 // Thrown when the server refuses to upload because the destination already
 // exists and the caller asked for "fail" conflict semantics (used to drive
 // the ask-before-overwrite flow).

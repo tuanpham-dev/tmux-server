@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
-import type { FsEntry, GitFileStatus } from "../types";
+import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 
 interface Props {
   rootDir: string | null;
@@ -8,6 +8,10 @@ interface Props {
   refreshKey: number;
   onOpenFile: (path: string) => void;
   onBranchChange: (branch: string | null) => void;
+  onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
+  fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
+  fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
+  prunePath: { path: string } | null;
 }
 
 const GIT_STATUS_LABEL: Record<GitFileStatus, string> = {
@@ -55,6 +59,10 @@ export default function FileTree({
   refreshKey,
   onOpenFile,
   onBranchChange,
+  onShowMenu,
+  fileMenuItems,
+  fileTreeRootMenuItems,
+  prunePath,
 }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Map<string, DirState>>(new Map());
@@ -63,6 +71,9 @@ export default function FileTree({
   const expandTimer = useRef<{ path: string; timer: number } | null>(null);
   const onBranchChangeRef = useRef(onBranchChange);
   onBranchChangeRef.current = onBranchChange;
+  // Tracks the last prunePath object already applied, so an unrelated
+  // refreshKey bump (e.g. the 3s session poll) doesn't re-run the prune scan.
+  const lastPrunedRef = useRef<{ path: string } | null>(null);
 
   const fetchDir = useCallback((dirPath: string) => {
     setDirCache((prev) => {
@@ -99,15 +110,30 @@ export default function FileTree({
     if (rootDir) fetchDir(rootDir);
   }, [rootDir, fetchDir]);
 
-  // Bumped after an upload lands: refetch whatever is currently visible.
+  // Bumped after an upload lands: refetch whatever is currently visible. A
+  // delete/rename bumps refreshKey together with prunePath (same action, same
+  // render), so pruning runs first and the fetch loop below never re-requests
+  // the very path that was just removed.
   useEffect(() => {
     if (!rootDir) return;
+    let liveExpanded = expanded;
+    if (prunePath && prunePath !== lastPrunedRef.current) {
+      lastPrunedRef.current = prunePath;
+      const { path: stale } = prunePath;
+      const isPruned = (p: string) => p === stale || p.startsWith(`${stale}/`);
+      liveExpanded = new Set([...expanded].filter((p) => !isPruned(p)));
+      if (liveExpanded.size !== expanded.size) setExpanded(liveExpanded);
+      setDirCache((prev) => {
+        const next = new Map([...prev].filter(([p]) => !isPruned(p)));
+        return next.size === prev.size ? prev : next;
+      });
+    }
     fetchDir(rootDir);
-    for (const dirPath of expanded) fetchDir(dirPath);
-    // Only react to refreshKey changes — rootDir/expanded changes are
-    // already handled by their own effects above.
+    for (const dirPath of liveExpanded) fetchDir(dirPath);
+    // Only react to refreshKey/prunePath changes — rootDir/expanded changes
+    // are already handled by their own effects above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
+  }, [refreshKey, prunePath]);
 
   const cancelExpandTimer = () => {
     if (expandTimer.current) {
@@ -230,6 +256,11 @@ export default function FileTree({
               style={{ paddingLeft: 6 + depth * 14 }}
               title={entryPath}
               onClick={() => toggle(entryPath)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onShowMenu(e.clientX, e.clientY, fileMenuItems(entryPath, true, rootDir!));
+              }}
             >
               <span className="chevron">{isExpanded ? "▾" : "▸"}</span>
               <span className="file-tree-name">{entry.name}</span>
@@ -246,6 +277,11 @@ export default function FileTree({
           style={{ paddingLeft: 6 + depth * 14 }}
           title={entry.name}
           onClick={() => onOpenFile(entryPath)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onShowMenu(e.clientX, e.clientY, fileMenuItems(entryPath, false, rootDir!));
+          }}
         >
           <span className="file-tree-name">{entry.name}</span>
           <GitStatusBadge status={entry.gitStatus} />
@@ -267,6 +303,10 @@ export default function FileTree({
       onDrop={dragHandlers(rootDir).onDrop}
       onDragLeave={(e) => {
         if (e.target === e.currentTarget) clearDragState();
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onShowMenu(e.clientX, e.clientY, fileTreeRootMenuItems(rootDir));
       }}
     >
       {rootState?.loading && !rootState.entries.length && (

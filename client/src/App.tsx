@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api";
+import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
 import Dialog, { type DialogRequest } from "./components/Dialog";
 import SettingsDialog from "./components/SettingsDialog";
@@ -166,6 +167,10 @@ export default function App() {
     totalBytes: number;
   } | null>(null);
   const [filesRefreshKey, setFilesRefreshKey] = useState(0);
+  // Set whenever a delete/rename lands, so FileTree can drop the now-stale
+  // path (and its descendants) from its expanded/dirCache state instead of
+  // waiting for a refetch to notice it's gone.
+  const [prunePath, setPrunePath] = useState<{ path: string } | null>(null);
 
   const startSidebarResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -390,6 +395,131 @@ export default function App() {
     [closeTab, closeOtherTabs, createWindow, renameSession, killSession],
   );
 
+  const renameFileEntry = useCallback(
+    async (entryPath: string) => {
+      const base = entryPath.slice(entryPath.lastIndexOf("/") + 1);
+      const newName = (await promptDialog("New name", base))?.trim();
+      if (!newName || newName === base) return;
+      try {
+        await api.renameEntry(entryPath, newName);
+        setPrunePath({ path: entryPath });
+        setFilesRefreshKey((k) => k + 1);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [promptDialog, showError],
+  );
+
+  const deleteFileEntry = useCallback(
+    async (entryPath: string, isDir: boolean) => {
+      const base = entryPath.slice(entryPath.lastIndexOf("/") + 1);
+      if (!(await confirmDialog(`Delete ${isDir ? "folder" : "file"} "${base}"?`, "Delete")))
+        return;
+      try {
+        await api.deleteEntry(entryPath);
+        setPrunePath({ path: entryPath });
+        setFilesRefreshKey((k) => k + 1);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [confirmDialog, showError],
+  );
+
+  const createFileInDir = useCallback(
+    async (dirPath: string) => {
+      const name = (await promptDialog("New file name"))?.trim();
+      if (!name) return;
+      try {
+        await api.createFile(dirPath, name);
+        setFilesRefreshKey((k) => k + 1);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [promptDialog, showError],
+  );
+
+  const createFolderInDir = useCallback(
+    async (dirPath: string) => {
+      const name = (await promptDialog("New folder name"))?.trim();
+      if (!name) return;
+      try {
+        await api.makeDir(dirPath, name);
+        setFilesRefreshKey((k) => k + 1);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [promptDialog, showError],
+  );
+
+  const copyFilePath = useCallback(
+    (entryPath: string) => {
+      copyText(entryPath).catch(showError);
+    },
+    [showError],
+  );
+
+  const copyFileRelativePath = useCallback(
+    (entryPath: string, rootDir: string) => {
+      const rel = entryPath.startsWith(rootDir + "/")
+        ? entryPath.slice(rootDir.length + 1)
+        : entryPath === rootDir
+          ? "."
+          : entryPath;
+      copyText(rel).catch(showError);
+    },
+    [showError],
+  );
+
+  const downloadFileEntry = useCallback((entryPath: string) => {
+    const a = document.createElement("a");
+    a.href = api.downloadUrl(entryPath);
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, []);
+
+  const fileMenuItems = useCallback(
+    (entryPath: string, isDir: boolean, rootDir: string): MenuItem[] => {
+      const items: MenuItem[] = [];
+      if (isDir) {
+        items.push(
+          { label: "New File…", onClick: () => createFileInDir(entryPath) },
+          { label: "New Folder…", onClick: () => createFolderInDir(entryPath) },
+        );
+      }
+      items.push(
+        { label: "Rename…", onClick: () => renameFileEntry(entryPath) },
+        { label: "Copy Path", onClick: () => copyFilePath(entryPath) },
+        { label: "Copy Relative Path", onClick: () => copyFileRelativePath(entryPath, rootDir) },
+        { label: "Download", onClick: () => downloadFileEntry(entryPath) },
+        { label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) },
+      );
+      return items;
+    },
+    [
+      createFileInDir,
+      createFolderInDir,
+      renameFileEntry,
+      copyFilePath,
+      copyFileRelativePath,
+      downloadFileEntry,
+      deleteFileEntry,
+    ],
+  );
+
+  const fileTreeRootMenuItems = useCallback(
+    (rootDir: string): MenuItem[] => [
+      { label: "New File…", onClick: () => createFileInDir(rootDir) },
+      { label: "New Folder…", onClick: () => createFolderInDir(rootDir) },
+    ],
+    [createFileInDir, createFolderInDir],
+  );
+
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const activeSession = sessions.find((s) => s.name === activeTab?.sessionName) ?? null;
   const filesRootDir = activeSession?.windows.find((w) => w.active)?.cwd ?? null;
@@ -473,6 +603,9 @@ export default function App() {
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
             onOpenFile={openFileInSession}
+            fileMenuItems={fileMenuItems}
+            fileTreeRootMenuItems={fileTreeRootMenuItems}
+            prunePath={prunePath}
           />
           <div className="resize-handle" onMouseDown={startSidebarResize} />
         </>

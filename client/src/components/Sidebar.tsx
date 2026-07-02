@@ -60,6 +60,9 @@ interface Props {
   filesRefreshKey: number;
   onFilesRefresh: () => void;
   onOpenFile: (path: string) => void;
+  fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
+  fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
+  prunePath: { path: string } | null;
 }
 
 export default function Sidebar({
@@ -79,6 +82,9 @@ export default function Sidebar({
   filesRefreshKey,
   onFilesRefresh,
   onOpenFile,
+  fileMenuItems,
+  fileTreeRootMenuItems,
+  prunePath,
 }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -302,6 +308,10 @@ export default function Sidebar({
         refreshKey={filesRefreshKey}
         onOpenFile={onOpenFile}
         onBranchChange={setFilesBranch}
+        onShowMenu={onShowMenu}
+        fileMenuItems={fileMenuItems}
+        fileTreeRootMenuItems={fileTreeRootMenuItems}
+        prunePath={prunePath}
       />
     );
   };

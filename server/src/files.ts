@@ -1,7 +1,16 @@
 import { constants } from "node:fs";
-import { access, mkdir, readdir, stat } from "node:fs/promises";
+import { access, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { GitFileStatus } from "./git.js";
+
+// Thrown by renamePath/createEmptyFile when the destination already exists,
+// so callers can map it to a 409 instead of a generic 400.
+export class ConflictError extends Error {
+  constructor(message = "a file or folder with that name already exists") {
+    super(message);
+    this.name = "ConflictError";
+  }
+}
 
 const HOME = process.env.HOME ?? "";
 
@@ -85,4 +94,29 @@ export async function isFile(p: string): Promise<boolean> {
 
 export async function ensureDir(p: string): Promise<void> {
   await mkdir(p, { recursive: true });
+}
+
+// Renames within the same parent directory only; newName is a basename, not
+// a path, so a crafted "../escape" can't move the entry elsewhere.
+export async function renamePath(targetPath: string, newName: string): Promise<string> {
+  if (!newName || newName.includes("/") || newName === "." || newName === "..") {
+    throw new Error("invalid name");
+  }
+  const dest = path.join(path.dirname(targetPath), newName);
+  if (await exists(dest)) {
+    throw new ConflictError();
+  }
+  await rename(targetPath, dest);
+  return dest;
+}
+
+export async function deletePath(targetPath: string): Promise<void> {
+  await rm(targetPath, { recursive: true });
+}
+
+export async function createEmptyFile(target: string): Promise<void> {
+  if (await exists(target)) {
+    throw new ConflictError();
+  }
+  await writeFile(target, "");
 }

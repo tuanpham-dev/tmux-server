@@ -1,14 +1,19 @@
 import { createWriteStream } from "node:fs";
+import { spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import path from "node:path";
-import { Router } from "express";
+import { Router, type Response } from "express";
 import {
+  ConflictError,
+  createEmptyFile,
+  deletePath,
   ensureDir,
   exists,
   expandHome,
   isDirectory,
   isFile,
   listDir,
+  renamePath,
   resolveDestination,
   uniquePath,
 } from "./files.js";
@@ -29,6 +34,14 @@ export const api = Router();
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function sendFsError(res: Response, err: unknown): void {
+  if (err instanceof ConflictError) {
+    res.status(409).json({ error: err.message });
+  } else {
+    res.status(400).json({ error: errMessage(err) });
+  }
 }
 
 api.get("/sessions", async (_req, res) => {
@@ -186,6 +199,87 @@ api.post("/mkdir", async (req, res) => {
     const target = resolveDestination(expandHome(dir), relPath);
     await ensureDir(target);
     res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/fs/rename", async (req, res) => {
+  const raw = typeof req.body?.path === "string" ? req.body.path : "";
+  const newName = typeof req.body?.newName === "string" ? req.body.newName.trim() : "";
+  if (!raw || !newName) {
+    res.status(400).json({ error: "path and newName are required" });
+    return;
+  }
+  try {
+    const dest = await renamePath(expandHome(raw), newName);
+    res.status(200).json({ path: dest });
+  } catch (err) {
+    sendFsError(res, err);
+  }
+});
+
+api.delete("/fs", async (req, res) => {
+  const raw = typeof req.query.path === "string" ? req.query.path : "";
+  if (!raw) {
+    res.status(400).json({ error: "path is required" });
+    return;
+  }
+  try {
+    await deletePath(expandHome(raw));
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/newfile", async (req, res) => {
+  const dir = typeof req.query.dir === "string" ? req.query.dir : "";
+  const relPath = typeof req.query.path === "string" ? req.query.path : "";
+  if (!dir || !relPath) {
+    res.status(400).json({ error: "dir and path are required" });
+    return;
+  }
+  try {
+    const target = resolveDestination(expandHome(dir), relPath);
+    await ensureDir(path.dirname(target));
+    await createEmptyFile(target);
+    res.status(201).json({ path: target });
+  } catch (err) {
+    sendFsError(res, err);
+  }
+});
+
+api.get("/download", async (req, res) => {
+  const raw = typeof req.query.path === "string" ? req.query.path : "";
+  if (!raw) {
+    res.status(400).json({ error: "path is required" });
+    return;
+  }
+  const targetPath = expandHome(raw);
+  try {
+    if (await isDirectory(targetPath)) {
+      const name = path.basename(targetPath);
+      res.setHeader("content-type", "application/zip");
+      res.setHeader("content-disposition", `attachment; filename="${name}.zip"`);
+      // "-r - <name>" zips the folder (relative to cwd, so entries inside the
+      // archive are rooted at <name>/) and streams the archive to stdout.
+      const zip = spawn("zip", ["-r", "-", name], {
+        cwd: path.dirname(targetPath),
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      zip.stdout.pipe(res);
+      zip.on("error", (err) => {
+        if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
+      });
+      res.on("close", () => zip.kill());
+      return;
+    }
+    if (!(await isFile(targetPath))) {
+      res.status(400).json({ error: "path is not a file or directory" });
+      return;
+    }
+    res.download(targetPath, path.basename(targetPath));
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }
