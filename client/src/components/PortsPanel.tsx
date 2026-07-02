@@ -60,7 +60,7 @@ export default function PortsPanel({ refreshKey }: Props) {
   const selectedPorts = [...selected].sort((a, b) => a - b);
   const command =
     selectedPorts.length > 0
-      ? `curl -O ${window.location.origin}/tunnel.mjs && node tunnel.mjs --url ${window.location.origin} ${selectedPorts.join(" ")}`
+      ? `curl -so /tmp/tunnel.mjs ${window.location.origin}/tunnel.mjs && node /tmp/tunnel.mjs --url ${window.location.origin} ${selectedPorts.join(" ")}`
       : null;
 
   const onCopy = () => {
