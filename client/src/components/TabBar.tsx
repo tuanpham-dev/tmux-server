@@ -1,4 +1,5 @@
 import type { MenuItem, Tab } from "../types";
+import Icon from "./Icon";
 
 interface Props {
   tabs: Tab[];
@@ -43,7 +44,7 @@ export default function TabBar({
               onClose(tab.id);
             }}
           >
-            ×
+            <Icon name="close" />
           </button>
         </div>
       ))}

@@ -122,7 +122,6 @@ body.resizing {
 }
 
 .mode-button {
-  font-size: 13px;
   color: var(--fg-inactive);
 }
 
@@ -243,6 +242,9 @@ body.resizing-row {
 }
 
 .icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: var(--fg);
@@ -257,10 +259,6 @@ body.resizing-row {
 
 .icon-button:hover {
   background: var(--hover);
-}
-
-.settings-icon {
-  font-size: 19px;
 }
 
 .new-session-input {
@@ -297,11 +295,16 @@ body.resizing-row {
 }
 
 .chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 14px;
   min-width: 14px;
   color: var(--fg-inactive);
-  font-size: 10px;
-  text-align: center;
+}
+
+.chevron .codicon {
+  font-size: 12px;
 }
 
 .chevron:hover {
@@ -351,6 +354,36 @@ body.resizing-row {
   text-align: right;
   font-size: 11px;
   color: var(--fg-inactive);
+}
+
+.window-kill-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--fg-inactive);
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: auto;
+  visibility: hidden;
+}
+
+.window-kill-button .codicon {
+  font-size: 14px;
+}
+
+.window-item:hover .window-kill-button {
+  visibility: visible;
+}
+
+.window-kill-button:hover {
+  background: var(--hover);
+  color: var(--fg-bright);
 }
 
 .dir-item .session-name {
@@ -534,16 +567,22 @@ body.resizing-row {
 }
 
 .tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: inherit;
-  font-size: 18px;
   line-height: 1;
   width: 20px;
   height: 20px;
   border-radius: 4px;
   cursor: pointer;
   visibility: hidden;
+}
+
+.tab-close .codicon {
+  font-size: 14px;
 }
 
 .tab:hover .tab-close,

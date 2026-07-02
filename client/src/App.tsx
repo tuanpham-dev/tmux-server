@@ -709,6 +709,7 @@ export default function App() {
             onOpen={openSession}
             onOpenWindow={openWindowTab}
             onCreate={createSession}
+            onKillWindow={killWindow}
             onShowMenu={showMenu}
             sessionMenuItems={sessionMenuItems}
             windowMenuItems={windowMenuItems}

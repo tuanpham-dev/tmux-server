@@ -9,6 +9,7 @@ import "@fontsource/ibm-plex-mono/700.css";
 // chunk covers a codepoint actually used (e.g. one ~250KB file for a
 // sailboat emoji in a prompt), not the full ~26MB font.
 import "@fontsource/noto-color-emoji";
+import "@vscode/codicons/dist/codicon.css";
 import "./styles.css";
 import "@xterm/xterm/css/xterm.css";
 

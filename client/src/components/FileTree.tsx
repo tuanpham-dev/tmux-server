@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import type { FsEntry, GitFileStatus, MenuItem } from "../types";
+import Icon from "./Icon";
 
 interface Props {
   rootDir: string | null;
@@ -262,7 +263,9 @@ export default function FileTree({
                 onShowMenu(e.clientX, e.clientY, fileMenuItems(entryPath, true, rootDir!));
               }}
             >
-              <span className="chevron">{isExpanded ? "▾" : "▸"}</span>
+              <span className="chevron">
+                <Icon name={isExpanded ? "chevron-down" : "chevron-right"} />
+              </span>
               <span className="file-tree-name">{entry.name}</span>
               <GitStatusBadge status={entry.gitStatus} />
             </button>

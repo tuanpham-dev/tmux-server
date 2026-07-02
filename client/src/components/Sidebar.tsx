@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { MenuItem, SidebarMode, TmuxSession, TmuxWindow } from "../types";
 import FileTree from "./FileTree";
+import Icon from "./Icon";
 import PortsPanel from "./PortsPanel";
 
 type PanelId = "sessions" | "files" | "ports";
@@ -55,6 +56,7 @@ interface Props {
   onOpen: (name: string) => void;
   onOpenWindow: (session: string, index: number) => void;
   onCreate: (name?: string) => void;
+  onKillWindow: (session: string, index: number) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   sessionMenuItems: (name: string) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
@@ -78,6 +80,7 @@ export default function Sidebar({
   onOpen,
   onOpenWindow,
   onCreate,
+  onKillWindow,
   onShowMenu,
   sessionMenuItems,
   windowMenuItems,
@@ -160,7 +163,7 @@ export default function Sidebar({
         toggleWindowCollapsed(key);
       }}
     >
-      {collapsedWindows.has(key) ? "▸" : "▾"}
+      <Icon name={collapsedWindows.has(key) ? "chevron-right" : "chevron-down"} />
     </span>
   );
 
@@ -170,11 +173,19 @@ export default function Sidebar({
         ? activeWindow.sessionName === s.name && activeWindow.index === w.index
         : w.active;
     return (
-      <button
+      <div
         key={`${s.name}:${w.index}`}
+        role="button"
+        tabIndex={0}
         className={`window-item${isActive ? " active-window" : ""}`}
         title={`${s.name}:${w.index} ${w.name} — ${w.cwd}${w.activity ? " (new output)" : ""}`}
         onClick={() => onOpenWindow(s.name, w.index)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpenWindow(s.name, w.index);
+          }
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           onShowMenu(e.clientX, e.clientY, windowMenuItems(s.name, w));
@@ -183,7 +194,17 @@ export default function Sidebar({
         {w.activity && <span className="activity-dot" />}
         <span className="window-label">{label}</span>
         {showCwd && <span className="item-cwd">{w.cwd}</span>}
-      </button>
+        <button
+          className="window-kill-button"
+          title="Kill window"
+          onClick={(e) => {
+            e.stopPropagation();
+            onKillWindow(s.name, w.index);
+          }}
+        >
+          <Icon name="trash" />
+        </button>
+      </div>
     );
   };
 
@@ -269,17 +290,17 @@ export default function Sidebar({
             title="Group by session"
             onClick={() => setMode("sessions")}
           >
-            ≣
+            <Icon name="list-flat" />
           </button>
           <button
             className={`icon-button mode-button${mode === "dirs" ? " active" : ""}`}
             title="Group by directory"
             onClick={() => setMode("dirs")}
           >
-            ▤
+            <Icon name="list-tree" />
           </button>
           <button className="icon-button" title="New session" onClick={startCreating}>
-            +
+            <Icon name="add" />
           </button>
         </>
       );
@@ -291,13 +312,13 @@ export default function Sidebar({
           title="Refresh"
           onClick={() => setPortsRefreshKey((k) => k + 1)}
         >
-          ↻
+          <Icon name="refresh" />
         </button>
       );
     }
     return (
       <button className="icon-button" title="Refresh" onClick={onFilesRefresh}>
-        ↻
+        <Icon name="refresh" />
       </button>
     );
   };
@@ -446,7 +467,9 @@ export default function Sidebar({
             onClick={() => togglePanelCollapsed(id)}
             {...headerDragHandlers(id)}
           >
-            <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
+            <span className="chevron">
+              <Icon name={isCollapsed ? "chevron-right" : "chevron-down"} />
+            </span>
             <span className="sidebar-title" title={id === "files" ? panelTitle(id) : undefined}>
               {panelTitle(id)}
             </span>
@@ -474,11 +497,11 @@ export default function Sidebar({
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="sidebar-topbar">
-        <button className="icon-button settings-icon" title="Settings" onClick={onOpenSettings}>
-          ⚙
+        <button className="icon-button" title="Settings" onClick={onOpenSettings}>
+          <Icon name="gear" />
         </button>
         <button className="icon-button" title="Hide sidebar (Ctrl+B)" onClick={onCollapse}>
-          «
+          <Icon name="layout-sidebar-left-off" />
         </button>
       </div>
       <div className="sidebar-panels">
