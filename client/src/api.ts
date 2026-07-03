@@ -51,6 +51,14 @@ export function createWindow(name: string, cwd?: string): Promise<void> {
   });
 }
 
+export function openLazygit(name: string, cwd?: string): Promise<{ index: number }> {
+  return request(`/api/sessions/${encodeURIComponent(name)}/lazygit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cwd }),
+  });
+}
+
 export function selectWindow(name: string, index: number): Promise<void> {
   return request(
     `/api/sessions/${encodeURIComponent(name)}/windows/${index}/select`,

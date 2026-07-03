@@ -744,6 +744,23 @@ export default function App() {
     createWindow(activeTab.sessionName, cwd);
   };
 
+  // Branch pill in the FILES panel header: find-or-create the active
+  // session's lazygit window (started in the file tree's root when created)
+  // and bring it up as a window tab.
+  const openLazygit = async () => {
+    if (!activeTab) return;
+    try {
+      const { index } = await api.openLazygit(activeTab.sessionName, filesRootDir ?? undefined);
+      // Refresh before opening the tab: the vanished-window sweep below
+      // closes any window-tab whose window isn't in `sessions` yet, and a
+      // just-created lazygit window won't be until the next poll otherwise.
+      await refresh();
+      await openWindowTab(activeTab.sessionName, index);
+    } catch (err) {
+      showError(err);
+    }
+  };
+
   const tabLabel = useCallback(
     (tab: Tab): string => {
       if (tab.windowIndex === undefined) return tab.sessionName;
@@ -884,6 +901,7 @@ export default function App() {
             onKillWindow={killWindow}
             onNewWindowInSession={createWindow}
             onNewWindowInDir={newWindowInDir}
+            onOpenLazygit={openLazygit}
             onShowMenu={showMenu}
             sessionMenuItems={sessionMenuItems}
             windowMenuItems={windowMenuItems}

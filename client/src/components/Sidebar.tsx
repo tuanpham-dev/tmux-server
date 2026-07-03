@@ -59,6 +59,7 @@ interface Props {
   onKillWindow: (session: string, index: number) => void;
   onNewWindowInSession: (session: string) => void;
   onNewWindowInDir: (cwd: string) => void;
+  onOpenLazygit: () => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   sessionMenuItems: (name: string) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
@@ -85,6 +86,7 @@ export default function Sidebar({
   onKillWindow,
   onNewWindowInSession,
   onNewWindowInDir,
+  onOpenLazygit,
   onShowMenu,
   sessionMenuItems,
   windowMenuItems,
@@ -496,9 +498,17 @@ export default function Sidebar({
               {panelTitle(id)}
             </span>
             {id === "files" && filesBranch && (
-              <span className="branch-pill" title={`Branch: ${filesBranch}`}>
+              <button
+                className="branch-pill"
+                title={`Branch: ${filesBranch} — click to open lazygit`}
+                onClick={(e) => {
+                  // The header's own click toggles panel collapse.
+                  e.stopPropagation();
+                  onOpenLazygit();
+                }}
+              >
                 {filesBranch}
-              </span>
+              </button>
             )}
             <div className="sidebar-actions" onClick={(e) => e.stopPropagation()}>
               {panelActions(id)}

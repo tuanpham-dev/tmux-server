@@ -100,6 +100,11 @@ export async function listSessions(): Promise<TmuxSession[]> {
 
 export async function createSession(name?: string): Promise<TmuxSession> {
   const args = ["new-session", "-d", "-P", "-F", "#{session_name}"];
+  // Without -c, tmux starts the session in this server process's own cwd
+  // (the server/ folder) — same pitfall as createWindow below. NEW_SESSION_CWD
+  // comes from server/.env (loaded in index.ts).
+  const cwd = process.env.NEW_SESSION_CWD;
+  if (cwd) args.push("-c", cwd);
   if (name) args.push("-s", name);
   const createdName = (await tmux(args)).trim();
   const sessions = await listSessions();
@@ -226,6 +231,39 @@ export async function createWindow(session: string, cwd?: string): Promise<void>
   // pane. Look up the active pane's path explicitly and pass it as -c.
   const dir = cwd ?? (await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"])).trim();
   await tmux(["new-window", "-t", `=${session}:`, "-c", dir]);
+}
+
+// Finds the session's lazygit window — by the active pane's running command,
+// with the window name as a fallback for panes momentarily running something
+// else (e.g. lazygit shelling out to an editor) — or creates one running
+// lazygit in `cwd`. Returns the window index for the caller to activate.
+export async function openLazygitWindow(session: string, cwd?: string): Promise<number> {
+  const out = await tmux([
+    "list-windows",
+    "-t",
+    `=${session}:`,
+    "-F",
+    "#{window_index}\t#{window_name}\t#{pane_current_command}",
+  ]);
+  for (const line of out.split("\n").filter(Boolean)) {
+    const [index, name, command] = line.split("\t");
+    if (command === "lazygit" || name === "lazygit") return Number(index);
+  }
+  // Same server-cwd pitfall as createWindow above: without -c the new window
+  // would open in the server's own directory.
+  const dir = cwd ?? (await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"])).trim();
+  const created = await tmux([
+    "new-window",
+    "-t",
+    `=${session}:`,
+    "-P",
+    "-F",
+    "#{window_index}",
+    "-c",
+    dir,
+    "lazygit",
+  ]);
+  return Number(created.trim());
 }
 
 // Creates a tmux session grouped with `session` (sharing its window list)

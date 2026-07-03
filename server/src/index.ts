@@ -9,6 +9,16 @@ import { startViewSweeper } from "./viewSweeper.js";
 import { handleAttach } from "./wsAttach.js";
 import { handleTunnel } from "./wsTunnel.js";
 
+// Optional server/.env (gitignored), e.g. NEW_SESSION_CWD — resolved relative
+// to this file so it's found no matter which directory the server starts from.
+// Consumers read process.env at call time, so loading after the imports above
+// is safe.
+try {
+  process.loadEnvFile(path.resolve(import.meta.dirname, "../.env"));
+} catch {
+  // No .env file — every variable it could set has a fallback.
+}
+
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT ?? 3001);
 

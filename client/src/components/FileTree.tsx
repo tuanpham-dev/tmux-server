@@ -72,6 +72,10 @@ export default function FileTree({
   const expandTimer = useRef<{ path: string; timer: number } | null>(null);
   const onBranchChangeRef = useRef(onBranchChange);
   onBranchChangeRef.current = onBranchChange;
+  // Read at fetch-resolve time so a response that raced a root change (or
+  // belongs to an expanded subfolder) can be told apart from the root's own.
+  const rootDirRef = useRef(rootDir);
+  rootDirRef.current = rootDir;
   // Tracks the last prunePath object already applied, so an unrelated
   // refreshKey bump (e.g. the 3s session poll) doesn't re-run the prune scan.
   const lastPrunedRef = useRef<{ path: string } | null>(null);
@@ -90,9 +94,11 @@ export default function FileTree({
           loading: false,
           error: null,
         }));
-        // Every "/api/fs" call reports the whole repo's branch, regardless
-        // of which directory was fetched, so any of them can update it.
-        onBranchChangeRef.current(listing.branch);
+        // Only the root's own listing may set the branch. Every "/api/fs"
+        // call reports a branch, but for an expanded subfolder that's *its*
+        // repo — a nested repo under a non-git root would otherwise light up
+        // the pill. It also drops stale responses from a just-replaced root.
+        if (dirPath === rootDirRef.current) onBranchChangeRef.current(listing.branch);
       })
       .catch((err) => {
         setDirCache((prev) => new Map(prev).set(dirPath, {

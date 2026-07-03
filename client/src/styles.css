@@ -239,6 +239,15 @@ body.resizing-row {
   font-weight: 600;
   letter-spacing: normal;
   text-transform: none;
+  /* It's a button (click opens lazygit) but should keep reading as a pill. */
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.branch-pill:hover {
+  background: var(--selection);
+  color: var(--fg-bright);
 }
 
 .icon-button {

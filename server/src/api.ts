@@ -28,6 +28,7 @@ import {
   killWindowTab,
   listSessions,
   openFileInPaneWithKeys,
+  openLazygitWindow,
   openFileInWindow,
   renameSession,
   renameWindow,
@@ -83,6 +84,17 @@ api.post("/sessions/:name/windows", async (req, res) => {
   try {
     await createWindow(req.params.name, cwd);
     res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/sessions/:name/lazygit", async (req, res) => {
+  const cwd = typeof req.body?.cwd === "string" && req.body.cwd.trim() !== ""
+    ? req.body.cwd.trim()
+    : undefined;
+  try {
+    res.json({ index: await openLazygitWindow(req.params.name, cwd) });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

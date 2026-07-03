@@ -131,6 +131,12 @@ export default function TerminalView({
     // cancelled by that first cleanup, so only the surviving mount ever builds
     // a terminal (and WS connection) at all.
     const raf = requestAnimationFrame(() => {
+      // Belt-and-braces alongside the cancelAnimationFrame in the effect's
+      // destructor: a tab opened and closed within the same tick (seen live
+      // when the vanished-window sweep raced a just-created window) can
+      // reach this frame after unmount already nulled the refs — building a
+      // terminal (and a WS) then would throw mid-setup and leak both.
+      if (disposed) return;
       const term = new Terminal({
         // Required by @xterm/addon-unicode11's terminal.unicode API below.
         allowProposedApi: true,
@@ -459,6 +465,28 @@ export default function TerminalView({
         return true;
       });
 
+      // tmux runs with mouse support on, so xterm forwards plain drags to
+      // tmux (tmux's own copy-mode selection) and reserves Shift+drag for
+      // local browser selection — that split is hardcoded in xterm's
+      // SelectionService with no option to flip it. Swap the two by shadowing
+      // the shiftKey flag xterm reads off mouse events in the capture phase:
+      // a plain drag now selects text locally, Shift+drag (and Shift+click)
+      // reaches tmux — with the shift bit cleared, so tmux sees a normal
+      // drag, not an S- modified one. Only while the app is actually
+      // mouse-reporting; otherwise plain drag already selects and the swap
+      // would only invert what Shift means to xterm's local selection.
+      // Deliberately leaves wheel events alone (Shift+wheel keeps meaning
+      // horizontal scroll, below).
+      const invertShift = (e: MouseEvent) => {
+        if (term.modes.mouseTrackingMode === "none") return;
+        const inverted = !e.shiftKey;
+        Object.defineProperty(e, "shiftKey", { get: () => inverted });
+      };
+      const invertedMouseEvents = ["mousedown", "mousemove", "mouseup"] as const;
+      for (const type of invertedMouseEvents) {
+        container.addEventListener(type, invertShift, true);
+      }
+
       // xterm.js ignores Shift+wheel outright (and never emits horizontal
       // mouse reports at all), and tmux has no concept of horizontal wheel
       // either — it maps any wheel button other than "up" to WheelDown,
@@ -515,6 +543,9 @@ export default function TerminalView({
       cleanup = () => {
         clearTimeout(reconnectTimer);
         onDragEnd();
+        for (const type of invertedMouseEvents) {
+          container.removeEventListener(type, invertShift, true);
+        }
         observer.disconnect();
         dataSub.dispose();
         ws.onclose = null;
