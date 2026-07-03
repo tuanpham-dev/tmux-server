@@ -5,7 +5,7 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 ## Features
 
 - **Sidebar** — sessions and windows as a tree, or grouped by working directory. Resizable, collapsible (`Ctrl+Shift+B`), shows attached/activity status.
-- **Tabbed terminals** — open a whole session or a single window as its own tab, switch between them, close individually or all-but-one.
+- **Tabbed terminals** — open a whole session or a single window as its own tab, switch between them, close individually or all-but-one. Drag to reorder (long-press then drag on touch). In the installed PWA: `Ctrl+Tab`/`Ctrl+Shift+Tab` to cycle tabs, `Ctrl+W` to close the active one.
 - **Session & window management** — create, rename, kill sessions and windows via context menu or hover buttons.
 - **FILES panel** — browse the active window's working directory, drag-and-drop upload (files or folders, with conflict handling and progress), git status badges, and a context menu for creating, renaming, deleting, downloading (folders as zip), and copying paths. Clicking a file opens it in the pane's running `nvim`, or a new window if it's busy.
 - **tmux-backed scrollbar** — draggable, since tmux (not the browser) owns scrollback.

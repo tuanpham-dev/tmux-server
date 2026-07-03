@@ -288,6 +288,48 @@ export default function App() {
     [tabs],
   );
 
+  // Tab switching/closing. Unlike the shortcuts above, these must never
+  // reach xterm — Ctrl+Tab would otherwise feed a literal Tab to tmux and
+  // Ctrl+W would send ^W to the shell in addition to closing the tab — so
+  // both preventDefault and stopPropagation are needed. Only works in the
+  // installed PWA: a regular browser tab reserves all three combos for
+  // itself and preventDefault can't override that.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (tabs.length < 2 || !activeTabId) return;
+        const idx = tabs.findIndex((t) => t.id === activeTabId);
+        if (idx === -1) return;
+        const delta = e.shiftKey ? -1 : 1;
+        const next = tabs[(idx + delta + tabs.length) % tabs.length];
+        setActiveTabId(next.id);
+        return;
+      }
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === "KeyW") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (activeTabId) closeTab(activeTabId);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [tabs, activeTabId, closeTab]);
+
+  const moveTab = useCallback((draggedId: string, toIndex: number) => {
+    setTabs((prev) => {
+      const draggedIdx = prev.findIndex((t) => t.id === draggedId);
+      if (draggedIdx === -1) return prev;
+      const dragged = prev[draggedIdx];
+      const without = prev.filter((t) => t.id !== draggedId);
+      const clamped = Math.max(0, Math.min(toIndex, without.length));
+      const next = [...without];
+      next.splice(clamped, 0, dragged);
+      return next;
+    });
+  }, []);
+
   const closeOtherTabs = useCallback(
     (id: string) => {
       for (const t of tabs) {
@@ -764,6 +806,7 @@ export default function App() {
           onClose={closeTab}
           onShowMenu={showMenu}
           tabMenuItems={tabMenuItems}
+          onReorder={moveTab}
         />
         <div className="terminals">
           {tabs.map((tab) => (
