@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MenuItem, Tab } from "../types";
 import Icon from "./Icon";
 
@@ -16,6 +16,7 @@ interface Props {
   // tab (e.g. an image viewer) can portal per-tab controls into it — VS
   // Code/code-server style editor-actions on the right of the tab strip.
   actionsRef: (el: HTMLDivElement | null) => void;
+  onToggleSidebar: () => void;
 }
 
 // Long-press delay (touch/pen) before a hold starts a drag instead of letting
@@ -39,6 +40,7 @@ export default function TabBar({
   tabMenuItems,
   onReorder,
   actionsRef,
+  onToggleSidebar,
 }: Props) {
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
@@ -175,6 +177,22 @@ export default function TabBar({
     if (sessionRef.current?.dragging) e.preventDefault();
   };
 
+  // Plain (unshifted) mouse wheel scrolls the strip horizontally too, not
+  // just Shift+wheel (the browser's native horizontal-scroll gesture).
+  // Native (non-passive) listener: React's onWheel can't preventDefault a
+  // scroll that's already begun.
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.shiftKey || e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   const handleTabClick = (id: string) => {
     if (justDraggedRef.current) {
       justDraggedRef.current = false;
@@ -204,6 +222,10 @@ export default function TabBar({
               className={`tab${tab.id === activeTabId ? " active" : ""}${indicatorClass}${draggingClass}`}
               onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
               onClick={() => handleTabClick(tab.id)}
+              onDoubleClick={(e) => {
+                if ((e.target as HTMLElement).closest(".tab-close")) return;
+                onToggleSidebar();
+              }}
               onAuxClick={(e) => {
                 if (e.button === 1) onClose(tab.id);
               }}

@@ -1080,6 +1080,7 @@ export default function App() {
           tabMenuItems={tabMenuItems}
           onReorder={moveTab}
           actionsRef={setTabActionsEl}
+          onToggleSidebar={() => setSidebarVisible((v) => !v)}
         />
         <div className="terminals">
           {tabs.map((tab) => {
