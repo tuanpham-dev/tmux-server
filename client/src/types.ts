@@ -77,3 +77,8 @@ export interface ListeningPort {
   process?: string;
   pid?: number;
 }
+
+export interface TunnelAuth {
+  cookie: string | null;
+  authorization: string | null;
+}

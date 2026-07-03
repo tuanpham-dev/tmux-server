@@ -208,6 +208,20 @@ api.get("/ports", async (_req, res) => {
   }
 });
 
+// Reflects the caller's own Cookie/Authorization headers back as JSON, so the
+// PORTS panel can bake them into the copied tunnel command when tmux-server is
+// fronted by a reverse-proxy auth layer. This deliberately punctures HttpOnly
+// (page JS can now read the session cookie) — acceptable under this app's
+// trust model, where anyone past the auth layer already has a full shell via
+// the terminal itself. Each response only ever contains what that request
+// carried, so there's no cross-user data to leak.
+api.get("/tunnel-auth", (req, res) => {
+  res.json({
+    cookie: req.headers.cookie ?? null,
+    authorization: req.headers.authorization ?? null,
+  });
+});
+
 api.get("/fs", async (req, res) => {
   const raw = typeof req.query.path === "string" ? req.query.path : "";
   if (!raw) {

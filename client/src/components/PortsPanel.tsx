@@ -1,16 +1,44 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
-import type { ListeningPort } from "../types";
+import type { ListeningPort, TunnelAuth } from "../types";
+import Icon from "./Icon";
 
 interface Props {
   refreshKey: number;
 }
 
 const POLL_MS = 30_000;
+const NO_AUTH: TunnelAuth = { cookie: null, authorization: null };
+const MASK = "••••";
 
 function isLoopback(address: string): boolean {
   return address === "127.0.0.1" || address === "::1" || address.startsWith("127.");
+}
+
+// Wraps a value in single quotes for a POSIX shell, escaping embedded single
+// quotes with the standard '\'' idiom — cookie values can legally contain them.
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function authHeaders(auth: TunnelAuth): { name: string; value: string }[] {
+  const headers: { name: string; value: string }[] = [];
+  if (auth.cookie) headers.push({ name: "Cookie", value: auth.cookie });
+  if (auth.authorization) headers.push({ name: "Authorization", value: auth.authorization });
+  return headers;
+}
+
+// Builds the copy-pasteable tunnel command. When `mask` is set, header values
+// are replaced with a placeholder for on-screen display; `mask: false` is
+// what actually gets copied to the clipboard.
+function buildCommand(origin: string, ports: number[], auth: TunnelAuth, mask: boolean): string {
+  const headers = authHeaders(auth).map((h) => ({ ...h, value: mask ? MASK : h.value }));
+  const curlArgs = headers.map((h) => `-H ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
+  const nodeArgs = headers.map((h) => `--header ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
+  const curl = `curl -so /tmp/tunnel.mjs ${curlArgs ? `${curlArgs} ` : ""}${origin}/tunnel.mjs`;
+  const node = `node /tmp/tunnel.mjs --url ${origin} ${nodeArgs ? `${nodeArgs} ` : ""}${ports.join(" ")}`;
+  return `${curl} && ${node}`;
 }
 
 export default function PortsPanel({ refreshKey }: Props) {
@@ -18,6 +46,8 @@ export default function PortsPanel({ refreshKey }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [copied, setCopied] = useState(false);
+  const [auth, setAuth] = useState<TunnelAuth>(NO_AUTH);
+  const [revealed, setRevealed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,6 +68,20 @@ export default function PortsPanel({ refreshKey }: Props) {
         .catch((err) => {
           if (!cancelled) setError(err instanceof Error ? err.message : String(err));
         });
+      // A failed auth fetch shouldn't break the ports list — fall back to no
+      // headers, same as an unauthenticated deployment.
+      api
+        .fetchTunnelAuth()
+        .then((next) => {
+          if (cancelled) return;
+          setAuth((prev) => {
+            if (prev.cookie === next.cookie && prev.authorization === next.authorization) return prev;
+            return next;
+          });
+        })
+        .catch(() => {
+          if (!cancelled) setAuth(NO_AUTH);
+        });
     };
 
     load();
@@ -47,6 +91,12 @@ export default function PortsPanel({ refreshKey }: Props) {
       window.clearInterval(timer);
     };
   }, [refreshKey]);
+
+  // Re-mask whenever the underlying auth headers change (e.g. a rotated
+  // session cookie), so a stale reveal doesn't linger on screen.
+  useEffect(() => {
+    setRevealed(false);
+  }, [auth]);
 
   const toggle = (port: number) => {
     setSelected((prev) => {
@@ -58,14 +108,15 @@ export default function PortsPanel({ refreshKey }: Props) {
   };
 
   const selectedPorts = [...selected].sort((a, b) => a - b);
-  const command =
-    selectedPorts.length > 0
-      ? `curl -so /tmp/tunnel.mjs ${window.location.origin}/tunnel.mjs && node /tmp/tunnel.mjs --url ${window.location.origin} ${selectedPorts.join(" ")}`
-      : null;
+  const hasAuthHeaders = auth.cookie !== null || auth.authorization !== null;
+  const origin = window.location.origin;
+  const displayCommand =
+    selectedPorts.length > 0 ? buildCommand(origin, selectedPorts, auth, !revealed) : null;
 
   const onCopy = () => {
-    if (!command) return;
-    copyText(command)
+    if (selectedPorts.length === 0) return;
+    const realCommand = buildCommand(origin, selectedPorts, auth, false);
+    copyText(realCommand)
       .then(() => {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1500);
@@ -92,9 +143,18 @@ export default function PortsPanel({ refreshKey }: Props) {
         ))}
         {ports.length === 0 && !error && <li className="session-empty">No listening ports</li>}
       </ul>
-      {command && (
+      {displayCommand && (
         <div className="port-command">
-          <code className="port-command-box">{command}</code>
+          <code className="port-command-box">{displayCommand}</code>
+          {hasAuthHeaders && (
+            <button
+              className="icon-button"
+              title={revealed ? "Hide auth header values" : "Reveal auth header values"}
+              onClick={() => setRevealed((prev) => !prev)}
+            >
+              <Icon name={revealed ? "eye-closed" : "eye"} />
+            </button>
+          )}
           <button className="port-copy-button" onClick={onCopy}>
             {copied ? "Copied" : "Copy"}
           </button>
