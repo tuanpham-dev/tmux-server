@@ -1,5 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import { copyText } from "../clipboard";
@@ -149,6 +150,21 @@ export default function TerminalView({
       term.unicode.activeVersion = "11";
       term.open(container);
       termRef.current = term;
+
+      // WebGL2 rendering is noticeably smoother on panes with heavy output;
+      // falls back to xterm's default (DOM) renderer if unsupported — no
+      // separate canvas addon is installed here — (no GPU/WebGL2 in the
+      // environment, an older browser) or if the context is lost later
+      // (e.g. a mobile browser reclaiming GPU memory in the background) —
+      // dispose is safe to call again from onExit below and a fresh
+      // Terminal mount just doesn't have WebGL loaded a second time.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      } catch {
+        // Unsupported — term already has its default renderer.
+      }
 
       // Mutable, not const: reconnect() replaces this on every attempt, and
       // every closure below reads it live rather than capturing one socket.
