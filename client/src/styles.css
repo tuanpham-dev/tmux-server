@@ -12,6 +12,14 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "seti";
+  src: url("/fonts/seti.woff") format("woff");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* Palette: Plastic Legacy (hadialqattan.plastic-legacy), extracted from the
    user's code-server instance. */
 :root {
@@ -587,8 +595,29 @@ body.resizing-row {
 }
 
 .file-tree-file .file-tree-name {
-  margin-left: 18px;
+  margin-left: 0;
 }
+
+.chevron-spacer {
+  display: inline-block;
+  width: 14px;
+  min-width: 14px;
+}
+
+.file-tree-folder-icon,
+.file-tree-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  min-width: 16px;
+  font-family: "seti";
+  font-size: 16px;
+  line-height: 1;
+  text-align: center;
+  flex-shrink: 0;
+}
+
 
 .file-tree-git-badge {
   flex-shrink: 0;

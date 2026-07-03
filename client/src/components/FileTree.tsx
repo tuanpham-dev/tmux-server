@@ -3,6 +3,8 @@ import * as api from "../api";
 import { isPreviewablePath } from "../fileKinds";
 import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import Icon from "./Icon";
+import { getFileIconInfo, getFolderIconInfo } from "../utils/setiIcons";
+
 
 interface Props {
   rootDir: string | null;
@@ -257,6 +259,7 @@ export default function FileTree({
       const gitClass = entry.gitStatus ? ` git-status-${entry.gitStatus}` : "";
       if (entry.dir) {
         const isExpanded = expanded.has(entryPath);
+        const folderIcon = getFolderIconInfo(entry.name, isExpanded);
         return (
           <div key={entryPath} {...dragHandlers(entryPath)}>
             <button
@@ -275,6 +278,9 @@ export default function FileTree({
               <span className="chevron">
                 <Icon name={isExpanded ? "chevron-down" : "chevron-right"} />
               </span>
+              <span className="file-tree-folder-icon" style={{ color: folderIcon.color }}>
+                {folderIcon.char}
+              </span>
               <span className="file-tree-name">{entry.name}</span>
               <GitStatusBadge status={entry.gitStatus} />
             </button>
@@ -287,6 +293,7 @@ export default function FileTree({
       // another <button>), so the whole row's hover background stays one
       // continuous element instead of two siblings with a gap between them.
       // Same accessible-div-as-button pattern as .window-item in Sidebar.
+      const fileIcon = getFileIconInfo(entry.name);
       return (
         <div
           key={entryPath}
@@ -308,7 +315,12 @@ export default function FileTree({
             onShowMenu(e.clientX, e.clientY, fileMenuItems(entryPath, false, rootDir!));
           }}
         >
+          <span className="chevron-spacer" />
+          <span className="file-tree-file-icon" style={{ color: fileIcon.color }}>
+            {fileIcon.char}
+          </span>
           <span className="file-tree-name">{entry.name}</span>
+
           {/* Single flex item so it's pushed right as one unit — putting
               margin-left:auto on both the button and the badge separately
               would split the leftover space between them instead of
