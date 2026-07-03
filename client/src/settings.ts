@@ -9,10 +9,11 @@ export interface AppSettings {
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
-// terminal.integrated.fontSize, terminal.integrated.fontWeightBold), with
-// two bundled fallback fonts filling gaps IBM Plex Mono has: "Symbols Nerd
-// Font Mono" for Powerline/prompt icon glyphs, "Noto Color Emoji" for
-// standard Unicode emoji (e.g. a sailboat in a shell prompt).
+// terminal.integrated.fontSize, terminal.integrated.fontWeightBold). "Symbols
+// Nerd Font Mono" is bundled for Powerline/prompt icon glyphs IBM Plex Mono
+// lacks. "Noto Color Emoji" is NOT bundled (too large for the PWA precache)
+// — it renders only if installed locally, otherwise falls through to
+// "Droid Sans Mono"/monospace.
 export const DEFAULT_SETTINGS: AppSettings = {
   fontFamily:
     "'IBM Plex Mono', 'Symbols Nerd Font Mono', 'Noto Color Emoji', 'Droid Sans Mono', monospace",
