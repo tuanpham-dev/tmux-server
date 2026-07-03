@@ -60,14 +60,41 @@ export interface RepoStatus {
   root: string;
   branch: string | null;
   statuses: Map<string, GitFileStatus>;
+  trackedDirs: Set<string>;
+}
+
+// Every ancestor directory (relative to root, no trailing slash) that
+// contains at least one tracked file. Used to tell a directory that's
+// genuinely fully ignored (e.g. "client/dist", never tracked) apart from one
+// that merely has some ignored content mixed in with tracked files.
+async function getTrackedDirs(root: string): Promise<Set<string>> {
+  let out: string;
+  try {
+    out = await git(["ls-files", "-z"], root);
+  } catch {
+    return new Set();
+  }
+  const dirs = new Set<string>();
+  for (const token of out.split("\0")) {
+    if (!token) continue;
+    let idx = token.lastIndexOf("/");
+    while (idx !== -1) {
+      const dir = token.slice(0, idx);
+      if (dirs.has(dir)) break;
+      dirs.add(dir);
+      idx = dir.lastIndexOf("/");
+    }
+  }
+  return dirs;
 }
 
 // Runs once per "/api/fs" request for whatever directory is being listed.
 // Uses -z so paths with spaces/special chars come back unquoted and
-// NUL-delimited instead of needing C-style unescaping. Untracked files are
-// expanded individually (-uall) for per-file badges, but ignored paths use
-// "traditional" mode so an ignored directory (e.g. node_modules) is reported
-// as a single entry instead of git recursing through every file inside it.
+// NUL-delimited instead of needing C-style unescaping. -uall expands both
+// untracked and ignored directories into their individual files (so no
+// directory is ever collapsed into a single "!!"/"??" entry here), which is
+// what per-file badges need; statusForEntry's trackedDirs check is what
+// keeps a merely-mixed directory from reading as fully ignored.
 export async function getRepoStatuses(anyDirInRepo: string): Promise<RepoStatus | null> {
   let root: string;
   try {
@@ -103,8 +130,8 @@ export async function getRepoStatuses(anyDirInRepo: string): Promise<RepoStatus 
       i++;
     }
   }
-  const branch = await getBranch(root);
-  return { root, branch, statuses };
+  const [branch, trackedDirs] = await Promise.all([getBranch(root), getTrackedDirs(root)]);
+  return { root, branch, statuses, trackedDirs };
 }
 
 // Worst-first tie-break when a directory contains changes of several kinds.
@@ -125,17 +152,26 @@ const PRIORITY: GitFileStatus[] = [
 // inherits that directory's status.
 export function statusForEntry(
   statuses: Map<string, GitFileStatus>,
+  trackedDirs: Set<string>,
   relPath: string,
   isDir: boolean,
 ): GitFileStatus | undefined {
-  const exact = statuses.get(relPath);
-  if (exact) return exact;
-  const dirPrefix = `${relPath}/`;
-  let best: GitFileStatus | undefined;
-  for (const [p, status] of statuses) {
-    const matches = isDir ? p.startsWith(dirPrefix) : relPath.startsWith(`${p}/`);
-    if (!matches) continue;
-    if (!best || PRIORITY.indexOf(status) < PRIORITY.indexOf(best)) best = status;
+  let result = statuses.get(relPath);
+  if (!result) {
+    const dirPrefix = `${relPath}/`;
+    for (const [p, status] of statuses) {
+      const matches = isDir ? p.startsWith(dirPrefix) : relPath.startsWith(`${p}/`);
+      if (!matches) continue;
+      if (!result || PRIORITY.indexOf(status) < PRIORITY.indexOf(result)) result = status;
+    }
   }
-  return best;
+  // A directory is only dimmed as "ignored" when it's fully covered by
+  // .gitignore. `git status -uall` always expands ignored directories into
+  // their individual files rather than collapsing them, so a directory that
+  // merely contains some ignored files/subfolders alongside ordinary tracked
+  // content would otherwise resolve to "ignored" too (nothing else in the
+  // sparse status map outranks it, since clean tracked files never appear
+  // there at all). Checking for tracked descendants tells the two apart.
+  if (isDir && result === "ignored" && trackedDirs.has(relPath)) return undefined;
+  return result;
 }

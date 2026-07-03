@@ -251,7 +251,7 @@ api.get("/fs", async (req, res) => {
     const withStatus = repo
       ? entries.map((entry) => {
           const relPath = path.relative(repo.root, path.join(dirPath, entry.name));
-          const gitStatus = statusForEntry(repo.statuses, relPath, entry.dir);
+          const gitStatus = statusForEntry(repo.statuses, repo.trackedDirs, relPath, entry.dir);
           return gitStatus ? { ...entry, gitStatus } : entry;
         })
       : entries;
