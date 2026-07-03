@@ -139,6 +139,10 @@ export default function TerminalView({
         fontSize: initialSettings.current.fontSize,
         fontFamily: initialSettings.current.fontFamily,
         fontWeightBold: initialSettings.current.fontWeightBold,
+        // VS Code/code-server default (terminal.integrated.minimumContrastRatio).
+        // Without it, e.g. lazygit's selected row keeps its original foreground
+        // colors on the blue selection background and becomes unreadable.
+        minimumContrastRatio: 4.5,
         theme: terminalTheme,
       });
       const fit = new FitAddon();
