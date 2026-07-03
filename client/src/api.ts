@@ -145,6 +145,15 @@ export function downloadUrl(targetPath: string): string {
   return `/api/download?path=${encodeURIComponent(targetPath)}`;
 }
 
+// Raw file contents as text (for the markdown preview) — request<T>() above
+// always JSON.parses the body, so it can't serve this; reuses the same
+// /api/download route ImageView already uses for image bytes.
+export async function fetchFileText(targetPath: string): Promise<string> {
+  const res = await fetch(downloadUrl(targetPath));
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.text();
+}
+
 // Thrown when the server refuses to upload because the destination already
 // exists and the caller asked for "fail" conflict semantics (used to drive
 // the ask-before-overwrite flow).

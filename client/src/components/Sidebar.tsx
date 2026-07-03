@@ -70,6 +70,7 @@ interface Props {
   filesRefreshKey: number;
   onFilesRefresh: () => void;
   onOpenFile: (path: string) => void;
+  onPreviewFile: (path: string) => void;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
   fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
   prunePath: { path: string } | null;
@@ -97,6 +98,7 @@ export default function Sidebar({
   filesRefreshKey,
   onFilesRefresh,
   onOpenFile,
+  onPreviewFile,
   fileMenuItems,
   fileTreeRootMenuItems,
   prunePath,
@@ -381,6 +383,7 @@ export default function Sidebar({
         onDropFiles={onDropFiles}
         refreshKey={filesRefreshKey}
         onOpenFile={onOpenFile}
+        onPreviewFile={onPreviewFile}
         onBranchChange={setFilesBranch}
         onShowMenu={onShowMenu}
         fileMenuItems={fileMenuItems}

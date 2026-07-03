@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
+import { isMarkdownPath } from "../fileKinds";
 import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import Icon from "./Icon";
 
@@ -8,6 +9,7 @@ interface Props {
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
   refreshKey: number;
   onOpenFile: (path: string) => void;
+  onPreviewFile: (path: string) => void;
   onBranchChange: (branch: string | null) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
@@ -59,6 +61,7 @@ export default function FileTree({
   onDropFiles,
   refreshKey,
   onOpenFile,
+  onPreviewFile,
   onBranchChange,
   onShowMenu,
   fileMenuItems,
@@ -279,13 +282,26 @@ export default function FileTree({
           </div>
         );
       }
+      // A <div role="button"> rather than a native <button> — the preview
+      // button needs to nest inside the row (a <button> can't contain
+      // another <button>), so the whole row's hover background stays one
+      // continuous element instead of two siblings with a gap between them.
+      // Same accessible-div-as-button pattern as .window-item in Sidebar.
       return (
-        <button
+        <div
           key={entryPath}
+          role="button"
+          tabIndex={0}
           className={`file-tree-row file-tree-file${gitClass}`}
           style={{ paddingLeft: 6 + depth * 14 }}
           title={entry.name}
           onClick={() => onOpenFile(entryPath)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onOpenFile(entryPath);
+            }
+          }}
           onContextMenu={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -293,8 +309,26 @@ export default function FileTree({
           }}
         >
           <span className="file-tree-name">{entry.name}</span>
-          <GitStatusBadge status={entry.gitStatus} />
-        </button>
+          {/* Single flex item so it's pushed right as one unit — putting
+              margin-left:auto on both the button and the badge separately
+              would split the leftover space between them instead of
+              pinning the button flush against the badge. */}
+          <span className="file-tree-row-trailer">
+            {isMarkdownPath(entry.name) && (
+              <button
+                className="file-tree-preview-button"
+                title="Preview"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPreviewFile(entryPath);
+                }}
+              >
+                <Icon name="preview" />
+              </button>
+            )}
+            <GitStatusBadge status={entry.gitStatus} />
+          </span>
+        </div>
       );
     });
   };

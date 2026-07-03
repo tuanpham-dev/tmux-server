@@ -41,6 +41,10 @@ export interface Tab {
   // the vanished-window sweep, dedupe, close) already gates on windowIndex
   // or a real session-name match, so an image tab passes through untouched.
   imagePath?: string;
+  // Marks a markdown-preview tab — same "" sessionName/attachName convention
+  // and the same tmux-path safety as imagePath above. A tab has at most one
+  // of imagePath/previewPath set; see isRealTab/tabVirtualPath in App.tsx.
+  previewPath?: string;
 }
 
 export interface MenuItem {

@@ -4,11 +4,13 @@ import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
 import Dialog, { type DialogRequest } from "./components/Dialog";
 import ImageView from "./components/ImageView";
+import MarkdownView from "./components/MarkdownView";
 import QuickSwitcher from "./components/QuickSwitcher";
 import SettingsDialog from "./components/SettingsDialog";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
+import { isImagePath, isMarkdownPath } from "./fileKinds";
 import { loadSettings, saveSettings, type AppSettings } from "./settings";
 import type { MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
 import { collectDropped, uploadAll, type DroppedItems } from "./upload";
@@ -16,14 +18,16 @@ import { collectDropped, uploadAll, type DroppedItems } from "./upload";
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
 
-const IMAGE_EXTENSIONS = new Set([
-  "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif",
-]);
+// A "virtual" tab (image viewer, markdown preview, …) has no tmux session
+// behind it — sessionName/attachName are "". Centralized here so a future
+// third virtual-tab kind only needs to extend this one place, not every
+// imagePath-only check that predates it.
+function isRealTab(tab: Tab): boolean {
+  return tab.imagePath === undefined && tab.previewPath === undefined;
+}
 
-function isImagePath(filePath: string): boolean {
-  const dot = filePath.lastIndexOf(".");
-  if (dot === -1) return false;
-  return IMAGE_EXTENSIONS.has(filePath.slice(dot + 1).toLowerCase());
+function tabVirtualPath(tab: Tab): string | undefined {
+  return tab.imagePath ?? tab.previewPath;
 }
 
 // Keeps tabs pointed at the right session/window across an out-of-band
@@ -343,6 +347,20 @@ export default function App() {
     });
   }, []);
 
+  // Same activate-or-create shape as openImageTab, keyed on previewPath.
+  const openPreviewTab = useCallback((filePath: string) => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.previewPath === filePath);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const tab: Tab = { id: crypto.randomUUID(), sessionName: "", attachName: "", previewPath: filePath };
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+  }, []);
+
   const openWindowTab = useCallback(
     async (session: string, index: number) => {
       const existing = tabs.find((t) => t.sessionName === session && t.windowIndex === index);
@@ -624,9 +642,9 @@ export default function App() {
         { label: "Close Tab", onClick: () => closeTab(tab.id) },
         { label: "Close Other Tabs", onClick: () => closeOtherTabs(tab.id) },
       ];
-      // Image tabs have no tmux session — New Window/Rename/Kill Session
-      // don't apply.
-      if (tab.imagePath !== undefined) return closeItems;
+      // Virtual tabs (image/markdown preview) have no tmux session — New
+      // Window/Rename/Kill Session don't apply.
+      if (!isRealTab(tab)) return closeItems;
       return [
         ...closeItems,
         { label: "New Window", onClick: () => createWindow(tab.sessionName) },
@@ -738,23 +756,23 @@ export default function App() {
   );
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  // Image tabs have no tmux session, so sidebar context (the FILES tree
-  // root, the lazygit branch pill, "new window in dir") keeps reflecting
-  // whichever real (terminal) tab was open most recently instead of
-  // collapsing to empty while an image tab is active. Mutated during render
-  // — same pattern as onBranchChangeRef in FileTree — so it's always current
-  // without an effect's one-render lag.
+  // Virtual tabs (image/markdown preview) have no tmux session, so sidebar
+  // context (the FILES tree root, the lazygit branch pill, "new window in
+  // dir") keeps reflecting whichever real (terminal) tab was open most
+  // recently instead of collapsing to empty while a virtual tab is active.
+  // Mutated during render — same pattern as onBranchChangeRef in FileTree —
+  // so it's always current without an effect's one-render lag.
   // Seeded from any real tab restored on this mount (useRef's initializer
-  // only runs once) so a reload that lands back on an image tab doesn't
+  // only runs once) so a reload that lands back on a virtual tab doesn't
   // leave the sidebar empty until the user manually switches tabs.
   const lastRealTabIdRef = useRef<string | null>(
-    tabs.find((t) => t.imagePath === undefined)?.id ?? null,
+    tabs.find(isRealTab)?.id ?? null,
   );
-  if (activeTab && activeTab.imagePath === undefined) {
+  if (activeTab && isRealTab(activeTab)) {
     lastRealTabIdRef.current = activeTab.id;
   }
   const activeRealTab =
-    activeTab && activeTab.imagePath === undefined
+    activeTab && isRealTab(activeTab)
       ? activeTab
       : (tabs.find((t) => t.id === lastRealTabIdRef.current) ?? null);
 
@@ -793,8 +811,9 @@ export default function App() {
 
   const tabLabel = useCallback(
     (tab: Tab): string => {
-      if (tab.imagePath !== undefined) {
-        return tab.imagePath.slice(tab.imagePath.lastIndexOf("/") + 1);
+      const virtualPath = tabVirtualPath(tab);
+      if (virtualPath !== undefined) {
+        return virtualPath.slice(virtualPath.lastIndexOf("/") + 1);
       }
       if (tab.windowIndex === undefined) return tab.sessionName;
       const session = sessions.find((s) => s.name === tab.sessionName);
@@ -933,6 +952,12 @@ export default function App() {
       if (!isDir && isImagePath(entryPath)) {
         items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
       }
+      // Markdown opens in nvim by default (unchanged) — Preview is the
+      // opt-in path to the rendered view, mirroring the hover icon in
+      // FileTree.
+      if (!isDir && isMarkdownPath(entryPath)) {
+        items.push({ label: "Preview", onClick: () => openPreviewTab(entryPath) });
+      }
       items.push({ label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) });
       return items;
     },
@@ -944,6 +969,7 @@ export default function App() {
       copyFileRelativePath,
       downloadFileEntry,
       openFileInSession,
+      openPreviewTab,
       deleteFileEntry,
     ],
   );
@@ -1000,6 +1026,7 @@ export default function App() {
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
             onOpenFile={openFileOrImage}
+            onPreviewFile={openPreviewTab}
             fileMenuItems={fileMenuItems}
             fileTreeRootMenuItems={fileTreeRootMenuItems}
             prunePath={prunePath}
@@ -1034,6 +1061,14 @@ export default function App() {
                 filePath={tab.imagePath}
                 active={tab.id === activeTabId}
                 toolbarTarget={tabActionsEl}
+              />
+            ) : tab.previewPath !== undefined ? (
+              <MarkdownView
+                key={tab.id}
+                filePath={tab.previewPath}
+                active={tab.id === activeTabId}
+                toolbarTarget={tabActionsEl}
+                onOpenInEditor={openFileInSession}
               />
             ) : (
               <TerminalView
