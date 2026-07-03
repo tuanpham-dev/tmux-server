@@ -6,6 +6,7 @@ import {
   currentWindowId,
   getScrollState,
   isWindowTabSession,
+  scrollHorizontal,
   scrollTo,
 } from "./tmux.js";
 
@@ -18,11 +19,14 @@ import {
 const WINDOW_PIN_CHECK_MS = 300;
 
 interface ClientMsg {
-  type: "input" | "resize" | "scrollQuery" | "scrollTo";
+  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll";
   data?: string;
   cols?: number;
   rows?: number;
   line?: number;
+  amount?: number;
+  col?: number;
+  row?: number;
 }
 
 export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
@@ -109,6 +113,13 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
           }
         })
         .catch(() => {});
+    } else if (
+      msg.type === "hscroll" &&
+      Number.isFinite(msg.amount) &&
+      Number.isFinite(msg.col) &&
+      Number.isFinite(msg.row)
+    ) {
+      scrollHorizontal(session, msg.amount!, msg.col!, msg.row!).catch(() => {});
     } else if (
       msg.type === "resize" &&
       Number.isInteger(msg.cols) &&

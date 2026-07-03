@@ -241,6 +241,134 @@ export async function scrollTo(session: string, line: number): Promise<void> {
   ]);
 }
 
+interface GeometryPane {
+  id: string;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  command: string;
+  pid: number;
+}
+
+// pane_left/top/right/bottom are cell coordinates in the session's current
+// window, inclusive on all four edges — matches the col/row range the client
+// computes from cursor position (0..cols-1 / 0..rows-1).
+async function listPaneGeometry(session: string): Promise<GeometryPane[]> {
+  const out = await tmux([
+    "list-panes",
+    "-t",
+    `=${session}:`,
+    "-F",
+    "#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_right}\t#{pane_bottom}\t#{pane_current_command}\t#{pane_pid}",
+  ]);
+  return out
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [id, left, top, right, bottom, command, pid] = line.split("\t");
+      return {
+        id,
+        left: Number(left),
+        top: Number(top),
+        right: Number(right),
+        bottom: Number(bottom),
+        command,
+        pid: Number(pid),
+      };
+    });
+}
+
+const HSCROLL_MAX_TICKS = 50;
+const HSCROLL_SOCKET_CACHE_TTL_MS = 2000;
+
+// Keyed by pane_id (stable across renumbering, unlike pane index).
+const hscrollSocketCache = new Map<string, { socket: string; expires: number }>();
+const hscrollState = new Map<string, { amount: number; inFlight: boolean }>();
+
+async function resolveNvimSocketCached(paneId: string, panePid: number): Promise<string | null> {
+  const cached = hscrollSocketCache.get(paneId);
+  if (cached && cached.expires > Date.now()) return cached.socket;
+  const socket = await findNvimSocket(panePid);
+  if (!socket) {
+    hscrollSocketCache.delete(paneId);
+    return null;
+  }
+  hscrollSocketCache.set(paneId, { socket, expires: Date.now() + HSCROLL_SOCKET_CACHE_TTL_MS });
+  return socket;
+}
+
+function nvimRemoteSend(socket: string, keys: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile("nvim", ["--server", socket, "--remote-send", keys], (err, _stdout, stderr) => {
+      if (err) reject(new Error(stderr.trim() || err.message));
+      else resolve();
+    });
+  });
+}
+
+// Delivers <ScrollWheelLeft>/<ScrollWheelRight> to the nvim RPC socket of
+// whichever pane sits under (col, row) — tmux can't carry a horizontal wheel
+// event itself (see wsAttach's "hscroll" handler for why), so this bypasses
+// the PTY entirely and lets nvim's own mouse handling do the actual
+// scrolling. Silently no-ops for anything that isn't nvim, or if nvim's
+// socket can't be found (matches openFileInWindow's fallback behavior).
+export async function scrollHorizontal(
+  session: string,
+  amount: number,
+  col: number,
+  row: number,
+): Promise<void> {
+  const clamped = Math.max(-HSCROLL_MAX_TICKS, Math.min(HSCROLL_MAX_TICKS, Math.trunc(amount)));
+  if (clamped === 0) return;
+
+  const panes = await listPaneGeometry(session);
+  const pane = panes.find(
+    (p) => col >= p.left && col <= p.right && row >= p.top && row <= p.bottom,
+  );
+  if (!pane || pane.command.replace(/^-/, "") !== "nvim") return;
+
+  let state = hscrollState.get(pane.id);
+  if (!state) {
+    state = { amount: 0, inFlight: false };
+    hscrollState.set(pane.id, state);
+  }
+  // Bursts of wheel ticks arrive faster than a remote-send round trip; fold
+  // them into whichever run is already in flight instead of spawning a new
+  // nvim process per tick.
+  state.amount += clamped;
+  if (state.inFlight) return;
+
+  state.inFlight = true;
+  try {
+    while (state.amount !== 0) {
+      const n = state.amount;
+      state.amount = 0;
+      const socket = await resolveNvimSocketCached(pane.id, pane.pid);
+      if (!socket) break;
+      const keys = (n > 0 ? "<ScrollWheelRight>" : "<ScrollWheelLeft>").repeat(Math.abs(n));
+      try {
+        await nvimRemoteSend(socket, keys);
+      } catch {
+        // Cached socket may be stale (nvim restarted) — drop it and retry
+        // resolution once before giving up on this batch.
+        hscrollSocketCache.delete(pane.id);
+        const retrySocket = await resolveNvimSocketCached(pane.id, pane.pid);
+        if (!retrySocket) break;
+        try {
+          await nvimRemoteSend(retrySocket, keys);
+        } catch {
+          break;
+        }
+      }
+    }
+  } finally {
+    state.inFlight = false;
+    hscrollState.delete(pane.id);
+  }
+}
+
 interface PaneInfo {
   command: string;
   pid: number;

@@ -273,6 +273,52 @@ export default function TerminalView({ attachName, active, settings, onExit }: P
         }
       });
 
+      // xterm.js ignores Shift+wheel outright (and never emits horizontal
+      // mouse reports at all), and tmux has no concept of horizontal wheel
+      // either — it maps any wheel button other than "up" to WheelDown,
+      // so forwarding one through the PTY would scroll vertically instead.
+      // Bypass both: detect the gesture here and ask the server to deliver
+      // <ScrollWheelLeft>/<ScrollWheelRight> straight to nvim over RPC,
+      // which handles the actual scrolling itself.
+      const HSCROLL_PX_PER_TICK = 50;
+      let hScrollPx = 0;
+      let hScrollCol = 0;
+      let hScrollRow = 0;
+      let hScrollRafPending = false;
+      const flushHScroll = () => {
+        hScrollRafPending = false;
+        const ticks = Math.trunc(hScrollPx / HSCROLL_PX_PER_TICK);
+        if (ticks === 0) return;
+        hScrollPx -= ticks * HSCROLL_PX_PER_TICK;
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({ type: "hscroll", amount: ticks, col: hScrollCol, row: hScrollRow }),
+          );
+        }
+      };
+      term.attachCustomWheelEventHandler((e) => {
+        // Diagonal trackpad motion (both deltas nonzero, no shift) falls
+        // through unchanged so vertical scrolling keeps working normally.
+        const horizontal = e.shiftKey ? e.deltaY : e.deltaY === 0 ? e.deltaX : 0;
+        if (horizontal === 0) return true;
+        const rect = container.getBoundingClientRect();
+        hScrollCol = Math.min(
+          term.cols - 1,
+          Math.max(0, Math.floor(((e.clientX - rect.left) / rect.width) * term.cols)),
+        );
+        hScrollRow = Math.min(
+          term.rows - 1,
+          Math.max(0, Math.floor(((e.clientY - rect.top) / rect.height) * term.rows)),
+        );
+        hScrollPx += horizontal;
+        if (!hScrollRafPending) {
+          hScrollRafPending = true;
+          requestAnimationFrame(flushHScroll);
+        }
+        e.preventDefault();
+        return false;
+      });
+
       // Fires when the tab becomes visible again (display:none → block) and on
       // window resizes, so hidden terminals refit as soon as they can measure.
       const observer = new ResizeObserver(refit);
