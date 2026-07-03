@@ -123,14 +123,91 @@ export function isWindowTabSession(name: string): boolean {
   return name.startsWith(WINDOW_TAB_PREFIX);
 }
 
-// The stable id (e.g. "@12") of whatever window `session` currently has
-// selected — unlike #{window_index}, this survives window renumbering, so
-// it's safe to compare across polls to detect the window changing out from
-// under a pinned attach.
-export async function currentWindowId(session: string): Promise<string> {
-  return (
-    await tmux(["display-message", "-t", `=${session}:`, "-p", "#{window_id}"])
-  ).trim();
+export interface AttachIdentity {
+  sessionId: string;
+  windowId: string;
+}
+
+// The stable ids (e.g. "$3" / "@12") of the attached session and whatever
+// window it currently has selected — unlike names and indexes, these survive
+// session renames and window renumbering, so the attach watcher can compare
+// them across polls and use them as unambiguous command targets.
+export async function getAttachIdentity(session: string): Promise<AttachIdentity> {
+  const out = await tmux([
+    "display-message",
+    "-t",
+    `=${session}:`,
+    "-p",
+    "#{session_id}\t#{window_id}",
+  ]);
+  const [sessionId, windowId] = out.trim().split("\t");
+  return { sessionId, windowId };
+}
+
+export interface TmuxClient {
+  pid: number;
+  tty: string;
+  sessionId: string;
+}
+
+// Every attached tmux client. client_pid is the pid of the client process
+// itself — for attaches spawned by this server, exactly node-pty's term.pid,
+// which is how the attach watcher matches clients to WS connections.
+export async function listClients(): Promise<TmuxClient[]> {
+  const out = await tmux([
+    "list-clients",
+    "-F",
+    "#{client_pid}\t#{client_tty}\t#{session_id}",
+  ]).catch(emptyIfNoServer);
+  return out
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [pid, tty, sessionId] = line.split("\t");
+      return { pid: Number(pid), tty, sessionId };
+    });
+}
+
+export interface SessionCurrentWindow {
+  name: string;
+  windowId: string;
+  windowIndex: number;
+}
+
+// In list-sessions' format context, window_* expands to each session's
+// *current* window — one call yields every session's current window (id and
+// index), keyed by stable session id. Verified live on tmux 3.5a.
+export async function listSessionCurrentWindows(): Promise<Map<string, SessionCurrentWindow>> {
+  const out = await tmux([
+    "list-sessions",
+    "-F",
+    "#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}",
+  ]).catch(emptyIfNoServer);
+  const map = new Map<string, SessionCurrentWindow>();
+  for (const line of out.split("\n").filter(Boolean)) {
+    const [sessionId, name, windowId, windowIndex] = line.split("\t");
+    map.set(sessionId, { name, windowId, windowIndex: Number(windowIndex) });
+  }
+  return map;
+}
+
+// Window ids of the session's whole window list — for a grouped window-tab
+// session this is the shared set, so a pinned id missing from it means the
+// pinned window itself is gone (not merely deselected).
+export async function listGroupWindowIds(sessionId: string): Promise<string[]> {
+  const out = await tmux(["list-windows", "-t", sessionId, "-F", "#{window_id}"]);
+  return out.split("\n").filter(Boolean);
+}
+
+// Verified live: a "$id:@id" target resolves the window within the given
+// session even when the window is shared across a session group.
+export async function selectWindowById(sessionId: string, windowId: string): Promise<void> {
+  await tmux(["select-window", "-t", `${sessionId}:${windowId}`]);
+}
+
+// Re-points one specific client (by tty, from listClients) at a session.
+export async function switchClient(tty: string, sessionId: string): Promise<void> {
+  await tmux(["switch-client", "-c", tty, "-t", sessionId]);
 }
 
 export async function createWindow(session: string, cwd?: string): Promise<void> {

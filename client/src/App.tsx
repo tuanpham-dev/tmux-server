@@ -751,6 +751,24 @@ export default function App() {
     [activeTab, showError, refresh, openWindowTab],
   );
 
+  // A tmux-native cross-session pick (choose-tree, Ctrl+B s) — the server
+  // already switched the client back to the tab's own session. Surface the
+  // target, preferring a tab pinned to the exact window the pick landed on
+  // over the whole-session tab.
+  const openSwitchedSession = useCallback(
+    (session: string, windowIndex: number) => {
+      const existing = tabs.find(
+        (t) => t.sessionName === session && t.windowIndex === windowIndex,
+      );
+      if (existing) {
+        setActiveTabId(existing.id);
+        return;
+      }
+      openSession(session);
+    },
+    [tabs, openSession],
+  );
+
   useEffect(() => {
     document.title = activeTab ? `${tabLabel(activeTab)} — tmux` : "tmux";
   }, [activeTab, tabLabel]);
@@ -817,6 +835,11 @@ export default function App() {
               settings={settings}
               onExit={() => closeTab(tab.id)}
               onError={showError}
+              // A tmux-native window switch inside this window tab — the
+              // server already reverted the synthetic session to its pin;
+              // surface the window the user actually picked.
+              onWindowSwitch={(windowIndex) => openWindowTab(tab.sessionName, windowIndex)}
+              onSessionSwitch={openSwitchedSession}
             />
           ))}
           {tabs.length === 0 && (

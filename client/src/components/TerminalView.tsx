@@ -12,9 +12,22 @@ interface Props {
   settings: AppSettings;
   onExit: () => void;
   onError: (err: unknown) => void;
+  // tmux-native navigation inside this attach, reported (and already
+  // reverted) by the server's attach watcher: a window switch within a
+  // window tab, or a cross-session switch from any tab.
+  onWindowSwitch?: (windowIndex: number) => void;
+  onSessionSwitch?: (session: string, windowIndex: number) => void;
 }
 
-export default function TerminalView({ attachName, active, settings, onExit, onError }: Props) {
+export default function TerminalView({
+  attachName,
+  active,
+  settings,
+  onExit,
+  onError,
+  onWindowSwitch,
+  onSessionSwitch,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollTrackRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -23,6 +36,10 @@ export default function TerminalView({ attachName, active, settings, onExit, onE
   onExitRef.current = onExit;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onWindowSwitchRef = useRef(onWindowSwitch);
+  onWindowSwitchRef.current = onWindowSwitch;
+  const onSessionSwitchRef = useRef(onSessionSwitch);
+  onSessionSwitchRef.current = onSessionSwitch;
   // The WS attaches to the name the tab was opened with; a later rename only
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
@@ -153,6 +170,14 @@ export default function TerminalView({ attachName, active, settings, onExit, onE
               queryDirty = false;
               requestScrollState();
             }
+          } else if (msg.type === "windowSwitched" && Number.isFinite(msg.windowIndex)) {
+            onWindowSwitchRef.current?.(msg.windowIndex);
+          } else if (
+            msg.type === "sessionSwitched" &&
+            typeof msg.session === "string" &&
+            Number.isFinite(msg.windowIndex)
+          ) {
+            onSessionSwitchRef.current?.(msg.session, msg.windowIndex);
           } else if (msg.type === "exit") {
             receivedExit = true;
             ws.close();
