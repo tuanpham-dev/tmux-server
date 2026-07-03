@@ -1,10 +1,13 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { copyText } from "../clipboard";
 import type { AppSettings } from "../settings";
+import SearchBar from "./SearchBar";
 import { terminalTheme } from "../theme";
+
+type SearchAction = "start" | "next" | "prev" | "cancel";
 
 interface Props {
   attachName: string;
@@ -44,6 +47,54 @@ export default function TerminalView({
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
   const initialSettings = useRef(settings);
+
+  // Scrollback search overlay. sendSearchRef is set inside the mount effect
+  // below (where it has closure access to the live `ws`, which is replaced
+  // on every reconnect) so these handlers always reach the current socket.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchOpenRef = useRef(false);
+  searchOpenRef.current = searchOpen;
+  // False whenever the query has changed since the last "start" — the next
+  // Enter/Shift+Enter re-starts the search instead of stepping an existing
+  // one, matching how most find boxes treat an edited query.
+  const searchStartedRef = useRef(false);
+  const sendSearchRef = useRef<(action: SearchAction, query?: string) => void>(() => {});
+
+  const handleSearchQueryChange = (q: string) => {
+    setSearchQuery(q);
+    searchStartedRef.current = false;
+  };
+  const handleSearchNext = () => {
+    if (!searchQuery) return;
+    if (searchStartedRef.current) {
+      sendSearchRef.current("next");
+    } else {
+      sendSearchRef.current("start", searchQuery);
+      searchStartedRef.current = true;
+    }
+  };
+  const handleSearchPrev = () => {
+    if (!searchQuery) return;
+    if (searchStartedRef.current) {
+      sendSearchRef.current("prev");
+    } else {
+      sendSearchRef.current("start", searchQuery);
+      searchStartedRef.current = true;
+    }
+  };
+  const handleSearchClose = () => {
+    sendSearchRef.current("cancel");
+    setSearchOpen(false);
+    setSearchQuery("");
+    searchStartedRef.current = false;
+    requestAnimationFrame(() => termRef.current?.focus());
+  };
+  // Referenced from inside the mount effect's key handler (Ctrl+Shift+F
+  // toggle-close), which only runs once and can't see this render's
+  // closure directly — same ref-forwarding pattern as onExitRef above.
+  const handleSearchCloseRef = useRef(handleSearchClose);
+  handleSearchCloseRef.current = handleSearchClose;
 
   useEffect(() => {
     const container = containerRef.current!;
@@ -199,6 +250,17 @@ export default function TerminalView({
 
       connect();
 
+      // Closure over the outer `let ws`, which connect() reassigns on every
+      // reconnect — always reaches whichever socket is currently live. The
+      // server replies to a "search" message with a "scroll" message, same
+      // as scrollTo, so the existing scroll handler above already updates
+      // the scrollbar thumb to track matches with no extra message type.
+      sendSearchRef.current = (action, query) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "search", action, query }));
+        }
+      };
+
       // Dragging/clicking the overlay bar jumps tmux's copy-mode scroll
       // position directly (goto-line), rather than emulating wheel ticks.
       const track = scrollTrackRef.current!;
@@ -317,6 +379,15 @@ export default function TerminalView({
           if (selection) copyText(selection).catch((err) => onErrorRef.current(err));
           return false;
         }
+        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === "KeyF") {
+          e.preventDefault();
+          // Toggle: closing here (rather than just opening) needs the
+          // ref-forwarded handler since this handler is set up once and
+          // can't see later renders' searchOpen value directly.
+          if (searchOpenRef.current) handleSearchCloseRef.current();
+          else setSearchOpen(true);
+          return false;
+        }
         if (e.shiftKey && e.key === "Enter" && !e.ctrlKey && !e.altKey && !e.metaKey) {
           e.preventDefault();
           if (ws.readyState === WebSocket.OPEN) {
@@ -424,6 +495,15 @@ export default function TerminalView({
       ref={containerRef}
       className={`terminal-host${active ? "" : " hidden"}`}
     >
+      {searchOpen && (
+        <SearchBar
+          query={searchQuery}
+          onQueryChange={handleSearchQueryChange}
+          onNext={handleSearchNext}
+          onPrev={handleSearchPrev}
+          onClose={handleSearchClose}
+        />
+      )}
       <div ref={scrollTrackRef} className="tmux-scrollbar">
         <div className="tmux-scrollbar-thumb" />
       </div>

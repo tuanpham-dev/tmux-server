@@ -327,6 +327,32 @@ export async function scrollTo(session: string, line: number): Promise<void> {
   ]);
 }
 
+export type SearchAction = "start" | "next" | "prev" | "cancel";
+
+// Drives copy-mode search for the scrollback search overlay. "start" uses
+// search-backward-text (plain-text match) rather than search-backward
+// (regex) — verified live against tmux 3.5a's man page and behavior — so a
+// user typing "a.b" or "(x)" searches for that literal string instead of a
+// pattern. search-again/search-reverse repeat the last search in the same
+// (plain-text) mode, so next/prev stay literal without re-specifying it.
+export async function searchScrollback(
+  session: string,
+  action: SearchAction,
+  query?: string,
+): Promise<void> {
+  const target = `=${session}:`;
+  if (action === "cancel") {
+    await tmux(["send-keys", "-X", "-t", target, "cancel"]);
+    return;
+  }
+  if (action === "start") {
+    await tmux(["copy-mode", "-t", target]);
+    await tmux(["send-keys", "-X", "-t", target, "search-backward-text", query ?? ""]);
+    return;
+  }
+  await tmux(["send-keys", "-X", "-t", target, action === "next" ? "search-again" : "search-reverse"]);
+}
+
 interface GeometryPane {
   id: string;
   left: number;

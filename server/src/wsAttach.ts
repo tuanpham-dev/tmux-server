@@ -9,10 +9,12 @@ import {
   isWindowTabSession,
   scrollHorizontal,
   scrollTo,
+  searchScrollback,
+  type SearchAction,
 } from "./tmux.js";
 
 interface ClientMsg {
-  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll";
+  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll" | "search";
   data?: string;
   cols?: number;
   rows?: number;
@@ -20,7 +22,11 @@ interface ClientMsg {
   amount?: number;
   col?: number;
   row?: number;
+  action?: SearchAction;
+  query?: string;
 }
+
+const SEARCH_ACTIONS = new Set<SearchAction>(["start", "next", "prev", "cancel"]);
 
 export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
   const url = new URL(req.url ?? "", "http://localhost");
@@ -106,6 +112,20 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
         .catch(() => {});
     } else if (msg.type === "scrollTo" && Number.isFinite(msg.line)) {
       scrollTo(session, msg.line!)
+        .then(() => getScrollState(session))
+        .then((state) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "scroll", ...state }));
+          }
+        })
+        .catch(() => {});
+    } else if (
+      msg.type === "search" &&
+      msg.action !== undefined &&
+      SEARCH_ACTIONS.has(msg.action) &&
+      (msg.action !== "start" || typeof msg.query === "string")
+    ) {
+      searchScrollback(session, msg.action, msg.query)
         .then(() => getScrollState(session))
         .then((state) => {
           if (ws.readyState === WebSocket.OPEN) {
