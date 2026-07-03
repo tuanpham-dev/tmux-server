@@ -2,15 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
+import CsvView from "./components/CsvView";
 import Dialog, { type DialogRequest } from "./components/Dialog";
 import ImageView from "./components/ImageView";
+import JsonView from "./components/JsonView";
 import MarkdownView from "./components/MarkdownView";
+import MediaView from "./components/MediaView";
+import PdfView from "./components/PdfView";
 import QuickSwitcher from "./components/QuickSwitcher";
 import SettingsDialog from "./components/SettingsDialog";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
-import { isImagePath, isMarkdownPath } from "./fileKinds";
+import { isCsvPath, isImagePath, isJsonPath, isMediaPath, isPdfPath, isPreviewablePath, isYamlPath } from "./fileKinds";
 import { loadSettings, saveSettings, type AppSettings } from "./settings";
 import type { MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
 import { collectDropped, uploadAll, type DroppedItems } from "./upload";
@@ -380,8 +384,19 @@ export default function App() {
     [tabs, showError],
   );
 
+  // Tabs with unsaved edits (currently only CsvView reports into this —
+  // JSON's Format & Save is a one-shot action, not an edit buffer). A plain
+  // ref, not state: membership changes don't need to trigger a render on
+  // their own, only the confirm check below reads it.
+  const dirtyTabsRef = useRef<Set<string>>(new Set());
+
   const closeTab = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      if (dirtyTabsRef.current.has(id)) {
+        const ok = await confirmDialog("This tab has unsaved changes. Close anyway?", "Close");
+        if (!ok) return;
+        dirtyTabsRef.current.delete(id);
+      }
       const tab = tabs.find((t) => t.id === id);
       if (tab?.windowIndex !== undefined) {
         api.closeWindowTab(tab.attachName).catch(() => {});
@@ -397,7 +412,7 @@ export default function App() {
         return next;
       });
     },
-    [tabs],
+    [tabs, confirmDialog],
   );
 
   // Tab switching/closing. Unlike the shortcuts above, these must never
@@ -443,16 +458,21 @@ export default function App() {
   }, []);
 
   const closeOtherTabs = useCallback(
-    (id: string) => {
-      for (const t of tabs) {
-        if (t.id !== id && t.windowIndex !== undefined) {
-          api.closeWindowTab(t.attachName).catch(() => {});
-        }
+    async (id: string) => {
+      const toClose = tabs.filter((t) => t.id !== id);
+      const anyDirty = toClose.some((t) => dirtyTabsRef.current.has(t.id));
+      if (anyDirty) {
+        const ok = await confirmDialog("Some tabs have unsaved changes. Close all others anyway?", "Close All");
+        if (!ok) return;
+      }
+      for (const t of toClose) {
+        dirtyTabsRef.current.delete(t.id);
+        if (t.windowIndex !== undefined) api.closeWindowTab(t.attachName).catch(() => {});
       }
       setTabs((prev) => prev.filter((t) => t.id === id));
       setActiveTabId(id);
     },
-    [tabs],
+    [tabs, confirmDialog],
   );
 
   // Runs every poll: rewrites any tab whose session/window drifted from an
@@ -919,17 +939,23 @@ export default function App() {
     [activeRealTab, showError, refresh, openWindowTab],
   );
 
-  // FILES-tree click dispatch: images open in the zoomable viewer tab,
-  // everything else keeps opening in nvim as before.
-  const openFileOrImage = useCallback(
+  // FILES-tree click dispatch: images/media/PDFs open directly in their
+  // viewer tab (nvim on binary content is useless); everything else
+  // (including markdown/json/yaml — see isPreviewablePath) keeps opening in
+  // nvim as before, reached via the hover icon / "Preview" menu item instead.
+  const openFileOrViewer = useCallback(
     (filePath: string) => {
       if (isImagePath(filePath)) {
         openImageTab(filePath);
         return;
       }
+      if (isMediaPath(filePath) || isPdfPath(filePath)) {
+        openPreviewTab(filePath);
+        return;
+      }
       openFileInSession(filePath);
     },
-    [openImageTab, openFileInSession],
+    [openImageTab, openPreviewTab, openFileInSession],
   );
 
   const fileMenuItems = useCallback(
@@ -947,15 +973,17 @@ export default function App() {
         { label: "Copy Relative Path", onClick: () => copyFileRelativePath(entryPath, rootDir) },
         { label: "Download", onClick: () => downloadFileEntry(entryPath) },
       );
-      // Images open in the zoomable viewer by default (see openFileOrImage)
-      // — this is the escape hatch to edit e.g. an SVG's source in nvim.
+      // Images/media/PDFs open in their viewer by default (see
+      // openFileOrViewer) — this is the escape hatch to edit e.g. an SVG's
+      // source in nvim. Doesn't apply to media/PDF (nvim on binary content
+      // isn't useful).
       if (!isDir && isImagePath(entryPath)) {
         items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
       }
-      // Markdown opens in nvim by default (unchanged) — Preview is the
-      // opt-in path to the rendered view, mirroring the hover icon in
+      // Markdown/JSON/YAML open in nvim by default (unchanged) — Preview is
+      // the opt-in path to the rendered view, mirroring the hover icon in
       // FileTree.
-      if (!isDir && isMarkdownPath(entryPath)) {
+      if (!isDir && isPreviewablePath(entryPath)) {
         items.push({ label: "Preview", onClick: () => openPreviewTab(entryPath) });
       }
       items.push({ label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) });
@@ -1025,7 +1053,7 @@ export default function App() {
             onDropFiles={handleFileTreeDrop}
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
-            onOpenFile={openFileOrImage}
+            onOpenFile={openFileOrViewer}
             onPreviewFile={openPreviewTab}
             fileMenuItems={fileMenuItems}
             fileTreeRootMenuItems={fileTreeRootMenuItems}
@@ -1054,27 +1082,69 @@ export default function App() {
           actionsRef={setTabActionsEl}
         />
         <div className="terminals">
-          {tabs.map((tab) =>
-            tab.imagePath !== undefined ? (
-              <ImageView
-                key={tab.id}
-                filePath={tab.imagePath}
-                active={tab.id === activeTabId}
-                toolbarTarget={tabActionsEl}
-              />
-            ) : tab.previewPath !== undefined ? (
-              <MarkdownView
-                key={tab.id}
-                filePath={tab.previewPath}
-                active={tab.id === activeTabId}
-                toolbarTarget={tabActionsEl}
-                onOpenInEditor={openFileInSession}
-              />
-            ) : (
+          {tabs.map((tab) => {
+            const active = tab.id === activeTabId;
+            if (tab.imagePath !== undefined) {
+              return (
+                <ImageView
+                  key={tab.id}
+                  filePath={tab.imagePath}
+                  active={active}
+                  toolbarTarget={tabActionsEl}
+                />
+              );
+            }
+            if (tab.previewPath !== undefined) {
+              const path = tab.previewPath;
+              if (isMediaPath(path)) {
+                return <MediaView key={tab.id} filePath={path} active={active} />;
+              }
+              if (isPdfPath(path)) {
+                return <PdfView key={tab.id} filePath={path} active={active} />;
+              }
+              if (isJsonPath(path) || isYamlPath(path)) {
+                return (
+                  <JsonView
+                    key={tab.id}
+                    filePath={path}
+                    active={active}
+                    toolbarTarget={tabActionsEl}
+                    onOpenInEditor={openFileInSession}
+                    fontSize={settings.fontSize}
+                  />
+                );
+              }
+              if (isCsvPath(path)) {
+                return (
+                  <CsvView
+                    key={tab.id}
+                    filePath={path}
+                    active={active}
+                    toolbarTarget={tabActionsEl}
+                    onOpenInEditor={openFileInSession}
+                    onShowMenu={showMenu}
+                    onDirtyChange={(dirty) => {
+                      if (dirty) dirtyTabsRef.current.add(tab.id);
+                      else dirtyTabsRef.current.delete(tab.id);
+                    }}
+                  />
+                );
+              }
+              return (
+                <MarkdownView
+                  key={tab.id}
+                  filePath={path}
+                  active={active}
+                  toolbarTarget={tabActionsEl}
+                  onOpenInEditor={openFileInSession}
+                />
+              );
+            }
+            return (
               <TerminalView
                 key={tab.id}
                 attachName={tab.attachName}
-                active={tab.id === activeTabId}
+                active={active}
                 settings={settings}
                 onExit={() => closeTab(tab.id)}
                 onError={showError}
@@ -1084,8 +1154,8 @@ export default function App() {
                 onWindowSwitch={(windowIndex) => openWindowTab(tab.sessionName, windowIndex)}
                 onSessionSwitch={openSwitchedSession}
               />
-            ),
-          )}
+            );
+          })}
           {tabs.length === 0 && (
             <div className="placeholder">
               Select a session from the sidebar to open a terminal

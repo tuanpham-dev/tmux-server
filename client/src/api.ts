@@ -154,6 +154,24 @@ export async function fetchFileText(targetPath: string): Promise<string> {
   return res.text();
 }
 
+// Renders a file inline instead of downloading it — for content an <iframe>
+// navigates to (PdfView), where Content-Disposition: attachment would
+// trigger a download instead of rendering. <img>/<video> subresource loads
+// don't need this: they ignore that header regardless.
+export function inlineUrl(targetPath: string): string {
+  return `/api/download?inline=1&path=${encodeURIComponent(targetPath)}`;
+}
+
+// Writes content back to targetPath via the existing upload route in
+// overwrite mode — no dedicated "write file" endpoint needed. Used by
+// JsonView's Format & Save and CsvView's Save.
+export function saveFileText(targetPath: string, content: string): Promise<{ path: string }> {
+  const slash = targetPath.lastIndexOf("/");
+  const dir = targetPath.slice(0, slash);
+  const name = targetPath.slice(slash + 1);
+  return uploadFile(dir, name, new Blob([content], { type: "text/plain" }), "overwrite");
+}
+
 // Thrown when the server refuses to upload because the destination already
 // exists and the caller asked for "fail" conflict semantics (used to drive
 // the ask-before-overwrite flow).

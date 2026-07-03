@@ -352,6 +352,15 @@ api.get("/download", async (req, res) => {
       res.status(400).json({ error: "path is not a file or directory" });
       return;
     }
+    // inline=1 (PdfView's iframe) needs no Content-Disposition: attachment —
+    // unlike an <img>/<video> subresource load, an iframe *navigation*
+    // honors that header and would download the file instead of rendering
+    // it. sendFile derives the right Content-Type from the extension and
+    // sets no disposition header at all.
+    if (req.query.inline === "1") {
+      res.sendFile(targetPath);
+      return;
+    }
     res.download(targetPath, path.basename(targetPath));
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });

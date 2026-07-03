@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
-import { isMarkdownPath } from "../fileKinds";
+import { isPreviewablePath } from "../fileKinds";
 import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import Icon from "./Icon";
 
@@ -314,7 +314,7 @@ export default function FileTree({
               would split the leftover space between them instead of
               pinning the button flush against the badge. */}
           <span className="file-tree-row-trailer">
-            {isMarkdownPath(entry.name) && (
+            {isPreviewablePath(entry.name) && (
               <button
                 className="file-tree-preview-button"
                 title="Preview"
