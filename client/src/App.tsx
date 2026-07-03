@@ -3,6 +3,7 @@ import * as api from "./api";
 import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
 import Dialog, { type DialogRequest } from "./components/Dialog";
+import QuickSwitcher from "./components/QuickSwitcher";
 import SettingsDialog from "./components/SettingsDialog";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
@@ -137,6 +138,24 @@ export default function App() {
       e.preventDefault();
       e.stopPropagation();
       setSidebarVisible((v) => !v);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
+  const [showSwitcher, setShowSwitcher] = useState(false);
+
+  // Capture phase + preventDefault to suppress the browser's print dialog,
+  // which owns Ctrl+P by default. Works in mainstream browsers; in a
+  // browser that refuses to let a page override it, the installed PWA
+  // (which reserves the combo for the app, same as Ctrl+Tab/Ctrl+W) is the
+  // guaranteed-clean path.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyP") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setShowSwitcher((v) => !v);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -925,6 +944,16 @@ export default function App() {
       </main>
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
       {dialog && <Dialog dialog={dialog} />}
+      {showSwitcher && (
+        <QuickSwitcher
+          sessions={sessions}
+          tabs={tabs}
+          onActivateTab={setActiveTabId}
+          onOpenWindow={openWindowTab}
+          onOpenSession={openSession}
+          onClose={() => setShowSwitcher(false)}
+        />
+      )}
       {showSettings && (
         <SettingsDialog
           settings={settings}
