@@ -149,6 +149,12 @@ export default function TerminalView({
         // Without it, e.g. lazygit's selected row keeps its original foreground
         // colors on the blue selection background and becomes unreadable.
         minimumContrastRatio: 4.5,
+        // On Mac, xterm's SelectionService only force-starts local selection
+        // for Option+click/drag, ignoring Shift entirely (shouldForceSelection
+        // branches on Browser.isMac). The drag/Shift+drag swap below needs
+        // Option held on the synthetic drag-start event on Mac clients for
+        // force-selection to trigger at all.
+        macOptionClickForcesSelection: true,
         theme: terminalTheme,
       });
       const fit = new FitAddon();
@@ -468,23 +474,120 @@ export default function TerminalView({
       // tmux runs with mouse support on, so xterm forwards plain drags to
       // tmux (tmux's own copy-mode selection) and reserves Shift+drag for
       // local browser selection — that split is hardcoded in xterm's
-      // SelectionService with no option to flip it. Swap the two by shadowing
-      // the shiftKey flag xterm reads off mouse events in the capture phase:
-      // a plain drag now selects text locally, Shift+drag (and Shift+click)
-      // reaches tmux — with the shift bit cleared, so tmux sees a normal
-      // drag, not an S- modified one. Only while the app is actually
-      // mouse-reporting; otherwise plain drag already selects and the swap
-      // would only invert what Shift means to xterm's local selection.
-      // Deliberately leaves wheel events alone (Shift+wheel keeps meaning
-      // horizontal scroll, below).
-      const invertShift = (e: MouseEvent) => {
-        if (term.modes.mouseTrackingMode === "none") return;
-        const inverted = !e.shiftKey;
-        Object.defineProperty(e, "shiftKey", { get: () => inverted });
+      // SelectionService with no option to flip it. Swap the two: Shift-held
+      // events reach tmux unmodified by clearing the shift bit in the
+      // capture phase (still true drag or click, tmux just never sees the
+      // S- modifier). Plain gestures need more care — xterm decides
+      // click-vs-selection at mousedown time, before movement is known, so a
+      // blind shift-bit flip on mousedown would force every plain click into
+      // local selection too (the caret in nvim would never move). Instead,
+      // swallow the plain mousedown and replay it once we've learned whether
+      // it became a drag, a click, or a held press. Only while the app is
+      // actually mouse-reporting; otherwise plain gestures already select
+      // locally and this would only get in the way. Deliberately leaves
+      // wheel events alone (Shift+wheel keeps meaning horizontal scroll,
+      // below).
+      const isMacClient = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(navigator.platform);
+      // Marks events this handler itself created so they pass through
+      // unmodified instead of being reprocessed as a new gesture.
+      const syntheticEvents = new WeakSet<MouseEvent>();
+      const DRAG_THRESHOLD_PX = 4;
+      const LONG_PRESS_MS = 500;
+
+      let pending: { startX: number; startY: number; source: MouseEvent } | null = null;
+      let longPressTimer: number | undefined;
+
+      const replay = (
+        type: "mousedown" | "mouseup",
+        source: MouseEvent,
+        shiftKey: boolean,
+        altKey: boolean,
+      ) => {
+        const el = term.element;
+        if (!el) return;
+        const synthetic = new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          detail: source.detail,
+          screenX: source.screenX,
+          screenY: source.screenY,
+          clientX: source.clientX,
+          clientY: source.clientY,
+          button: source.button,
+          buttons: type === "mouseup" ? 0 : source.buttons,
+          shiftKey,
+          altKey,
+          ctrlKey: source.ctrlKey,
+          metaKey: source.metaKey,
+        });
+        syntheticEvents.add(synthetic);
+        el.dispatchEvent(synthetic);
       };
-      const invertedMouseEvents = ["mousedown", "mousemove", "mouseup"] as const;
-      for (const type of invertedMouseEvents) {
-        container.addEventListener(type, invertShift, true);
+
+      const onPendingMove = (e: MouseEvent) => {
+        if (!pending) return;
+        const dx = e.clientX - pending.startX;
+        const dy = e.clientY - pending.startY;
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        const source = pending.source;
+        endPending();
+        // Drag: force local selection to start at the original press point;
+        // the ongoing real moves (now unintercepted) extend it live.
+        replay("mousedown", source, true, isMacClient);
+      };
+
+      const onPendingUp = () => {
+        if (!pending) return;
+        const source = pending.source;
+        endPending();
+        // Click: clear any leftover highlight from a prior local drag (a
+        // forced-selection mousedown never runs _handleSingleClick, so a
+        // plain click wouldn't otherwise clear stale selection state), then
+        // replay press+release unshifted so tmux gets a normal click report.
+        term.clearSelection();
+        replay("mousedown", source, false, false);
+        replay("mouseup", source, false, false);
+      };
+
+      function endPending() {
+        if (!pending) return;
+        window.clearTimeout(longPressTimer);
+        document.removeEventListener("mousemove", onPendingMove, true);
+        document.removeEventListener("mouseup", onPendingUp, true);
+        pending = null;
+      }
+
+      const onCapture = (e: MouseEvent) => {
+        if (syntheticEvents.has(e)) return;
+        if (term.modes.mouseTrackingMode === "none") return;
+
+        if (e.shiftKey) {
+          Object.defineProperty(e, "shiftKey", { get: () => false });
+          return;
+        }
+
+        if (e.button !== 0 || e.type !== "mousedown") return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        term.focus();
+        endPending();
+        pending = { startX: e.clientX, startY: e.clientY, source: e };
+        document.addEventListener("mousemove", onPendingMove, true);
+        document.addEventListener("mouseup", onPendingUp, true);
+        longPressTimer = window.setTimeout(() => {
+          if (!pending) return;
+          const source = pending.source;
+          endPending();
+          // Held without moving: start a real press in tmux now; the
+          // ongoing real moves/release (now unintercepted) report live.
+          replay("mousedown", source, false, false);
+        }, LONG_PRESS_MS);
+      };
+      const capturedMouseEvents = ["mousedown", "mousemove", "mouseup"] as const;
+      for (const type of capturedMouseEvents) {
+        container.addEventListener(type, onCapture, true);
       }
 
       // xterm.js ignores Shift+wheel outright (and never emits horizontal
@@ -543,8 +646,9 @@ export default function TerminalView({
       cleanup = () => {
         clearTimeout(reconnectTimer);
         onDragEnd();
-        for (const type of invertedMouseEvents) {
-          container.removeEventListener(type, invertShift, true);
+        endPending();
+        for (const type of capturedMouseEvents) {
+          container.removeEventListener(type, onCapture, true);
         }
         observer.disconnect();
         dataSub.dispose();
