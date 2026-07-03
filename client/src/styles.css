@@ -1309,6 +1309,30 @@ body.resizing-row {
   height: 100%;
 }
 
+/* OSC 8 hyperlink hover tooltip — shows the real target URI, which can
+   differ from the visible cell text (e.g. `ls --hyperlink` shows just the
+   filename). The `xterm-hover` class is required, not just descriptive:
+   xterm's Linkifier explicitly skips hover-resolving links under any
+   element carrying it, so this tooltip can't fight the link detection it's
+   displaying info about. */
+.terminal-link-tooltip {
+  position: absolute;
+  z-index: 30;
+  display: none;
+  max-width: min(80vw, 480px);
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  color: var(--fg-bright);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
 /* Overlay scrollbar mirroring tmux copy-mode scroll state (tmux keeps
    scrollback internally, so xterm's own scrollbar never shows). Draggable,
    like code-server's Monaco-based scrollbar. */

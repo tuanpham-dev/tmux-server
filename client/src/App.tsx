@@ -902,13 +902,13 @@ export default function App() {
   }, []);
 
   const openFileInSession = useCallback(
-    async (filePath: string) => {
+    async (filePath: string, line?: number) => {
       if (!activeRealTab) return;
       try {
         // attachName so a window-tab opens the file against the exact
         // pinned window, not whichever window the real session's own
         // (independently-diverged) current-window pointer happens to be on.
-        const { windowIndex, deferredPane } = await api.openFile(activeRealTab.attachName, filePath);
+        const { windowIndex, deferredPane } = await api.openFile(activeRealTab.attachName, filePath, undefined, line);
         if (windowIndex !== null) {
           // Either a busy pane got a fresh nvim window, or an nvim already
           // running in another window was reused — either way, surface that
@@ -929,8 +929,9 @@ export default function App() {
         if (deferredPane) {
           // The found nvim's RPC socket wasn't reachable, so the server held
           // off injecting keystrokes until its window's tab was visible —
-          // complete it now.
-          await api.openFile(activeRealTab.attachName, filePath, deferredPane);
+          // complete it now (same line, so the deferred keystroke-based
+          // open still jumps to it).
+          await api.openFile(activeRealTab.attachName, filePath, deferredPane, line);
         }
       } catch (err) {
         showError(err);
@@ -943,8 +944,10 @@ export default function App() {
   // viewer tab (nvim on binary content is useless); everything else
   // (including markdown/json/yaml — see isPreviewablePath) keeps opening in
   // nvim as before, reached via the hover icon / "Preview" menu item instead.
+  // `line` (terminal ctrl+click on a "file:line" link) is ignored by the two
+  // viewer-tab branches — they have no line-jump concept.
   const openFileOrViewer = useCallback(
-    (filePath: string) => {
+    (filePath: string, line?: number) => {
       if (isImagePath(filePath)) {
         openImageTab(filePath);
         return;
@@ -953,23 +956,24 @@ export default function App() {
         openPreviewTab(filePath);
         return;
       }
-      openFileInSession(filePath);
+      openFileInSession(filePath, line);
     },
     [openImageTab, openPreviewTab, openFileInSession],
   );
 
-  // Quick switcher's Shift+Enter action. Mirrors the "Preview" escape hatch
-  // for markdown/json/yaml/csv (see fileMenuItems); images/media/PDFs have no
-  // secondary action here — they always land on their viewer regardless of
-  // the modifier, unlike the FILES-tree context menu's image "Open in
-  // Editor" item.
+  // Quick switcher's Shift+Enter action (also terminal ctrl+shift+click —
+  // see TerminalView's onOpenFileSecondary). Mirrors the "Preview" escape
+  // hatch for markdown/json/yaml/csv (see fileMenuItems); images/media/PDFs
+  // have no secondary action here — they always land on their viewer
+  // regardless of the modifier, unlike the FILES-tree context menu's image
+  // "Open in Editor" item.
   const openFileOrViewerSecondary = useCallback(
-    (filePath: string) => {
+    (filePath: string, line?: number) => {
       if (isPreviewablePath(filePath)) {
         openPreviewTab(filePath);
         return;
       }
-      openFileOrViewer(filePath);
+      openFileOrViewer(filePath, line);
     },
     [openPreviewTab, openFileOrViewer],
   );
@@ -1170,6 +1174,8 @@ export default function App() {
                 // surface the window the user actually picked.
                 onWindowSwitch={(windowIndex) => openWindowTab(tab.sessionName, windowIndex)}
                 onSessionSwitch={openSwitchedSession}
+                onOpenFile={openFileOrViewer}
+                onOpenFileSecondary={openFileOrViewerSecondary}
               />
             );
           })}

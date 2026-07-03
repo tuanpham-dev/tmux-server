@@ -224,6 +224,15 @@ export async function switchClient(tty: string, sessionId: string): Promise<void
   await tmux(["switch-client", "-c", tty, "-t", sessionId]);
 }
 
+// The active pane's cwd, used to resolve relative file-path candidates
+// hovered in the terminal (see resolvePaths in api.ts) — same tmux query
+// createWindow/openLazygitWindow already use for the same purpose.
+export async function paneCurrentPath(session: string): Promise<string> {
+  return (
+    await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"])
+  ).trim();
+}
+
 export async function createWindow(session: string, cwd?: string): Promise<void> {
   // Without -c, tmux defaults a new window's cwd to the cwd of the process
   // that ran this command — the server's own directory, not the session's —
@@ -694,20 +703,30 @@ async function findNvimSocket(panePid: number): Promise<string | null> {
   return null;
 }
 
+function nvimRemote(socket: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile("nvim", ["--server", socket, ...args], (err, _stdout, stderr) => {
+      if (err) reject(new Error(stderr.trim() || err.message));
+      else resolve();
+    });
+  });
+}
+
 // "--remote-tab" is "--remote" but opens the file with :tab-edit instead of
 // :edit, so it lands in a new tab rather than replacing the pane's current
 // buffer.
-function nvimRemoteOpen(socket: string, filePath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "nvim",
-      ["--server", socket, "--remote-tab", filePath],
-      (err, _stdout, stderr) => {
-        if (err) reject(new Error(stderr.trim() || err.message));
-        else resolve();
-      },
-    );
-  });
+//
+// A `+<line>` CLI arg here does NOT do what it does for a plain `nvim
+// +<line> file` invocation — confirmed empirically against a scratch
+// `--listen` socket: nvim treats it as a second, literal filename ("+5" as
+// its own new buffer) rather than a startup command, and the cursor stays
+// on line 1. `:tabe +<line> file`'s Ex-command `+cmd` argument is a
+// different mechanism and isn't available through `--remote-tab`. Instead,
+// open the tab first, then drive the cursor with a second `--remote-send`
+// once it's the active buffer.
+async function nvimRemoteOpen(socket: string, filePath: string, line?: number): Promise<void> {
+  await nvimRemote(socket, ["--remote-tab", filePath]);
+  if (line) await nvimRemote(socket, ["--remote-send", `<Esc>:${line}<CR>`]);
 }
 
 // Backslash-escapes characters vim's cmdline treats specially, so a path with
@@ -722,16 +741,25 @@ function shellQuote(p: string): string {
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
+// ":tabe [+cmd] file" — the Ex-command "+cmd" argument (distinct from the
+// CLI "+line" convention, and from --remote-tab's lack of one; see
+// nvimRemoteOpen above) — confirmed empirically to jump the cursor as
+// expected.
+function vimTabeCmd(filePath: string, line?: number): string {
+  const cmd = line ? `+${line} ` : "";
+  return `:tabe ${cmd}${escapeForVimCmdline(filePath)}`;
+}
+
 const EDITOR_COMMANDS = new Set(["nvim", "vim"]);
 const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
 
 // RPC-only nvim open: true if `pid`'s nvim has a reachable socket and the
 // file was opened as a new tab through it. Never falls back to keystrokes —
 // callers decide what an unreachable socket means for their pane.
-async function tryNvimRpcOpen(pid: number, filePath: string): Promise<boolean> {
+async function tryNvimRpcOpen(pid: number, filePath: string, line?: number): Promise<boolean> {
   const socket = await findNvimSocket(pid);
   if (!socket) return false;
-  await nvimRemoteOpen(socket, filePath);
+  await nvimRemoteOpen(socket, filePath, line);
   return true;
 }
 
@@ -741,10 +769,10 @@ async function tryNvimRpcOpen(pid: number, filePath: string): Promise<boolean> {
 // this is used for; a hidden pane in another window instead defers the
 // keystroke fallback (see openFileInWindow's step 2 and
 // openFileInPaneWithKeys below).
-async function openInEditorPane(paneId: string, pid: number, command: string, filePath: string): Promise<void> {
-  if (command === "nvim" && (await tryNvimRpcOpen(pid, filePath))) return;
+async function openInEditorPane(paneId: string, pid: number, command: string, filePath: string, line?: number): Promise<void> {
+  if (command === "nvim" && (await tryNvimRpcOpen(pid, filePath, line))) return;
   await tmux(["send-keys", "-t", paneId, "Escape"]);
-  await tmux(["send-keys", "-t", paneId, "-l", `:tabe ${escapeForVimCmdline(filePath)}`]);
+  await tmux(["send-keys", "-t", paneId, "-l", vimTabeCmd(filePath, line)]);
   await tmux(["send-keys", "-t", paneId, "Enter"]);
 }
 
@@ -762,14 +790,18 @@ export interface OpenFileResult {
 // it's already running nvim/vim; any nvim found in another window of the
 // session; an idle shell in the current window; or, failing all of that, a
 // new tmux window. See each branch below for why.
-export async function openFileInWindow(session: string, filePath: string): Promise<OpenFileResult> {
+export async function openFileInWindow(session: string, filePath: string, line?: number): Promise<OpenFileResult> {
   const pane = await getActivePane(session);
   // Login shells report their command with a leading "-" (e.g. "-zsh").
   const command = pane.command.replace(/^-/, "");
   const target = `=${session}:`;
+  // Classic vim CLI form ("vim +42 file") — distinct from --remote-tab's
+  // lack of +line support (see nvimRemoteOpen) but confirmed working here
+  // since these two branches spawn a fresh `nvim` process directly.
+  const nvimCliArg = line ? `+${line} ${shellQuote(filePath)}` : shellQuote(filePath);
 
   if (EDITOR_COMMANDS.has(command)) {
-    await openInEditorPane(target, pane.pid, command, filePath);
+    await openInEditorPane(target, pane.pid, command, filePath, line);
     return { windowIndex: null };
   }
 
@@ -789,7 +821,7 @@ export async function openFileInWindow(session: string, filePath: string): Promi
     .sort((a, b) => a.windowIndex - b.windowIndex)[0];
 
   if (otherNvimPane) {
-    if (await tryNvimRpcOpen(otherNvimPane.pid, filePath)) {
+    if (await tryNvimRpcOpen(otherNvimPane.pid, filePath, line)) {
       return { windowIndex: otherNvimPane.windowIndex };
     }
     return { windowIndex: otherNvimPane.windowIndex, deferredPane: otherNvimPane.id };
@@ -797,7 +829,7 @@ export async function openFileInWindow(session: string, filePath: string): Promi
 
   if (SHELL_COMMANDS.has(command)) {
     await tmux(["send-keys", "-t", target, "C-u"]);
-    await tmux(["send-keys", "-t", target, "-l", `nvim ${shellQuote(filePath)}`]);
+    await tmux(["send-keys", "-t", target, "-l", `nvim ${nvimCliArg}`]);
     await tmux(["send-keys", "-t", target, "Enter"]);
     return { windowIndex: null };
   }
@@ -823,7 +855,7 @@ export async function openFileInWindow(session: string, filePath: string): Promi
     target,
     "-c",
     pane.cwd,
-    `nvim ${shellQuote(filePath)}`,
+    `nvim ${nvimCliArg}`,
   ]);
   return { windowIndex: Number(out.trim()) };
 }
@@ -833,12 +865,12 @@ export async function openFileInWindow(session: string, filePath: string): Promi
 // visible. Re-checks the pane is still running an editor first — it may have
 // changed (or exited) between the scan and this call — and no-ops otherwise
 // rather than typing into whatever's running now.
-export async function openFileInPaneWithKeys(paneId: string, filePath: string): Promise<void> {
+export async function openFileInPaneWithKeys(paneId: string, filePath: string, line?: number): Promise<void> {
   const out = await tmux(["display-message", "-t", paneId, "-p", "#{pane_current_command}"]);
   const command = out.trim().replace(/^-/, "");
   if (!EDITOR_COMMANDS.has(command)) return;
   await tmux(["send-keys", "-t", paneId, "Escape"]);
-  await tmux(["send-keys", "-t", paneId, "-l", `:tabe ${escapeForVimCmdline(filePath)}`]);
+  await tmux(["send-keys", "-t", paneId, "-l", vimTabeCmd(filePath, line)]);
   await tmux(["send-keys", "-t", paneId, "Enter"]);
 }
 
@@ -855,4 +887,16 @@ export async function applyTmuxOptions(): Promise<void> {
   // instead of the scrollback. With it, the wheel enters copy-mode and
   // scrolls tmux's own buffer.
   await tmux(["set", "-g", "mouse", "on"]).catch(() => {});
+  // terminal-features hyperlinks: tmux only forwards OSC 8 hyperlink escape
+  // sequences (see TerminalView's linkHandler) to clients whose declared
+  // terminal capabilities include "hyperlinks" — xterm.js supports them
+  // fully, but the built-in xterm* feature set tmux ships with doesn't list
+  // it, so without this tmux silently strips every OSC 8 sequence before it
+  // ever reaches the browser (confirmed empirically: identical PTY output
+  // with vs. without this option, byte-for-byte, except the OSC 8 bytes are
+  // simply absent). "-a" appends this as an additional terminal-features
+  // entry rather than replacing the existing xterm* one — tmux merges
+  // capability flags across all entries whose pattern matches the client's
+  // TERM, so both entries' flags apply together.
+  await tmux(["set", "-a", "-g", "terminal-features", "xterm*:hyperlinks"]).catch(() => {});
 }

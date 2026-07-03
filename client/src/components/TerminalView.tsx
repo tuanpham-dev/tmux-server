@@ -3,11 +3,13 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
+import * as api from "../api";
 import { copyText } from "../clipboard";
 import type { AppSettings } from "../settings";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
 import { terminalTheme } from "../theme";
+import { buildLinkProvider, isOpenGesture, openUrl } from "../terminalLinks";
 
 type SearchAction = "start" | "next" | "prev" | "cancel";
 
@@ -22,6 +24,10 @@ interface Props {
   // window tab, or a cross-session switch from any tab.
   onWindowSwitch?: (windowIndex: number) => void;
   onSessionSwitch?: (session: string, windowIndex: number) => void;
+  // Ctrl+click / Ctrl+Shift+click on a detected file-path link — same
+  // primary/secondary pair as QuickSwitcher's Enter/Shift+Enter.
+  onOpenFile?: (path: string, line?: number) => void;
+  onOpenFileSecondary?: (path: string, line?: number) => void;
 }
 
 export default function TerminalView({
@@ -32,6 +38,8 @@ export default function TerminalView({
   onError,
   onWindowSwitch,
   onSessionSwitch,
+  onOpenFile,
+  onOpenFileSecondary,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollTrackRef = useRef<HTMLDivElement>(null);
@@ -45,6 +53,20 @@ export default function TerminalView({
   onWindowSwitchRef.current = onWindowSwitch;
   const onSessionSwitchRef = useRef(onSessionSwitch);
   onSessionSwitchRef.current = onSessionSwitch;
+  const onOpenFileRef = useRef(onOpenFile);
+  onOpenFileRef.current = onOpenFile;
+  const onOpenFileSecondaryRef = useRef(onOpenFileSecondary);
+  onOpenFileSecondaryRef.current = onOpenFileSecondary;
+  // Set (by the custom link provider's onHoverChange or the OSC-8
+  // linkHandler's hover/leave, both wired in the mount effect below) to the
+  // currently-hovered link's own activation call, or null when nothing's
+  // hovered. Read from onCapture's mouse-mode interception so a ctrl+click
+  // on a link is activated directly and never reaches tmux (which would
+  // e.g. re-trigger nvim's own <C-LeftMouse> tag-jump binding).
+  const linkActivateRef = useRef<((e: MouseEvent) => void) | null>(null);
+  // True from a swallowed ctrl+mousedown on a hovered link until its
+  // matching mouseup — see onCapture's link-interception branch below.
+  const linkPressArmedRef = useRef(false);
   // The WS attaches to the name the tab was opened with; a later rename only
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
@@ -166,6 +188,73 @@ export default function TerminalView({
       term.unicode.activeVersion = "11";
       term.open(container);
       termRef.current = term;
+
+      // Ctrl+click (Cmd+click on Mac) links: URLs and local file paths
+      // detected by our own regex provider, plus explicit OSC 8 hyperlinks
+      // (`ls --hyperlink`, gcc, etc.) via xterm's built-in linkHandler.
+      // Activation is gated on the modifier inside each activate callback
+      // (xterm's own recommendation — Linkifier itself doesn't gate on it),
+      // and onCapture below additionally intercepts ctrl+mousedown while
+      // mouse-reporting is on so a ctrl+click never reaches tmux.
+      const hoverTooltip = document.createElement("div");
+      hoverTooltip.className = "xterm-hover terminal-link-tooltip";
+      term.element?.appendChild(hoverTooltip);
+      const showTooltip = (event: MouseEvent, text: string) => {
+        const hostRect = term.element?.getBoundingClientRect();
+        if (!hostRect) return;
+        hoverTooltip.textContent = text;
+        hoverTooltip.style.left = `${event.clientX - hostRect.left + 12}px`;
+        hoverTooltip.style.top = `${event.clientY - hostRect.top + 16}px`;
+        hoverTooltip.style.display = "block";
+      };
+      const hideTooltip = () => {
+        hoverTooltip.style.display = "none";
+      };
+
+      // OSC 8's `text` is the link's real target URI, not the visible cell
+      // content (confirmed against xterm's OscLinkProvider source — it
+      // looks the URI up by the cell's urlId rather than reading the
+      // rendered characters), so a file:// target routes through
+      // onOpenFile the same as a detected file-path link, and the hover
+      // tooltip shows the true destination even when the visible text
+      // doesn't match it (the guide's own rationale for showing it).
+      const activateOsc8 = (event: MouseEvent, text: string) => {
+        if (!isOpenGesture(event)) return;
+        try {
+          const url = new URL(text);
+          if (url.protocol === "file:") {
+            onOpenFileRef.current?.(decodeURIComponent(url.pathname));
+            return;
+          }
+        } catch {
+          // Not a parseable URL — fall through and let openUrl/window.open
+          // decide (e.g. mailto:, custom schemes some tools emit).
+        }
+        openUrl(text);
+      };
+      term.options.linkHandler = {
+        activate: activateOsc8,
+        hover: (event, text) => {
+          showTooltip(event, text);
+          linkActivateRef.current = (e) => activateOsc8(e, text);
+        },
+        leave: () => {
+          hideTooltip();
+          linkActivateRef.current = null;
+        },
+      };
+
+      const linkProviderDisposable = term.registerLinkProvider(
+        buildLinkProvider(term, {
+          resolvePaths: (paths) => api.resolvePaths(attachNameRef.current, paths).then((r) => r.results),
+          onOpenUrl: openUrl,
+          onOpenFile: (path, line) => onOpenFileRef.current?.(path, line),
+          onOpenFileSecondary: (path, line) => onOpenFileSecondaryRef.current?.(path, line),
+          onHoverChange: (link) => {
+            linkActivateRef.current = link ? (e) => link.activate(e, link.text) : null;
+          },
+        }),
+      );
 
       // WebGL2 rendering is noticeably smoother on panes with heavy output;
       // falls back to xterm's default (DOM) renderer if unsupported — no
@@ -562,6 +651,35 @@ export default function TerminalView({
         if (syntheticEvents.has(e)) return;
         if (term.modes.mouseTrackingMode === "none") return;
 
+        // Ctrl+click / Ctrl+Shift+click on a hovered link: swallow the
+        // whole press-to-release gesture so nothing reaches tmux (a
+        // replayed ctrl+click would e.g. re-trigger nvim's own
+        // <C-LeftMouse> tag-jump binding), and activate the link directly
+        // on release. Checked before the shift-swap branch below so
+        // Ctrl+Shift+click lands here rather than being shift-un-modified
+        // and falling through to a plain-tmux-click replay.
+        if (linkPressArmedRef.current) {
+          if (e.type === "mouseup" || e.type === "mousemove") {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+          if (e.type === "mouseup") {
+            linkPressArmedRef.current = false;
+            // Re-check at release time: if the pointer dragged off the
+            // link or the modifier was released first, drop the gesture
+            // instead of activating (matches a normal link click's
+            // cancel-by-drag-away behavior).
+            if (isOpenGesture(e) && linkActivateRef.current) linkActivateRef.current(e);
+          }
+          return;
+        }
+        if (isOpenGesture(e) && e.type === "mousedown" && linkActivateRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          linkPressArmedRef.current = true;
+          return;
+        }
+
         if (e.shiftKey) {
           Object.defineProperty(e, "shiftKey", { get: () => false });
           return;
@@ -652,6 +770,8 @@ export default function TerminalView({
         }
         observer.disconnect();
         dataSub.dispose();
+        linkProviderDisposable.dispose();
+        hoverTooltip.remove();
         ws.onclose = null;
         ws.close();
         term.dispose();

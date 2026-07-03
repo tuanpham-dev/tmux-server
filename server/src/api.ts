@@ -31,6 +31,7 @@ import {
   openFileInPaneWithKeys,
   openLazygitWindow,
   openFileInWindow,
+  paneCurrentPath,
   renameSession,
   renameWindow,
   selectWindow,
@@ -193,6 +194,12 @@ api.post("/sessions/:name/open-file", async (req, res) => {
   }
   const filePath = expandHome(raw);
   const keysPane = typeof req.body?.keysPane === "string" ? req.body.keysPane : null;
+  // Ctrl+click on a "file:line" terminal link (see resolve-paths below) —
+  // only a positive integer is honored, anything else opens without a jump.
+  const line =
+    typeof req.body?.line === "number" && Number.isInteger(req.body.line) && req.body.line > 0
+      ? req.body.line
+      : undefined;
   try {
     if (!(await isFile(filePath))) {
       res.status(400).json({ error: "path is not a file" });
@@ -202,12 +209,37 @@ api.post("/sessions/:name/open-file", async (req, res) => {
     // the client already surfaced that pane's window/tab, so it's now safe
     // to inject the keystrokes the initial scan held back.
     if (keysPane) {
-      await openFileInPaneWithKeys(keysPane, filePath);
+      await openFileInPaneWithKeys(keysPane, filePath, line);
       res.status(200).json({ windowIndex: null });
       return;
     }
-    const result = await openFileInWindow(req.params.name, filePath);
+    const result = await openFileInWindow(req.params.name, filePath, line);
     res.status(200).json(result);
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// Validates terminal-link file-path candidates for the ctrl+click link
+// provider (see client/src/terminalLinks.ts): relative candidates resolve
+// against the session's active pane cwd (mirroring createWindow's own
+// #{pane_current_path} lookup), then each is checked with isFile so only
+// real files become clickable — a path-shaped string in scrollback output
+// (e.g. a comment, a log line) never turns into a false-positive link.
+api.post("/sessions/:name/resolve-paths", async (req, res) => {
+  const candidates = Array.isArray(req.body?.paths)
+    ? req.body.paths.filter((p: unknown): p is string => typeof p === "string")
+    : [];
+  try {
+    const cwd = await paneCurrentPath(req.params.name);
+    const results = await Promise.all(
+      candidates.map(async (raw: string) => {
+        const expanded = expandHome(raw);
+        const abs = path.isAbsolute(expanded) ? expanded : path.join(cwd, expanded);
+        return (await isFile(abs)) ? abs : null;
+      }),
+    );
+    res.status(200).json({ results });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

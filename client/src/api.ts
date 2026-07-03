@@ -111,11 +111,24 @@ export function openFile(
   session: string,
   filePath: string,
   keysPane?: string,
+  line?: number,
 ): Promise<{ windowIndex: number | null; deferredPane?: string }> {
   return request(`/api/sessions/${encodeURIComponent(session)}/open-file`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: filePath, keysPane }),
+    body: JSON.stringify({ path: filePath, keysPane, line }),
+  });
+}
+
+// Validates terminal-link file-path candidates against the session's active
+// pane cwd — see the matching server route for the resolution rules. Result
+// array is index-aligned with `paths`; a null entry means "not a real file,
+// don't linkify it".
+export function resolvePaths(session: string, paths: string[]): Promise<{ results: (string | null)[] }> {
+  return request(`/api/sessions/${encodeURIComponent(session)}/resolve-paths`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths }),
   });
 }
 
