@@ -735,6 +735,22 @@ export default function App() {
     [sessions],
   );
 
+  // Suppressed on the active tab — you're already looking at it, a dot
+  // there would just be noise. A window tab reflects its one window; a
+  // whole-session tab reflects "any window in it has new output".
+  const tabActivity = useCallback(
+    (tab: Tab): boolean => {
+      if (tab.id === activeTabId) return false;
+      const session = sessions.find((s) => s.name === tab.sessionName);
+      if (!session) return false;
+      if (tab.windowIndex !== undefined) {
+        return session.windows.find((w) => w.index === tab.windowIndex)?.activity ?? false;
+      }
+      return session.windows.some((w) => w.activity);
+    },
+    [sessions, activeTabId],
+  );
+
   const handleUpload = useCallback(
     async (items: DroppedItems, destDir: string) => {
       if (items.files.length === 0 && items.dirs.length === 0) return;
@@ -877,6 +893,7 @@ export default function App() {
           tabs={tabs}
           activeTabId={activeTabId}
           label={tabLabel}
+          activity={tabActivity}
           onActivate={setActiveTabId}
           onClose={closeTab}
           onShowMenu={showMenu}

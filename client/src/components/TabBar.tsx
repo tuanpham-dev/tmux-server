@@ -6,6 +6,7 @@ interface Props {
   tabs: Tab[];
   activeTabId: string | null;
   label: (tab: Tab) => string;
+  activity: (tab: Tab) => boolean;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
@@ -27,6 +28,7 @@ export default function TabBar({
   tabs,
   activeTabId,
   label,
+  activity,
   onActivate,
   onClose,
   onShowMenu,
@@ -204,6 +206,7 @@ export default function TabBar({
               onShowMenu(e.clientX, e.clientY, tabMenuItems(tab));
             }}
           >
+            {activity(tab) && <span className="activity-dot" />}
             <span className="tab-title">{label(tab)}</span>
             <button
               className="tab-close"
