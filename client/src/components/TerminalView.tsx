@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
+import { copyText } from "../clipboard";
 import type { AppSettings } from "../settings";
 import { terminalTheme } from "../theme";
 
@@ -10,15 +11,18 @@ interface Props {
   active: boolean;
   settings: AppSettings;
   onExit: () => void;
+  onError: (err: unknown) => void;
 }
 
-export default function TerminalView({ attachName, active, settings, onExit }: Props) {
+export default function TerminalView({ attachName, active, settings, onExit, onError }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollTrackRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const refitRef = useRef<(() => void) | null>(null);
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   // The WS attaches to the name the tab was opened with; a later rename only
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
@@ -271,6 +275,31 @@ export default function TerminalView({ attachName, active, settings, onExit }: P
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "input", data }));
         }
+      });
+
+      // attachCustomKeyEventHandler fires for keydown/keypress/keyup alike;
+      // without the type guard each combo below would fire up to 3x.
+      // Returning false stops xterm's own handling (e.g. sending a plain CR
+      // for Shift+Enter), but xterm's underlying textarea still gets the
+      // browser's default action unless we preventDefault it ourselves — for
+      // Enter that default is inserting a literal newline into the textarea,
+      // which xterm then reads and forwards as a second, unwanted Enter.
+      term.attachCustomKeyEventHandler((e) => {
+        if (e.type !== "keydown") return true;
+        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === "KeyC") {
+          e.preventDefault();
+          const selection = term.getSelection();
+          if (selection) copyText(selection).catch((err) => onErrorRef.current(err));
+          return false;
+        }
+        if (e.shiftKey && e.key === "Enter" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+          e.preventDefault();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: "\\\n" }));
+          }
+          return false;
+        }
+        return true;
       });
 
       // xterm.js ignores Shift+wheel outright (and never emits horizontal

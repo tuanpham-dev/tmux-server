@@ -102,12 +102,12 @@ export default function App() {
   // Chrome/Firefox bind Ctrl+Shift+C to "inspect element", stealing it before
   // it can be used as an in-app shortcut. Calling preventDefault in a capture
   // listener suppresses that browser default (unlike F12, which can't be
-  // suppressed this way).
+  // suppressed this way). No stopPropagation: the event still needs to reach
+  // xterm's own key handler in TerminalView, which does the actual copy.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyC") return;
       e.preventDefault();
-      e.stopPropagation();
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -765,6 +765,7 @@ export default function App() {
               active={tab.id === activeTabId}
               settings={settings}
               onExit={() => closeTab(tab.id)}
+              onError={showError}
             />
           ))}
           {tabs.length === 0 && (
