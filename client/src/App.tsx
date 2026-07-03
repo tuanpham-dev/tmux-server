@@ -3,6 +3,7 @@ import * as api from "./api";
 import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
 import Dialog, { type DialogRequest } from "./components/Dialog";
+import ImageView from "./components/ImageView";
 import QuickSwitcher from "./components/QuickSwitcher";
 import SettingsDialog from "./components/SettingsDialog";
 import Sidebar from "./components/Sidebar";
@@ -14,6 +15,16 @@ import { collectDropped, uploadAll, type DroppedItems } from "./upload";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
+
+const IMAGE_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif",
+]);
+
+function isImagePath(filePath: string): boolean {
+  const dot = filePath.lastIndexOf(".");
+  if (dot === -1) return false;
+  return IMAGE_EXTENSIONS.has(filePath.slice(dot + 1).toLowerCase());
+}
 
 // Keeps tabs pointed at the right session/window across an out-of-band
 // rename or renumber (another terminal, not this app). Matches by stable
@@ -93,6 +104,11 @@ export default function App() {
   }, [activeTabId]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // TabBar's right-side actions container — an image tab portals its zoom
+  // toolbar into this while active (VS Code/code-server editor-actions
+  // placement). State (not a plain ref) because ImageView needs to re-render
+  // once it becomes non-null on first mount.
+  const [tabActionsEl, setTabActionsEl] = useState<HTMLDivElement | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem("sidebarWidth"));
     return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 260;
@@ -307,6 +323,21 @@ export default function App() {
         return prev;
       }
       const tab: Tab = { id: crypto.randomUUID(), sessionName: name, attachName: name };
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+  }, []);
+
+  // Activate-or-create, keyed on the file path rather than a session/window
+  // — image tabs have no tmux backing, just the file they're viewing.
+  const openImageTab = useCallback((filePath: string) => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.imagePath === filePath);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const tab: Tab = { id: crypto.randomUUID(), sessionName: "", attachName: "", imagePath: filePath };
       setActiveTabId(tab.id);
       return [...prev, tab];
     });
@@ -588,17 +619,25 @@ export default function App() {
   );
 
   const tabMenuItems = useCallback(
-    (tab: Tab): MenuItem[] => [
-      { label: "Close Tab", onClick: () => closeTab(tab.id) },
-      { label: "Close Other Tabs", onClick: () => closeOtherTabs(tab.id) },
-      { label: "New Window", onClick: () => createWindow(tab.sessionName) },
-      { label: "Rename Session…", onClick: () => renameSession(tab.sessionName) },
-      {
-        label: "Kill Session",
-        danger: true,
-        onClick: () => killSession(tab.sessionName),
-      },
-    ],
+    (tab: Tab): MenuItem[] => {
+      const closeItems: MenuItem[] = [
+        { label: "Close Tab", onClick: () => closeTab(tab.id) },
+        { label: "Close Other Tabs", onClick: () => closeOtherTabs(tab.id) },
+      ];
+      // Image tabs have no tmux session — New Window/Rename/Kill Session
+      // don't apply.
+      if (tab.imagePath !== undefined) return closeItems;
+      return [
+        ...closeItems,
+        { label: "New Window", onClick: () => createWindow(tab.sessionName) },
+        { label: "Rename Session…", onClick: () => renameSession(tab.sessionName) },
+        {
+          label: "Kill Session",
+          danger: true,
+          onClick: () => killSession(tab.sessionName),
+        },
+      ];
+    },
     [closeTab, closeOtherTabs, createWindow, renameSession, killSession],
   );
 
@@ -690,35 +729,6 @@ export default function App() {
     a.remove();
   }, []);
 
-  const fileMenuItems = useCallback(
-    (entryPath: string, isDir: boolean, rootDir: string): MenuItem[] => {
-      const items: MenuItem[] = [];
-      if (isDir) {
-        items.push(
-          { label: "New File…", onClick: () => createFileInDir(entryPath) },
-          { label: "New Folder…", onClick: () => createFolderInDir(entryPath) },
-        );
-      }
-      items.push(
-        { label: "Rename…", onClick: () => renameFileEntry(entryPath) },
-        { label: "Copy Path", onClick: () => copyFilePath(entryPath) },
-        { label: "Copy Relative Path", onClick: () => copyFileRelativePath(entryPath, rootDir) },
-        { label: "Download", onClick: () => downloadFileEntry(entryPath) },
-        { label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) },
-      );
-      return items;
-    },
-    [
-      createFileInDir,
-      createFolderInDir,
-      renameFileEntry,
-      copyFilePath,
-      copyFileRelativePath,
-      downloadFileEntry,
-      deleteFileEntry,
-    ],
-  );
-
   const fileTreeRootMenuItems = useCallback(
     (rootDir: string): MenuItem[] => [
       { label: "New File…", onClick: () => createFileInDir(rootDir) },
@@ -728,34 +738,54 @@ export default function App() {
   );
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  const activeSession = sessions.find((s) => s.name === activeTab?.sessionName) ?? null;
+  // Image tabs have no tmux session, so sidebar context (the FILES tree
+  // root, the lazygit branch pill, "new window in dir") keeps reflecting
+  // whichever real (terminal) tab was open most recently instead of
+  // collapsing to empty while an image tab is active. Mutated during render
+  // — same pattern as onBranchChangeRef in FileTree — so it's always current
+  // without an effect's one-render lag.
+  // Seeded from any real tab restored on this mount (useRef's initializer
+  // only runs once) so a reload that lands back on an image tab doesn't
+  // leave the sidebar empty until the user manually switches tabs.
+  const lastRealTabIdRef = useRef<string | null>(
+    tabs.find((t) => t.imagePath === undefined)?.id ?? null,
+  );
+  if (activeTab && activeTab.imagePath === undefined) {
+    lastRealTabIdRef.current = activeTab.id;
+  }
+  const activeRealTab =
+    activeTab && activeTab.imagePath === undefined
+      ? activeTab
+      : (tabs.find((t) => t.id === lastRealTabIdRef.current) ?? null);
+
+  const activeSession = sessions.find((s) => s.name === activeRealTab?.sessionName) ?? null;
   // A window-tab is pinned to a specific window, which may not be the
   // session's own tmux-level active window (their current-window pointers
   // diverge independently once a window-tab exists) — look it up by index
   // rather than falling back to whatever the session considers active.
   const activeWindow =
-    activeTab?.windowIndex !== undefined
-      ? activeSession?.windows.find((w) => w.index === activeTab.windowIndex)
+    activeRealTab?.windowIndex !== undefined
+      ? activeSession?.windows.find((w) => w.index === activeRealTab.windowIndex)
       : activeSession?.windows.find((w) => w.active);
   const filesRootDir = activeWindow?.cwd ?? null;
 
   const newWindowInDir = (cwd: string) => {
-    if (!activeTab) return;
-    createWindow(activeTab.sessionName, cwd);
+    if (!activeRealTab) return;
+    createWindow(activeRealTab.sessionName, cwd);
   };
 
   // Branch pill in the FILES panel header: find-or-create the active
   // session's lazygit window (started in the file tree's root when created)
   // and bring it up as a window tab.
   const openLazygit = async () => {
-    if (!activeTab) return;
+    if (!activeRealTab) return;
     try {
-      const { index } = await api.openLazygit(activeTab.sessionName, filesRootDir ?? undefined);
+      const { index } = await api.openLazygit(activeRealTab.sessionName, filesRootDir ?? undefined);
       // Refresh before opening the tab: the vanished-window sweep below
       // closes any window-tab whose window isn't in `sessions` yet, and a
       // just-created lazygit window won't be until the next poll otherwise.
       await refresh();
-      await openWindowTab(activeTab.sessionName, index);
+      await openWindowTab(activeRealTab.sessionName, index);
     } catch (err) {
       showError(err);
     }
@@ -763,6 +793,9 @@ export default function App() {
 
   const tabLabel = useCallback(
     (tab: Tab): string => {
+      if (tab.imagePath !== undefined) {
+        return tab.imagePath.slice(tab.imagePath.lastIndexOf("/") + 1);
+      }
       if (tab.windowIndex === undefined) return tab.sessionName;
       const session = sessions.find((s) => s.name === tab.sessionName);
       const win = session?.windows.find((w) => w.index === tab.windowIndex);
@@ -831,33 +864,88 @@ export default function App() {
 
   const openFileInSession = useCallback(
     async (filePath: string) => {
-      if (!activeTab) return;
+      if (!activeRealTab) return;
       try {
         // attachName so a window-tab opens the file against the exact
         // pinned window, not whichever window the real session's own
         // (independently-diverged) current-window pointer happens to be on.
-        const { windowIndex, deferredPane } = await api.openFile(activeTab.attachName, filePath);
+        const { windowIndex, deferredPane } = await api.openFile(activeRealTab.attachName, filePath);
         if (windowIndex !== null) {
           // Either a busy pane got a fresh nvim window, or an nvim already
           // running in another window was reused — either way, surface that
           // window's tab (activating it if already open) rather than
-          // leaving the user to hunt for it in the sidebar. activeTab.sessionName
+          // leaving the user to hunt for it in the sidebar. activeRealTab.sessionName
           // (the real session), not attachName, since that's what window-tabs
           // are keyed on.
           await refresh();
-          await openWindowTab(activeTab.sessionName, windowIndex);
+          await openWindowTab(activeRealTab.sessionName, windowIndex);
+        } else {
+          // null means the file opened directly in activeRealTab's own
+          // window (an editor/shell already there). That's normally also
+          // the tab on screen, but if an image tab is the one currently
+          // active (see activeRealTab above), switch to activeRealTab so the
+          // edit is actually visible instead of landing silently offscreen.
+          setActiveTabId(activeRealTab.id);
         }
         if (deferredPane) {
           // The found nvim's RPC socket wasn't reachable, so the server held
           // off injecting keystrokes until its window's tab was visible —
           // complete it now.
-          await api.openFile(activeTab.attachName, filePath, deferredPane);
+          await api.openFile(activeRealTab.attachName, filePath, deferredPane);
         }
       } catch (err) {
         showError(err);
       }
     },
-    [activeTab, showError, refresh, openWindowTab],
+    [activeRealTab, showError, refresh, openWindowTab],
+  );
+
+  // FILES-tree click dispatch: images open in the zoomable viewer tab,
+  // everything else keeps opening in nvim as before.
+  const openFileOrImage = useCallback(
+    (filePath: string) => {
+      if (isImagePath(filePath)) {
+        openImageTab(filePath);
+        return;
+      }
+      openFileInSession(filePath);
+    },
+    [openImageTab, openFileInSession],
+  );
+
+  const fileMenuItems = useCallback(
+    (entryPath: string, isDir: boolean, rootDir: string): MenuItem[] => {
+      const items: MenuItem[] = [];
+      if (isDir) {
+        items.push(
+          { label: "New File…", onClick: () => createFileInDir(entryPath) },
+          { label: "New Folder…", onClick: () => createFolderInDir(entryPath) },
+        );
+      }
+      items.push(
+        { label: "Rename…", onClick: () => renameFileEntry(entryPath) },
+        { label: "Copy Path", onClick: () => copyFilePath(entryPath) },
+        { label: "Copy Relative Path", onClick: () => copyFileRelativePath(entryPath, rootDir) },
+        { label: "Download", onClick: () => downloadFileEntry(entryPath) },
+      );
+      // Images open in the zoomable viewer by default (see openFileOrImage)
+      // — this is the escape hatch to edit e.g. an SVG's source in nvim.
+      if (!isDir && isImagePath(entryPath)) {
+        items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
+      }
+      items.push({ label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) });
+      return items;
+    },
+    [
+      createFileInDir,
+      createFolderInDir,
+      renameFileEntry,
+      copyFilePath,
+      copyFileRelativePath,
+      downloadFileEntry,
+      openFileInSession,
+      deleteFileEntry,
+    ],
   );
 
   // A tmux-native cross-session pick (choose-tree, Ctrl+B s) — the server
@@ -889,10 +977,10 @@ export default function App() {
           <Sidebar
             width={sidebarWidth}
             sessions={sessions}
-            activeSessionName={activeTab?.sessionName ?? null}
+            activeSessionName={activeRealTab?.sessionName ?? null}
             activeWindow={
-              activeTab?.windowIndex !== undefined
-                ? { sessionName: activeTab.sessionName, index: activeTab.windowIndex }
+              activeRealTab?.windowIndex !== undefined
+                ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
                 : null
             }
             onOpen={openSession}
@@ -911,7 +999,7 @@ export default function App() {
             onDropFiles={handleFileTreeDrop}
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
-            onOpenFile={openFileInSession}
+            onOpenFile={openFileOrImage}
             fileMenuItems={fileMenuItems}
             fileTreeRootMenuItems={fileTreeRootMenuItems}
             prunePath={prunePath}
@@ -936,23 +1024,33 @@ export default function App() {
           onShowMenu={showMenu}
           tabMenuItems={tabMenuItems}
           onReorder={moveTab}
+          actionsRef={setTabActionsEl}
         />
         <div className="terminals">
-          {tabs.map((tab) => (
-            <TerminalView
-              key={tab.id}
-              attachName={tab.attachName}
-              active={tab.id === activeTabId}
-              settings={settings}
-              onExit={() => closeTab(tab.id)}
-              onError={showError}
-              // A tmux-native window switch inside this window tab — the
-              // server already reverted the synthetic session to its pin;
-              // surface the window the user actually picked.
-              onWindowSwitch={(windowIndex) => openWindowTab(tab.sessionName, windowIndex)}
-              onSessionSwitch={openSwitchedSession}
-            />
-          ))}
+          {tabs.map((tab) =>
+            tab.imagePath !== undefined ? (
+              <ImageView
+                key={tab.id}
+                filePath={tab.imagePath}
+                active={tab.id === activeTabId}
+                toolbarTarget={tabActionsEl}
+              />
+            ) : (
+              <TerminalView
+                key={tab.id}
+                attachName={tab.attachName}
+                active={tab.id === activeTabId}
+                settings={settings}
+                onExit={() => closeTab(tab.id)}
+                onError={showError}
+                // A tmux-native window switch inside this window tab — the
+                // server already reverted the synthetic session to its pin;
+                // surface the window the user actually picked.
+                onWindowSwitch={(windowIndex) => openWindowTab(tab.sessionName, windowIndex)}
+                onSessionSwitch={openSwitchedSession}
+              />
+            ),
+          )}
           {tabs.length === 0 && (
             <div className="placeholder">
               Select a session from the sidebar to open a terminal

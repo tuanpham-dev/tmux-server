@@ -587,15 +587,33 @@ body.resizing-row {
 
 .tab-bar {
   display: flex;
+  align-items: stretch;
   background: var(--panel-bg);
   min-height: 35px;
+}
+
+.tab-strip {
+  display: flex;
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
 
-.tab-bar::-webkit-scrollbar {
+.tab-strip::-webkit-scrollbar {
   display: none;
+}
+
+/* Per-tab controls (e.g. the image viewer's zoom toolbar) portal in here —
+   VS Code/code-server editor-actions placement, right of the tab strip.
+   Empty and invisible for tab types (terminals) that don't use it. */
+.tab-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0 6px;
 }
 
 .tab {
@@ -676,6 +694,61 @@ body.resizing-row {
 
 .terminal-host.hidden {
   display: none;
+}
+
+/* ---- Image viewer ---- */
+
+.image-host {
+  position: absolute;
+  inset: 0;
+}
+
+.image-host.hidden {
+  display: none;
+}
+
+.image-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  cursor: grab;
+  /* Checkerboard so transparent regions read as transparent, not as the
+     panel's own background color. */
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(45deg, var(--hover) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--hover) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--hover) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--hover) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+
+.image-viewport.dragging {
+  cursor: grabbing;
+}
+
+.image-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--fg-inactive);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.image-error {
+  color: var(--error);
+}
+
+.image-toolbar-readout {
+  color: var(--fg-inactive);
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 0 6px;
+  flex-shrink: 0;
 }
 
 .terminal-host .xterm {

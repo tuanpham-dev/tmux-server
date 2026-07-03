@@ -12,6 +12,10 @@ interface Props {
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   tabMenuItems: (tab: Tab) => MenuItem[];
   onReorder: (draggedId: string, toIndex: number) => void;
+  // Reports the actions container's DOM element as it mounts/unmounts, so a
+  // tab (e.g. an image viewer) can portal per-tab controls into it — VS
+  // Code/code-server style editor-actions on the right of the tab strip.
+  actionsRef: (el: HTMLDivElement | null) => void;
 }
 
 // Long-press delay (touch/pen) before a hold starts a drag instead of letting
@@ -34,6 +38,7 @@ export default function TabBar({
   onShowMenu,
   tabMenuItems,
   onReorder,
+  actionsRef,
 }: Props) {
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
@@ -179,48 +184,51 @@ export default function TabBar({
   };
 
   return (
-    <div
-      className="tab-bar"
-      ref={barRef}
-      onTouchMove={handleBarTouchMove}
-    >
-      {tabs.map((tab) => {
-        const indicatorClass =
-          dropIndicator?.id === tab.id ? ` drop-indicator-${dropIndicator.edge}` : "";
-        const draggingClass = dragTabId === tab.id ? " dragging" : "";
-        return (
-          <div
-            key={tab.id}
-            ref={(el) => {
-              if (el) tabRefs.current.set(tab.id, el);
-              else tabRefs.current.delete(tab.id);
-            }}
-            className={`tab${tab.id === activeTabId ? " active" : ""}${indicatorClass}${draggingClass}`}
-            onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
-            onClick={() => handleTabClick(tab.id)}
-            onAuxClick={(e) => {
-              if (e.button === 1) onClose(tab.id);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              onShowMenu(e.clientX, e.clientY, tabMenuItems(tab));
-            }}
-          >
-            {activity(tab) && <span className="activity-dot" />}
-            <span className="tab-title">{label(tab)}</span>
-            <button
-              className="tab-close"
-              title="Close tab"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(tab.id);
+    <div className="tab-bar">
+      <div
+        className="tab-strip"
+        ref={barRef}
+        onTouchMove={handleBarTouchMove}
+      >
+        {tabs.map((tab) => {
+          const indicatorClass =
+            dropIndicator?.id === tab.id ? ` drop-indicator-${dropIndicator.edge}` : "";
+          const draggingClass = dragTabId === tab.id ? " dragging" : "";
+          return (
+            <div
+              key={tab.id}
+              ref={(el) => {
+                if (el) tabRefs.current.set(tab.id, el);
+                else tabRefs.current.delete(tab.id);
+              }}
+              className={`tab${tab.id === activeTabId ? " active" : ""}${indicatorClass}${draggingClass}`}
+              onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+              onClick={() => handleTabClick(tab.id)}
+              onAuxClick={(e) => {
+                if (e.button === 1) onClose(tab.id);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onShowMenu(e.clientX, e.clientY, tabMenuItems(tab));
               }}
             >
-              <Icon name="close" />
-            </button>
-          </div>
-        );
-      })}
+              {activity(tab) && <span className="activity-dot" />}
+              <span className="tab-title">{label(tab)}</span>
+              <button
+                className="tab-close"
+                title="Close tab"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(tab.id);
+                }}
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="tab-bar-actions" ref={actionsRef} />
     </div>
   );
 }

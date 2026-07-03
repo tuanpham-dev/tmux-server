@@ -36,6 +36,11 @@ export interface Tab {
   // next successful id match.
   sessionId?: string;
   windowId?: string;
+  // Marks an image-viewer tab instead of a tmux terminal tab. sessionName/
+  // attachName are "" for these — every tmux-facing code path (reconcile,
+  // the vanished-window sweep, dedupe, close) already gates on windowIndex
+  // or a real session-name match, so an image tab passes through untouched.
+  imagePath?: string;
 }
 
 export interface MenuItem {
