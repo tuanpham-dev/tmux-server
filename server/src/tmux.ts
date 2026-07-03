@@ -373,22 +373,58 @@ interface PaneInfo {
   command: string;
   pid: number;
   cwd: string;
+  windowIndex: number;
 }
 
-// The foreground process, pid, and cwd of a session's active pane. pane_pid
-// is the pane's original process (usually the login shell); pane_current_command
-// is whatever's currently in the foreground (the shell itself, or a program
-// it exec'd/forked, like nvim).
+// The foreground process, pid, cwd, and window index of a session's active
+// pane. pane_pid is the pane's original process (usually the login shell);
+// pane_current_command is whatever's currently in the foreground (the shell
+// itself, or a program it exec'd/forked, like nvim).
 async function getActivePane(session: string): Promise<PaneInfo> {
   const out = await tmux([
     "display-message",
     "-t",
     `=${session}:`,
     "-p",
-    "#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}",
+    "#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}\t#{window_index}",
   ]);
-  const [command, pid, cwd] = out.trim().split("\t");
-  return { command, pid: Number(pid), cwd };
+  const [command, pid, cwd, windowIndex] = out.trim().split("\t");
+  return { command, pid: Number(pid), cwd, windowIndex: Number(windowIndex) };
+}
+
+interface SessionPane {
+  windowIndex: number;
+  paneActive: boolean;
+  id: string;
+  command: string;
+  pid: number;
+}
+
+// Every pane across every window in the session — used to find a running
+// nvim outside the currently-viewed window (see openFileInWindow below).
+async function listSessionPanes(session: string): Promise<SessionPane[]> {
+  const out = await tmux([
+    "list-panes",
+    "-s",
+    "-t",
+    `=${session}:`,
+    "-F",
+    "#{window_index}\t#{pane_active}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}",
+  ]);
+  return out
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [windowIndex, paneActive, id, command, pid] = line.split("\t");
+      return {
+        windowIndex: Number(windowIndex),
+        paneActive: paneActive === "1",
+        id,
+        command,
+        pid: Number(pid),
+      };
+    });
 }
 
 interface ProcInfo {
@@ -539,42 +575,81 @@ function shellQuote(p: string): string {
 const EDITOR_COMMANDS = new Set(["nvim", "vim"]);
 const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
 
-// Opens filePath in the given session's active window, choosing behavior
-// from the active pane's current foreground process:
-//  - nvim/vim running: reuse it, opening the file in a new tab (RPC
-//    "--remote-tab" for nvim when its socket can be found, else Escape +
-//    ":tabe" keystrokes as a fallback for plain vim or an unreachable
-//    socket).
-//  - idle shell: clear any half-typed input (C-u) and type "nvim <path>".
-//  - anything else (a busy pane): never inject into it — open nvim in a new
-//    tmux window instead, without switching to it (see -d below). Returns
-//    that new window's index so the caller can open a dedicated tab for it;
-//    every other path returns null (the file opened in an existing window).
-export async function openFileInWindow(session: string, filePath: string): Promise<number | null> {
+// RPC-only nvim open: true if `pid`'s nvim has a reachable socket and the
+// file was opened as a new tab through it. Never falls back to keystrokes —
+// callers decide what an unreachable socket means for their pane.
+async function tryNvimRpcOpen(pid: number, filePath: string): Promise<boolean> {
+  const socket = await findNvimSocket(pid);
+  if (!socket) return false;
+  await nvimRemoteOpen(socket, filePath);
+  return true;
+}
+
+// Opens filePath as a new tab in whatever nvim/vim is running in `paneId`
+// (RPC for nvim when reachable, else Escape + ":tabe" keystrokes). Safe to
+// call on the pane the user is currently looking at — that's the only case
+// this is used for; a hidden pane in another window instead defers the
+// keystroke fallback (see openFileInWindow's step 2 and
+// openFileInPaneWithKeys below).
+async function openInEditorPane(paneId: string, pid: number, command: string, filePath: string): Promise<void> {
+  if (command === "nvim" && (await tryNvimRpcOpen(pid, filePath))) return;
+  await tmux(["send-keys", "-t", paneId, "Escape"]);
+  await tmux(["send-keys", "-t", paneId, "-l", `:tabe ${escapeForVimCmdline(filePath)}`]);
+  await tmux(["send-keys", "-t", paneId, "Enter"]);
+}
+
+export interface OpenFileResult {
+  windowIndex: number | null;
+  // Set only when a running nvim was found in another window but its RPC
+  // socket couldn't be reached: the pane's %id, for the client to complete
+  // via openFileInPaneWithKeys once that window's tab is open and visible —
+  // injecting keystrokes into a pane the user can't see would be invisible
+  // and confusing if something went wrong.
+  deferredPane?: string;
+}
+
+// Opens filePath, preferring (in order): the current window's active pane if
+// it's already running nvim/vim; any nvim found in another window of the
+// session; an idle shell in the current window; or, failing all of that, a
+// new tmux window. See each branch below for why.
+export async function openFileInWindow(session: string, filePath: string): Promise<OpenFileResult> {
   const pane = await getActivePane(session);
   // Login shells report their command with a leading "-" (e.g. "-zsh").
   const command = pane.command.replace(/^-/, "");
   const target = `=${session}:`;
 
   if (EDITOR_COMMANDS.has(command)) {
-    if (command === "nvim") {
-      const socket = await findNvimSocket(pane.pid);
-      if (socket) {
-        await nvimRemoteOpen(socket, filePath);
-        return null;
-      }
+    await openInEditorPane(target, pane.pid, command, filePath);
+    return { windowIndex: null };
+  }
+
+  // Look for nvim already running in some other window before falling back
+  // to typing into an idle shell or spawning a fresh window — reusing it
+  // means the file lands next to whatever the user's already editing.
+  // Only each window's own active pane is considered (mirroring the
+  // current-window check above); ties broken by lowest window index for a
+  // deterministic pick.
+  const otherNvimPane = (await listSessionPanes(session))
+    .filter(
+      (p) =>
+        p.paneActive &&
+        p.windowIndex !== pane.windowIndex &&
+        p.command.replace(/^-/, "") === "nvim",
+    )
+    .sort((a, b) => a.windowIndex - b.windowIndex)[0];
+
+  if (otherNvimPane) {
+    if (await tryNvimRpcOpen(otherNvimPane.pid, filePath)) {
+      return { windowIndex: otherNvimPane.windowIndex };
     }
-    await tmux(["send-keys", "-t", target, "Escape"]);
-    await tmux(["send-keys", "-t", target, "-l", `:tabe ${escapeForVimCmdline(filePath)}`]);
-    await tmux(["send-keys", "-t", target, "Enter"]);
-    return null;
+    return { windowIndex: otherNvimPane.windowIndex, deferredPane: otherNvimPane.id };
   }
 
   if (SHELL_COMMANDS.has(command)) {
     await tmux(["send-keys", "-t", target, "C-u"]);
     await tmux(["send-keys", "-t", target, "-l", `nvim ${shellQuote(filePath)}`]);
     await tmux(["send-keys", "-t", target, "Enter"]);
-    return null;
+    return { windowIndex: null };
   }
 
   // No -c given here would default the new window's cwd to the server
@@ -600,7 +675,21 @@ export async function openFileInWindow(session: string, filePath: string): Promi
     pane.cwd,
     `nvim ${shellQuote(filePath)}`,
   ]);
-  return Number(out.trim());
+  return { windowIndex: Number(out.trim()) };
+}
+
+// Completes a deferred open (see OpenFileResult.deferredPane) by injecting
+// Escape + ":tabe" keystrokes into paneId once its window's tab is open and
+// visible. Re-checks the pane is still running an editor first — it may have
+// changed (or exited) between the scan and this call — and no-ops otherwise
+// rather than typing into whatever's running now.
+export async function openFileInPaneWithKeys(paneId: string, filePath: string): Promise<void> {
+  const out = await tmux(["display-message", "-t", paneId, "-p", "#{pane_current_command}"]);
+  const command = out.trim().replace(/^-/, "");
+  if (!EDITOR_COMMANDS.has(command)) return;
+  await tmux(["send-keys", "-t", paneId, "Escape"]);
+  await tmux(["send-keys", "-t", paneId, "-l", `:tabe ${escapeForVimCmdline(filePath)}`]);
+  await tmux(["send-keys", "-t", paneId, "Enter"]);
 }
 
 export async function applyTmuxOptions(): Promise<void> {

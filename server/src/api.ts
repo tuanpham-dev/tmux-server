@@ -27,6 +27,7 @@ import {
   killWindow,
   killWindowTab,
   listSessions,
+  openFileInPaneWithKeys,
   openFileInWindow,
   renameSession,
   renameWindow,
@@ -178,13 +179,22 @@ api.post("/sessions/:name/open-file", async (req, res) => {
     return;
   }
   const filePath = expandHome(raw);
+  const keysPane = typeof req.body?.keysPane === "string" ? req.body.keysPane : null;
   try {
     if (!(await isFile(filePath))) {
       res.status(400).json({ error: "path is not a file" });
       return;
     }
-    const newWindowIndex = await openFileInWindow(req.params.name, filePath);
-    res.status(200).json({ newWindowIndex });
+    // keysPane completes a deferred open (see OpenFileResult.deferredPane):
+    // the client already surfaced that pane's window/tab, so it's now safe
+    // to inject the keystrokes the initial scan held back.
+    if (keysPane) {
+      await openFileInPaneWithKeys(keysPane, filePath);
+      res.status(200).json({ windowIndex: null });
+      return;
+    }
+    const result = await openFileInWindow(req.params.name, filePath);
+    res.status(200).json(result);
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

@@ -677,15 +677,22 @@ export default function App() {
         // attachName so a window-tab opens the file against the exact
         // pinned window, not whichever window the real session's own
         // (independently-diverged) current-window pointer happens to be on.
-        const { newWindowIndex } = await api.openFile(activeTab.attachName, filePath);
-        if (newWindowIndex !== null) {
-          // A busy pane got a fresh nvim window instead of being typed into
-          // — open it as its own tab automatically rather than leaving the
-          // user to hunt for it in the sidebar. activeTab.sessionName (the
-          // real session), not attachName, since that's what window-tabs
+        const { windowIndex, deferredPane } = await api.openFile(activeTab.attachName, filePath);
+        if (windowIndex !== null) {
+          // Either a busy pane got a fresh nvim window, or an nvim already
+          // running in another window was reused — either way, surface that
+          // window's tab (activating it if already open) rather than
+          // leaving the user to hunt for it in the sidebar. activeTab.sessionName
+          // (the real session), not attachName, since that's what window-tabs
           // are keyed on.
           await refresh();
-          openWindowTab(activeTab.sessionName, newWindowIndex);
+          await openWindowTab(activeTab.sessionName, windowIndex);
+        }
+        if (deferredPane) {
+          // The found nvim's RPC socket wasn't reachable, so the server held
+          // off injecting keystrokes until its window's tab was visible —
+          // complete it now.
+          await api.openFile(activeTab.attachName, filePath, deferredPane);
         }
       } catch (err) {
         showError(err);

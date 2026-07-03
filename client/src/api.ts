@@ -94,11 +94,12 @@ export function listDir(dirPath: string): Promise<FsListing> {
 export function openFile(
   session: string,
   filePath: string,
-): Promise<{ newWindowIndex: number | null }> {
+  keysPane?: string,
+): Promise<{ windowIndex: number | null; deferredPane?: string }> {
   return request(`/api/sessions/${encodeURIComponent(session)}/open-file`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: filePath }),
+    body: JSON.stringify({ path: filePath, keysPane }),
   });
 }
 
