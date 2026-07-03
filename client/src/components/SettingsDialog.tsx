@@ -106,20 +106,6 @@ export default function SettingsDialog({ settings, onChange, onClose }: Props) {
           </select>
         </label>
 
-        <label className="settings-row checkbox-row">
-          <input
-            type="checkbox"
-            checked={settings.ctrlBInTerminal}
-            onChange={(e) => set("ctrlBInTerminal", e.target.checked)}
-          />
-          <span>
-            Ctrl+B toggles sidebar even when the terminal is focused
-            <span className="settings-hint">
-              When on, Ctrl+B never reaches tmux — its prefix becomes untypeable here.
-            </span>
-          </span>
-        </label>
-
         <div className="dialog-buttons">
           <button
             className="dialog-button secondary"

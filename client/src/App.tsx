@@ -84,19 +84,27 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
 
-  // Capture phase so this wins over xterm's own key handling; Ctrl+B inside a
-  // terminal stays the tmux prefix unless the settings override is on.
+  // Capture phase so this wins over xterm's own key handling. Shift
+  // distinguishes it from tmux's Ctrl+B prefix, so it's safe to fire even
+  // when the terminal is focused.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyB") return;
-      const inTerminal = (e.target as HTMLElement)?.closest?.(".terminal-host");
-      if (inTerminal && !settingsRef.current.ctrlBInTerminal) return;
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyB") return;
       e.preventDefault();
       e.stopPropagation();
       setSidebarVisible((v) => !v);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
+  // Right-click anywhere without a dedicated context menu (empty terminal
+  // space, tab bar gaps, etc.) would otherwise show the browser's native
+  // menu, which has no useful actions in this app.
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => e.preventDefault();
+    window.addEventListener("contextmenu", onContextMenu);
+    return () => window.removeEventListener("contextmenu", onContextMenu);
   }, []);
 
   // Chrome/Firefox bind Ctrl+Shift+C to "inspect element", stealing it before
@@ -743,7 +751,7 @@ export default function App() {
       ) : (
         <div
           className="sidebar-reopen"
-          title="Show sidebar (Ctrl+B)"
+          title="Show sidebar (Ctrl+Shift+B)"
           onClick={() => setSidebarVisible(true)}
         />
       )}

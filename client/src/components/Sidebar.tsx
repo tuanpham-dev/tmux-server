@@ -522,7 +522,7 @@ export default function Sidebar({
         <button className="icon-button" title="Settings" onClick={onOpenSettings}>
           <Icon name="gear" />
         </button>
-        <button className="icon-button" title="Hide sidebar (Ctrl+B)" onClick={onCollapse}>
+        <button className="icon-button" title="Hide sidebar (Ctrl+Shift+B)" onClick={onCollapse}>
           <Icon name="layout-sidebar-left-off" />
         </button>
       </div>

@@ -295,7 +295,7 @@ export default function TerminalView({ attachName, active, settings, onExit, onE
         if (e.shiftKey && e.key === "Enter" && !e.ctrlKey && !e.altKey && !e.metaKey) {
           e.preventDefault();
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "input", data: "\\\n" }));
+            ws.send(JSON.stringify({ type: "input", data: "\n" }));
           }
           return false;
         }

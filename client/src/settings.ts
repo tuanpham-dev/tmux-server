@@ -4,7 +4,6 @@ export interface AppSettings {
   fontWeightBold: "normal" | "bold";
   cursorStyle: "block" | "bar" | "underline";
   cursorBlink: boolean;
-  ctrlBInTerminal: boolean;
   uploadConflict: "rename" | "overwrite" | "ask";
 }
 
@@ -21,7 +20,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontWeightBold: "normal",
   cursorStyle: "block",
   cursorBlink: true,
-  ctrlBInTerminal: false,
   uploadConflict: "rename",
 };
 
