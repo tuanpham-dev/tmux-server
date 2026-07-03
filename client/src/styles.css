@@ -165,8 +165,9 @@ body.resizing {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 7px 8px 7px 8px;
+  padding: 0 4px;
   cursor: pointer;
+  background: var(--bg);
   border-top: 2px solid transparent;
   border-bottom: 2px solid transparent;
 }
