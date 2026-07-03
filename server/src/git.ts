@@ -89,12 +89,23 @@ async function getTrackedDirs(root: string): Promise<Set<string>> {
 }
 
 // Runs once per "/api/fs" request for whatever directory is being listed.
-// Uses -z so paths with spaces/special chars come back unquoted and
-// NUL-delimited instead of needing C-style unescaping. -uall expands both
-// untracked and ignored directories into their individual files (so no
-// directory is ever collapsed into a single "!!"/"??" entry here), which is
-// what per-file badges need; statusForEntry's trackedDirs check is what
-// keeps a merely-mixed directory from reading as fully ignored.
+//
+// Two separate git calls instead of one to avoid blowing past execFile's
+// default 1 MB maxBuffer:
+//
+// 1. `git status --porcelain=v1 -z -uall` — modified/added/deleted/untracked.
+//    -uall recurses into *untracked* directories so each file gets its own
+//    badge; crucially it does NOT recurse into *ignored* directories, so
+//    node_modules / dist / etc. never appear here at all. Output stays tiny.
+//
+// 2. `git ls-files -i --others --directory --exclude-standard -z` — ignored
+//    directories only, one collapsed entry per directory (e.g. "node_modules/"),
+//    never listing the files inside them. Tiny regardless of repo size.
+//
+// Previously a single `git status -uall --ignored=traditional` was used, but
+// combining -uall with --ignored caused git to expand every file inside every
+// ignored directory (node_modules, dist, .backups …) into individual "!! …"
+// lines — easily producing 1 MB+ of output that made execFile throw silently.
 export async function getRepoStatuses(anyDirInRepo: string): Promise<RepoStatus | null> {
   let root: string;
   try {
@@ -104,24 +115,19 @@ export async function getRepoStatuses(anyDirInRepo: string): Promise<RepoStatus 
   }
   if (!root) return null;
 
-  let out: string;
+  // --- 1. modified / added / deleted / untracked (no ignored) ---
+  let statusOut: string;
   try {
-    out = await git(
-      ["status", "--porcelain=v1", "-z", "-uall", "--ignored=traditional"],
-      root,
-    );
+    statusOut = await git(["status", "--porcelain=v1", "-z", "-uall"], root);
   } catch {
     return null;
   }
 
   const statuses = new Map<string, GitFileStatus>();
-  const tokens = out.split("\0").filter((t) => t.length > 0);
+  const tokens = statusOut.split("\0").filter((t) => t.length > 0);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     const code = token.slice(0, 2);
-    // Collapsed untracked/ignored directories are reported with a trailing
-    // slash (e.g. "!! node_modules/"); strip it so directory entries key the
-    // same way as files.
     const filePath = token.slice(3).replace(/\/$/, "");
     statuses.set(filePath, classify(code));
     // Renames/copies emit the original path as a separate NUL-terminated
@@ -130,6 +136,25 @@ export async function getRepoStatuses(anyDirInRepo: string): Promise<RepoStatus 
       i++;
     }
   }
+
+  // --- 2. ignored directories (collapsed, not expanded) ---
+  // -i = --ignored, --others = show untracked/ignored, --directory = collapse
+  // directory contents to a single trailing-slash entry.
+  try {
+    const ignoredOut = await git(
+      ["ls-files", "-i", "--others", "--directory", "--exclude-standard", "-z"],
+      root,
+    );
+    for (const token of ignoredOut.split("\0")) {
+      if (!token) continue;
+      // Strip trailing slash so directory keys match the rest of the map.
+      statuses.set(token.replace(/\/$/, ""), "ignored");
+    }
+  } catch {
+    // Ignored-dir detection is best-effort; a failure here doesn't break
+    // the main status display.
+  }
+
   const [branch, trackedDirs] = await Promise.all([getBranch(root), getTrackedDirs(root)]);
   return { root, branch, statuses, trackedDirs };
 }
