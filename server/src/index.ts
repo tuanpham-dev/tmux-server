@@ -4,6 +4,7 @@ import path from "node:path";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
+import { isAllowedHost, isAllowedOrigin } from "./security.js";
 import { startViewSweeper } from "./viewSweeper.js";
 import { handleAttach } from "./wsAttach.js";
 import { handleTunnel } from "./wsTunnel.js";
@@ -12,6 +13,23 @@ const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT ?? 3001);
 
 const app = express();
+// Host guards against DNS rebinding; Origin guards against a browser tab on
+// some other site making a request here (WebSockets ignore same-origin
+// policy entirely, and a handful of no-body POST endpoints are reachable
+// cross-origin as "simple requests"). Requests with no Origin (curl, the
+// tunnel CLI) aren't from a browser context this protects against, so they
+// pass — see security.ts.
+app.use((req, res, next) => {
+  if (!isAllowedHost(req.headers.host)) {
+    res.status(403).json({ error: "forbidden host" });
+    return;
+  }
+  if (!isAllowedOrigin(req.headers.origin)) {
+    res.status(403).json({ error: "forbidden origin" });
+    return;
+  }
+  next();
+});
 app.use(express.json());
 app.use("/api", api);
 
@@ -32,6 +50,10 @@ const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 
 server.on("upgrade", (req, socket, head) => {
+  if (!isAllowedHost(req.headers.host) || !isAllowedOrigin(req.headers.origin)) {
+    socket.destroy();
+    return;
+  }
   const { pathname } = new URL(req.url ?? "", "http://localhost");
   if (pathname === "/ws/attach") {
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -44,6 +66,15 @@ server.on("upgrade", (req, socket, head) => {
   } else {
     socket.destroy();
   }
+});
+
+// Without this, a listen failure (e.g. EADDRINUSE from two rapid tsx-watch
+// restarts racing on shutdown) throws uncaught and kills the process with an
+// opaque stack trace — tsx watch only respawns on the next file save, so it
+// stays dead. Logging plainly at least makes the cause diagnosable.
+server.on("error", (err) => {
+  console.error(`server failed to start: ${err.message}`);
+  process.exit(1);
 });
 
 server.listen(PORT, HOST, () => {

@@ -64,6 +64,14 @@ location / {
 }
 ```
 
+The server only accepts requests whose `Host` (and, for browser requests, `Origin`) resolve to `localhost`, `127.0.0.1`, or `::1` by default — this blocks other websites' pages from reaching it via your browser (WebSockets ignore same-origin policy). Set `ALLOWED_HOSTS` to a comma-separated list of the hostname(s) you expose it as, e.g.:
+
+```bash
+ALLOWED_HOSTS=tmux.example.com npm start
+```
+
+The `Host $host` line in the nginx config above forwards the real hostname through, so this only needs to be set once per domain.
+
 ## Port forwarding
 
 If something on the server listens on a port (a dev server, a database) and you want `localhost:PORT` on your own machine to reach it — like `ssh -L`, but without SSH access — download and run the tunnel CLI:
