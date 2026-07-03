@@ -1,4 +1,6 @@
 export interface TmuxWindow {
+  // Stable tmux id ("@12") — survives renumbering.
+  id: string;
   index: number;
   name: string;
   active: boolean;
@@ -7,6 +9,8 @@ export interface TmuxWindow {
 }
 
 export interface TmuxSession {
+  // Stable tmux id ("$3") — survives rename.
+  id: string;
   name: string;
   created: number;
   attached: number;
@@ -24,6 +28,14 @@ export interface Tab {
   attachName: string;
   // Present only for a window-tab — the specific window it's pinned to.
   windowIndex?: number;
+  // Stable tmux ids for the tab's session/window, used to re-target
+  // sessionName/windowIndex after an out-of-band rename or renumber
+  // (see App.tsx's reconcileTabIds). Absent for tabs restored from
+  // localStorage before id-keying shipped, or a fresh open whose ids
+  // haven't been resolved from the next poll yet — both self-heal on the
+  // next successful id match.
+  sessionId?: string;
+  windowId?: string;
 }
 
 export interface MenuItem {

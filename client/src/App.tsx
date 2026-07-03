@@ -14,6 +14,50 @@ import { collectDropped, uploadAll, type DroppedItems } from "./upload";
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
 
+// Keeps tabs pointed at the right session/window across an out-of-band
+// rename or renumber (another terminal, not this app). Matches by stable
+// tmux id first — falls back to name/index only for a tab whose ids haven't
+// resolved yet (freshly opened, or restored from localStorage before
+// id-keying shipped), which then adopts the id it finds for next time. A
+// session/window that's gone entirely is left alone here; the attach's own
+// "exit" message (or the window-tab cleanup effect below) closes that tab.
+function reconcileTabs(tabs: Tab[], sessions: TmuxSession[]): Tab[] {
+  let changed = false;
+  const next = tabs.map((tab) => {
+    const session = tab.sessionId
+      ? sessions.find((s) => s.id === tab.sessionId)
+      : sessions.find((s) => s.name === tab.sessionName);
+    if (!session) return tab;
+
+    let updated = tab;
+    if (updated.sessionId !== session.id || updated.sessionName !== session.name) {
+      changed = true;
+      updated = {
+        ...updated,
+        sessionId: session.id,
+        sessionName: session.name,
+        // attachName tracks the base session's name only for a whole-session
+        // tab; a window-tab's attachName is its own synthetic session name
+        // and must never follow a rename of the base session.
+        attachName: updated.windowIndex === undefined ? session.name : updated.attachName,
+      };
+    }
+
+    if (updated.windowIndex !== undefined) {
+      const win = updated.windowId
+        ? session.windows.find((w) => w.id === updated.windowId)
+        : session.windows.find((w) => w.index === updated.windowIndex);
+      if (win && (updated.windowId !== win.id || updated.windowIndex !== win.index)) {
+        changed = true;
+        updated = { ...updated, windowId: win.id, windowIndex: win.index };
+      }
+    }
+
+    return updated;
+  });
+  return changed ? next : tabs;
+}
+
 function loadStoredTabs(): Tab[] {
   try {
     const parsed = JSON.parse(localStorage.getItem("tabs") ?? "[]");
@@ -343,6 +387,13 @@ export default function App() {
     [tabs],
   );
 
+  // Runs every poll: rewrites any tab whose session/window drifted from an
+  // out-of-band rename or renumber. See reconcileTabs above.
+  useEffect(() => {
+    if (!sessionsLoadedRef.current) return;
+    setTabs((prev) => reconcileTabs(prev, sessions));
+  }, [sessions]);
+
   // A window-tab's pinned window can disappear for reasons we can't
   // explicitly intercept client-side — nvim exiting closes the window it
   // was the sole command of, a shell's own "exit", someone killing it from
@@ -356,8 +407,14 @@ export default function App() {
     if (!sessionsLoadedRef.current) return;
     for (const tab of tabs) {
       if (tab.windowIndex === undefined) continue;
-      const session = sessions.find((s) => s.name === tab.sessionName);
-      const stillExists = session?.windows.some((w) => w.index === tab.windowIndex) ?? false;
+      // id first: an out-of-band rename/renumber must not read as the
+      // window having disappeared (see reconcileTabs above this effect).
+      const session = tab.sessionId
+        ? sessions.find((s) => s.id === tab.sessionId)
+        : sessions.find((s) => s.name === tab.sessionName);
+      const stillExists = tab.windowId
+        ? (session?.windows.some((w) => w.id === tab.windowId) ?? false)
+        : (session?.windows.some((w) => w.index === tab.windowIndex) ?? false);
       if (!stillExists) closeTab(tab.id);
     }
   }, [sessions, tabs, closeTab]);

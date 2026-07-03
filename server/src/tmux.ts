@@ -8,6 +8,9 @@ import { randomUUID } from "node:crypto";
 const WINDOW_TAB_PREFIX = "tmuxserver-view-";
 
 export interface TmuxWindow {
+  // Stable tmux id ("@12") — survives renumbering, unlike index. Lets the
+  // client re-target a tab whose window moved without losing track of it.
+  id: string;
   index: number;
   name: string;
   active: boolean;
@@ -16,6 +19,10 @@ export interface TmuxWindow {
 }
 
 export interface TmuxSession {
+  // Stable tmux id ("$3") — survives rename, unlike name. Lets the client
+  // re-target a tab whose session was renamed out-of-band instead of the
+  // tab silently going stale.
+  id: string;
   name: string;
   created: number;
   attached: number;
@@ -55,21 +62,22 @@ export async function listSessions(): Promise<TmuxSession[]> {
     tmux([
       "list-sessions",
       "-F",
-      "#{session_name}\t#{session_created}\t#{session_attached}",
+      "#{session_id}\t#{session_name}\t#{session_created}\t#{session_attached}",
     ]).catch(emptyIfNoServer),
     tmux([
       "list-windows",
       "-a",
       "-F",
-      "#{session_name}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}\t#{window_activity_flag}",
+      "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}\t#{window_activity_flag}",
     ]).catch(emptyIfNoServer),
   ]);
 
   const sessions = new Map<string, TmuxSession>();
   for (const line of sessionsOut.split("\n").filter(Boolean)) {
-    const [name, created, attached] = line.split("\t");
+    const [id, name, created, attached] = line.split("\t");
     if (name.startsWith(WINDOW_TAB_PREFIX)) continue;
     sessions.set(name, {
+      id,
       name,
       created: Number(created),
       attached: Number(attached),
@@ -77,8 +85,9 @@ export async function listSessions(): Promise<TmuxSession[]> {
     });
   }
   for (const line of windowsOut.split("\n").filter(Boolean)) {
-    const [sessionName, index, name, active, cwd, activity] = line.split("\t");
+    const [sessionName, id, index, name, active, cwd, activity] = line.split("\t");
     sessions.get(sessionName)?.windows.push({
+      id,
       index: Number(index),
       name,
       active: active === "1",
