@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { copyText } from "../clipboard";
 import type { AppSettings } from "../settings";
 import SearchBar from "./SearchBar";
+import TouchKeyBar from "./TouchKeyBar";
 import { terminalTheme } from "../theme";
 
 type SearchAction = "start" | "next" | "prev" | "cancel";
@@ -95,6 +96,28 @@ export default function TerminalView({
   // closure directly — same ref-forwarding pattern as onExitRef above.
   const handleSearchCloseRef = useRef(handleSearchClose);
   handleSearchCloseRef.current = handleSearchClose;
+
+  // Touch key bar: onscreen keys a mobile keyboard can't send (Esc, Tab,
+  // arrows, Ctrl+C) plus sticky Ctrl for the next character typed. The
+  // sendInput/stickyCtrl refs are read from inside term.onData in the mount
+  // effect below, which needs the always-current values without re-running.
+  const [coarsePointer, setCoarsePointer] = useState(
+    () => window.matchMedia("(pointer: coarse)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(pointer: coarse)");
+    const onChange = () => setCoarsePointer(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  const keyBarVisible =
+    active &&
+    (settings.touchKeyBar === "always" ||
+      (settings.touchKeyBar === "auto" && coarsePointer));
+  const [stickyCtrl, setStickyCtrl] = useState(false);
+  const stickyCtrlRef = useRef(false);
+  stickyCtrlRef.current = stickyCtrl;
+  const sendInputRef = useRef<(data: string) => void>(() => {});
 
   useEffect(() => {
     const container = containerRef.current!;
@@ -261,6 +284,12 @@ export default function TerminalView({
         }
       };
 
+      sendInputRef.current = (data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "input", data }));
+        }
+      };
+
       // Dragging/clicking the overlay bar jumps tmux's copy-mode scroll
       // position directly (goto-line), rather than emulating wheel ticks.
       const track = scrollTrackRef.current!;
@@ -359,8 +388,20 @@ export default function TerminalView({
       });
 
       const dataSub = term.onData((data) => {
+        let toSend = data;
+        // Sticky Ctrl from the touch key bar: converts the next single
+        // letter typed into its control code (Ctrl+A..Z is ASCII & 0x1f for
+        // both cases), then disarms regardless of what was typed — matches
+        // how sticky modifiers behave on mobile OS keyboards.
+        if (stickyCtrlRef.current) {
+          if (data.length === 1 && /[a-zA-Z]/.test(data)) {
+            toSend = String.fromCharCode(data.charCodeAt(0) & 0x1f);
+          }
+          stickyCtrlRef.current = false;
+          setStickyCtrl(false);
+        }
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "input", data }));
+          ws.send(JSON.stringify({ type: "input", data: toSend }));
         }
       });
 
@@ -508,6 +549,12 @@ export default function TerminalView({
         <div className="tmux-scrollbar-thumb" />
       </div>
       <div className="reconnect-overlay">Reconnecting…</div>
+      <TouchKeyBar
+        visible={keyBarVisible}
+        stickyCtrl={stickyCtrl}
+        onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
+        onSendInput={(data) => sendInputRef.current(data)}
+      />
     </div>
   );
 }

@@ -1211,3 +1211,39 @@ body.scrollbar-dragging {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.touch-key-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  background: var(--panel-bg);
+  border-top: 1px solid var(--border);
+}
+
+.touch-key {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg-bright);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.touch-key-ctrl.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}

@@ -106,6 +106,19 @@ export default function SettingsDialog({ settings, onChange, onClose }: Props) {
           </select>
         </label>
 
+        <label className="settings-row">
+          <span className="settings-label">On-screen key bar (touch)</span>
+          <select
+            className="dialog-input settings-select"
+            value={settings.touchKeyBar}
+            onChange={(e) => set("touchKeyBar", e.target.value as AppSettings["touchKeyBar"])}
+          >
+            <option value="auto">Auto (touch devices only)</option>
+            <option value="always">Always show</option>
+            <option value="never">Never show</option>
+          </select>
+        </label>
+
         <div className="dialog-buttons">
           <button
             className="dialog-button secondary"

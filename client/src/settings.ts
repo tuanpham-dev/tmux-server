@@ -5,6 +5,9 @@ export interface AppSettings {
   cursorStyle: "block" | "bar" | "underline";
   cursorBlink: boolean;
   uploadConflict: "rename" | "overwrite" | "ask";
+  // "auto" shows the on-screen key bar only on coarse-pointer devices
+  // (phones/tablets, and touch laptops).
+  touchKeyBar: "auto" | "always" | "never";
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
@@ -21,6 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cursorStyle: "block",
   cursorBlink: true,
   uploadConflict: "rename",
+  touchKeyBar: "auto",
 };
 
 const KEY = "settings";
