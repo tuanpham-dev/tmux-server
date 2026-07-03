@@ -5,11 +5,13 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 ## Features
 
 - **Sidebar** — sessions and windows as a tree, or grouped by working directory. Resizable, collapsible (`Ctrl+B`), shows attached/activity status.
-- **Tabbed terminals** — open any session as a tab, switch between them, close individually or all-but-one.
-- **Session & window management** — create, rename, kill sessions and windows via context menu.
+- **Tabbed terminals** — open a whole session or a single window as its own tab, switch between them, close individually or all-but-one.
+- **Session & window management** — create, rename, kill sessions and windows via context menu or hover buttons.
+- **FILES panel** — browse the active window's working directory, drag-and-drop upload (files or folders, with conflict handling and progress), git status badges, and a context menu for creating, renaming, deleting, downloading (folders as zip), and copying paths. Clicking a file opens it in the pane's running `nvim`, or a new window if it's busy.
 - **tmux-backed scrollbar** — draggable, since tmux (not the browser) owns scrollback.
 - **Theming** — matches VS Code's Plastic Legacy theme and IBM Plex Mono by default; configurable via the in-app Settings dialog (font, size, cursor style, etc.).
 - **Auto-reconnect** — a dropped connection (server restart, laptop sleep) reconnects automatically instead of losing the tab; open tabs also survive a browser reload.
+- **Installable PWA** — installable app shell with offline caching for the UI; terminal/session traffic (`/api`, `/ws`) is always network-only.
 
 ## Requirements
 
