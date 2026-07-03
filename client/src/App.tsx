@@ -321,20 +321,32 @@ export default function App() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const openSession = useCallback((name: string) => {
-    setTabs((prev) => {
-      // Only match a whole-session tab — a window-tab for this session
-      // shares the same sessionName but must never be treated as it.
-      const existing = prev.find((t) => t.sessionName === name && t.windowIndex === undefined);
-      if (existing) {
-        setActiveTabId(existing.id);
-        return prev;
-      }
-      const tab: Tab = { id: crypto.randomUUID(), sessionName: name, attachName: name };
-      setActiveTabId(tab.id);
-      return [...prev, tab];
-    });
-  }, []);
+  const openSession = useCallback(
+    (name: string) => {
+      setTabs((prev) => {
+        // Only match a whole-session tab — a window-tab for this session
+        // shares the same sessionName but must never be treated as it.
+        const existing = prev.find((t) => t.sessionName === name && t.windowIndex === undefined);
+        if (existing) {
+          setActiveTabId(existing.id);
+          return prev;
+        }
+        // A window-tab pinned to this session's currently active window
+        // shows this exact same content under a different label — focus it
+        // instead of opening a duplicate whole-session tab.
+        const activeIndex = sessions.find((s) => s.name === name)?.windows.find((w) => w.active)?.index;
+        const pinnedActive = prev.find((t) => t.sessionName === name && t.windowIndex === activeIndex);
+        if (activeIndex !== undefined && pinnedActive) {
+          setActiveTabId(pinnedActive.id);
+          return prev;
+        }
+        const tab: Tab = { id: crypto.randomUUID(), sessionName: name, attachName: name };
+        setActiveTabId(tab.id);
+        return [...prev, tab];
+      });
+    },
+    [sessions],
+  );
 
   // Activate-or-create, keyed on the file path rather than a session/window
   // — image tabs have no tmux backing, just the file they're viewing.
@@ -372,6 +384,20 @@ export default function App() {
         setActiveTabId(existing.id);
         return;
       }
+      // If this is the session's currently active window and a whole-session
+      // tab is already open, that tab already shows this exact content —
+      // focus it instead of spawning a duplicate grouped-session tab under a
+      // different label.
+      const isActiveWindow = sessions
+        .find((s) => s.name === session)
+        ?.windows.find((w) => w.index === index)?.active;
+      if (isActiveWindow) {
+        const wholeSessionTab = tabs.find((t) => t.sessionName === session && t.windowIndex === undefined);
+        if (wholeSessionTab) {
+          setActiveTabId(wholeSessionTab.id);
+          return;
+        }
+      }
       try {
         const { attachName } = await api.openWindowTab(session, index);
         const tab: Tab = { id: crypto.randomUUID(), sessionName: session, attachName, windowIndex: index };
@@ -381,7 +407,7 @@ export default function App() {
         showError(err);
       }
     },
-    [tabs, showError],
+    [tabs, sessions, showError],
   );
 
   // Tabs with unsaved edits (currently only CsvView reports into this —
