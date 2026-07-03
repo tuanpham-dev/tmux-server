@@ -2499,6 +2499,11 @@ body.scrollbar-dragging {
   color: var(--fg-bright);
 }
 
+.quick-switcher-loading {
+  cursor: default;
+  color: var(--fg-inactive);
+}
+
 .quick-switcher-tag {
   flex-shrink: 0;
   padding: 1px 6px;

@@ -1,4 +1,4 @@
-import type { FsListing, ListeningPort, TmuxSession, TunnelAuth } from "./types";
+import type { FsFilesListing, FsListing, ListeningPort, TmuxSession, TunnelAuth } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -101,6 +101,10 @@ export function renameSession(name: string, newName: string): Promise<void> {
 
 export function listDir(dirPath: string): Promise<FsListing> {
   return request(`/api/fs?path=${encodeURIComponent(dirPath)}`);
+}
+
+export function listFiles(dirPath: string): Promise<FsFilesListing> {
+  return request(`/api/fs/files?path=${encodeURIComponent(dirPath)}`);
 }
 
 export function openFile(

@@ -958,6 +958,22 @@ export default function App() {
     [openImageTab, openPreviewTab, openFileInSession],
   );
 
+  // Quick switcher's Shift+Enter action. Mirrors the "Preview" escape hatch
+  // for markdown/json/yaml/csv (see fileMenuItems); images/media/PDFs have no
+  // secondary action here — they always land on their viewer regardless of
+  // the modifier, unlike the FILES-tree context menu's image "Open in
+  // Editor" item.
+  const openFileOrViewerSecondary = useCallback(
+    (filePath: string) => {
+      if (isPreviewablePath(filePath)) {
+        openPreviewTab(filePath);
+        return;
+      }
+      openFileOrViewer(filePath);
+    },
+    [openPreviewTab, openFileOrViewer],
+  );
+
   const fileMenuItems = useCallback(
     (entryPath: string, isDir: boolean, rootDir: string): MenuItem[] => {
       const items: MenuItem[] = [];
@@ -1170,9 +1186,12 @@ export default function App() {
         <QuickSwitcher
           sessions={sessions}
           tabs={tabs}
+          filesRootDir={filesRootDir}
           onActivateTab={setActiveTabId}
           onOpenWindow={openWindowTab}
           onOpenSession={openSession}
+          onOpenFile={openFileOrViewer}
+          onOpenFileSecondary={openFileOrViewerSecondary}
           onClose={() => setShowSwitcher(false)}
         />
       )}

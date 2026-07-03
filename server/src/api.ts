@@ -16,8 +16,9 @@ import {
   renamePath,
   resolveDestination,
   uniquePath,
+  walkFiles,
 } from "./files.js";
-import { getRepoStatuses, statusForEntry } from "./git.js";
+import { getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
 import { listPorts } from "./ports.js";
 import {
   createSession,
@@ -256,6 +257,31 @@ api.get("/fs", async (req, res) => {
         })
       : entries;
     res.json({ path: dirPath, entries: withStatus, branch: repo?.branch ?? null });
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// Backs the quick switcher's file search: recursively lists files under
+// `path`, gitignore-aware via `git ls-files` in a repo, falling back to a
+// capped directory walk otherwise.
+const FS_FILES_CAP = 10000;
+
+api.get("/fs/files", async (req, res) => {
+  const raw = typeof req.query.path === "string" ? req.query.path : "";
+  if (!raw) {
+    res.status(400).json({ error: "path is required" });
+    return;
+  }
+  const dirPath = expandHome(raw);
+  try {
+    if (!(await isDirectory(dirPath))) {
+      res.status(400).json({ error: "path is not a directory" });
+      return;
+    }
+    const repoFiles = await listRepoFiles(dirPath, FS_FILES_CAP);
+    const { files, truncated } = repoFiles ?? (await walkFiles(dirPath, FS_FILES_CAP));
+    res.json({ path: dirPath, files, truncated });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

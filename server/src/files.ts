@@ -37,6 +37,45 @@ export async function listDir(dirPath: string): Promise<FsEntry[]> {
     });
 }
 
+// Recursive fallback for the quick switcher's file search when rootDir isn't
+// inside a git repo (so there's no .gitignore-aware `git ls-files` to lean
+// on). Walks depth-first, skipping ".git", and stops as soon as it hits cap
+// so a huge non-git directory can't stall the request.
+export async function walkFiles(
+  rootDir: string,
+  cap: number,
+): Promise<{ files: string[]; truncated: boolean }> {
+  const files: string[] = [];
+  let truncated = false;
+
+  async function walk(dirPath: string, relPrefix: string): Promise<void> {
+    if (truncated) return;
+    let entries;
+    try {
+      entries = await readdir(dirPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (truncated) return;
+      if (entry.name === ".git") continue;
+      const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(path.join(dirPath, entry.name), rel);
+      } else {
+        if (files.length >= cap) {
+          truncated = true;
+          return;
+        }
+        files.push(rel);
+      }
+    }
+  }
+
+  await walk(rootDir, "");
+  return { files, truncated };
+}
+
 // Joins baseDir + relativePath, rejecting any relative path that is absolute
 // or escapes baseDir via "..". Both uploads and mkdir route through this so
 // a crafted relative path can't write outside the chosen destination.

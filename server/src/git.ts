@@ -134,6 +134,42 @@ export async function getRepoStatuses(anyDirInRepo: string): Promise<RepoStatus 
   return { root, branch, statuses, trackedDirs };
 }
 
+// Lists every file under dirPath that isn't gitignored (tracked +
+// untracked), for the quick switcher's file search. Returns null when
+// dirPath isn't inside a git repo, so callers can fall back to a plain
+// directory walk. Run with cwd = dirPath (not the repo root) so git scopes
+// and returns paths relative to dirPath itself, matching what the fallback
+// walker would produce for the same directory.
+export async function listRepoFiles(
+  dirPath: string,
+  cap: number,
+): Promise<{ files: string[]; truncated: boolean } | null> {
+  try {
+    await git(["rev-parse", "--show-toplevel"], dirPath);
+  } catch {
+    return null;
+  }
+
+  let out: string;
+  try {
+    out = await git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], dirPath);
+  } catch {
+    return null;
+  }
+
+  const files: string[] = [];
+  let truncated = false;
+  for (const token of out.split("\0")) {
+    if (!token) continue;
+    if (files.length >= cap) {
+      truncated = true;
+      break;
+    }
+    files.push(token);
+  }
+  return { files, truncated };
+}
+
 // Worst-first tie-break when a directory contains changes of several kinds.
 const PRIORITY: GitFileStatus[] = [
   "conflicted",

@@ -80,6 +80,12 @@ export interface FsListing {
   branch: string | null;
 }
 
+export interface FsFilesListing {
+  path: string;
+  files: string[];
+  truncated: boolean;
+}
+
 export interface ListeningPort {
   port: number;
   address: string;
