@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Papa from "papaparse";
 import * as api from "../api";
@@ -875,14 +875,19 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
     return () => window.removeEventListener("mousedown", onDown);
   }, [showHiddenPanel]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = formulaRef.current;
     if (!el) return;
     el.style.height = "auto";
     const h = Math.min(el.scrollHeight, 160);
     el.style.height = `${h}px`;
     el.style.overflowY = el.scrollHeight > 160 ? "auto" : "hidden";
-  }, [displayValue]);
+    // Growing/shrinking the formula bar changes .csv-scroll's clientHeight
+    // after scrollToCell already ran against the old height, so the active
+    // row can end up clipped — re-run the scroll correction synchronously
+    // (before paint) against the now-settled layout.
+    if (selection) scrollToCell(selection.focus.row, selection.focus.col);
+  }, [displayValue, selection, scrollToCell]);
 
   // ── Keyboard ───────────────────────────────────────────────────────────
 
@@ -1265,7 +1270,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
                     const rowFullySel = isRowFullySelected(ri);
                     return (
                       <tr key={originalIdx} className="csv-row" style={{ height: ROW_HEIGHT }}>
-                        <td className={`csv-td csv-td-rownum${rowFullySel ? " csv-td-rownum-selected" : ""}`}>
+                        <td className={`csv-td csv-td-rownum${rowFullySel ? " csv-td-rownum-selected" : ""}`} style={{ height: ROW_HEIGHT }}>
                           <div className="csv-rownum-cell">
                             <button onClick={(e) => selectRow(ri, e.shiftKey)} title="Click to select row · Shift+click to extend" className={`csv-rownum-button${rowFullySel ? " csv-rownum-button-selected" : ""}`}>
                               {ri + 1}
@@ -1290,7 +1295,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
                             <td
                               key={ci}
                               className={`csv-td${isPinned ? " csv-td-pinned" : ""}`}
-                              style={isPinned ? { left: getPinnedLeft(ci) } : undefined}
+                              style={{ height: ROW_HEIGHT, ...(isPinned ? { left: getPinnedLeft(ci) } : {}) }}
                               onContextMenu={(e) => showCellMenu(e, ri, ci)}
                             >
                               <EditableCell

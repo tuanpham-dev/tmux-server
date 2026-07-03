@@ -201,6 +201,11 @@ export default function TabBar({
     onActivate(id);
   };
 
+  useEffect(() => {
+    if (!activeTabId) return;
+    tabRefs.current.get(activeTabId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId, tabs]);
+
   return (
     <div className="tab-bar">
       <div

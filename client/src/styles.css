@@ -2003,7 +2003,7 @@ body.scrollbar-dragging {
 
 .csv-cell-wrap {
   position: relative;
-  height: 32px;
+  height: 100%;
   width: 100%;
 }
 
