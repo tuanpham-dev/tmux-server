@@ -106,6 +106,18 @@ The nginx config above needs no changes — `/ws/tunnel` is covered by the same 
 
 Extensions live as folders under `~/.config/tmux-server/extensions/<folder>/` — either drop one in directly (the server picks it up on next scan/restart), or install a packed `.tsix` from the Settings dialog's **Extensions** section, which also lists what's installed and lets you enable/disable or uninstall each one. A worked example covering every surface below is in [`examples/hello-extension`](examples/hello-extension).
 
+Every built-in file preview (image, media, PDF, markdown, JSON/YAML, CSV) is itself a bundled extension under the repo's own [`extensions/`](extensions) directory, discovered alongside `~/.config/tmux-server/extensions/` — see [Bundled extensions](#bundled-extensions) below. A user-installed extension with the same id always takes precedence over a bundled one.
+
+### Bundled extensions
+
+`extensions/<name>/` (one per built-in preview: `image-preview`, `media-preview`, `pdf-preview`, `markdown-preview`, `json-preview`, `csv-preview`) ships a normal extension manifest plus a `src/client.tsx` built by `extensions/build.mjs` into `dist/client.js` (+ `dist/client.css` if it imports any CSS). `npm run build`/`npm run dev` build these automatically (`prebuild`/`predev` hooks); `npm run build:extensions` builds them standalone, and `node extensions/build.mjs --watch` rebuilds on save (what `npm run dev` runs in the background).
+
+Bundled extensions are enabled by default and show a **Built-in** badge in Settings. Uninstalling one doesn't delete repo files — it's tombstoned in `~/.config/tmux-server/extensions-state.json` (hidden from the list until you install a `.tsix` with the same id, which restores or overrides it, or you remove the tombstone entry from that file by hand).
+
+Small helpers shared across the bundled extensions (an `Icon` component, clipboard/file-fetch wrappers, a `MenuItem` type) live in `extensions/_shared/` as plain source — each extension's build inlines its own copy rather than sharing a runtime module, per `_shared`'s own comments. `extensions/_shared/shims/` holds the react/react-dom/react-jsx-runtime aliases described below.
+
+Writing your own bundled-style extension with JSX or npm dependencies (not required — a plain ESM `client.js` like hello-extension's works with zero build step) means following the same convention: bundle with a tool of your choice, but alias `react`/`react-dom`/`react/jsx-runtime` to thin re-exports of `window.__tmuxServerModules` (set by `client/src/main.tsx` before any extension activates) instead of bundling real copies — two React instances break hooks and portals shared with the host. See `extensions/build.mjs` and `extensions/_shared/shims/*.mjs` for the reference implementation.
+
 ### Manifest format
 
 Each extension has a `package.json` — a subset of the real VS Code extension manifest, plus one custom field:
@@ -142,13 +154,18 @@ Both icon styles VS Code themes use are supported: font-glyph (`fontCharacter`/`
 
 `tmuxServer.client` is a plain ESM module (no JSX, no bundler) exporting `activate(ctx)`:
 
-- `ctx.React` — the app's own React instance (use `React.createElement`, or a JSX build step of your own that targets it)
+- `ctx.React` — the app's own React instance (use `React.createElement`, or a JSX build step of your own that targets it — see [Bundled extensions](#bundled-extensions))
 - `ctx.registerCommand({ id, label, defaultBinding?, run })` — joins the built-in command list and the Keyboard settings section, auto-namespaced to `ext.<extensionId>.<id>`
-- `ctx.registerFileViewer({ id, extensions, component })` — a component rendered full-tab for files with one of the given extensions (no override authority over the built-in image/media/PDF viewers)
+- `ctx.registerFileViewer({ id, extensions, mode?, editorFallback?, component })` — a component rendered full-tab for files with one of the given extensions:
+  - `mode` (default `"default"`): `"default"` means a FILES-tree click opens this viewer directly; `"preview"` means a click still opens the file in nvim as usual, and this viewer is reached instead via the FILES-tree hover icon, the "Preview" context-menu item, or Shift+Enter in the quick switcher
+  - `editorFallback` (default `true`, `"default"`-mode only): whether the context menu offers an "Open in Editor" item to fall back to nvim — the bundled image-preview leaves this on (for editing e.g. an SVG's source), media-preview/pdf-preview turn it off (nvim on binary content isn't useful)
+  - among same-path matches, a third-party (user-installed) viewer takes precedence over a bundled one, so you can override a built-in preview by registering for the same extension
+  - the component receives `{ filePath, active }` plus optional host props: `toolbarTarget` (a `HTMLDivElement | null` to portal tab-bar controls into), `openInEditor(path)`, `showMenu(x, y, items)`, `setDirty(dirty)` (report unsaved edits so closing the tab confirms first), `fontSize` (px)
 - `ctx.registerSidebarPanel({ id, title, component })` — joins the sidebar accordion alongside SESSIONS/FILES/PORTS
 - `ctx.app.getActiveContext()` / `ctx.app.onDidChangeContext(cb)` — the active tab's session name / window index / cwd
 - `ctx.app.openFileTab(path)` — opens a path through the same dispatch a FILES-tree click uses
 - `ctx.serverFetch(path, init?)` — `fetch()` scoped to this extension's own server route
+- `ctx.assetUrl(relPath)` — resolves an extension-relative path (e.g. a bundled stylesheet) to a fetchable URL, the same route the client entry itself is loaded from
 
 `tmuxServer.server` is a plain ESM module exporting `activate({ router, log })` — `router` is an Express router mounted at `/api/ext/<extensionId>` for as long as the extension stays enabled; disabling/uninstalling unmounts the routes immediately, though the loaded module itself stays resident until the server restarts (Node can't unload an ES module) — the Settings dialog shows a restart hint for this case.
 
@@ -161,11 +178,12 @@ Installing an extension with a `tmuxServer.server` entry runs its code as the se
 ## Project layout
 
 ```
-server/   Express + ws + node-pty — REST API for tmux operations, WS bridge to a PTY running `tmux attach`
-client/   React + TypeScript + xterm.js — the browser UI
-cli/      tunnel.mjs — standalone port-forwarding client, served at GET /tunnel.mjs
-examples/ hello-extension — a reference extension covering every surface in Extensions
-plans/    Design docs written during development
+server/     Express + ws + node-pty — REST API for tmux operations, WS bridge to a PTY running `tmux attach`
+client/     React + TypeScript + xterm.js — the browser UI
+extensions/ Bundled extensions (image/media/pdf/markdown/json/csv preview) — see Bundled extensions
+cli/        tunnel.mjs — standalone port-forwarding client, served at GET /tunnel.mjs
+examples/   hello-extension — a reference extension covering every surface in Extensions
+plans/      Design docs written during development
 ```
 
 ## License

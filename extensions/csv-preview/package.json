@@ -1,0 +1,14 @@
+{
+  "name": "csv-preview",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "CSV Preview",
+  "description": "Built-in editable CSV/TSV grid preview (bundled — see extensions/build.mjs).",
+  "tmuxServer": {
+    "client": "./dist/client.js"
+  },
+  "dependencies": {
+    "papaparse": "^5.5.4"
+  }
+}

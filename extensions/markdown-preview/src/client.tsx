@@ -4,24 +4,26 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 import "highlight.js/styles/github-dark.css";
-import * as api from "../api";
-import Icon from "./Icon";
+import "./style.css";
+import { fetchFileText } from "../../_shared/fileApi";
+import { injectStylesheet } from "../../_shared/injectStylesheet";
+import Icon from "../../_shared/Icon";
 
 interface Props {
   filePath: string;
   active: boolean;
   // The tab bar's actions container (TabBar's .tab-bar-actions) — same
-  // portal mechanism as ImageView's zoom toolbar, only one viewer's
+  // portal mechanism as image-preview's zoom toolbar, only one viewer's
   // controls ever render into it since only one tab is active at a time.
-  toolbarTarget: HTMLDivElement | null;
+  toolbarTarget?: HTMLDivElement | null;
   // Escape hatch back to the default (nvim) view of this same file —
   // markdown's primary click already opens the editor, so unlike images
   // this is surfaced directly in the tab bar rather than only the context
   // menu, since the user had to opt out of the editor to get here.
-  onOpenInEditor: (path: string) => void;
+  openInEditor?: (path: string) => void;
 }
 
-export default function MarkdownView({ filePath, active, toolbarTarget, onOpenInEditor }: Props) {
+function MarkdownView({ filePath, active, toolbarTarget, openInEditor }: Props) {
   const basename = filePath.slice(filePath.lastIndexOf("/") + 1);
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,8 +32,7 @@ export default function MarkdownView({ filePath, active, toolbarTarget, onOpenIn
   // Refresh button below for picking up on-disk edits on demand.
   const load = useCallback(() => {
     setError(null);
-    api
-      .fetchFileText(filePath)
+    fetchFileText(filePath)
       .then(setContent)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [filePath]);
@@ -49,7 +50,7 @@ export default function MarkdownView({ filePath, active, toolbarTarget, onOpenIn
       {/* file-code, not edit/pencil — matches code-server's own markdown
           extension, which uses $(file-code) for showSource/reopenAsSource
           (its "back to editor from preview" action). */}
-      <button className="icon-button" title="Open in Editor" onClick={() => onOpenInEditor(filePath)}>
+      <button className="icon-button" title="Open in Editor" onClick={() => openInEditor?.(filePath)}>
         <Icon name="file-code" />
       </button>
     </>
@@ -71,4 +72,22 @@ export default function MarkdownView({ filePath, active, toolbarTarget, onOpenIn
       {active && toolbarTarget && createPortal(controls, toolbarTarget)}
     </div>
   );
+}
+
+export function activate(ctx: {
+  registerFileViewer: (v: {
+    id: string;
+    extensions: string[];
+    mode: "default" | "preview";
+    component: typeof MarkdownView;
+  }) => void;
+  assetUrl: (relPath: string) => string;
+}) {
+  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  ctx.registerFileViewer({
+    id: "markdownViewer",
+    extensions: ["md", "markdown"],
+    mode: "preview",
+    component: MarkdownView,
+  });
 }

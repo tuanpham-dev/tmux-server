@@ -7,7 +7,7 @@
 // extension code, since they're just JSON.
 import * as ReactNS from "react";
 import { extensionApiBase, extensionFileUrl, fetchExtensions } from "./api";
-import type { ExtensionInfo } from "./types";
+import type { ExtensionInfo, MenuItem } from "./types";
 
 export interface ActiveContext {
   sessionName: string | null;
@@ -23,12 +23,47 @@ export interface RegisteredCommand {
   run: () => void;
 }
 
+// Every prop beyond filePath/active is optional so a viewer that only cares
+// about the file (e.g. hello-extension's DemoViewer) needs no changes —
+// these are opt-in host affordances the built-in-turned-extension viewers
+// (image/markdown/json/csv/media/pdf) rely on.
+export interface FileViewerHostProps {
+  filePath: string;
+  active: boolean;
+  // The tab bar's actions container — same portal mechanism ImageView's
+  // zoom toolbar and MarkdownView/JsonView/CsvView's controls already use.
+  toolbarTarget?: HTMLDivElement | null;
+  // Escape hatch back to the default (nvim) view of this same file.
+  openInEditor?: (path: string) => void;
+  // Opens the app's shared context menu at the given screen position.
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  // Reports dirty/clean transitions so closing the tab can confirm before
+  // discarding unsaved edits (CsvView's editable grid).
+  setDirty?: (dirty: boolean) => void;
+  // Terminal/UI font size, in px — JsonView sizes its tree to match.
+  fontSize?: number;
+}
+
+export type FileViewerMode = "default" | "preview";
+
 export interface RegisteredFileViewer {
   id: string;
   extensionId: string;
   // Lowercase file extensions without the leading dot, e.g. ["demo"].
   extensions: string[];
-  component: ReactNS.ComponentType<{ filePath: string; active: boolean }>;
+  // "default" (image/media/pdf): a FILES-tree click opens this viewer
+  // directly. "preview" (markdown/json/yaml/csv): a click still opens nvim;
+  // this viewer is reached via the hover icon / "Preview" menu item /
+  // Shift+Enter instead. See findFileViewerFor.
+  mode: FileViewerMode;
+  // Whether the FILES-tree context menu offers "Open in Editor" (nvim) as an
+  // escape hatch from this "default"-mode viewer — true for image (editing
+  // e.g. an SVG's source) and any third-party binary viewer, false for
+  // media/pdf (nvim on audio/video/PDF bytes isn't useful). Ignored for
+  // "preview"-mode viewers, which already open in nvim by default. Defaults
+  // to true when omitted.
+  editorFallback: boolean;
+  component: ReactNS.ComponentType<FileViewerHostProps>;
 }
 
 export interface RegisteredSidebarPanel {
@@ -44,7 +79,12 @@ export interface ExtensionContext {
   registerFileViewer(viewer: {
     id: string;
     extensions: string[];
-    component: ReactNS.ComponentType<{ filePath: string; active: boolean }>;
+    // Defaults to "default" when omitted, matching v1 extensions (like
+    // hello-extension) that predate the preview/default distinction.
+    mode?: FileViewerMode;
+    // See RegisteredFileViewer.editorFallback. Defaults to true.
+    editorFallback?: boolean;
+    component: ReactNS.ComponentType<FileViewerHostProps>;
   }): void;
   registerSidebarPanel(panel: {
     id: string;
@@ -60,6 +100,10 @@ export interface ExtensionContext {
   // /api/ext/<extensionId> — 404s if the extension has no server entry or
   // is disabled.
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
+  // Resolves an extension-relative path (a bundled stylesheet, an image) to
+  // a fetchable URL — same route registerFileViewer's own client entry is
+  // dynamic-imported from.
+  assetUrl(relPath: string): string;
 }
 
 export const extensionCommands: RegisteredCommand[] = [];
@@ -80,14 +124,24 @@ export function subscribeExtensionRegistry(cb: Listener): () => void {
   return () => listeners.delete(cb);
 }
 
-// Matches by extension only (no override authority over built-in viewers —
-// App.tsx checks images/media/PDF first, and only falls through to this for
-// extensions no built-in viewer claims), first match wins.
-export function findFileViewerFor(filePath: string, viewers: RegisteredFileViewer[]): RegisteredFileViewer | null {
+// Matches by extension + mode ("default": FILES-tree click target;
+// "preview": hover icon / "Preview" menu / Shift+Enter target — see
+// FileViewerMode). Among ties, a non-builtin (user-installed) viewer wins
+// over a bundled one, so a third-party extension can override e.g. the
+// built-in CSV preview; otherwise first-registered wins.
+export function findFileViewerFor(
+  filePath: string,
+  viewers: RegisteredFileViewer[],
+  mode: FileViewerMode,
+): RegisteredFileViewer | null {
   const dot = filePath.lastIndexOf(".");
   const ext = dot === -1 ? "" : filePath.slice(dot + 1).toLowerCase();
   if (!ext) return null;
-  return viewers.find((v) => v.extensions.includes(ext)) ?? null;
+  const matches = viewers.filter((v) => v.mode === mode && v.extensions.includes(ext));
+  if (matches.length <= 1) return matches[0] ?? null;
+  const isBuiltin = (extensionId: string) =>
+    installedExtensions.find((e) => e.id === extensionId)?.builtin ?? false;
+  return matches.find((v) => !isBuiltin(v.extensionId)) ?? matches[0];
 }
 
 export function useExtensionRegistry(): {
@@ -149,6 +203,8 @@ function makeContext(ext: ExtensionInfo): ExtensionContext {
         id: `ext.${ext.id}.${viewer.id}`,
         extensionId: ext.id,
         extensions: viewer.extensions.map((e) => e.toLowerCase()),
+        mode: viewer.mode ?? "default",
+        editorFallback: viewer.editorFallback ?? true,
         component: viewer.component,
       });
       notify();
@@ -173,6 +229,9 @@ function makeContext(ext: ExtensionInfo): ExtensionContext {
     },
     serverFetch(path, init) {
       return fetch(`${extensionApiBase(ext.id)}${path}`, init);
+    },
+    assetUrl(relPath) {
+      return extensionFileUrl(ext.id, relPath);
     },
   };
 }

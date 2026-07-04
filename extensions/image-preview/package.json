@@ -1,0 +1,11 @@
+{
+  "name": "image-preview",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "Image Preview",
+  "description": "Built-in image viewer tab with zoom/pan (bundled — see extensions/build.mjs).",
+  "tmuxServer": {
+    "client": "./dist/client.js"
+  }
+}

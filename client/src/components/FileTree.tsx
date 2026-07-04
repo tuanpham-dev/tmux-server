@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
-import { isPreviewablePath } from "../fileKinds";
 import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import Icon from "./Icon";
 import { getFileIconResult, getFolderIconResult, useIconThemeVersion, type IconResult } from "../utils/iconThemes";
@@ -15,6 +14,10 @@ interface Props {
   refreshKey: number;
   onOpenFile: (path: string) => void;
   onPreviewFile: (path: string) => void;
+  // Registry-driven replacement for the old fileKinds.ts extension tables —
+  // true if some registered extension viewer claims this path in "preview"
+  // mode (see extensions.ts's findFileViewerFor), gating the hover icon.
+  isPreviewable: (path: string) => boolean;
   onBranchChange: (branch: string | null) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
@@ -85,6 +88,7 @@ export default function FileTree({
   refreshKey,
   onOpenFile,
   onPreviewFile,
+  isPreviewable,
   onBranchChange,
   onShowMenu,
   fileMenuItems,
@@ -366,7 +370,7 @@ export default function FileTree({
               would split the leftover space between them instead of
               pinning the button flush against the badge. */}
           <span className="file-tree-row-trailer">
-            {isPreviewablePath(entry.name) && (
+            {isPreviewable(entry.name) && (
               <button
                 className="file-tree-preview-button"
                 title="Preview"

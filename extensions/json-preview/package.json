@@ -1,0 +1,15 @@
+{
+  "name": "json-preview",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "JSON/YAML Preview",
+  "description": "Built-in JSON/YAML tree preview (bundled — see extensions/build.mjs).",
+  "tmuxServer": {
+    "client": "./dist/client.js"
+  },
+  "dependencies": {
+    "react-json-view-lite": "^2.5.0",
+    "yaml": "^2.9.0"
+  }
+}

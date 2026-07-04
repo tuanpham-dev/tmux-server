@@ -79,6 +79,7 @@ interface Props {
   onFilesRefresh: () => void;
   onOpenFile: (path: string) => void;
   onPreviewFile: (path: string) => void;
+  isPreviewable: (path: string) => boolean;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
   fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
   prunePath: { path: string } | null;
@@ -109,6 +110,7 @@ export default function Sidebar({
   onFilesRefresh,
   onOpenFile,
   onPreviewFile,
+  isPreviewable,
   fileMenuItems,
   fileTreeRootMenuItems,
   prunePath,
@@ -422,6 +424,7 @@ export default function Sidebar({
           refreshKey={filesRefreshKey}
           onOpenFile={onOpenFile}
           onPreviewFile={onPreviewFile}
+          isPreviewable={isPreviewable}
           onBranchChange={setFilesBranch}
           onShowMenu={onShowMenu}
           fileMenuItems={fileMenuItems}

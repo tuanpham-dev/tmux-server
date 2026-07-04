@@ -1,0 +1,17 @@
+{
+  "name": "markdown-preview",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "Markdown Preview",
+  "description": "Built-in rendered Markdown preview (bundled — see extensions/build.mjs).",
+  "tmuxServer": {
+    "client": "./dist/client.js"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
+  }
+}

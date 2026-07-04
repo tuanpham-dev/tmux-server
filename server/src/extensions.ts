@@ -20,6 +20,12 @@ const configDir = path.join(
 export const extensionsDir = path.join(configDir, "extensions");
 const stateFilePath = path.join(configDir, "extensions-state.json");
 
+// Bundled extensions shipped in the repo (image/markdown/json/csv/media/pdf
+// previews, etc.) — discovered alongside user-installed ones. A user-dir
+// extension with the same id takes precedence (lets a .tsix reinstall
+// override or restore an uninstalled builtin) — see discoverExtensions.
+const bundledExtensionsDir = path.resolve(import.meta.dirname, "../../extensions");
+
 // Extension ids (publisher.name, or the folder name as a fallback) are used
 // as URL path segments (/api/ext/:id, /api/extensions/:id/file/*) — reject
 // anything that isn't a plain token so an id can never smuggle a path
@@ -74,6 +80,10 @@ export interface ExtensionInfo {
   clientEntry: string | null;
   hasClient: boolean;
   hasServer: boolean;
+  // Shipped from the repo's extensions/ dir rather than user-installed —
+  // see bundledExtensionsDir. Uninstalling one tombstones it in the state
+  // file instead of deleting repo files (see uninstallExtension).
+  builtin: boolean;
 }
 
 function resolveId(manifest: ExtensionManifest, folder: string): string {
@@ -84,18 +94,24 @@ function resolveId(manifest: ExtensionManifest, folder: string): string {
   return folder;
 }
 
-async function readState(): Promise<Record<string, boolean>> {
+// A builtin's state entry is "uninstalled" (tombstoned — hidden from the
+// list, repo files untouched) rather than deleted like a user extension's
+// state key. true/false is the ordinary enabled/disabled toggle for either
+// kind.
+type ExtensionState = boolean | "uninstalled";
+
+async function readState(): Promise<Record<string, ExtensionState>> {
   try {
     const parsed: unknown = JSON.parse(await readFile(stateFilePath, "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Record<string, boolean>)
+      ? (parsed as Record<string, ExtensionState>)
       : {};
   } catch {
     return {};
   }
 }
 
-async function writeState(state: Record<string, boolean>): Promise<void> {
+async function writeState(state: Record<string, ExtensionState>): Promise<void> {
   await mkdir(configDir, { recursive: true });
   const tmp = `${stateFilePath}.${process.pid}.tmp`;
   await writeFile(tmp, JSON.stringify(state, null, 2));
@@ -112,9 +128,9 @@ async function readManifest(folderPath: string): Promise<ExtensionManifest | nul
   }
 }
 
-async function listFolders(): Promise<string[]> {
+async function listFoldersIn(dir: string): Promise<string[]> {
   try {
-    return (await readdir(extensionsDir, { withFileTypes: true }))
+    return (await readdir(dir, { withFileTypes: true }))
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
   } catch {
@@ -122,7 +138,33 @@ async function listFolders(): Promise<string[]> {
   }
 }
 
-function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean): ExtensionInfo {
+interface DiscoveredExtension {
+  folderPath: string;
+  manifest: ExtensionManifest;
+  builtin: boolean;
+}
+
+// Bundled extensions first, then user-installed ones layered on top by id —
+// a user-dir extension always wins over a builtin with the same id, which
+// is how installing a .tsix restores or overrides a tombstoned builtin.
+async function discoverExtensions(): Promise<Map<string, DiscoveredExtension>> {
+  const found = new Map<string, DiscoveredExtension>();
+  for (const folder of await listFoldersIn(bundledExtensionsDir)) {
+    const folderPath = path.join(bundledExtensionsDir, folder);
+    const manifest = await readManifest(folderPath);
+    if (!manifest) continue;
+    found.set(resolveId(manifest, folder), { folderPath, manifest, builtin: true });
+  }
+  for (const folder of await listFoldersIn(extensionsDir)) {
+    const folderPath = path.join(extensionsDir, folder);
+    const manifest = await readManifest(folderPath);
+    if (!manifest) continue;
+    found.set(resolveId(manifest, folder), { folderPath, manifest, builtin: false });
+  }
+  return found;
+}
+
+function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, builtin: boolean): ExtensionInfo {
   return {
     id,
     displayName: manifest.displayName || manifest.name || id,
@@ -138,37 +180,26 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean): Exte
     clientEntry: manifest.tmuxServer?.client ?? null,
     hasClient: Boolean(manifest.tmuxServer?.client),
     hasServer: Boolean(manifest.tmuxServer?.server),
+    builtin,
   };
 }
 
 export async function listExtensions(): Promise<ExtensionInfo[]> {
   const state = await readState();
   const results: ExtensionInfo[] = [];
-  for (const folder of await listFolders()) {
-    const manifest = await readManifest(path.join(extensionsDir, folder));
-    if (!manifest) continue;
-    const id = resolveId(manifest, folder);
+  for (const [id, { manifest, builtin }] of await discoverExtensions()) {
+    // A tombstoned builtin is hidden entirely rather than listed disabled —
+    // uninstalling it should look identical to it never having existed.
+    if (builtin && state[id] === "uninstalled") continue;
     // A freshly dropped-in or installed extension is active by default;
     // only an explicit `false` in the state file turns it off.
-    results.push(toInfo(manifest, id, state[id] !== false));
+    results.push(toInfo(manifest, id, state[id] !== false, builtin));
   }
   return results;
 }
 
-// O(n) over installed extensions, but that count is expected to stay in the
-// single digits for a local-first tool — not worth a persisted id->folder
-// index.
-async function findExtensionFolder(
-  id: string,
-): Promise<{ folderPath: string; manifest: ExtensionManifest } | null> {
-  for (const folder of await listFolders()) {
-    const folderPath = path.join(extensionsDir, folder);
-    const manifest = await readManifest(folderPath);
-    if (manifest && resolveId(manifest, folder) === id) {
-      return { folderPath, manifest };
-    }
-  }
-  return null;
+async function findExtensionFolder(id: string): Promise<DiscoveredExtension | null> {
+  return (await discoverExtensions()).get(id) ?? null;
 }
 
 // Resolves an extension-relative path (theme JSON, icon font, client/server
@@ -247,9 +278,16 @@ export async function uninstallExtension(id: string): Promise<void> {
   const found = await findExtensionFolder(id);
   if (!found) throw new Error("extension not found");
   unmountServerHook(id);
-  await rm(found.folderPath, { recursive: true, force: true });
   const state = await readState();
-  delete state[id];
+  if (found.builtin) {
+    // Tombstone rather than delete repo files — a future .tsix install with
+    // the same id overrides this entry (discoverExtensions layers user-dir
+    // extensions on top of builtins) and restores it.
+    state[id] = "uninstalled";
+  } else {
+    await rm(found.folderPath, { recursive: true, force: true });
+    delete state[id];
+  }
   await writeState(state);
 }
 
@@ -266,7 +304,7 @@ export async function setExtensionEnabled(id: string, enabled: boolean): Promise
     unmountServerHook(id);
   }
 
-  return toInfo(found.manifest, id, enabled);
+  return toInfo(found.manifest, id, enabled, found.builtin);
 }
 
 // ---- Server hooks ----

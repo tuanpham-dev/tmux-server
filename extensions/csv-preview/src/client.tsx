@@ -1,200 +1,45 @@
+// Ported from client/src/components/CsvView.tsx. Split into modules per the
+// plan's "refactor while moving" decision: Grid.tsx (pure geometry helpers +
+// EditableCell/EditableHeaderCell), undo.ts (history stack as a hook),
+// Toolbar.tsx (the two portaled/inline toolbar JSX blocks) — all extraction
+// only, no logic changes. Everything else (state, selection/editing/fill/
+// paste/keyboard/context-menu handlers, and the table body) stays here since
+// it's all tightly coupled through the same closures and splitting it
+// further would mean rewriting behavior, not just relocating it.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import Papa from "papaparse";
-import * as api from "../api";
-import { copyText } from "../clipboard";
-import type { MenuItem } from "../types";
-import Icon from "./Icon";
+import "./style.css";
+import { fetchFileText, saveFileText } from "../../_shared/fileApi";
+import { copyText } from "../../_shared/clipboard";
+import { injectStylesheet } from "../../_shared/injectStylesheet";
+import type { MenuItem } from "../../_shared/types";
+import Icon from "../../_shared/Icon";
+import { calcColWidths, EditableCell, EditableHeaderCell, escapeRegex, getBounds, inBounds } from "./Grid";
+import { useUndoHistory } from "./undo";
+import { CsvFindBar, CsvToolbar } from "./Toolbar";
+import type { Bounds, CellPos, CellRange, SortDir } from "./types";
 
 interface Props {
   filePath: string;
   active: boolean;
-  toolbarTarget: HTMLDivElement | null;
-  onOpenInEditor: (path: string) => void;
-  onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
-  // Reported on every dirty/clean transition so App's closeTab/closeOtherTabs
-  // can confirm before discarding unsaved edits.
-  onDirtyChange: (dirty: boolean) => void;
+  toolbarTarget?: HTMLDivElement | null;
+  openInEditor?: (path: string) => void;
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  // Reported on every dirty/clean transition so the host's closeTab/
+  // closeOtherTabs can confirm before discarding unsaved edits.
+  setDirty?: (dirty: boolean) => void;
 }
 
 const ROW_HEIGHT = 32;
 const VIRT_BUFFER = 25;
 const ROW_NUM_MIN_W = 44;
 const DEFAULT_COL_W = 120;
-const MAX_HISTORY = 100;
-
-type SortDir = "asc" | "desc" | null;
-type CellPos = { row: number; col: number };
-type CellRange = { anchor: CellPos; focus: CellPos };
-type Bounds = { minRow: number; maxRow: number; minCol: number; maxCol: number };
-type Snapshot = { rows: string[][]; headers: string[] };
-
-function getBounds(sel: CellRange, maxRow: number, maxCol: number): Bounds {
-  return {
-    minRow: Math.max(0, Math.min(sel.anchor.row, sel.focus.row)),
-    maxRow: Math.min(maxRow, Math.max(sel.anchor.row, sel.focus.row)),
-    minCol: Math.max(0, Math.min(sel.anchor.col, sel.focus.col)),
-    maxCol: Math.min(maxCol, Math.max(sel.anchor.col, sel.focus.col)),
-  };
-}
-function inBounds(row: number, col: number, b: Bounds) {
-  return row >= b.minRow && row <= b.maxRow && col >= b.minCol && col <= b.maxCol;
-}
-function escapeRegex(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Approximate column width from content (char-based estimation).
-function calcColWidths(hdrs: string[], dataRows: string[][]): Record<number, number> {
-  const CHAR_W = 7.5;
-  const PAD = 40;
-  const MIN_W = 60;
-  const MAX_W = 320;
-  const SAMPLE = Math.min(dataRows.length, 300);
-  const result: Record<number, number> = {};
-  hdrs.forEach((h, ci) => {
-    let maxChars = h.length + 3;
-    for (let ri = 0; ri < SAMPLE; ri++) {
-      const cell = dataRows[ri]?.[ci] ?? "";
-      const len = cell.includes("\n") ? cell.split("\n").reduce((m, l) => Math.max(m, l.length), 0) : cell.length;
-      if (len > maxChars) maxChars = len;
-    }
-    result[ci] = Math.max(MIN_W, Math.min(MAX_W, Math.round(maxChars * CHAR_W + PAD)));
-  });
-  return result;
-}
-
-// ── Editable cell ─────────────────────────────────────────────────────────
-
-function EditableCell({
-  value, rowIdx, colIdx, selStyle, findHighlight, isEditing, draft, showFillHandle,
-  onMouseDown, onDoubleClick, onMouseEnter, onDraftChange, onCommitAndMove, onCancel, onFillHandleMouseDown,
-}: {
-  value: string; rowIdx: number; colIdx: number;
-  selStyle: "anchor" | "range" | "fill" | null;
-  findHighlight: "current" | "match" | null;
-  isEditing: boolean; draft: string; showFillHandle: boolean;
-  onMouseDown: (r: number, c: number, e: React.MouseEvent) => void;
-  onDoubleClick: (r: number, c: number) => void;
-  onMouseEnter: (r: number, c: number) => void;
-  onDraftChange: (v: string) => void;
-  onCommitAndMove: (r: number, c: number, v: string, dir: "down" | "right" | "left" | "none") => void;
-  onCancel: () => void;
-  onFillHandleMouseDown: (e: React.MouseEvent) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (isEditing) {
-      inputRef.current?.focus();
-      const len = inputRef.current?.value.length ?? 0;
-      inputRef.current?.setSelectionRange(len, len);
-    }
-  }, [isEditing]);
-
-  const cellClass = [
-    "csv-cell",
-    selStyle ? `csv-cell-${selStyle}` : "",
-    findHighlight ? `csv-cell-find-${findHighlight}` : "",
-  ].join(" ").trim();
-
-  return (
-    <div className="csv-cell-wrap">
-      {isEditing ? (
-        <input
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => onDraftChange(e.target.value)}
-          onBlur={() => onCommitAndMove(rowIdx, colIdx, draft, "none")}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") { e.preventDefault(); onCommitAndMove(rowIdx, colIdx, draft, "down"); }
-            else if (e.key === "Tab") { e.preventDefault(); onCommitAndMove(rowIdx, colIdx, draft, e.shiftKey ? "left" : "right"); }
-            else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
-          }}
-          className="csv-cell-input"
-        />
-      ) : (
-        <div
-          onMouseDown={(e) => onMouseDown(rowIdx, colIdx, e)}
-          onDoubleClick={() => onDoubleClick(rowIdx, colIdx)}
-          onMouseEnter={() => onMouseEnter(rowIdx, colIdx)}
-          className={cellClass}
-        >
-          {value || <span className="csv-cell-empty">—</span>}
-        </div>
-      )}
-      {showFillHandle && !isEditing && (
-        <div onMouseDown={onFillHandleMouseDown} className="csv-fill-handle" title="Drag to fill down" />
-      )}
-    </div>
-  );
-}
-
-// ── Editable header cell ─────────────────────────────────────────────────
-
-function EditableHeaderCell({
-  value, colIdx, sortDir, isSelected, onSelectColumn, onSort, onRename, onDelete,
-}: {
-  value: string; colIdx: number; sortDir: SortDir; isSelected: boolean;
-  onSelectColumn: (c: number, shift: boolean, ctrl: boolean) => void;
-  onSort: (c: number) => void; onRename: (c: number, v: string) => void; onDelete: (c: number) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
-
-  return (
-    <div className={`csv-header-cell${isSelected ? " csv-header-cell-selected" : ""}`}>
-      {editing ? (
-        <input
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => { onRename(colIdx, draft); setEditing(false); }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === "Tab" || e.key === "Escape") {
-              e.preventDefault();
-              onRename(colIdx, draft);
-              setEditing(false);
-            }
-          }}
-          onClick={(e) => e.stopPropagation()}
-          className="csv-header-input"
-        />
-      ) : (
-        <button
-          onClick={(e) => onSelectColumn(colIdx, e.shiftKey, e.ctrlKey || e.metaKey)}
-          onDoubleClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true); }}
-          title="Click · Shift+Click range · Ctrl+Click multi-select · Double-click rename"
-          className="csv-header-label-button"
-        >
-          <span className="csv-header-label">{value || `col${colIdx + 1}`}</span>
-        </button>
-      )}
-      {!editing && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onSort(colIdx); }}
-          title={sortDir === "asc" ? "Sorted ascending — click for descending" : sortDir === "desc" ? "Sorted descending — click to clear" : "Sort"}
-          className="csv-header-sort"
-        >
-          {/* Base glyph reads as ascending; flipped to point the other way for
-              descending — dropped when this was ported from dev-dashboard's
-              rotate-180, leaving only a color change with no direction cue. */}
-          <Icon name="chevron-down" className={[sortDir ? "csv-sort-active" : "", sortDir === "desc" ? "icon-flip-y" : ""].filter(Boolean).join(" ")} />
-        </button>
-      )}
-      {!editing && (
-        <button onClick={() => onDelete(colIdx)} title="Delete column" className="csv-header-delete">
-          <Icon name="close" />
-        </button>
-      )}
-    </div>
-  );
-}
 
 const basenameOf = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
-export default function CsvView({ filePath, active, toolbarTarget, onOpenInEditor, onShowMenu, onDirtyChange }: Props) {
+function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setDirty }: Props) {
   const basename = basenameOf(filePath);
 
   const [content, setContent] = useState<string | null>(null);
@@ -208,11 +53,8 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
   const [rows, setRows] = useState<string[][]>([]);
   const [parseWarning, setParseWarning] = useState<string | null>(null);
 
-  const undoStack = useRef<Snapshot[]>([]);
-  const redoStack = useRef<Snapshot[]>([]);
-  const [canUndo, setCanUndo] = useState(false);
-  const [canRedo, setCanRedo] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const { pushHistory, clearHistory, undo, redo, canUndo, canRedo, dirty, setDirty: setDirtyState } =
+    useUndoHistory(rows, headers, setRows, setHeaders);
 
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>(null);
@@ -261,8 +103,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
   const formulaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    api
-      .fetchFileText(filePath)
+    fetchFileText(filePath)
       .then(setContent)
       .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -277,46 +118,9 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
     return () => ro.disconnect();
   }, []);
 
-  // ── History ────────────────────────────────────────────────────────────
-
-  function pushHistory() {
-    undoStack.current.push({ rows: rows.map((r) => [...r]), headers: [...headers] });
-    if (undoStack.current.length > MAX_HISTORY) undoStack.current.shift();
-    redoStack.current = [];
-    setCanUndo(true);
-    setCanRedo(false);
-    setDirty(true);
-  }
-  function clearHistory() {
-    undoStack.current = [];
-    redoStack.current = [];
-    setCanUndo(false);
-    setCanRedo(false);
-  }
-  function undo() {
-    const snap = undoStack.current.pop();
-    if (!snap) return;
-    redoStack.current.push({ rows: rows.map((r) => [...r]), headers: [...headers] });
-    setRows(snap.rows);
-    setHeaders(snap.headers);
-    setCanUndo(undoStack.current.length > 0);
-    setCanRedo(true);
-    setDirty(true);
-  }
-  function redo() {
-    const snap = redoStack.current.pop();
-    if (!snap) return;
-    undoStack.current.push({ rows: rows.map((r) => [...r]), headers: [...headers] });
-    setRows(snap.rows);
-    setHeaders(snap.headers);
-    setCanUndo(true);
-    setCanRedo(redoStack.current.length > 0);
-    setDirty(true);
-  }
-
   useEffect(() => {
-    onDirtyChange(dirty);
-  }, [dirty, onDirtyChange]);
+    setDirty?.(dirty);
+  }, [dirty, setDirty]);
 
   // ── Parse ──────────────────────────────────────────────────────────────
 
@@ -324,7 +128,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
     detectedDelimiterRef.current = detectedDelim || ",";
     setParseWarning(errMsg);
     clearHistory();
-    setDirty(false);
+    setDirtyState(false);
     if (!data.length) { setHeaders([]); setRows([]); setColWidths({}); return; }
     let newHeaders: string[];
     let newRows: string[][];
@@ -369,8 +173,8 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
       // never silently rewrites the file just because a sort is active.
       const activeDelimiter = delimiter === "auto" ? detectedDelimiterRef.current : delimiter;
       const csvText = Papa.unparse(hasHeader ? [headers, ...rows] : rows, { delimiter: activeDelimiter });
-      await api.saveFileText(filePath, csvText);
-      setDirty(false);
+      await saveFileText(filePath, csvText);
+      setDirtyState(false);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -541,7 +345,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
     scrollRef.current?.focus();
   }
 
-  function handleCellMouseDown(row: number, col: number, e: React.MouseEvent) {
+  function handleCellMouseDown(row: number, col: number, e: ReactMouseEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
     setCtrlSelectedCols(null);
@@ -644,7 +448,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
 
   // ── Fill handle ────────────────────────────────────────────────────────
 
-  function handleFillHandleMouseDown(e: React.MouseEvent) {
+  function handleFillHandleMouseDown(e: ReactMouseEvent) {
     e.preventDefault(); e.stopPropagation();
     if (!selBounds) return;
     isDraggingFillRef.current = true;
@@ -891,7 +695,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
 
   // ── Keyboard ───────────────────────────────────────────────────────────
 
-  function handleTableKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+  function handleTableKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
     const mod = e.ctrlKey || e.metaKey;
 
     if (mod && (e.key === "s" || e.key === "S")) { e.preventDefault(); handleSave(); return; }
@@ -968,7 +772,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
 
   // ── Context menu ───────────────────────────────────────────────────────
 
-  function showHeaderMenu(e: React.MouseEvent, ci: number) {
+  function showHeaderMenu(e: ReactMouseEvent, ci: number) {
     e.preventDefault();
     const useCtrl = !!(ctrlSelectedCols && ctrlSelectedCols.size > 0 && ctrlSelectedCols.has(ci));
     const isMulti = useCtrl
@@ -1015,10 +819,10 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
       items.push({ label: "Insert column right", onClick: () => insertColumnAt(ci + 1) });
     }
     items.push({ label: label("Delete column"), danger: true, onClick: () => (n > 1 ? batchDeleteColumns(colRange) : deleteColumn(ci)) });
-    onShowMenu(e.clientX, e.clientY, items);
+    showMenu?.(e.clientX, e.clientY, items);
   }
 
-  function showCellMenu(e: React.MouseEvent, ri: number, ci: number) {
+  function showCellMenu(e: ReactMouseEvent, ri: number, ci: number) {
     e.preventDefault();
     if (editingCell) return;
     if (!selBounds || !inBounds(ri, ci, selBounds)) selectCell(ri, ci);
@@ -1033,7 +837,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
     items.push({ label: "Insert row above", onClick: () => insertRowAt(ri) });
     items.push({ label: "Insert row below", onClick: () => insertRowAfterIdx(ri) });
     items.push({ label: `Delete row${rowCount > 1 ? `s (${rowCount})` : ""}`, danger: true, onClick: () => deleteSelectedRows() });
-    onShowMenu(e.clientX, e.clientY, items);
+    showMenu?.(e.clientX, e.clientY, items);
   }
 
   // ── Toolbar (portaled) ─────────────────────────────────────────────────
@@ -1044,7 +848,7 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
       <button className="icon-button" title={saveError ? `Save failed: ${saveError}` : "Save (Ctrl+S)"} disabled={saving} onClick={handleSave}>
         <Icon name="save" />
       </button>
-      <button className="icon-button" title="Open in Editor" onClick={() => onOpenInEditor(filePath)}>
+      <button className="icon-button" title="Open in Editor" onClick={() => openInEditor?.(filePath)}>
         <Icon name="file-code" />
       </button>
     </>
@@ -1058,130 +862,52 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
       {!loadError && content === null && <div className="csv-status">Loading…</div>}
       {!loadError && content !== null && (
         <div className="csv-body">
-          <div className="csv-toolbar">
-            <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)" className="icon-button">
-              <Icon name="redo" className="icon-flip-x" />
-            </button>
-            <button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)" className="icon-button">
-              <Icon name="redo" />
-            </button>
-            <span className="csv-toolbar-sep" />
-            <span className="csv-status-text" title={statusText}>{statusText}</span>
-
-            <span className="csv-toolbar-spacer" />
-
-            {hiddenCols.size > 0 && (
-              <div ref={hiddenPanelRef} className="csv-hidden-panel-wrap">
-                <button onClick={() => setShowHiddenPanel((v) => !v)} className="csv-hidden-badge" title="Hidden columns">
-                  <Icon name="eye-closed" /> {hiddenCols.size}
-                </button>
-                {showHiddenPanel && (
-                  <div className="csv-hidden-panel">
-                    <button className="csv-hidden-panel-item" onClick={() => { setHiddenCols(new Set()); setShowHiddenPanel(false); }}>
-                      <Icon name="eye" /> Show all columns
-                    </button>
-                    {[...hiddenCols].sort((a, b) => a - b).map((ci) => (
-                      <button
-                        key={ci}
-                        className="csv-hidden-panel-item"
-                        onClick={() => setHiddenCols((prev) => { const n = new Set(prev); n.delete(ci); return n; })}
-                      >
-                        <Icon name="eye" /> <span className="csv-hidden-panel-item-name">{headers[ci] ?? `col${ci + 1}`}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            <button onClick={openFind} title="Find (Ctrl+F)" className={`icon-button${showFind ? " csv-toolbar-btn-active" : ""}`}>
-              <Icon name="search" />
-            </button>
-            <span className="csv-toolbar-sep" />
-            <button onClick={addRow} disabled={!hasData} title="Add row" className="csv-text-button">
-              <Icon name="add" /> Row
-            </button>
-            <button onClick={addColumn} disabled={!hasData} title="Add column" className="csv-text-button">
-              <Icon name="add" /> Col
-            </button>
-            <span className="csv-toolbar-sep" />
-            <label className="csv-header-toggle">
-              <input type="checkbox" checked={hasHeader} onChange={(e) => setHasHeader(e.target.checked)} /> Header
-            </label>
-            <select value={delimiter} onChange={(e) => setDelimiter(e.target.value)} className="csv-delimiter-select">
-              <option value="auto">Auto</option>
-              <option value=",">, comma</option>
-              <option value=";">; semi</option>
-              <option value="&#9;">⇥ tab</option>
-              <option value="|">| pipe</option>
-            </select>
-            <span className="csv-toolbar-sep" />
-            <button onClick={handleCopyAll} disabled={!hasData} title="Copy whole CSV" className="csv-text-button">
-              <Icon name="copy" /> {copied ? "Copied!" : "Copy"}
-            </button>
-          </div>
+          <CsvToolbar
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndo={undo}
+            onRedo={redo}
+            statusText={statusText}
+            hiddenCols={hiddenCols}
+            headers={headers}
+            showHiddenPanel={showHiddenPanel}
+            setShowHiddenPanel={setShowHiddenPanel}
+            hiddenPanelRef={hiddenPanelRef}
+            setHiddenCols={setHiddenCols}
+            showFind={showFind}
+            onOpenFind={openFind}
+            hasData={hasData}
+            onAddRow={addRow}
+            onAddColumn={addColumn}
+            hasHeader={hasHeader}
+            setHasHeader={setHasHeader}
+            delimiter={delimiter}
+            setDelimiter={setDelimiter}
+            copied={copied}
+            onCopyAll={handleCopyAll}
+          />
 
           {showFind && (
-            <div className="csv-find-bar">
-              <div className="csv-find-row">
-                <Icon name="search" />
-                <input
-                  ref={findInputRef}
-                  value={findQuery}
-                  onChange={(e) => { setFindQuery(e.target.value); setFindIdx(0); }}
-                  onKeyDown={(e) => {
-                    e.stopPropagation();
-                    if (e.key === "Enter") jumpToMatch(safeIdx + (e.shiftKey ? -1 : 1));
-                    if (e.key === "Escape") closeFind();
-                    if (e.key === "Tab" && showReplace) { e.preventDefault(); replaceInputRef.current?.focus(); }
-                  }}
-                  placeholder="Find in cells…"
-                  className={`csv-find-input${regexError ? " csv-find-input-error" : ""}`}
-                />
-                {regexError ? (
-                  <span className="csv-find-error" title={regexError}>{regexError}</span>
-                ) : findQuery ? (
-                  <span className="csv-find-count">{findMatches.length === 0 ? "No results" : `${safeIdx + 1} / ${findMatches.length}`}</span>
-                ) : null}
-                <button onClick={() => { setUseRegexFind((v) => !v); setFindIdx(0); }} title="Use regular expression" className={`icon-button${useRegexFind ? " csv-toolbar-btn-active" : ""}`}>
-                  <Icon name="regex" />
-                </button>
-                <button onClick={() => setShowReplace((v) => !v)} title="Toggle replace (Ctrl+H)" className={`icon-button${showReplace ? " csv-toolbar-btn-active" : ""}`}>
-                  <Icon name="replace" />
-                </button>
-                <button onClick={() => jumpToMatch(safeIdx - 1)} disabled={!findMatches.length} title="Previous (Shift+Enter)" className="icon-button">
-                  <Icon name="chevron-down" className="icon-flip-y" />
-                </button>
-                <button onClick={() => jumpToMatch(safeIdx + 1)} disabled={!findMatches.length} title="Next (Enter)" className="icon-button">
-                  <Icon name="chevron-down" />
-                </button>
-                <button onClick={closeFind} title="Close (Esc)" className="icon-button">
-                  <Icon name="close" />
-                </button>
-              </div>
-              {showReplace && (
-                <div className="csv-find-row csv-replace-row">
-                  <input
-                    ref={replaceInputRef}
-                    value={replaceQuery}
-                    onChange={(e) => setReplaceQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      e.stopPropagation();
-                      if (e.key === "Escape") closeFind();
-                      if (e.key === "Enter") replaceCurrent();
-                      if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); findInputRef.current?.focus(); }
-                    }}
-                    placeholder="Replace with…"
-                    className="csv-find-input"
-                  />
-                  <button onClick={replaceCurrent} disabled={!findMatches.length || !!regexError} className="csv-text-button" title="Replace current match (Enter)">
-                    <Icon name="replace" /> Replace
-                  </button>
-                  <button onClick={replaceAll} disabled={!findMatches.length || !!regexError} className="csv-text-button" title="Replace all matches">
-                    <Icon name="replace-all" /> Replace All
-                  </button>
-                </div>
-              )}
-            </div>
+            <CsvFindBar
+              findInputRef={findInputRef}
+              findQuery={findQuery}
+              setFindQuery={setFindQuery}
+              setFindIdx={setFindIdx}
+              safeIdx={safeIdx}
+              findMatchesLength={findMatches.length}
+              onJumpToMatch={jumpToMatch}
+              onCloseFind={closeFind}
+              showReplace={showReplace}
+              setShowReplace={setShowReplace}
+              replaceInputRef={replaceInputRef}
+              regexError={regexError}
+              useRegexFind={useRegexFind}
+              setUseRegexFind={setUseRegexFind}
+              replaceQuery={replaceQuery}
+              setReplaceQuery={setReplaceQuery}
+              onReplaceCurrent={replaceCurrent}
+              onReplaceAll={replaceAll}
+            />
           )}
 
           {parseWarning && <div className="csv-warning">{parseWarning}</div>}
@@ -1343,4 +1069,22 @@ export default function CsvView({ filePath, active, toolbarTarget, onOpenInEdito
       {active && toolbarTarget && createPortal(controls, toolbarTarget)}
     </div>
   );
+}
+
+export function activate(ctx: {
+  registerFileViewer: (v: {
+    id: string;
+    extensions: string[];
+    mode: "default" | "preview";
+    component: typeof CsvView;
+  }) => void;
+  assetUrl: (relPath: string) => string;
+}) {
+  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  ctx.registerFileViewer({
+    id: "csvViewer",
+    extensions: ["csv", "tsv"],
+    mode: "preview",
+    component: CsvView,
+  });
 }

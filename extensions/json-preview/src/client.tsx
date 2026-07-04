@@ -1,25 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { allExpanded, collapseAllNested, JsonView as JsonTree } from "react-json-view-lite";
 import type { StyleProps } from "react-json-view-lite/dist/DataRenderer";
 import { parse as parseYaml } from "yaml";
 import "react-json-view-lite/dist/index.css";
-import * as api from "../api";
-import { copyText } from "../clipboard";
-import { isYamlPath } from "../fileKinds";
-import type { AppSettings } from "../settings";
-import Icon from "./Icon";
+import "./style.css";
+import { fetchFileText, saveFileText } from "../../_shared/fileApi";
+import { copyText } from "../../_shared/clipboard";
+import { injectStylesheet } from "../../_shared/injectStylesheet";
+import Icon from "../../_shared/Icon";
+
+const YAML_EXTENSIONS = new Set(["yml", "yaml"]);
 
 interface Props {
   filePath: string;
   active: boolean;
-  toolbarTarget: HTMLDivElement | null;
-  onOpenInEditor: (path: string) => void;
-  fontSize: AppSettings["fontSize"];
+  toolbarTarget?: HTMLDivElement | null;
+  openInEditor?: (path: string) => void;
+  fontSize?: number;
 }
 
-// Points every StyleProps hook at classes defined in styles.css (against
-// this app's own CSS variables) instead of the library's built-in
+// Points every StyleProps hook at classes defined in the host's styles.css
+// (against this app's own CSS variables) instead of the library's built-in
 // light/dark presets, which ship their own hardcoded palette.
 const jsonTheme: StyleProps = {
   container: "json-tree",
@@ -63,6 +66,11 @@ function valuePreview(v: unknown): string {
   return String(v);
 }
 
+function extOf(filePath: string): string {
+  const dot = filePath.lastIndexOf(".");
+  return dot === -1 ? "" : filePath.slice(dot + 1).toLowerCase();
+}
+
 // 16+ consecutive digits, not part of a quoted string (a numeric string
 // value round-trips fine) and not immediately touching another digit/dot —
 // i.e. a bare JSON integer literal wide enough to exceed Number's 2^53 safe
@@ -70,9 +78,9 @@ function valuePreview(v: unknown): string {
 // guard disables Format & Save instead of corrupting them.
 const WIDE_INTEGER_RE = /(?<!["\d.])\d{16,}(?!["\d])/;
 
-export default function JsonView({ filePath, active, toolbarTarget, onOpenInEditor, fontSize }: Props) {
+function JsonView({ filePath, active, toolbarTarget, openInEditor, fontSize = 14 }: Props) {
   const basename = filePath.slice(filePath.lastIndexOf("/") + 1);
-  const isYaml = isYamlPath(filePath);
+  const isYaml = YAML_EXTENSIONS.has(extOf(filePath));
   const [content, setContent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [expandAll, setExpandAll] = useState(true);
@@ -83,8 +91,7 @@ export default function JsonView({ filePath, active, toolbarTarget, onOpenInEdit
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
-    api
-      .fetchFileText(filePath)
+    fetchFileText(filePath)
       .then(setContent)
       .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -119,12 +126,12 @@ export default function JsonView({ filePath, active, toolbarTarget, onOpenInEdit
   };
 
   // react-json-view-lite has no onValueClick hook (no editing API at all —
-  // see the plan's decision to keep this read-only), so this is plain event
-  // delegation: every leaf value is a <span> tagged with one of our own
-  // theme classes, nothing else. The flash is a direct DOM class toggle
-  // rather than React state, since it's transient feedback on a node React
-  // itself doesn't own the identity of between re-renders.
-  const handleTreeClick = (e: React.MouseEvent) => {
+  // this stays read-only), so this is plain event delegation: every leaf
+  // value is a <span> tagged with one of our own theme classes, nothing
+  // else. The flash is a direct DOM class toggle rather than React state,
+  // since it's transient feedback on a node React itself doesn't own the
+  // identity of between re-renders.
+  const handleTreeClick = (e: ReactMouseEvent) => {
     const target = (e.target as HTMLElement).closest<HTMLElement>(
       ".json-tree-string, .json-tree-number, .json-tree-boolean, .json-tree-null, .json-tree-other",
     );
@@ -147,7 +154,7 @@ export default function JsonView({ filePath, active, toolbarTarget, onOpenInEdit
     setSaveError(null);
     try {
       const formatted = JSON.stringify(parsed.value, null, 2) + "\n";
-      await api.saveFileText(filePath, formatted);
+      await saveFileText(filePath, formatted);
       setContent(formatted);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
@@ -182,7 +189,7 @@ export default function JsonView({ filePath, active, toolbarTarget, onOpenInEdit
           <Icon name="save" />
         </button>
       )}
-      <button className="icon-button" title="Open in Editor" onClick={() => onOpenInEditor(filePath)}>
+      <button className="icon-button" title="Open in Editor" onClick={() => openInEditor?.(filePath)}>
         <Icon name="file-code" />
       </button>
     </>
@@ -231,11 +238,7 @@ export default function JsonView({ filePath, active, toolbarTarget, onOpenInEdit
               </div>
             )}
             {parsed.ok ? (
-              <div
-                className="json-tree-wrap"
-                style={{ fontSize }}
-                onClick={handleTreeClick}
-              >
+              <div className="json-tree-wrap" style={{ fontSize }} onClick={handleTreeClick}>
                 <JsonTree
                   data={parsed.value as object}
                   shouldExpandNode={expandAll ? allExpanded : collapseAllNested}
@@ -255,4 +258,22 @@ export default function JsonView({ filePath, active, toolbarTarget, onOpenInEdit
       {active && toolbarTarget && createPortal(controls, toolbarTarget)}
     </div>
   );
+}
+
+export function activate(ctx: {
+  registerFileViewer: (v: {
+    id: string;
+    extensions: string[];
+    mode: "default" | "preview";
+    component: typeof JsonView;
+  }) => void;
+  assetUrl: (relPath: string) => string;
+}) {
+  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  ctx.registerFileViewer({
+    id: "jsonViewer",
+    extensions: ["json", ...YAML_EXTENSIONS],
+    mode: "preview",
+    component: JsonView,
+  });
 }

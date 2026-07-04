@@ -505,6 +505,7 @@ export default function SettingsView({
                   <div className="extension-row-info">
                     <div className="extension-row-title">
                       {ext.displayName} <span className="extension-row-version">v{ext.version}</span>
+                      {ext.builtin && <span className="extension-row-builtin">Built-in</span>}
                     </div>
                     {ext.description && <div className="extension-row-description">{ext.description}</div>}
                     <div className="extension-row-contributes">
@@ -524,7 +525,11 @@ export default function SettingsView({
                   </div>
                   {pendingUninstallId === ext.id ? (
                     <div className="extension-row-confirm">
-                      <span>Uninstall?</span>
+                      <span>
+                        {ext.builtin
+                          ? "Uninstall this built-in? You can restore it later by installing its .tsix again."
+                          : "Uninstall?"}
+                      </span>
                       <button
                         className="dialog-button primary"
                         onClick={() => {

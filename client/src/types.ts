@@ -36,23 +36,25 @@ export interface Tab {
   // next successful id match.
   sessionId?: string;
   windowId?: string;
-  // Marks an image-viewer tab instead of a tmux terminal tab. sessionName/
-  // attachName are "" for these — every tmux-facing code path (reconcile,
-  // the vanished-window sweep, dedupe, close) already gates on windowIndex
-  // or a real session-name match, so an image tab passes through untouched.
+  // Legacy virtual-tab kinds from before built-in previews became extension-
+  // registered viewers (image/media/pdf/markdown/json/yaml/csv all moved to
+  // extViewerId/extViewerPath below). Only ever present on a tab restored
+  // from localStorage before that migration shipped — App.tsx's one-time
+  // migration effect converts these to extViewerId/extViewerPath as soon as
+  // the registry populates; never set on a newly created tab.
   imagePath?: string;
-  // Marks a markdown-preview tab — same "" sessionName/attachName convention
-  // and the same tmux-path safety as imagePath above. A tab has at most one
-  // of imagePath/previewPath set; see isRealTab/tabVirtualPath in App.tsx.
   previewPath?: string;
-  // Marks the (singleton) settings tab — the third virtual-tab kind, same
-  // "" sessionName/attachName convention as imagePath/previewPath.
+  // Marks the (singleton) settings tab — sessionName/attachName are "" for
+  // this and every virtual-tab kind below — every tmux-facing code path
+  // (reconcile, the vanished-window sweep, dedupe, close) already gates on
+  // windowIndex or a real session-name match, so a virtual tab passes
+  // through untouched.
   settingsView?: true;
-  // Marks an extension-registered file-viewer tab — the fourth virtual-tab
-  // kind, same "" sessionName/attachName convention. extViewerId identifies
-  // which registered viewer (extensions.ts) renders extViewerPath; a tab
-  // always has exactly one of imagePath/previewPath/settingsView/
-  // extViewerPath set.
+  // Marks an extension-registered file-viewer tab — the current virtual-tab
+  // kind for every built-in and third-party preview. extViewerId identifies
+  // which registered viewer (extensions.ts) renders extViewerPath; a
+  // newly-created tab always has exactly one of settingsView/extViewerPath
+  // set (imagePath/previewPath only appear pre-migration — see above).
   extViewerId?: string;
   extViewerPath?: string;
 }
@@ -131,4 +133,6 @@ export interface ExtensionInfo {
   clientEntry: string | null;
   hasClient: boolean;
   hasServer: boolean;
+  // Shipped from the repo's extensions/ dir rather than user-installed.
+  builtin: boolean;
 }

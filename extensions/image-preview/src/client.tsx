@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
-import * as api from "../api";
-import Icon from "./Icon";
+import "./style.css";
+import { downloadUrl } from "../../_shared/fileApi";
+import { injectStylesheet } from "../../_shared/injectStylesheet";
+import Icon from "../../_shared/Icon";
+
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"];
 
 interface Props {
   filePath: string;
@@ -9,7 +14,7 @@ interface Props {
   // The tab bar's actions container (TabBar's .tab-bar-actions), or null
   // before it's mounted. Controls are only portaled in while this tab is
   // active, so switching tabs swaps which viewer's toolbar is showing.
-  toolbarTarget: HTMLDivElement | null;
+  toolbarTarget?: HTMLDivElement | null;
 }
 
 const ZOOM_MIN = 0.05;
@@ -28,7 +33,7 @@ function clampScale(scale: number): number {
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, scale));
 }
 
-export default function ImageView({ filePath, active, toolbarTarget }: Props) {
+function ImageView({ filePath, active, toolbarTarget }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const basename = filePath.slice(filePath.lastIndexOf("/") + 1);
 
@@ -107,7 +112,7 @@ export default function ImageView({ filePath, active, toolbarTarget }: Props) {
 
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; startOffset: { x: number; y: number } } | null>(null);
 
-  const onPointerDown = (e: React.PointerEvent) => {
+  const onPointerDown = (e: ReactPointerEvent) => {
     if (e.button !== 0) return;
     dragRef.current = {
       pointerId: e.pointerId,
@@ -120,7 +125,7 @@ export default function ImageView({ filePath, active, toolbarTarget }: Props) {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
+  const onPointerMove = (e: ReactPointerEvent) => {
     const drag = dragRef.current;
     if (!drag || e.pointerId !== drag.pointerId) return;
     setOffset({
@@ -129,7 +134,7 @@ export default function ImageView({ filePath, active, toolbarTarget }: Props) {
     });
   };
 
-  const onPointerUp = (e: React.PointerEvent) => {
+  const onPointerUp = (e: ReactPointerEvent) => {
     if (dragRef.current?.pointerId !== e.pointerId) return;
     dragRef.current = null;
     setDragging(false);
@@ -190,7 +195,7 @@ export default function ImageView({ filePath, active, toolbarTarget }: Props) {
       >
         {!error && (
           <img
-            src={api.downloadUrl(filePath)}
+            src={downloadUrl(filePath)}
             alt={basename}
             draggable={false}
             onLoad={(e) => {
@@ -216,4 +221,22 @@ export default function ImageView({ filePath, active, toolbarTarget }: Props) {
       {active && toolbarTarget && createPortal(controls, toolbarTarget)}
     </div>
   );
+}
+
+export function activate(ctx: {
+  registerFileViewer: (v: {
+    id: string;
+    extensions: string[];
+    mode: "default" | "preview";
+    component: typeof ImageView;
+  }) => void;
+  assetUrl: (relPath: string) => string;
+}) {
+  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  ctx.registerFileViewer({
+    id: "imageViewer",
+    extensions: IMAGE_EXTENSIONS,
+    mode: "default",
+    component: ImageView,
+  });
 }

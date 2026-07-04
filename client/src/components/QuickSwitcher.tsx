@@ -85,7 +85,7 @@ export default function QuickSwitcher({
   const entries = useMemo<Entry[]>(() => {
     const list: Entry[] = [];
     for (const tab of tabs) {
-      const virtualPath = tab.imagePath ?? tab.previewPath;
+      const virtualPath = tab.imagePath ?? tab.previewPath ?? tab.extViewerPath;
       const label =
         virtualPath !== undefined
           ? virtualPath.slice(virtualPath.lastIndexOf("/") + 1)

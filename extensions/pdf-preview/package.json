@@ -1,0 +1,11 @@
+{
+  "name": "pdf-preview",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "PDF Preview",
+  "description": "Built-in PDF viewer tab (bundled — see extensions/build.mjs).",
+  "tmuxServer": {
+    "client": "./dist/client.js"
+  }
+}

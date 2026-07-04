@@ -2,19 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
-import CsvView from "./components/CsvView";
 import Dialog, { type DialogRequest } from "./components/Dialog";
-import ImageView from "./components/ImageView";
-import JsonView from "./components/JsonView";
-import MarkdownView from "./components/MarkdownView";
-import MediaView from "./components/MediaView";
-import PdfView from "./components/PdfView";
 import QuickSwitcher from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
-import { isCsvPath, isImagePath, isJsonPath, isMediaPath, isPdfPath, isPreviewablePath, isYamlPath } from "./fileKinds";
 import {
   findFileViewerFor,
   loadExtensions,
@@ -160,8 +153,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   // TabBar's right-side actions container — an image tab portals its zoom
   // toolbar into this while active (VS Code/code-server editor-actions
-  // placement). State (not a plain ref) because ImageView needs to re-render
-  // once it becomes non-null on first mount.
+  // placement). State (not a plain ref) because the portaling viewer needs
+  // to re-render once it becomes non-null on first mount.
   const [tabActionsEl, setTabActionsEl] = useState<HTMLDivElement | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem("sidebarWidth"));
@@ -476,39 +469,13 @@ export default function App() {
     [sessions],
   );
 
-  // Activate-or-create, keyed on the file path rather than a session/window
-  // — image tabs have no tmux backing, just the file they're viewing.
-  const openImageTab = useCallback((filePath: string) => {
-    setTabs((prev) => {
-      const existing = prev.find((t) => t.imagePath === filePath);
-      if (existing) {
-        setActiveTabId(existing.id);
-        return prev;
-      }
-      const tab: Tab = { id: crypto.randomUUID(), sessionName: "", attachName: "", imagePath: filePath };
-      setActiveTabId(tab.id);
-      return [...prev, tab];
-    });
-  }, []);
-
-  // Same activate-or-create shape as openImageTab, keyed on previewPath.
-  const openPreviewTab = useCallback((filePath: string) => {
-    setTabs((prev) => {
-      const existing = prev.find((t) => t.previewPath === filePath);
-      if (existing) {
-        setActiveTabId(existing.id);
-        return prev;
-      }
-      const tab: Tab = { id: crypto.randomUUID(), sessionName: "", attachName: "", previewPath: filePath };
-      setActiveTabId(tab.id);
-      return [...prev, tab];
-    });
-  }, []);
-
-  // Same activate-or-create shape as openImageTab/openPreviewTab, keyed on
-  // (viewerId, path) — viewerId is stored on the tab so the render dispatch
-  // knows which registered component to use without re-matching by
-  // extension (a second extension could register for the same one later).
+  // Activate-or-create, keyed on (viewerId, path) — viewerId is stored on
+  // the tab so the render dispatch knows which registered component to use
+  // without re-matching by extension (a second extension could register for
+  // the same one later). Every built-in preview (image/media/pdf/markdown/
+  // json/yaml/csv) is itself an extension-registered viewer now, so this is
+  // the only virtual-file-tab opener — see findFileViewerFor for how a path
+  // resolves to a viewer.
   const openExtViewerTab = useCallback((viewerId: string, filePath: string) => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.extViewerId === viewerId && t.extViewerPath === filePath);
@@ -528,8 +495,57 @@ export default function App() {
     });
   }, []);
 
+  // The "Preview" escape hatch (hover icon / context-menu item / Shift+Enter)
+  // for a path some "preview"-mode viewer claims — markdown/json/yaml/csv
+  // today. A no-op if no such viewer is registered (extension disabled, or
+  // called before activation finishes).
+  const openPreviewViewerTab = useCallback(
+    (filePath: string) => {
+      const viewer = findFileViewerFor(filePath, extFileViewers, "preview");
+      if (viewer) openExtViewerTab(viewer.id, filePath);
+    },
+    [extFileViewers, openExtViewerTab],
+  );
+
+  // Gates FileTree's hover preview icon — registry-driven replacement for
+  // the old fileKinds.ts isPreviewablePath.
+  const isPreviewable = useCallback(
+    (filePath: string) => findFileViewerFor(filePath, extFileViewers, "preview") !== null,
+    [extFileViewers],
+  );
+
+  // One-time migration for tabs restored from localStorage before this
+  // extraction shipped — old imagePath/previewPath tabs become extViewerId/
+  // extViewerPath tabs against whichever registered viewer now claims that
+  // path, in the equivalent mode. Runs whenever the registry changes (i.e.
+  // once activation completes); a tab whose viewer never shows up (its
+  // extension got removed) is left as-is and falls through to the "loading"
+  // placeholder in the render switch below.
+  useEffect(() => {
+    if (extFileViewers.length === 0) return;
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((tab) => {
+        const legacyPath = tab.imagePath ?? tab.previewPath;
+        if (legacyPath === undefined) return tab;
+        const mode: "default" | "preview" = tab.imagePath !== undefined ? "default" : "preview";
+        const viewer = findFileViewerFor(legacyPath, extFileViewers, mode);
+        if (!viewer) return tab;
+        changed = true;
+        return {
+          id: tab.id,
+          sessionName: "",
+          attachName: "",
+          extViewerId: viewer.id,
+          extViewerPath: legacyPath,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [extFileViewers]);
+
   // Singleton settings tab — the third virtual-tab kind. Activate-or-create
-  // like openImageTab, keyed on the marker itself since there's only one.
+  // like openExtViewerTab, keyed on the marker itself since there's only one.
   const openSettingsTab = useCallback(() => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.settingsView);
@@ -576,9 +592,10 @@ export default function App() {
     [tabs, sessions, showError],
   );
 
-  // Tabs with unsaved edits (currently only CsvView reports into this —
-  // JSON's Format & Save is a one-shot action, not an edit buffer). A plain
-  // ref, not state: membership changes don't need to trigger a render on
+  // Tabs with unsaved edits (currently only csv-preview's editable grid
+  // reports into this via setDirty — JSON's Format & Save is a one-shot
+  // action, not an edit buffer). A plain ref, not state: membership changes
+  // don't need to trigger a render on
   // their own, only the confirm check below reads it.
   const dirtyTabsRef = useRef<Set<string>>(new Set());
 
@@ -1186,33 +1203,23 @@ export default function App() {
     [activeRealTab, showError, refresh, openWindowTab],
   );
 
-  // FILES-tree click dispatch: images/media/PDFs open directly in their
-  // viewer tab (nvim on binary content is useless); everything else
-  // (including markdown/json/yaml — see isPreviewablePath) keeps opening in
-  // nvim as before, reached via the hover icon / "Preview" menu item instead.
-  // `line` (terminal ctrl+click on a "file:line" link) is ignored by the two
-  // viewer-tab branches — they have no line-jump concept.
+  // FILES-tree click dispatch: any path a "default"-mode viewer claims
+  // (image/media/pdf today) opens directly in its viewer tab — nvim on
+  // binary content is useless. Everything else (including markdown/json/
+  // yaml/csv, "preview"-mode viewers) keeps opening in nvim as before,
+  // reached via the hover icon / "Preview" menu item instead. `line`
+  // (terminal ctrl+click on a "file:line" link) is ignored by the viewer-tab
+  // branch — it has no line-jump concept.
   const openFileOrViewer = useCallback(
     (filePath: string, line?: number) => {
-      if (isImagePath(filePath)) {
-        openImageTab(filePath);
-        return;
-      }
-      if (isMediaPath(filePath) || isPdfPath(filePath)) {
-        openPreviewTab(filePath);
-        return;
-      }
-      // Extensions get no override authority over the built-in binary
-      // viewers above — only extensions no built-in viewer already claims
-      // reach here.
-      const extViewer = findFileViewerFor(filePath, extFileViewers);
-      if (extViewer) {
-        openExtViewerTab(extViewer.id, filePath);
+      const viewer = findFileViewerFor(filePath, extFileViewers, "default");
+      if (viewer) {
+        openExtViewerTab(viewer.id, filePath);
         return;
       }
       openFileInSession(filePath, line);
     },
-    [openImageTab, openPreviewTab, openExtViewerTab, extFileViewers, openFileInSession],
+    [extFileViewers, openExtViewerTab, openFileInSession],
   );
 
   // ctx.app.openFileTab(path) (extensions.ts) routes through the exact same
@@ -1230,13 +1237,14 @@ export default function App() {
   // "Open in Editor" item.
   const openFileOrViewerSecondary = useCallback(
     (filePath: string, line?: number) => {
-      if (isPreviewablePath(filePath)) {
-        openPreviewTab(filePath);
+      const viewer = findFileViewerFor(filePath, extFileViewers, "preview");
+      if (viewer) {
+        openExtViewerTab(viewer.id, filePath);
         return;
       }
       openFileOrViewer(filePath, line);
     },
-    [openPreviewTab, openFileOrViewer],
+    [extFileViewers, openExtViewerTab, openFileOrViewer],
   );
 
   const fileMenuItems = useCallback(
@@ -1255,17 +1263,18 @@ export default function App() {
         { label: "Download", onClick: () => downloadFileEntry(entryPath) },
       );
       // Images/media/PDFs open in their viewer by default (see
-      // openFileOrViewer) — this is the escape hatch to edit e.g. an SVG's
-      // source in nvim. Doesn't apply to media/PDF (nvim on binary content
-      // isn't useful).
-      if (!isDir && (isImagePath(entryPath) || findFileViewerFor(entryPath, extFileViewers))) {
+      // openFileOrViewer) — editorFallback is the escape hatch to edit e.g.
+      // an SVG's source in nvim; media/PDF opt out of it (nvim on binary
+      // content isn't useful) via their own registration.
+      const defaultViewer = !isDir ? findFileViewerFor(entryPath, extFileViewers, "default") : null;
+      if (defaultViewer?.editorFallback) {
         items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
       }
-      // Markdown/JSON/YAML open in nvim by default (unchanged) — Preview is
-      // the opt-in path to the rendered view, mirroring the hover icon in
+      // Markdown/JSON/YAML/CSV open in nvim by default (unchanged) — Preview
+      // is the opt-in path to the rendered view, mirroring the hover icon in
       // FileTree.
-      if (!isDir && isPreviewablePath(entryPath)) {
-        items.push({ label: "Preview", onClick: () => openPreviewTab(entryPath) });
+      if (!isDir && findFileViewerFor(entryPath, extFileViewers, "preview")) {
+        items.push({ label: "Preview", onClick: () => openPreviewViewerTab(entryPath) });
       }
       items.push({ label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) });
       return items;
@@ -1278,7 +1287,7 @@ export default function App() {
       copyFileRelativePath,
       downloadFileEntry,
       openFileInSession,
-      openPreviewTab,
+      openPreviewViewerTab,
       deleteFileEntry,
       extFileViewers,
     ],
@@ -1337,7 +1346,8 @@ export default function App() {
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
             onOpenFile={openFileOrViewer}
-            onPreviewFile={openPreviewTab}
+            onPreviewFile={openPreviewViewerTab}
+            isPreviewable={isPreviewable}
             fileMenuItems={fileMenuItems}
             fileTreeRootMenuItems={fileTreeRootMenuItems}
             prunePath={prunePath}
@@ -1383,16 +1393,6 @@ export default function App() {
                 />
               );
             }
-            if (tab.imagePath !== undefined) {
-              return (
-                <ImageView
-                  key={tab.id}
-                  filePath={tab.imagePath}
-                  active={active}
-                  toolbarTarget={tabActionsEl}
-                />
-              );
-            }
             if (tab.extViewerPath !== undefined) {
               // The registered viewer that opened this tab may have been
               // unregistered since (extension disabled/uninstalled) — the
@@ -1408,52 +1408,32 @@ export default function App() {
                 );
               }
               const ViewerComponent = viewer.component;
-              return <ViewerComponent key={tab.id} filePath={tab.extViewerPath} active={active} />;
-            }
-            if (tab.previewPath !== undefined) {
-              const path = tab.previewPath;
-              if (isMediaPath(path)) {
-                return <MediaView key={tab.id} filePath={path} active={active} />;
-              }
-              if (isPdfPath(path)) {
-                return <PdfView key={tab.id} filePath={path} active={active} />;
-              }
-              if (isJsonPath(path) || isYamlPath(path)) {
-                return (
-                  <JsonView
-                    key={tab.id}
-                    filePath={path}
-                    active={active}
-                    toolbarTarget={tabActionsEl}
-                    onOpenInEditor={openFileInSession}
-                    fontSize={settings.fontSize}
-                  />
-                );
-              }
-              if (isCsvPath(path)) {
-                return (
-                  <CsvView
-                    key={tab.id}
-                    filePath={path}
-                    active={active}
-                    toolbarTarget={tabActionsEl}
-                    onOpenInEditor={openFileInSession}
-                    onShowMenu={showMenu}
-                    onDirtyChange={(dirty) => {
-                      if (dirty) dirtyTabsRef.current.add(tab.id);
-                      else dirtyTabsRef.current.delete(tab.id);
-                    }}
-                  />
-                );
-              }
               return (
-                <MarkdownView
+                <ViewerComponent
                   key={tab.id}
-                  filePath={path}
+                  filePath={tab.extViewerPath}
                   active={active}
                   toolbarTarget={tabActionsEl}
-                  onOpenInEditor={openFileInSession}
+                  openInEditor={openFileInSession}
+                  showMenu={showMenu}
+                  fontSize={settings.fontSize}
+                  setDirty={(dirty) => {
+                    if (dirty) dirtyTabsRef.current.add(tab.id);
+                    else dirtyTabsRef.current.delete(tab.id);
+                  }}
                 />
+              );
+            }
+            // A legacy imagePath/previewPath tab restored from localStorage
+            // before this extraction shipped, not yet converted to
+            // extViewerId/extViewerPath by the migration effect above —
+            // resolves itself once extension activation populates the
+            // registry (see the plan's "accept the flash" decision).
+            if (tab.imagePath !== undefined || tab.previewPath !== undefined) {
+              return (
+                <div key={tab.id} className={`settings-host${active ? "" : " hidden"}`}>
+                  <div className="file-tree-empty">Loading…</div>
+                </div>
               );
             }
             return (
