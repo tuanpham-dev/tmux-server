@@ -91,6 +91,7 @@ export interface ListeningPort {
   address: string;
   process?: string;
   pid?: number;
+  session: string;
 }
 
 export interface TunnelAuth {

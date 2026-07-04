@@ -1,5 +1,6 @@
 import net from "node:net";
 import { WebSocket } from "ws";
+import { getTunnelablePorts } from "./ports.js";
 
 // Frame format shared with cli/tunnel.mjs (kept in sync manually — the CLI
 // must stay a single dependency-free file, so this codec can't be imported):
@@ -57,6 +58,10 @@ function errCode(err: unknown): string {
 
 export function handleTunnel(ws: WebSocket): void {
   const channels = new Map<number, Channel>();
+  // Channel ids with a tmux-ownership check in flight — guards against a
+  // duplicate FRAME_OPEN for the same id (channels.has(id) can't catch it,
+  // since the channel isn't created until the check resolves).
+  const pendingOpens = new Set<number>();
 
   const flushAck = (id: number, ch: Channel) => {
     if (ch.unacked > 0 && ws.readyState === WebSocket.OPEN) {
@@ -65,13 +70,30 @@ export function handleTunnel(ws: WebSocket): void {
     ch.unacked = 0;
   };
 
-  const openChannel = (id: number, payload: Buffer) => {
-    if (channels.has(id) || payload.length < 2) return;
+  const openChannel = async (id: number, payload: Buffer) => {
+    if (channels.has(id) || pendingOpens.has(id) || payload.length < 2) return;
     const port = payload.readUInt16BE(0);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       ws.send(encodeFrame(FRAME_OPEN_FAIL, id, Buffer.from("invalid port", "utf8")));
       return;
     }
+
+    pendingOpens.add(id);
+    let allowed: Set<number>;
+    try {
+      allowed = await getTunnelablePorts();
+    } finally {
+      pendingOpens.delete(id);
+    }
+    if (!allowed.has(port)) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(encodeFrame(FRAME_OPEN_FAIL, id, Buffer.from("port not allowed", "utf8")));
+      }
+      return;
+    }
+    // The socket may have connected via a race (client retried, or ws closed
+    // mid-check) — re-check now that the async gap has closed.
+    if (channels.has(id) || ws.readyState !== WebSocket.OPEN) return;
 
     const socket = net.connect(port, "127.0.0.1");
     const ch: Channel = { socket, connected: false, sendCredit: WINDOW_SIZE, unacked: 0, drainScheduled: false };
@@ -147,7 +169,7 @@ export function handleTunnel(ws: WebSocket): void {
     if (!frame) return;
     switch (frame.type) {
       case FRAME_OPEN:
-        openChannel(frame.channel, frame.payload);
+        void openChannel(frame.channel, frame.payload);
         break;
       case FRAME_DATA:
         dataToChannel(frame.channel, frame.payload);

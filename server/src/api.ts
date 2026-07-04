@@ -19,7 +19,7 @@ import {
   walkFiles,
 } from "./files.js";
 import { getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
-import { listPorts } from "./ports.js";
+import { listTmuxPorts } from "./ports.js";
 import {
   createSession,
   createWindow,
@@ -247,7 +247,7 @@ api.post("/sessions/:name/resolve-paths", async (req, res) => {
 
 api.get("/ports", async (_req, res) => {
   try {
-    res.json(await listPorts());
+    res.json(await listTmuxPorts());
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }

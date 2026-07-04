@@ -2434,6 +2434,15 @@ body.scrollbar-dragging {
   color: var(--fg-inactive);
 }
 
+.port-session {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--hover);
+  color: var(--fg-inactive);
+}
+
 .port-address {
   font-size: 11px;
   color: var(--fg-inactive);

@@ -586,7 +586,25 @@ async function listSessionPanes(session: string): Promise<SessionPane[]> {
     });
 }
 
-interface ProcInfo {
+// Every pane across every session on the host, for attributing listening
+// ports to the tmux session that owns them (see ports.ts). Synthetic
+// window-tab sessions are grouped with a real session and share its
+// windows/panes, so they're filtered out to avoid a duplicate/odd session
+// label on the attributed port.
+export async function listAllPanePids(): Promise<Map<number, string>> {
+  const out = await tmux(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"]).catch(
+    emptyIfNoServer,
+  );
+  const map = new Map<number, string>();
+  for (const line of out.split("\n").filter(Boolean)) {
+    const [sessionName, pid] = line.split("\t");
+    if (sessionName.startsWith(WINDOW_TAB_PREFIX)) continue;
+    map.set(Number(pid), sessionName);
+  }
+  return map;
+}
+
+export interface ProcInfo {
   ppid: number;
   comm: string;
 }
@@ -594,7 +612,7 @@ interface ProcInfo {
 // Scans /proc once for a ppid+comm map of every process on the host. Linux
 // only — callers must treat a failure (missing /proc, e.g. on macOS) as
 // "unknown" and fall back to the keystroke-injection path.
-async function buildProcessMap(): Promise<Map<number, ProcInfo>> {
+export async function buildProcessMap(): Promise<Map<number, ProcInfo>> {
   const map = new Map<number, ProcInfo>();
   let entries: string[];
   try {

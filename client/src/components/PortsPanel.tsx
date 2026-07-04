@@ -137,11 +137,14 @@ export default function PortsPanel({ refreshKey }: Props) {
             >
               <span className="port-number">{p.port}</span>
               {p.process && <span className="port-process">{p.process}</span>}
+              <span className="port-session">{p.session}</span>
               {!isLoopback(p.address) && <span className="port-address">{p.address}</span>}
             </button>
           </li>
         ))}
-        {ports.length === 0 && !error && <li className="session-empty">No listening ports</li>}
+        {ports.length === 0 && !error && (
+          <li className="session-empty">No listening ports in tmux sessions</li>
+        )}
       </ul>
       {displayCommand && (
         <div className="port-command">
