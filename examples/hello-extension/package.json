@@ -3,7 +3,7 @@
   "publisher": "tmux-server-samples",
   "version": "1.0.0",
   "displayName": "Hello Extension",
-  "description": "Reference extension: a color theme, an icon theme, and functionality (command, .demo file viewer, sidebar panel, server route).",
+  "description": "Reference extension: a color theme, an icon theme, two terminal font groups (one bundling a mono font + a Nerd Font symbols companion), and functionality (command, .demo file viewer, sidebar panel, server route).",
   "contributes": {
     "themes": [
       {
@@ -17,6 +17,26 @@
         "id": "hello-icons",
         "label": "Hello Icons",
         "path": "./themes/hello-icon-theme.json"
+      }
+    ],
+    "fonts": [
+      {
+        "group": "Hello",
+        "fonts": [
+          { "family": "Hello Mono", "src": [{ "path": "./fonts/HelloMono-Regular.woff2", "format": "woff2" }] },
+          {
+            "family": "Hello Mono",
+            "src": [{ "path": "./fonts/HelloMono-Bold.woff2", "format": "woff2" }],
+            "weight": "bold"
+          },
+          { "family": "Hello Nerd Symbols", "src": [{ "path": "./fonts/HelloNerdSymbols.woff2", "format": "woff2" }] }
+        ]
+      },
+      {
+        "group": "Hello Nerd Symbols Only",
+        "fonts": [
+          { "family": "Hello Nerd Symbols", "src": [{ "path": "./fonts/HelloNerdSymbols.woff2", "format": "woff2" }] }
+        ]
       }
     ]
   },

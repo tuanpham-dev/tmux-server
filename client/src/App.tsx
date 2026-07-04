@@ -39,6 +39,7 @@ import {
 } from "./theme";
 import type { ExtensionInfo, MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
 import { collectDropped, uploadAll, type DroppedItems } from "./upload";
+import { applyExtensionFonts, useExtensionFontsVersion } from "./utils/fonts";
 import { resolveIconThemeValue, setActiveIconTheme } from "./utils/iconThemes";
 
 const SIDEBAR_MIN = 180;
@@ -317,6 +318,18 @@ export default function App() {
   useEffect(() => {
     setActiveIconTheme(resolveIconThemeValue(settings.iconTheme, extensions)).catch(() => {});
   }, [settings.iconTheme, extensions]);
+
+  // Extension-contributed terminal fonts: loads only the families actually
+  // present in settings.fontFamily (primary or fallback) — same selected-
+  // only asset policy as the color/icon theme effects above. Reconciles on
+  // both a font-picker change and an extension enable/disable/install/
+  // uninstall, so a font's FontFace is added/removed through one path.
+  // fontsVersion is handed to every TerminalView so it can force a re-
+  // measure once a face it's configured to use actually finishes loading.
+  useEffect(() => {
+    applyExtensionFonts(extensions, settings.fontFamily).catch(() => {});
+  }, [settings.fontFamily, extensions]);
+  const fontsVersion = useExtensionFontsVersion();
 
   const [showSwitcher, setShowSwitcher] = useState(false);
 
@@ -1443,6 +1456,7 @@ export default function App() {
                 active={active}
                 settings={settings}
                 theme={activeTerminalTheme}
+                fontsVersion={fontsVersion}
                 bindings={resolvedBindings}
                 onExit={() => closeTab(tab.id)}
                 onError={showError}

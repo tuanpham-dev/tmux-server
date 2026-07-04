@@ -10,7 +10,7 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 - **FILES panel** — browse the active window's working directory, drag-and-drop upload (files or folders, with conflict handling and progress), git status badges, and a context menu for creating, renaming, deleting, downloading (folders as zip), and copying paths. Clicking a file opens it in the pane's running `nvim`, or a new window if it's busy.
 - **tmux-backed scrollbar** — draggable, since tmux (not the browser) owns scrollback.
 - **Theming** — matches VS Code's Plastic Legacy theme and IBM Plex Mono by default; configurable via the in-app Settings dialog (font, size, cursor style, etc.).
-- **Extensions** — install VS Code color themes and icon themes unchanged, or a small custom extension that adds a command, a file viewer, a sidebar panel, and a server route. See [Extensions](#extensions) below.
+- **Extensions** — install VS Code color themes and icon themes unchanged, contribute custom terminal fonts, or a small custom extension that adds a command, a file viewer, a sidebar panel, and a server route. See [Extensions](#extensions) below.
 - **Auto-reconnect** — a dropped connection (server restart, laptop sleep) reconnects automatically instead of losing the tab; open tabs also survive a browser reload.
 - **Installable PWA** — installable app shell with offline caching for the UI; terminal/session traffic (`/api`, `/ws`) is always network-only.
 
@@ -131,7 +131,8 @@ Each extension has a `package.json` — a subset of the real VS Code extension m
   "description": "What it does",
   "contributes": {
     "themes": [{ "label": "My Theme", "uiTheme": "vs-dark", "path": "./themes/my-theme-color-theme.json" }],
-    "iconThemes": [{ "id": "my-icons", "label": "My Icons", "path": "./themes/my-icon-theme.json" }]
+    "iconThemes": [{ "id": "my-icons", "label": "My Icons", "path": "./themes/my-icon-theme.json" }],
+    "fonts": [{ "group": "My Fonts", "fonts": [{ "family": "My Mono", "src": [{ "path": "./fonts/MyMono-Regular.woff2", "format": "woff2" }] }] }]
   },
   "tmuxServer": {
     "client": "./client.js",
@@ -149,6 +150,31 @@ A theme JSON's `colors` map is read via VS Code's own workbench keys (`editor.ba
 ### Icon themes
 
 Both icon styles VS Code themes use are supported: font-glyph (`fontCharacter`/`fontColor`, the bundled Seti default's style — the theme's own font is loaded at runtime via `FontFace`) and SVG (`iconPath`, the Material Icon Theme style). Matched by filename, then extension, then a theme-wide default, same as VS Code.
+
+### Fonts
+
+Not a VS Code manifest concept (VS Code's own font contributions are icon-theme glyph fonts only) — `contributes.fonts` is tmux-server's own extension of the manifest, for terminal text fonts. Each entry is a named **group** bundling one or more font families:
+
+```json
+"contributes": {
+  "fonts": [
+    {
+      "group": "My Fonts",
+      "fonts": [
+        { "family": "My Mono", "src": [{ "path": "./fonts/MyMono-Regular.woff2", "format": "woff2" }] },
+        { "family": "My Mono", "src": [{ "path": "./fonts/MyMono-Bold.woff2", "format": "woff2" }], "weight": "bold" },
+        { "family": "My Nerd Symbols", "src": [{ "path": "./fonts/MyNerdSymbols.woff2", "format": "woff2" }] }
+      ]
+    }
+  ]
+}
+```
+
+Within a group's `fonts`, entries sharing a `family` register different weights/styles of the same font (worth including a `"weight": "bold"` face — xterm renders bold cells with it, falling back to synthetic bold otherwise); entries with distinct `family` values bundle separate fonts into that one group, e.g. a mono text font plus a Nerd Font symbols companion. A group is the Settings → Terminal font picker's unit of selection: picking "My Fonts" writes **every** family in the group into the font stack at once (mono as the primary font, the symbols font riding along as an implicit fallback) — no separate step to combine them. One extension can contribute several groups (e.g. the same symbols font offered both bundled into a combo group and on its own).
+
+The font-family select only lists fonts this app can actually guarantee: "Use fallback fonts" (contributes nothing itself — the whole stack comes from the fallback field), its own bundled fonts, and whatever enabled extensions contribute. A locally-installed system font isn't offered there (it isn't guaranteed to exist wherever the page is next opened) — type it into the fallback field instead, same as any other font-family string. A stored stack whose leading font doesn't match a listed option (typed by hand, or from an extension that's since been disabled) just shows as "Use fallback fonts" with the whole thing sitting in that field.
+
+Unlike themes, fonts aren't mutually exclusive and aren't all loaded up front: a family's `FontFace`s are only fetched once that family is actually present in the stack — whether it got there via a group selection or a hand-typed fallback — and are dropped again if it's removed or its extension is disabled/uninstalled, the same selected-only-loads policy color and icon themes already follow; this is per-family, so a stack that keeps only one member of a group never loads the other. Registers under each family's real name (unlike icon-theme fonts, which load under an internal namespaced family), so you can reference it directly in the fallback field. Applies live, no reload.
 
 ### Functionality
 

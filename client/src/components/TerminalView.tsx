@@ -20,6 +20,11 @@ interface Props {
   // The active extension color theme's terminal palette, or the built-in
   // Plastic Legacy theme if none is selected/loaded — see theme.ts.
   theme: ITheme;
+  // Bumped by utils/fonts.ts whenever an extension-contributed font finishes
+  // (or stops) loading — triggers a re-measure below, since a font that
+  // arrives after settings.fontFamily was already applied needs a nudge
+  // xterm wouldn't otherwise give it (see that effect's comment).
+  fontsVersion: number;
   // Resolved command-id → combo map (keybindings.ts); the terminal.* entries
   // drive the custom key handler below, so rebinds apply live via a ref.
   bindings: Record<string, string>;
@@ -41,6 +46,7 @@ export default function TerminalView({
   active,
   settings,
   theme,
+  fontsVersion,
   bindings,
   onExit,
   onError,
@@ -830,6 +836,21 @@ export default function TerminalView({
     if (!term) return;
     term.options.theme = theme;
   }, [theme]);
+
+  // A newly-loaded extension font needs a re-measure even though
+  // options.fontFamily was already set to its name (while the face was still
+  // loading, so glyphs rendered in whatever fallback matched first) — xterm
+  // only re-measures on an actual option *change*, so reassigning the same
+  // string is a no-op. Bounce through a distinct value to force it.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const family = term.options.fontFamily;
+    term.options.fontFamily = `${family} `;
+    term.options.fontFamily = family;
+    refitRef.current?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fontsVersion]);
 
   useEffect(() => {
     if (active) {

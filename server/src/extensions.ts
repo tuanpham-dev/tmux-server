@@ -48,6 +48,32 @@ interface IconThemeContribution {
   path: string;
 }
 
+interface FontSrc {
+  path: string;
+  format: string;
+}
+
+// Not a VS Code manifest concept (VS Code's only font contribution is
+// icon-theme glyph fonts) — tmux-server's own extension of `contributes`.
+// Within a group's `fonts`, entries sharing a `family` register different
+// weights/styles of the same font (xterm needs the bold face for bold
+// cells); entries with distinct `family` values are separate fonts bundled
+// into that one group. A group is the Settings font picker's unit of
+// selection: picking "Hello" (a group of a mono font + a Nerd Font symbols
+// companion) writes BOTH families into the stack at once. One extension can
+// contribute several groups.
+interface FontEntry {
+  family: string;
+  src: FontSrc[];
+  weight?: string;
+  style?: string;
+}
+
+interface FontGroupContribution {
+  group: string;
+  fonts: FontEntry[];
+}
+
 interface ExtensionManifest {
   name?: string;
   publisher?: string;
@@ -57,6 +83,7 @@ interface ExtensionManifest {
   contributes?: {
     themes?: ThemeContribution[];
     iconThemes?: IconThemeContribution[];
+    fonts?: FontGroupContribution[];
   };
   tmuxServer?: {
     client?: string;
@@ -72,6 +99,7 @@ export interface ExtensionInfo {
   enabled: boolean;
   themes: { label: string; path: string }[];
   iconThemes: { id: string; label: string; path: string }[];
+  fonts: { group: string; fonts: FontEntry[] }[];
   // Extension-relative path to the client ESM entry, or null if this
   // extension has no client contribution — the client dynamic-imports it
   // via extensionFileUrl(id, clientEntry). hasServer stays a plain boolean:
@@ -177,6 +205,15 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, built
       label: t.label,
       path: t.path,
     })),
+    fonts: (manifest.contributes?.fonts ?? [])
+      .filter((g) => typeof g.group === "string" && g.group && Array.isArray(g.fonts))
+      .map((g) => ({
+        group: g.group,
+        fonts: g.fonts
+          .filter((f) => typeof f.family === "string" && f.family && Array.isArray(f.src) && f.src.length > 0)
+          .map((f) => ({ family: f.family, src: f.src, weight: f.weight, style: f.style })),
+      }))
+      .filter((g) => g.fonts.length > 0),
     clientEntry: manifest.tmuxServer?.client ?? null,
     hasClient: Boolean(manifest.tmuxServer?.client),
     hasServer: Boolean(manifest.tmuxServer?.server),

@@ -14,6 +14,13 @@ import type { AppSettings } from "../settings";
 import { DEFAULT_SETTINGS } from "../settings";
 import { listColorThemeOptions } from "../theme";
 import type { ExtensionInfo } from "../types";
+import { listExtensionFontOptions } from "../utils/fonts";
+import {
+  composeFontStack,
+  FALLBACK_ONLY_VALUE,
+  splitFontStack,
+  type FontStackOption,
+} from "../utils/fontStack";
 import { listIconThemeOptions } from "../utils/iconThemes";
 import Icon from "./Icon";
 
@@ -72,6 +79,116 @@ function NumberField({
       }}
       onBlur={() => setDraft(String(value))}
     />
+  );
+}
+
+// Bundled fonts the app ships with (see settings.ts's DEFAULT_SETTINGS
+// comment) — always offered regardless of any extension, so the picker
+// never has fewer options than the previous free-text default stack did.
+const BUNDLED_FONT_FAMILIES = ["IBM Plex Mono", "Symbols Nerd Font Mono", "Noto Color Emoji"];
+
+interface FontOption extends FontStackOption {
+  label: string;
+}
+
+// Only fonts this app actually ships or bundles as an extension — a locally
+// installed system font (Menlo, JetBrains Mono, …) isn't guaranteed to exist
+// on whatever machine opens this page next, so it's not offered as a
+// selectable option; type it into the fallback field instead. "Use fallback
+// fonts" always leads (the neutral/no-pick state — see FALLBACK_ONLY_VALUE),
+// then extension-contributed groups (a group of 2+ families — e.g. a mono
+// font plus a Nerd Font symbols companion — is ONE option here, expanding to
+// every family in the group when selected), then the built-in fonts.
+function buildFontOptions(extensions: ExtensionInfo[]): FontOption[] {
+  const options: FontOption[] = [{ value: FALLBACK_ONLY_VALUE, families: [], label: "Use fallback fonts" }];
+  const seen = new Set<string>();
+  const push = (value: string, families: string[], label: string) => {
+    if (seen.has(value)) return;
+    seen.add(value);
+    options.push({ value, families, label });
+  };
+  for (const opt of listExtensionFontOptions(extensions)) {
+    push(opt.value, opt.families, opt.label);
+  }
+  for (const family of BUNDLED_FONT_FAMILIES) push(family, [family], `${family} (built-in)`);
+  return options;
+}
+
+// Font family selector + a plain fallback-fonts text field, both reading and
+// writing the same settings.fontFamily CSS stack string via splitFontStack/
+// composeFontStack — there's only one stored value, so the two views can
+// never drift from each other or from a stack a user hand-edited elsewhere.
+// A stored value that doesn't match any option (a font typed by hand, or
+// whose extension got disabled) just shows as "Use fallback fonts" with the
+// whole stack sitting in the fallback field — no separate custom-entry mode.
+function FontFamilyPicker({
+  value,
+  onChange,
+  extensions,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  extensions: ExtensionInfo[];
+}) {
+  const options = buildFontOptions(extensions);
+  const split = splitFontStack(value, options);
+
+  return (
+    <>
+      <label className="settings-row">
+        <span className="settings-label">Font family</span>
+        <select
+          className="dialog-input settings-select"
+          value={split.primaryValue}
+          onChange={(e) => {
+            const opt = options.find((o) => o.value === e.target.value);
+            if (opt) onChange(composeFontStack(opt.families, split.fallback));
+          }}
+        >
+          {options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <FallbackFontsField
+        // Remounts (resetting its own draft state) when the primary
+        // selection changes — the fallback text is only ever meant to track
+        // its own edits, not the primary swap that just happened.
+        key={split.primaryValue}
+        value={split.fallback}
+        onChange={(next) => onChange(composeFontStack(split.primaryFamilies, next))}
+      />
+    </>
+  );
+}
+
+// Draft-buffered like NumberField above: keystrokes shouldn't fight a value
+// that's re-derived (via splitFontStack) from what was just typed. Commits
+// on blur/Enter rather than every keystroke, so mid-edit text (an unfinished
+// family name before its trailing comma) is never re-parsed and reformatted
+// out from under the user.
+function FallbackFontsField({ value, onChange }: { value: string; onChange: (next: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  const commit = () => {
+    if (draft !== value) onChange(draft);
+  };
+  return (
+    <label className="settings-row">
+      <span className="settings-label">Fallback fonts</span>
+      <input
+        className="dialog-input"
+        value={draft}
+        placeholder="e.g. Menlo, monospace"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+      />
+    </label>
   );
 }
 
@@ -185,14 +302,11 @@ export default function SettingsView({
           <>
             <h2 className="settings-section-title">Terminal</h2>
 
-            <label className="settings-row">
-              <span className="settings-label">Font family</span>
-              <input
-                className="dialog-input"
-                value={settings.fontFamily}
-                onChange={(e) => set("fontFamily", e.target.value)}
-              />
-            </label>
+            <FontFamilyPicker
+              value={settings.fontFamily}
+              onChange={(v) => set("fontFamily", v)}
+              extensions={extensions}
+            />
 
             <label className="settings-row">
               <span className="settings-label">Font size</span>
@@ -511,6 +625,7 @@ export default function SettingsView({
                     <div className="extension-row-contributes">
                       {ext.themes.length > 0 && <span>{ext.themes.length} color theme(s)</span>}
                       {ext.iconThemes.length > 0 && <span>{ext.iconThemes.length} icon theme(s)</span>}
+                      {ext.fonts.length > 0 && <span>{ext.fonts.length} font(s)</span>}
                       {ext.hasClient && <span>UI functionality</span>}
                       {ext.hasServer && <span>Server functionality</span>}
                     </div>

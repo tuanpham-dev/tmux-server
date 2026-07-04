@@ -122,6 +122,30 @@ export interface ExtensionIconThemeContribution {
   path: string;
 }
 
+export interface ExtensionFontSrc {
+  path: string;
+  format: string;
+}
+
+// See server/src/extensions.ts's FontGroupContribution comment — a
+// tmux-server-specific manifest field, not a VS Code concept. Entries
+// sharing a `family` are different weights/styles of the same font; entries
+// with distinct `family` values are separate fonts bundled into one group. A
+// group is the Settings font picker's unit of selection — picking it writes
+// every family in `fonts` into the stack at once. One extension can
+// contribute several groups.
+export interface ExtensionFontEntry {
+  family: string;
+  src: ExtensionFontSrc[];
+  weight?: string;
+  style?: string;
+}
+
+export interface ExtensionFontGroupContribution {
+  group: string;
+  fonts: ExtensionFontEntry[];
+}
+
 export interface ExtensionInfo {
   id: string;
   displayName: string;
@@ -130,6 +154,7 @@ export interface ExtensionInfo {
   enabled: boolean;
   themes: ExtensionThemeContribution[];
   iconThemes: ExtensionIconThemeContribution[];
+  fonts: ExtensionFontGroupContribution[];
   clientEntry: string | null;
   hasClient: boolean;
   hasServer: boolean;
