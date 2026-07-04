@@ -273,7 +273,7 @@ export function fetchExtensions(): Promise<ExtensionInfo[]> {
   return request("/api/extensions");
 }
 
-export function installExtensionVsix(file: File | Blob): Promise<ExtensionInfo> {
+export function installExtensionTsix(file: File | Blob): Promise<ExtensionInfo> {
   return request("/api/extensions/install", {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },

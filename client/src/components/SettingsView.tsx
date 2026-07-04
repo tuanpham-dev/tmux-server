@@ -455,10 +455,10 @@ export default function SettingsView({
             <h2 className="settings-section-title">Extensions</h2>
 
             <label className="dialog-button secondary extension-install-button">
-              {installing ? "Installing…" : "Install from .vsix"}
+              {installing ? "Installing…" : "Install from .tsix"}
               <input
                 type="file"
-                accept=".vsix"
+                accept=".tsix"
                 disabled={installing}
                 style={{ display: "none" }}
                 onChange={async (e) => {
@@ -468,7 +468,7 @@ export default function SettingsView({
                   setInstalling(true);
                   setExtensionsError(null);
                   try {
-                    await api.installExtensionVsix(file);
+                    await api.installExtensionTsix(file);
                     onReloadExtensions();
                   } catch (err) {
                     setExtensionsError(err instanceof Error ? err.message : String(err));

@@ -22,7 +22,7 @@ import {
 } from "./files.js";
 import {
   extensionHookMiddleware,
-  installFromVsixFile,
+  installFromTsixFile,
   listExtensions,
   resolveExtensionFile,
   setExtensionEnabled,
@@ -125,12 +125,12 @@ api.get("/extensions", async (_req, res) => {
 });
 
 api.post("/extensions/install", async (req, res) => {
-  const tmpPath = path.join(tmpdir(), `tmux-server-upload-${randomUUID()}.vsix`);
+  const tmpPath = path.join(tmpdir(), `tmux-server-upload-${randomUUID()}.tsix`);
   const out = createWriteStream(tmpPath);
   req.pipe(out);
   out.on("finish", async () => {
     try {
-      res.status(201).json(await installFromVsixFile(tmpPath));
+      res.status(201).json(await installFromTsixFile(tmpPath));
     } catch (err) {
       res.status(400).json({ error: errMessage(err) });
     }

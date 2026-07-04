@@ -2,7 +2,7 @@
 // each with a VS Code-shaped package.json. `contributes.themes` /
 // `contributes.iconThemes` are served as-is to the client (which does all
 // theme parsing/mapping) — this module only discovers manifests, tracks
-// enabled state, handles .vsix install/uninstall, and mounts/unmounts
+// enabled state, handles .tsix install/uninstall, and mounts/unmounts
 // per-extension server hooks. See README's Extensions section for the
 // manifest format.
 import { spawn } from "node:child_process";
@@ -193,7 +193,7 @@ function runUnzip(zipPath: string, destDir: string): Promise<void> {
     });
     proc.on("error", (err: NodeJS.ErrnoException) => {
       if (err.code === "ENOENT") {
-        reject(new Error('installing .vsix extensions requires the "unzip" command, which was not found on PATH'));
+        reject(new Error('installing .tsix extensions requires the "unzip" command, which was not found on PATH'));
       } else {
         reject(err);
       }
@@ -205,14 +205,14 @@ function runUnzip(zipPath: string, destDir: string): Promise<void> {
   });
 }
 
-// vsixPath is a temp file (already written by the caller); this consumes
+// tsixPath is a temp file (already written by the caller); this consumes
 // and removes it either way.
-export async function installFromVsixFile(vsixPath: string): Promise<ExtensionInfo> {
+export async function installFromTsixFile(tsixPath: string): Promise<ExtensionInfo> {
   const workDir = path.join(tmpdir(), `tmux-server-ext-${randomUUID()}`);
   try {
     await mkdir(workDir, { recursive: true });
-    await runUnzip(vsixPath, workDir);
-    // A .vsix is a zip with the extension's actual contents under extension/.
+    await runUnzip(tsixPath, workDir);
+    // A .tsix is a zip with the extension's actual contents under extension/.
     const extractedRoot = path.join(workDir, "extension");
     const manifest = await readManifest(extractedRoot);
     if (!manifest) throw new Error("invalid extension: missing extension/package.json");
@@ -239,7 +239,7 @@ export async function installFromVsixFile(vsixPath: string): Promise<ExtensionIn
     return info;
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
-    await rm(vsixPath, { force: true }).catch(() => {});
+    await rm(tsixPath, { force: true }).catch(() => {});
   }
 }
 
