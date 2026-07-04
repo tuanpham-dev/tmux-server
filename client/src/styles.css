@@ -478,8 +478,16 @@ body.resizing-row {
   color: var(--fg);
 }
 
-.session-item.active {
+/* Background lives on the row, not the item: .session-row also contains the
+   fixed-width .row-add-button as a sibling, so a background on .session-item
+   alone (flex: 1) would stop short of the row's right edge instead of
+   spanning full width. Declared after .session-row:hover so hovering the
+   active row still reads as solid active-color, not two-toned. */
+.session-row.active {
   background: var(--list-active-bg);
+}
+
+.session-item.active {
   color: var(--list-active-fg);
 }
 

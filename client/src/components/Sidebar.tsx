@@ -256,7 +256,7 @@ export default function Sidebar({
         const activeWin = s.windows.find((w) => w.active);
         return (
           <li key={s.name}>
-            <div className="session-row">
+            <div className={`session-row${s.name === activeSessionName ? " active" : ""}`}>
               <button
                 className={`session-item${s.name === activeSessionName ? " active" : ""}`}
                 title={activeWin ? activeWin.cwd : s.name}
