@@ -237,6 +237,12 @@ export default function SettingsView({
   const [pendingUninstallId, setPendingUninstallId] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [extensionsError, setExtensionsError] = useState<string | null>(null);
+  const [extensionSearch, setExtensionSearch] = useState("");
+  const [extensionStatusFilter, setExtensionStatusFilter] = useState<"all" | "enabled" | "disabled">("all");
+  const [extensionSourceFilter, setExtensionSourceFilter] = useState<"all" | "builtin" | "installed">("all");
+  const [extensionContributesFilter, setExtensionContributesFilter] = useState<
+    "all" | "themes" | "iconThemes" | "fonts" | "client" | "server"
+  >("all");
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onSettingsChange({ ...settings, [key]: value });
@@ -312,6 +318,36 @@ export default function SettingsView({
       cmd.label.toLowerCase().includes(filterLower) ||
       formatBinding(resolved[cmd.id]).toLowerCase().includes(filterLower),
   );
+
+  const extensionSearchLower = extensionSearch.trim().toLowerCase();
+  const visibleExtensions = extensions.filter((ext) => {
+    if (
+      extensionSearchLower &&
+      !ext.displayName.toLowerCase().includes(extensionSearchLower) &&
+      !ext.description.toLowerCase().includes(extensionSearchLower) &&
+      !ext.id.toLowerCase().includes(extensionSearchLower)
+    ) {
+      return false;
+    }
+    if (extensionStatusFilter === "enabled" && !ext.enabled) return false;
+    if (extensionStatusFilter === "disabled" && ext.enabled) return false;
+    if (extensionSourceFilter === "builtin" && !ext.builtin) return false;
+    if (extensionSourceFilter === "installed" && ext.builtin) return false;
+    switch (extensionContributesFilter) {
+      case "themes":
+        return ext.themes.length > 0;
+      case "iconThemes":
+        return ext.iconThemes.length > 0;
+      case "fonts":
+        return ext.fonts.length > 0;
+      case "client":
+        return ext.hasClient;
+      case "server":
+        return ext.hasServer;
+      default:
+        return true;
+    }
+  });
 
   return (
     <div className={`settings-host${active ? "" : " hidden"}`}>
@@ -628,11 +664,55 @@ export default function SettingsView({
 
             {extensionsError && <div className="extension-error">{extensionsError}</div>}
 
+            <div className="extension-filter-row">
+              <input
+                className="dialog-input extension-filter-search"
+                placeholder="Search extensions"
+                value={extensionSearch}
+                onChange={(e) => setExtensionSearch(e.target.value)}
+              />
+              <select
+                className="dialog-input settings-select extension-filter-select"
+                value={extensionStatusFilter}
+                onChange={(e) => setExtensionStatusFilter(e.target.value as typeof extensionStatusFilter)}
+              >
+                <option value="all">All statuses</option>
+                <option value="enabled">Enabled</option>
+                <option value="disabled">Disabled</option>
+              </select>
+              <select
+                className="dialog-input settings-select extension-filter-select"
+                value={extensionSourceFilter}
+                onChange={(e) => setExtensionSourceFilter(e.target.value as typeof extensionSourceFilter)}
+              >
+                <option value="all">All sources</option>
+                <option value="builtin">Built-in</option>
+                <option value="installed">Installed</option>
+              </select>
+              <select
+                className="dialog-input settings-select extension-filter-select"
+                value={extensionContributesFilter}
+                onChange={(e) =>
+                  setExtensionContributesFilter(e.target.value as typeof extensionContributesFilter)
+                }
+              >
+                <option value="all">All contributions</option>
+                <option value="themes">Color themes</option>
+                <option value="iconThemes">Icon themes</option>
+                <option value="fonts">Fonts</option>
+                <option value="client">UI functionality</option>
+                <option value="server">Server functionality</option>
+              </select>
+            </div>
+
             <div className="extension-list">
               {extensions.length === 0 && (
                 <div className="keybinding-empty">No extensions installed</div>
               )}
-              {extensions.map((ext) => (
+              {extensions.length > 0 && visibleExtensions.length === 0 && (
+                <div className="keybinding-empty">No extensions match your search</div>
+              )}
+              {visibleExtensions.map((ext) => (
                 <div key={ext.id} className="extension-row">
                   <label className="checkbox-row extension-row-toggle">
                     <input

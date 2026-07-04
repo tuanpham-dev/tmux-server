@@ -1319,8 +1319,25 @@ body.scrollbar-dragging {
   font-size: 12px;
 }
 
-.extension-list {
+.extension-filter-row {
   margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.extension-filter-search {
+  flex: 1;
+  min-width: 160px;
+}
+
+.extension-filter-select {
+  width: auto;
+  min-width: 140px;
+}
+
+.extension-list {
+  margin-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
