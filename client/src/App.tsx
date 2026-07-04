@@ -26,6 +26,7 @@ import {
   DEFAULT_SETTINGS,
   loadKeybindingOverrides,
   loadSettings,
+  migrateSettings,
   saveKeybindingOverrides,
   saveSettings,
   type AppSettings,
@@ -235,7 +236,7 @@ export default function App() {
       .then((doc) => {
         if (cancelled) return;
         if (doc.settings && typeof doc.settings === "object") {
-          setSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) });
+          setSettings(migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }));
         }
         if (doc.keybindings && typeof doc.keybindings === "object") {
           setKeybindingOverrides(doc.keybindings);
@@ -330,6 +331,14 @@ export default function App() {
     applyExtensionFonts(extensions, settings.fontFamily).catch(() => {});
   }, [settings.fontFamily, extensions]);
   const fontsVersion = useExtensionFontsVersion();
+
+  // Non-terminal UI elements that want "whatever monospace font the user
+  // actually configured" (styles.css's .terminal-link-tooltip) read this var
+  // instead of hard-coding a font name — keeps them in sync with the picker
+  // without needing their own settings plumbing.
+  useEffect(() => {
+    document.documentElement.style.setProperty("--terminal-font", settings.fontFamily);
+  }, [settings.fontFamily]);
 
   const [showSwitcher, setShowSwitcher] = useState(false);
 

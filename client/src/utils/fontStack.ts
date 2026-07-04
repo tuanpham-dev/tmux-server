@@ -31,12 +31,16 @@ export function serializeFontStack(families: string[]): string {
 }
 
 // Appends a freeform fallback CSS stack (as typed into the Settings fallback
-// field) after the primary families a font-picker option resolved to (one
-// family for a plain font, several for an extension group) — re-quoting the
-// whole result so it round-trips through parseFontStack regardless of how
-// the fallback text was formatted.
-export function composeFontStack(primaryFamilies: string[], fallbackCss: string): string {
-  return serializeFontStack([...primaryFamilies, ...parseFontStack(fallbackCss)]);
+// field) after the primary and secondary families a font-picker option
+// resolved to (one family for a plain font, several for an extension group)
+// — re-quoting the whole result so it round-trips through parseFontStack
+// regardless of how the fallback text was formatted.
+export function composeFontStack(
+  primaryFamilies: string[],
+  secondaryFamilies: string[],
+  fallbackCss: string,
+): string {
+  return serializeFontStack([...primaryFamilies, ...secondaryFamilies, ...parseFontStack(fallbackCss)]);
 }
 
 export interface FontStackOption {
@@ -56,41 +60,69 @@ export interface FontStackOption {
 // always a valid select value with no separate "custom" mode to fall into.
 export const FALLBACK_ONLY_VALUE = "__fallback_only__";
 
+// The secondary select's default — no second font picked, same idea as
+// FALLBACK_ONLY_VALUE but for the secondary slot (which is optional
+// regardless of what the primary resolved to, so it needs its own sentinel
+// rather than reusing the primary's).
+export const NO_SECONDARY_VALUE = "__no_secondary__";
+
 export interface FontStackSplit {
   // Always one of the passed-in options' `value`s (including, commonly,
   // FALLBACK_ONLY_VALUE) — never an arbitrary string, so the select always
   // has a matching <option>.
   primaryValue: string;
   primaryFamilies: string[];
-  // Whatever's left after primaryFamilies, re-serialized — shown verbatim in
-  // the Settings fallback text field. Equals the entire stack when
-  // primaryValue is FALLBACK_ONLY_VALUE.
+  // Same idea, one slot further in — NO_SECONDARY_VALUE when nothing beyond
+  // the primary families matched a listed option (including when there's no
+  // primary match at all, e.g. "Use fallback fonts").
+  secondaryValue: string;
+  secondaryFamilies: string[];
+  // Whatever's left after primary + secondary, re-serialized — shown
+  // verbatim in the Settings fallback text field.
   fallback: string;
 }
 
-// Splits a stored settings.fontFamily stack into "primary" (the leading
-// family or families, matched against a font option so a multi-family
-// extension group round-trips as one selection) and "fallback" (everything
-// after). The stack itself is the only state; this is a pure derivation, not
-// stored separately, so the picker and a hand-edited stack can never drift.
-export function splitFontStack(stack: string, options: FontStackOption[]): FontStackSplit {
-  const tokens = parseFontStack(stack);
-
-  // Longest matching prefix wins — e.g. a 2-family group is preferred over a
-  // single-family option that only matches its first member.
+// Longest matching prefix wins — e.g. a 2-family group is preferred over a
+// single-family option that only matches its first member.
+function matchLongestPrefix(tokens: string[], options: FontStackOption[]): FontStackOption | null {
   let best: FontStackOption | null = null;
   for (const option of options) {
     if (option.families.length === 0 || option.families.length > tokens.length) continue;
     const matches = option.families.every((family, i) => tokens[i] === family);
     if (matches && (!best || option.families.length > best.families.length)) best = option;
   }
+  return best;
+}
 
-  if (best) {
-    return {
-      primaryValue: best.value,
-      primaryFamilies: best.families,
-      fallback: serializeFontStack(tokens.slice(best.families.length)),
-    };
-  }
-  return { primaryValue: FALLBACK_ONLY_VALUE, primaryFamilies: [], fallback: serializeFontStack(tokens) };
+// Splits a stored settings.fontFamily stack into "primary" (the leading
+// family or families, matched against a font option so a multi-family
+// extension group round-trips as one selection), "secondary" (the next
+// family or families after that, matched the same way — e.g. a powerline/
+// Nerd Font companion picked deliberately rather than typed by hand), and
+// "fallback" (everything left over). The stack itself is the only state;
+// this is a pure derivation, not stored separately, so the picker and a
+// hand-edited stack can never drift.
+export function splitFontStack(stack: string, options: FontStackOption[]): FontStackSplit {
+  const tokens = parseFontStack(stack);
+
+  const primaryMatch = matchLongestPrefix(tokens, options);
+  const primaryValue = primaryMatch ? primaryMatch.value : FALLBACK_ONLY_VALUE;
+  const primaryFamilies = primaryMatch ? primaryMatch.families : [];
+  const afterPrimary = primaryMatch ? tokens.slice(primaryFamilies.length) : tokens;
+
+  // Excludes the primary's own option so the same group can't be picked
+  // twice in a row (picking it again would just duplicate its families).
+  const secondaryOptions = options.filter((o) => o.value !== primaryValue);
+  const secondaryMatch = matchLongestPrefix(afterPrimary, secondaryOptions);
+  const secondaryValue = secondaryMatch ? secondaryMatch.value : NO_SECONDARY_VALUE;
+  const secondaryFamilies = secondaryMatch ? secondaryMatch.families : [];
+  const afterSecondary = secondaryMatch ? afterPrimary.slice(secondaryFamilies.length) : afterPrimary;
+
+  return {
+    primaryValue,
+    primaryFamilies,
+    secondaryValue,
+    secondaryFamilies,
+    fallback: serializeFontStack(afterSecondary),
+  };
 }

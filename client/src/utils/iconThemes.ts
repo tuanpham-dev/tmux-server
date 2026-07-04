@@ -2,13 +2,13 @@
 // VS Code icon theme JSON — font-glyph icons (fontCharacter/fontColor, VS
 // Code's Seti/vscode-icons style) and SVG icons (iconPath, Material Icon
 // Theme's style), with runtime FontFace loading for an extension's own
-// bundled font. The built-in Seti theme is the only one imported statically
-// (bundled at build time); every extension theme is fetched at runtime.
+// bundled font. Seti itself is now the tmux-server.seti-icons bundled
+// extension (see extensions/seti-icons) rather than statically imported
+// here; every icon theme, built-in or third-party, loads the same way.
 import * as ReactNS from "react";
 import { extensionFileUrl } from "../api";
 import { joinRelPath, parseJsonc } from "../theme";
 import type { ExtensionInfo } from "../types";
-import builtInSetiTheme from "../components/vs-seti-icon-theme.json";
 
 interface IconDef {
   fontCharacter?: string;
@@ -47,15 +47,17 @@ interface LoadedIconTheme {
   resolveAssetUrl(relPath: string): string;
 }
 
-// "seti" matches the @font-face already declared in styles.css — the
-// built-in theme needs no runtime FontFace loading.
-const BUILT_IN: LoadedIconTheme = {
-  doc: builtInSetiTheme as unknown as IconThemeDoc,
-  fontFamilyFor: () => "seti",
+// The "no icon theme" state — an empty iconDefinitions map means
+// resolveIconKey always falls through to `kind: "none"`, and FileTree's
+// FileIcon already renders an empty spacer <span> for that case, so file
+// rows stay aligned with no font/asset loading at all.
+const NONE: LoadedIconTheme = {
+  doc: { iconDefinitions: {} },
+  fontFamilyFor: () => "monospace",
   resolveAssetUrl: (relPath) => relPath,
 };
 
-let active: LoadedIconTheme = BUILT_IN;
+let active: LoadedIconTheme = NONE;
 const listeners = new Set<() => void>();
 function notify(): void {
   for (const l of listeners) l();
@@ -126,11 +128,11 @@ function loadIconTheme(extensionId: string, relPath: string): Promise<LoadedIcon
   return promise;
 }
 
-// "" / an unresolvable value both mean "revert to Seti" — mirrors
+// "" / an unresolvable value both mean "no icon theme" — mirrors
 // applyColorThemeCssVars(null) in theme.ts.
 export async function setActiveIconTheme(target: { extensionId: string; path: string } | null): Promise<void> {
   if (!target) {
-    active = BUILT_IN;
+    active = NONE;
     notify();
     return;
   }
@@ -138,7 +140,7 @@ export async function setActiveIconTheme(target: { extensionId: string; path: st
     active = await loadIconTheme(target.extensionId, target.path);
   } catch (err) {
     console.error("failed to activate icon theme:", err);
-    active = BUILT_IN;
+    active = NONE;
   }
   notify();
 }
@@ -184,12 +186,12 @@ export function getFolderIconResult(folderName: string, isExpanded: boolean): Ic
 }
 
 export interface IconThemeOption {
-  value: string; // "" = built-in Seti; else `${extensionId}:${iconThemeId}`
+  value: string; // "" = no icon theme; else `${extensionId}:${iconThemeId}`
   label: string;
 }
 
 export function listIconThemeOptions(extensions: ExtensionInfo[]): IconThemeOption[] {
-  const options: IconThemeOption[] = [{ value: "", label: "Seti (built-in)" }];
+  const options: IconThemeOption[] = [{ value: "", label: "None" }];
   for (const ext of extensions) {
     if (!ext.enabled) continue;
     for (const theme of ext.iconThemes) {

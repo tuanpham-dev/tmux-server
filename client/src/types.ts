@@ -139,6 +139,10 @@ export interface ExtensionFontEntry {
   src: ExtensionFontSrc[];
   weight?: string;
   style?: string;
+  // CSS unicode-range descriptor — splits one family/weight/style combo
+  // across several entries by script (e.g. IBM Plex Mono's latin/cyrillic/
+  // vietnamese subsets), each loaded as its own FontFace.
+  unicodeRange?: string;
 }
 
 export interface ExtensionFontGroupContribution {

@@ -29,24 +29,32 @@ export interface AppSettings {
   // Git status badges/colors in the FILES tree. Off also skips the server's
   // porcelain status scan — worthwhile on very large repos.
   fileTreeGitStatus: boolean;
-  // "" = the built-in Plastic Legacy theme; otherwise `${extensionId}:${themeLabel}`
-  // from an installed extension's contributes.themes — see theme.ts.
+  // `${extensionId}:${themeLabel}` from an installed extension's
+  // contributes.themes — see theme.ts. Defaults to the bundled
+  // tmux-server.plastic-legacy-theme extension; "" (or any unresolvable
+  // value) falls back to the hard-coded Plastic Legacy values in
+  // styles.css's :root, which are pixel-identical to that extension.
   colorTheme: string;
-  // "" = the built-in Seti theme; otherwise `${extensionId}:${iconThemeId}`
-  // from an installed extension's contributes.iconThemes — see
-  // utils/iconThemes.ts.
+  // `${extensionId}:${iconThemeId}` from an installed extension's
+  // contributes.iconThemes — see utils/iconThemes.ts. Defaults to the
+  // bundled tmux-server.seti-icons extension; "" means no icon theme (blank
+  // spacer icons, not a fallback to Seti).
   iconTheme: string;
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
-// terminal.integrated.fontSize, terminal.integrated.fontWeightBold). "Symbols
-// Nerd Font Mono" is bundled for Powerline/prompt icon glyphs IBM Plex Mono
-// lacks. "Noto Color Emoji" is NOT bundled (too large for the PWA precache)
-// — it renders only if installed locally, otherwise falls through to
-// "Droid Sans Mono"/monospace.
+// terminal.integrated.fontSize, terminal.integrated.fontWeightBold). IBM
+// Plex Mono, Plastic Legacy, and Seti are bundled extensions (see
+// extensions/ibm-plex-mono, plastic-legacy-theme, seti-icons) rather than
+// built into the client bundle — selected-only asset loading applies to all
+// three like any other extension. The fallback tail after IBM Plex Mono is
+// each major OS's own default monospace font — Menlo (macOS, since Lion),
+// Consolas (Windows, since Vista), DejaVu Sans Mono / Liberation Mono (the
+// two most commonly pre-installed on Linux, no single distro-wide default
+// exists) — so an unavailable bundled font still lands on something native
+// to the machine before falling through to the browser's generic mapping.
 export const DEFAULT_SETTINGS: AppSettings = {
-  fontFamily:
-    "'IBM Plex Mono', 'Symbols Nerd Font Mono', 'Noto Color Emoji', 'Droid Sans Mono', monospace",
+  fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
   fontWeightBold: "normal",
   cursorStyle: "block",
@@ -60,16 +68,35 @@ export const DEFAULT_SETTINGS: AppSettings = {
   tabCloseActivation: "recent",
   newSessionCwd: "",
   fileTreeGitStatus: true,
-  colorTheme: "",
-  iconTheme: "",
+  colorTheme: "tmux-server.plastic-legacy-theme:Plastic Legacy",
+  iconTheme: "tmux-server.seti-icons:seti",
 };
+
+// A stored value from before the built-in theme/icon theme/font were
+// extracted into bundled extensions: colorTheme/iconTheme "" used to mean
+// "the built-in one", which is now a value colorTheme still tolerates
+// (falls back to hard-coded :root colors) but iconTheme does not (means "no
+// icon theme" instead of Seti) — leaving it unmigrated would silently drop
+// a returning user's file icons. The old default font stack maps forward
+// too; a stack the user actually customized (including one that merely
+// starts with 'IBM Plex Mono') is left alone.
+const LEGACY_DEFAULT_FONT_FAMILY =
+  "'IBM Plex Mono', 'Symbols Nerd Font Mono', 'Noto Color Emoji', 'Droid Sans Mono', monospace";
+
+export function migrateSettings(settings: AppSettings): AppSettings {
+  const next = { ...settings };
+  if (next.colorTheme === "") next.colorTheme = DEFAULT_SETTINGS.colorTheme;
+  if (next.iconTheme === "") next.iconTheme = DEFAULT_SETTINGS.iconTheme;
+  if (next.fontFamily === LEGACY_DEFAULT_FONT_FAMILY) next.fontFamily = DEFAULT_SETTINGS.fontFamily;
+  return next;
+}
 
 const KEY = "settings";
 const KEYBINDINGS_KEY = "keybindings";
 
 export function loadSettings(): AppSettings {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    return migrateSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") });
   } catch {
     return { ...DEFAULT_SETTINGS };
   }

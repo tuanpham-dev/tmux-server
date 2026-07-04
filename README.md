@@ -106,11 +106,14 @@ The nginx config above needs no changes — `/ws/tunnel` is covered by the same 
 
 Extensions live as folders under `~/.config/tmux-server/extensions/<folder>/` — either drop one in directly (the server picks it up on next scan/restart), or install a packed `.tsix` from the Settings dialog's **Extensions** section, which also lists what's installed and lets you enable/disable or uninstall each one. A worked example covering every surface below is in [`examples/hello-extension`](examples/hello-extension).
 
-Every built-in file preview (image, media, PDF, markdown, JSON/YAML, CSV) is itself a bundled extension under the repo's own [`extensions/`](extensions) directory, discovered alongside `~/.config/tmux-server/extensions/` — see [Bundled extensions](#bundled-extensions) below. A user-installed extension with the same id always takes precedence over a bundled one.
+Every built-in file preview (image, media, PDF, markdown, JSON/YAML, CSV) — and the app's default color theme, icon theme, and terminal font — is itself a bundled extension under the repo's own [`extensions/`](extensions) directory, discovered alongside `~/.config/tmux-server/extensions/` — see [Bundled extensions](#bundled-extensions) below. A user-installed extension with the same id always takes precedence over a bundled one.
 
 ### Bundled extensions
 
-`extensions/<name>/` (one per built-in preview: `image-preview`, `media-preview`, `pdf-preview`, `markdown-preview`, `json-preview`, `csv-preview`) ships a normal extension manifest plus a `src/client.tsx` built by `extensions/build.mjs` into `dist/client.js` (+ `dist/client.css` if it imports any CSS). `npm run build`/`npm run dev` build these automatically (`prebuild`/`predev` hooks); `npm run build:extensions` builds them standalone, and `node extensions/build.mjs --watch` rebuilds on save (what `npm run dev` runs in the background).
+Two shapes of bundled extension live under `extensions/<name>/`:
+
+- **Functionality extensions** (one per built-in preview: `image-preview`, `media-preview`, `pdf-preview`, `markdown-preview`, `json-preview`, `csv-preview`) ship a normal extension manifest plus a `src/client.tsx` built by `extensions/build.mjs` into `dist/client.js` (+ `dist/client.css` if it imports any CSS). `npm run build`/`npm run dev` build these automatically (`prebuild`/`predev` hooks); `npm run build:extensions` builds them standalone, and `node extensions/build.mjs --watch` rebuilds on save (what `npm run dev` runs in the background).
+- **Asset-only extensions** (`plastic-legacy-theme`, `seti-icons`, `ibm-plex-mono` — the app's default color theme, icon theme, and terminal font) have no `src/client.tsx`, so `build.mjs` skips them entirely; their manifest just points at theme/font files directly. All three are enabled by default, giving a fresh install the same look it always had, but each is now independently disable-/uninstallable/overridable like any other extension — a hard-coded fallback (styles.css's `:root` values, "no icon theme", generic `monospace`) covers the gap if one is off.
 
 Bundled extensions are enabled by default and show a **Built-in** badge in Settings. Uninstalling one doesn't delete repo files — it's tombstoned in `~/.config/tmux-server/extensions-state.json` (hidden from the list until you install a `.tsix` with the same id, which restores or overrides it, or you remove the tombstone entry from that file by hand).
 
@@ -145,11 +148,11 @@ The extension's id is `publisher.name` (falling back to its folder name). `contr
 
 ### Color themes
 
-A theme JSON's `colors` map is read via VS Code's own workbench keys (`editor.background`, `tab.activeBackground`, `list.hoverBackground`, `button.background`, `terminal.ansiRed`, …) — anything not set falls back to the built-in Plastic Legacy value for that slot, so a partial theme never breaks the UI. Applies live, no reload — both the app chrome and the terminal palette.
+A theme JSON's `colors` map is read via VS Code's own workbench keys (`editor.background`, `tab.activeBackground`, `list.hoverBackground`, `button.background`, `terminal.ansiRed`, …) — anything not set falls back to the hard-coded Plastic Legacy value for that slot (styles.css's `:root`), so a partial theme never breaks the UI. That hard fallback is pixel-identical to the bundled `plastic-legacy-theme` extension, which is what's actually selected by default. Applies live, no reload — both the app chrome and the terminal palette.
 
 ### Icon themes
 
-Both icon styles VS Code themes use are supported: font-glyph (`fontCharacter`/`fontColor`, the bundled Seti default's style — the theme's own font is loaded at runtime via `FontFace`) and SVG (`iconPath`, the Material Icon Theme style). Matched by filename, then extension, then a theme-wide default, same as VS Code.
+Both icon styles VS Code themes use are supported: font-glyph (`fontCharacter`/`fontColor`, the bundled `seti-icons` extension's style — the theme's own font is loaded at runtime via `FontFace`) and SVG (`iconPath`, the Material Icon Theme style). Matched by filename, then extension, then a theme-wide default, same as VS Code. Selecting no icon theme ("None") shows blank spacer icons rather than falling back to Seti.
 
 ### Fonts
 

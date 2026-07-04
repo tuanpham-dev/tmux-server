@@ -67,6 +67,11 @@ interface FontEntry {
   src: FontSrc[];
   weight?: string;
   style?: string;
+  // CSS unicode-range descriptor — lets one family/weight/style combo be
+  // split across several entries by script (e.g. IBM Plex Mono's
+  // latin/cyrillic/vietnamese subsets), each its own FontFace the browser
+  // only fetches when a rendered character actually falls in its range.
+  unicodeRange?: string;
 }
 
 interface FontGroupContribution {
@@ -211,7 +216,13 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, built
         group: g.group,
         fonts: g.fonts
           .filter((f) => typeof f.family === "string" && f.family && Array.isArray(f.src) && f.src.length > 0)
-          .map((f) => ({ family: f.family, src: f.src, weight: f.weight, style: f.style })),
+          .map((f) => ({
+            family: f.family,
+            src: f.src,
+            weight: f.weight,
+            style: f.style,
+            unicodeRange: f.unicodeRange,
+          })),
       }))
       .filter((g) => g.fonts.length > 0),
     clientEntry: manifest.tmuxServer?.client ?? null,

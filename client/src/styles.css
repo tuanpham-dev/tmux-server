@@ -1,27 +1,6 @@
-/* Fallback-only icon font: covers Powerline/Nerd Font private-use glyphs
-   (segment separators, git/file icons) that prompts like agnoster/p10k use.
-   Without it those codepoints have no glyph in any installed font and the
-   browser draws an oversized "missing glyph" box, which both looks wrong and
-   throws off cell spacing in the terminal. MIT-licensed, bundled from
-   github.com/ryanoasis/nerd-fonts (NerdFontsSymbolsOnly release). */
-@font-face {
-  font-family: "Symbols Nerd Font Mono";
-  src: url("/fonts/SymbolsNerdFontMono-Regular.ttf") format("truetype");
-  font-weight: normal;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "seti";
-  src: url("/fonts/seti.woff") format("woff");
-  font-weight: normal;
-  font-style: normal;
-  font-display: swap;
-}
-
-/* Palette: Plastic Legacy (hadialqattan.plastic-legacy), extracted from the
-   user's code-server instance. */
+/* Palette: Plastic Legacy (hadialqattan.plastic-legacy) — hard-coded rendering
+   floor for an unresolvable color theme; the selectable, identical version
+   ships as the tmux-server.plastic-legacy-theme bundled extension. */
 :root {
   --bg: #21252b;
   --fg: #a9b2c3;
@@ -638,10 +617,10 @@ body.resizing-row {
 }
 
 /* font-family is set inline per-icon now (utils/iconThemes.ts resolves it
-   per icon theme) — the built-in Seti theme still resolves to "seti", so
-   this is a pure refactor, not a behavior change. Also doubles as the sizing
-   box for an SVG icon theme's <img> (Material Icon Theme's style), which
-   gets the same className directly rather than a font glyph. */
+   per icon theme, including Seti — now the tmux-server.seti-icons bundled
+   extension rather than a static built-in). Also doubles as the sizing box
+   for an SVG icon theme's <img> (Material Icon Theme's style), which gets
+   the same className directly rather than a font glyph. */
 .file-tree-folder-icon,
 .file-tree-file-icon {
   display: inline-flex;
@@ -847,7 +826,7 @@ body.resizing-row {
   border-radius: 4px;
   background: var(--panel-bg);
   color: var(--fg-bright);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--terminal-font, monospace);
   font-size: 11px;
   white-space: nowrap;
   overflow: hidden;

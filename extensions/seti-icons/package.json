@@ -1,0 +1,17 @@
+{
+  "name": "seti-icons",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "Seti Icons",
+  "description": "Built-in file-icon theme (bundled — VS Code's Seti icon theme, MIT, see LICENSE.txt).",
+  "contributes": {
+    "iconThemes": [
+      {
+        "id": "seti",
+        "label": "Seti",
+        "path": "./themes/vs-seti-icon-theme.json"
+      }
+    ]
+  }
+}

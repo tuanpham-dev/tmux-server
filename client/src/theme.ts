@@ -251,9 +251,11 @@ export function loadColorTheme(extensionId: string, themeRelPath: string): Promi
   return promise;
 }
 
-// Sets/clears the CSS var overrides on <html> — call with null to fully
-// revert to the built-in Plastic Legacy theme (every var falls back to its
-// :root default).
+// Sets/clears the CSS var overrides on <html> — call with null to fall back
+// to the hard-coded Plastic Legacy values in styles.css's :root (still the
+// rendering floor for an unresolvable theme — extension disabled/
+// uninstalled — even though Plastic Legacy is no longer itself a selectable
+// option; see extensions/plastic-legacy-theme for the selectable version).
 export function applyColorThemeCssVars(cssVars: Record<string, string> | null): void {
   const root = document.documentElement.style;
   for (const name of ALL_THEME_VAR_NAMES) root.removeProperty(name);
@@ -262,12 +264,12 @@ export function applyColorThemeCssVars(cssVars: Record<string, string> | null): 
 }
 
 export interface ColorThemeOption {
-  value: string; // "" = built-in; else `${extensionId}:${themeLabel}`
+  value: string; // `${extensionId}:${themeLabel}` — no built-in "" entry
   label: string;
 }
 
 export function listColorThemeOptions(extensions: ExtensionInfo[]): ColorThemeOption[] {
-  const options: ColorThemeOption[] = [{ value: "", label: "Plastic Legacy (built-in)" }];
+  const options: ColorThemeOption[] = [];
   for (const ext of extensions) {
     if (!ext.enabled) continue;
     for (const theme of ext.themes) {
