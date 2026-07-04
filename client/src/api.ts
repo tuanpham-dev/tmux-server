@@ -1,4 +1,11 @@
-import type { FsFilesListing, FsListing, ListeningPort, TmuxSession, TunnelAuth } from "./types";
+import type {
+  ExtensionInfo,
+  FsFilesListing,
+  FsListing,
+  ListeningPort,
+  TmuxSession,
+  TunnelAuth,
+} from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -260,4 +267,40 @@ export function uploadFile(
     xhr.onerror = () => reject(new Error("network error during upload"));
     xhr.send(file);
   });
+}
+
+export function fetchExtensions(): Promise<ExtensionInfo[]> {
+  return request("/api/extensions");
+}
+
+export function installExtensionVsix(file: File | Blob): Promise<ExtensionInfo> {
+  return request("/api/extensions/install", {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: file,
+  });
+}
+
+export function uninstallExtension(id: string): Promise<void> {
+  return request(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function setExtensionEnabled(id: string, enabled: boolean): Promise<ExtensionInfo> {
+  return request(`/api/extensions/${encodeURIComponent(id)}/enabled`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+// Resolves an extension-relative path (theme JSON, icon font/SVG, the
+// client entry module) to a fetchable/importable URL.
+export function extensionFileUrl(id: string, relPath: string): string {
+  return `/api/extensions/${encodeURIComponent(id)}/file/${relPath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+// The mount point for an extension's server hook, if it has one and is
+// enabled — 404s otherwise (see extensionHookMiddleware).
+export function extensionApiBase(id: string): string {
+  return `/api/ext/${encodeURIComponent(id)}`;
 }

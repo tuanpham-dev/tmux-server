@@ -48,6 +48,13 @@ export interface Tab {
   // Marks the (singleton) settings tab — the third virtual-tab kind, same
   // "" sessionName/attachName convention as imagePath/previewPath.
   settingsView?: true;
+  // Marks an extension-registered file-viewer tab — the fourth virtual-tab
+  // kind, same "" sessionName/attachName convention. extViewerId identifies
+  // which registered viewer (extensions.ts) renders extViewerPath; a tab
+  // always has exactly one of imagePath/previewPath/settingsView/
+  // extViewerPath set.
+  extViewerId?: string;
+  extViewerPath?: string;
 }
 
 export interface MenuItem {
@@ -100,4 +107,28 @@ export interface ListeningPort {
 export interface TunnelAuth {
   cookie: string | null;
   authorization: string | null;
+}
+
+export interface ExtensionThemeContribution {
+  label: string;
+  path: string;
+}
+
+export interface ExtensionIconThemeContribution {
+  id: string;
+  label: string;
+  path: string;
+}
+
+export interface ExtensionInfo {
+  id: string;
+  displayName: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  themes: ExtensionThemeContribution[];
+  iconThemes: ExtensionIconThemeContribution[];
+  clientEntry: string | null;
+  hasClient: boolean;
+  hasServer: boolean;
 }

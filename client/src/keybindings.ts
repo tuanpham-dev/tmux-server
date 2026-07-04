@@ -31,9 +31,17 @@ export const COMMANDS: Command[] = [
 // defaults. Persisted via settings.ts and the server settings doc.
 export type KeybindingOverrides = Record<string, string>;
 
-export function resolveBindings(overrides: KeybindingOverrides): Record<string, string> {
+// extraCommands is the extension command registry (extensions.ts) — kept as
+// a parameter rather than imported directly so this module (loaded at
+// startup, before extension activation) has no dependency on it.
+export function resolveBindings(
+  overrides: KeybindingOverrides,
+  extraCommands: Command[] = [],
+): Record<string, string> {
   const map: Record<string, string> = {};
-  for (const cmd of COMMANDS) map[cmd.id] = overrides[cmd.id] ?? cmd.defaultBinding;
+  for (const cmd of [...COMMANDS, ...extraCommands]) {
+    map[cmd.id] = overrides[cmd.id] ?? cmd.defaultBinding ?? "";
+  }
   return map;
 }
 

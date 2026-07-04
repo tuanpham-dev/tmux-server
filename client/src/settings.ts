@@ -29,6 +29,13 @@ export interface AppSettings {
   // Git status badges/colors in the FILES tree. Off also skips the server's
   // porcelain status scan — worthwhile on very large repos.
   fileTreeGitStatus: boolean;
+  // "" = the built-in Plastic Legacy theme; otherwise `${extensionId}:${themeLabel}`
+  // from an installed extension's contributes.themes — see theme.ts.
+  colorTheme: string;
+  // "" = the built-in Seti theme; otherwise `${extensionId}:${iconThemeId}`
+  // from an installed extension's contributes.iconThemes — see
+  // utils/iconThemes.ts.
+  iconTheme: string;
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
@@ -53,6 +60,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   tabCloseActivation: "recent",
   newSessionCwd: "",
   fileTreeGitStatus: true,
+  colorTheme: "",
+  iconTheme: "",
 };
 
 const KEY = "settings";

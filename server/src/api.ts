@@ -1,6 +1,8 @@
 import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { Router, type Response } from "express";
 import {
@@ -18,6 +20,14 @@ import {
   uniquePath,
   walkFiles,
 } from "./files.js";
+import {
+  extensionHookMiddleware,
+  installFromVsixFile,
+  listExtensions,
+  resolveExtensionFile,
+  setExtensionEnabled,
+  uninstallExtension,
+} from "./extensions.js";
 import { getRepoBranch, getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
 import { listTmuxPorts } from "./ports.js";
 import { readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
@@ -101,6 +111,81 @@ api.put("/settings", async (req, res) => {
     res.status(400).json({ error: errMessage(err) });
   }
 });
+
+// Extensions: manifests discovered under ~/.config/tmux-server/extensions/.
+// See extensions.ts for the format and security posture (running an
+// extension's server hook is running code as the server user — same threat
+// model as the terminal this app already gives you).
+api.get("/extensions", async (_req, res) => {
+  try {
+    res.json(await listExtensions());
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/extensions/install", async (req, res) => {
+  const tmpPath = path.join(tmpdir(), `tmux-server-upload-${randomUUID()}.vsix`);
+  const out = createWriteStream(tmpPath);
+  req.pipe(out);
+  out.on("finish", async () => {
+    try {
+      res.status(201).json(await installFromVsixFile(tmpPath));
+    } catch (err) {
+      res.status(400).json({ error: errMessage(err) });
+    }
+  });
+  out.on("error", (err) => {
+    unlink(tmpPath).catch(() => {});
+    res.status(500).json({ error: errMessage(err) });
+  });
+  req.on("error", (err) => {
+    out.destroy();
+    unlink(tmpPath).catch(() => {});
+    if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
+  });
+});
+
+api.delete("/extensions/:id", async (req, res) => {
+  try {
+    await uninstallExtension(req.params.id);
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/extensions/:id/enabled", async (req, res) => {
+  if (typeof req.body?.enabled !== "boolean") {
+    res.status(400).json({ error: "enabled must be a boolean" });
+    return;
+  }
+  try {
+    res.json(await setExtensionEnabled(req.params.id, req.body.enabled));
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// Serves an extension's own files (theme JSON, icon fonts/SVGs, the client
+// JS entry point) — resolveExtensionFile rejects traversal outside the
+// extension's folder the same way resolveDestination does for the FILES
+// panel.
+api.get("/extensions/:id/file/*", async (req, res) => {
+  const relPath = (req.params as unknown as { 0: string })[0] ?? "";
+  const target = await resolveExtensionFile(req.params.id, relPath);
+  if (!target) {
+    res.status(404).json({ error: "file not found" });
+    return;
+  }
+  res.sendFile(target, (err) => {
+    if (err && !res.headersSent) res.status(404).json({ error: "file not found" });
+  });
+});
+
+// Dispatches to a live extension's server hook router, or 404 if the
+// extension has none/is disabled — see extensions.ts's serverHooks map.
+api.use("/ext/:extId", extensionHookMiddleware);
 
 api.delete("/sessions/:name", async (req, res) => {
   try {

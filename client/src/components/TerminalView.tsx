@@ -1,7 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
@@ -9,7 +9,6 @@ import { serializeEvent } from "../keybindings";
 import type { AppSettings } from "../settings";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
-import { terminalTheme } from "../theme";
 import { buildLinkProvider, isOpenGesture, openUrl } from "../terminalLinks";
 
 type SearchAction = "start" | "next" | "prev" | "cancel";
@@ -18,6 +17,9 @@ interface Props {
   attachName: string;
   active: boolean;
   settings: AppSettings;
+  // The active extension color theme's terminal palette, or the built-in
+  // Plastic Legacy theme if none is selected/loaded — see theme.ts.
+  theme: ITheme;
   // Resolved command-id → combo map (keybindings.ts); the terminal.* entries
   // drive the custom key handler below, so rebinds apply live via a ref.
   bindings: Record<string, string>;
@@ -38,6 +40,7 @@ export default function TerminalView({
   attachName,
   active,
   settings,
+  theme,
   bindings,
   onExit,
   onError,
@@ -78,6 +81,7 @@ export default function TerminalView({
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
   const initialSettings = useRef(settings);
+  const initialTheme = useRef(theme);
 
   // Scrollback search overlay. sendSearchRef is set inside the mount effect
   // below (where it has closure access to the live `ws`, which is replaced
@@ -187,7 +191,7 @@ export default function TerminalView({
         // Option held on the synthetic drag-start event on Mac clients for
         // force-selection to trigger at all.
         macOptionClickForcesSelection: true,
-        theme: terminalTheme,
+        theme: initialTheme.current,
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -820,6 +824,12 @@ export default function TerminalView({
     term.options.minimumContrastRatio = settings.minimumContrastRatio;
     refitRef.current?.();
   }, [settings]);
+
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = theme;
+  }, [theme]);
 
   useEffect(() => {
     if (active) {

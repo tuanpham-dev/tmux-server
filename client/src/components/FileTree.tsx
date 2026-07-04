@@ -3,7 +3,7 @@ import * as api from "../api";
 import { isPreviewablePath } from "../fileKinds";
 import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import Icon from "./Icon";
-import { getFileIconInfo, getFolderIconInfo } from "../utils/setiIcons";
+import { getFileIconResult, getFolderIconResult, useIconThemeVersion, type IconResult } from "../utils/iconThemes";
 
 
 interface Props {
@@ -31,6 +31,23 @@ const GIT_STATUS_LABEL: Record<GitFileStatus, string> = {
   conflicted: "!",
   ignored: "",
 };
+
+// A font-glyph icon (Seti, most VS Code icon themes) or an SVG one
+// (Material Icon Theme) — className carries the shared box sizing from
+// styles.css, this only supplies what differs per icon.
+function FileIcon({ className, result }: { className: string; result: IconResult }) {
+  if (result.kind === "svg") {
+    return <img className={className} src={result.url} alt="" />;
+  }
+  if (result.kind === "font") {
+    return (
+      <span className={className} style={{ color: result.color, fontFamily: result.fontFamily }}>
+        {result.char}
+      </span>
+    );
+  }
+  return <span className={className} />;
+}
 
 function GitStatusBadge({ status }: { status?: GitFileStatus }) {
   // "ignored" is conveyed by dimming the row alone; a badge letter would be
@@ -74,6 +91,9 @@ export default function FileTree({
   fileTreeRootMenuItems,
   prunePath,
 }: Props) {
+  // Unused value — subscribing is enough to re-render on icon-theme change,
+  // since getFileIconResult/getFolderIconResult read module state directly.
+  useIconThemeVersion();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Map<string, DirState>>(new Map());
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
@@ -283,7 +303,7 @@ export default function FileTree({
       const gitClass = entry.gitStatus ? ` git-status-${entry.gitStatus}` : "";
       if (entry.dir) {
         const isExpanded = expanded.has(entryPath);
-        const folderIcon = getFolderIconInfo(entry.name, isExpanded);
+        const folderIcon = getFolderIconResult(entry.name, isExpanded);
         return (
           <div key={entryPath} {...dragHandlers(entryPath)}>
             <button
@@ -302,9 +322,7 @@ export default function FileTree({
               <span className="chevron">
                 <Icon name={isExpanded ? "chevron-down" : "chevron-right"} />
               </span>
-              <span className="file-tree-folder-icon" style={{ color: folderIcon.color }}>
-                {folderIcon.char}
-              </span>
+              <FileIcon className="file-tree-folder-icon" result={folderIcon} />
               <span className="file-tree-name">{entry.name}</span>
               <GitStatusBadge status={entry.gitStatus} />
             </button>
@@ -317,7 +335,7 @@ export default function FileTree({
       // another <button>), so the whole row's hover background stays one
       // continuous element instead of two siblings with a gap between them.
       // Same accessible-div-as-button pattern as .window-item in Sidebar.
-      const fileIcon = getFileIconInfo(entry.name);
+      const fileIcon = getFileIconResult(entry.name);
       return (
         <div
           key={entryPath}
@@ -340,9 +358,7 @@ export default function FileTree({
           }}
         >
           <span className="chevron-spacer" />
-          <span className="file-tree-file-icon" style={{ color: fileIcon.color }}>
-            {fileIcon.char}
-          </span>
+          <FileIcon className="file-tree-file-icon" result={fileIcon} />
           <span className="file-tree-name">{entry.name}</span>
 
           {/* Single flex item so it's pushed right as one unit — putting

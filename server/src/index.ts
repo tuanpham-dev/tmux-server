@@ -4,6 +4,7 @@ import path from "node:path";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
+import { loadEnabledServerHooks } from "./extensions.js";
 import { isAllowedHost, isAllowedOrigin } from "./security.js";
 import { startViewSweeper } from "./viewSweeper.js";
 import { handleAttach } from "./wsAttach.js";
@@ -92,3 +93,6 @@ server.listen(PORT, HOST, () => {
 });
 
 startViewSweeper();
+loadEnabledServerHooks().catch((err) => {
+  console.error("failed to load extension server hooks:", err);
+});

@@ -15,7 +15,20 @@ import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
 import { isCsvPath, isImagePath, isJsonPath, isMediaPath, isPdfPath, isPreviewablePath, isYamlPath } from "./fileKinds";
-import { recorderState, resolveBindings, serializeEvent, type KeybindingOverrides } from "./keybindings";
+import {
+  findFileViewerFor,
+  loadExtensions,
+  setActiveContext,
+  setOpenFileTabHandler,
+  useExtensionRegistry,
+} from "./extensions";
+import {
+  recorderState,
+  resolveBindings,
+  serializeEvent,
+  type Command,
+  type KeybindingOverrides,
+} from "./keybindings";
 import {
   DEFAULT_SETTINGS,
   loadKeybindingOverrides,
@@ -24,8 +37,16 @@ import {
   saveSettings,
   type AppSettings,
 } from "./settings";
-import type { MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
+import {
+  applyColorThemeCssVars,
+  loadColorTheme,
+  resolveColorThemeValue,
+  terminalTheme as builtInTerminalTheme,
+  type ResolvedColorTheme,
+} from "./theme";
+import type { ExtensionInfo, MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
 import { collectDropped, uploadAll, type DroppedItems } from "./upload";
+import { resolveIconThemeValue, setActiveIconTheme } from "./utils/iconThemes";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
@@ -35,11 +56,16 @@ const SIDEBAR_MAX = 500;
 // future virtual-tab kind only needs to extend this one place, not every
 // imagePath-only check that predates it.
 function isRealTab(tab: Tab): boolean {
-  return tab.imagePath === undefined && tab.previewPath === undefined && tab.settingsView === undefined;
+  return (
+    tab.imagePath === undefined &&
+    tab.previewPath === undefined &&
+    tab.settingsView === undefined &&
+    tab.extViewerPath === undefined
+  );
 }
 
 function tabVirtualPath(tab: Tab): string | undefined {
-  return tab.imagePath ?? tab.previewPath;
+  return tab.imagePath ?? tab.previewPath ?? tab.extViewerPath;
 }
 
 // Keeps tabs pointed at the right session/window across an out-of-band
@@ -177,7 +203,19 @@ export default function App() {
   // including the skip-initial-persist rationale.
   const [keybindingOverrides, setKeybindingOverrides] =
     useState<KeybindingOverrides>(loadKeybindingOverrides);
-  const resolvedBindings = resolveBindings(keybindingOverrides);
+  // Extension-registered commands/viewers/panels (extensions.ts) — commands
+  // join the built-in list below (always "global" scope in v1, namespaced
+  // ext.<extensionId>.<cmd> so they can't collide with a built-in id);
+  // fileViewers/sidebarPanels are consumed further down.
+  const { commands: extCommands, fileViewers: extFileViewers, sidebarPanels: extSidebarPanels } =
+    useExtensionRegistry();
+  const extCommandDefs: Command[] = extCommands.map((c) => ({
+    id: c.id,
+    label: c.label,
+    defaultBinding: c.defaultBinding ?? "",
+    scope: "global",
+  }));
+  const resolvedBindings = resolveBindings(keybindingOverrides, extCommandDefs);
   const bindingsRef = useRef(resolvedBindings);
   bindingsRef.current = resolvedBindings;
 
@@ -230,6 +268,62 @@ export default function App() {
     }, 400);
     return () => window.clearTimeout(timer);
   }, [settings, keybindingOverrides]);
+
+  // Extensions: fetches the installed list and activates every enabled
+  // client entry (commands/viewers/panels register themselves into
+  // extensions.ts's module-level registries — see useExtensionRegistry).
+  // reloadExtensions is re-called after install/uninstall/enable/disable in
+  // the Settings dialog so this list and the color/icon theme dropdowns
+  // stay current without a full page reload.
+  const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
+  const reloadExtensions = useCallback(() => {
+    loadExtensions()
+      .then(setExtensions)
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    reloadExtensions();
+  }, [reloadExtensions]);
+
+  // Active color theme: resolves settings.colorTheme against the installed
+  // extension list, loads+parses the theme JSON (cached in theme.ts), then
+  // applies its CSS vars to <html> and hands its terminal palette to every
+  // TerminalView. "" or an unresolvable value both mean "built-in".
+  const [colorTheme, setColorTheme] = useState<ResolvedColorTheme | null>(null);
+  useEffect(() => {
+    const target = resolveColorThemeValue(settings.colorTheme, extensions);
+    if (!target) {
+      setColorTheme(null);
+      applyColorThemeCssVars(null);
+      return;
+    }
+    let cancelled = false;
+    loadColorTheme(target.extensionId, target.path)
+      .then((resolved) => {
+        if (cancelled) return;
+        setColorTheme(resolved);
+        applyColorThemeCssVars(resolved.cssVars);
+      })
+      .catch((err) => {
+        console.error(`failed to load color theme "${settings.colorTheme}":`, err);
+        if (!cancelled) {
+          setColorTheme(null);
+          applyColorThemeCssVars(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.colorTheme, extensions]);
+  const activeTerminalTheme = colorTheme?.terminalTheme ?? builtInTerminalTheme;
+
+  // Active icon theme: same resolve-against-installed-extensions shape as
+  // color themes above, but applied through iconThemes.ts's own module
+  // state (FileTree subscribes to it directly via useIconThemeVersion)
+  // rather than App-level React state, since nothing here needs the result.
+  useEffect(() => {
+    setActiveIconTheme(resolveIconThemeValue(settings.iconTheme, extensions)).catch(() => {});
+  }, [settings.iconTheme, extensions]);
 
   const [showSwitcher, setShowSwitcher] = useState(false);
 
@@ -411,6 +505,29 @@ export default function App() {
     });
   }, []);
 
+  // Same activate-or-create shape as openImageTab/openPreviewTab, keyed on
+  // (viewerId, path) — viewerId is stored on the tab so the render dispatch
+  // knows which registered component to use without re-matching by
+  // extension (a second extension could register for the same one later).
+  const openExtViewerTab = useCallback((viewerId: string, filePath: string) => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.extViewerId === viewerId && t.extViewerPath === filePath);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const tab: Tab = {
+        id: crypto.randomUUID(),
+        sessionName: "",
+        attachName: "",
+        extViewerId: viewerId,
+        extViewerPath: filePath,
+      };
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+  }, []);
+
   // Singleton settings tab — the third virtual-tab kind. Activate-or-create
   // like openImageTab, keyed on the marker itself since there's only one.
   const openSettingsTab = useCallback(() => {
@@ -525,6 +642,7 @@ export default function App() {
       if (activeTabId) closeTab(activeTabId);
     },
     "settings.open": openSettingsTab,
+    ...Object.fromEntries(extCommands.map((c) => [c.id, c.run])),
   };
 
   useEffect(() => {
@@ -920,6 +1038,20 @@ export default function App() {
       : activeSession?.windows.find((w) => w.active);
   const filesRootDir = activeWindow?.cwd ?? null;
 
+  // Feeds ctx.app.getActiveContext()/onDidChangeContext() for extensions —
+  // reuses the exact same activeRealTab/activeWindow derivation the FILES
+  // panel and lazygit pill already trust (see the comment above
+  // activeRealTab), so an extension sees the same "current session/window"
+  // a virtual tab (image/preview/settings/another ext viewer) doesn't
+  // collapse to.
+  useEffect(() => {
+    setActiveContext({
+      sessionName: activeRealTab?.sessionName ?? null,
+      windowIndex: activeWindow?.index ?? null,
+      cwd: filesRootDir,
+    });
+  }, [activeRealTab, activeWindow, filesRootDir]);
+
   const newWindowInDir = (cwd: string) => {
     if (!activeRealTab) return;
     createWindow(activeRealTab.sessionName, cwd);
@@ -1070,10 +1202,25 @@ export default function App() {
         openPreviewTab(filePath);
         return;
       }
+      // Extensions get no override authority over the built-in binary
+      // viewers above — only extensions no built-in viewer already claims
+      // reach here.
+      const extViewer = findFileViewerFor(filePath, extFileViewers);
+      if (extViewer) {
+        openExtViewerTab(extViewer.id, filePath);
+        return;
+      }
       openFileInSession(filePath, line);
     },
-    [openImageTab, openPreviewTab, openFileInSession],
+    [openImageTab, openPreviewTab, openExtViewerTab, extFileViewers, openFileInSession],
   );
+
+  // ctx.app.openFileTab(path) (extensions.ts) routes through the exact same
+  // dispatch a FILES-tree click uses, so an extension command that opens a
+  // file gets identical built-in-viewer-first behavior.
+  useEffect(() => {
+    setOpenFileTabHandler(openFileOrViewer);
+  }, [openFileOrViewer]);
 
   // Quick switcher's Shift+Enter action (also terminal ctrl+shift+click —
   // see TerminalView's onOpenFileSecondary). Mirrors the "Preview" escape
@@ -1111,7 +1258,7 @@ export default function App() {
       // openFileOrViewer) — this is the escape hatch to edit e.g. an SVG's
       // source in nvim. Doesn't apply to media/PDF (nvim on binary content
       // isn't useful).
-      if (!isDir && isImagePath(entryPath)) {
+      if (!isDir && (isImagePath(entryPath) || findFileViewerFor(entryPath, extFileViewers))) {
         items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
       }
       // Markdown/JSON/YAML open in nvim by default (unchanged) — Preview is
@@ -1133,6 +1280,7 @@ export default function App() {
       openFileInSession,
       openPreviewTab,
       deleteFileEntry,
+      extFileViewers,
     ],
   );
 
@@ -1193,6 +1341,7 @@ export default function App() {
             fileMenuItems={fileMenuItems}
             fileTreeRootMenuItems={fileTreeRootMenuItems}
             prunePath={prunePath}
+            extensionPanels={extSidebarPanels}
           />
           <div className="resize-handle" onMouseDown={startSidebarResize} />
         </>
@@ -1229,6 +1378,8 @@ export default function App() {
                   onSettingsChange={setSettings}
                   keybindingOverrides={keybindingOverrides}
                   onKeybindingOverridesChange={setKeybindingOverrides}
+                  extensions={extensions}
+                  onReloadExtensions={reloadExtensions}
                 />
               );
             }
@@ -1241,6 +1392,23 @@ export default function App() {
                   toolbarTarget={tabActionsEl}
                 />
               );
+            }
+            if (tab.extViewerPath !== undefined) {
+              // The registered viewer that opened this tab may have been
+              // unregistered since (extension disabled/uninstalled) — the
+              // tab still exists but has nothing left to render.
+              const viewer = extFileViewers.find((v) => v.id === tab.extViewerId);
+              if (!viewer) {
+                return (
+                  <div key={tab.id} className={`settings-host${active ? "" : " hidden"}`}>
+                    <div className="file-tree-empty">
+                      This viewer's extension is no longer active.
+                    </div>
+                  </div>
+                );
+              }
+              const ViewerComponent = viewer.component;
+              return <ViewerComponent key={tab.id} filePath={tab.extViewerPath} active={active} />;
             }
             if (tab.previewPath !== undefined) {
               const path = tab.previewPath;
@@ -1294,6 +1462,7 @@ export default function App() {
                 attachName={tab.attachName}
                 active={active}
                 settings={settings}
+                theme={activeTerminalTheme}
                 bindings={resolvedBindings}
                 onExit={() => closeTab(tab.id)}
                 onError={showError}

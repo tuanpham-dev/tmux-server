@@ -1,10 +1,15 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import type { RegisteredSidebarPanel } from "../extensions";
 import type { MenuItem, SidebarMode, TmuxSession, TmuxWindow } from "../types";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
 import PortsPanel from "./PortsPanel";
 
-type PanelId = "sessions" | "files" | "ports";
+// Built-in ids are the literal union below; an extension panel's id is
+// whatever registerSidebarPanel namespaced it to (ext.<extensionId>.<id>),
+// so the type widens to string — PANEL_IDS stays the source of truth for
+// "is this one of the three built-ins".
+type PanelId = string;
 
 interface PanelState {
   order: PanelId[];
@@ -29,12 +34,14 @@ function loadPanelState(): PanelState {
   try {
     const parsed = JSON.parse(localStorage.getItem(PANELS_KEY) ?? "null");
     if (!parsed || typeof parsed !== "object") return { ...DEFAULT_PANEL_STATE };
-    const order =
-      Array.isArray(parsed.order) &&
-      parsed.order.length === PANEL_IDS.length &&
-      PANEL_IDS.every((id) => parsed.order.includes(id))
-        ? (parsed.order as PanelId[])
-        : DEFAULT_PANEL_STATE.order;
+    // Any string id is accepted here (not just the 3 built-ins) so a
+    // persisted extension panel's position/collapsed/size survives a
+    // reload — the mount effect below drops anything no longer registered.
+    const order: PanelId[] =
+      Array.isArray(parsed.order) && parsed.order.every((id: unknown) => typeof id === "string")
+        ? [...(parsed.order as PanelId[])]
+        : [...DEFAULT_PANEL_STATE.order];
+    for (const id of PANEL_IDS) if (!order.includes(id)) order.push(id);
     return {
       order,
       collapsed: { ...DEFAULT_PANEL_STATE.collapsed, ...parsed.collapsed },
@@ -75,6 +82,7 @@ interface Props {
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
   fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
   prunePath: { path: string } | null;
+  extensionPanels: RegisteredSidebarPanel[];
 }
 
 export default function Sidebar({
@@ -104,6 +112,7 @@ export default function Sidebar({
   fileMenuItems,
   fileTreeRootMenuItems,
   prunePath,
+  extensionPanels,
 }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -118,6 +127,27 @@ export default function Sidebar({
     ports: null,
   });
   const [portsRefreshKey, setPortsRefreshKey] = useState(0);
+
+  // Keeps panelState in sync as extensions activate/deactivate: appends any
+  // newly-registered panel id (collapsed/size default to the same values a
+  // fresh built-in gets), and drops any id no longer registered — a
+  // disabled/uninstalled extension's panel simply disappears rather than
+  // leaving an empty row.
+  useEffect(() => {
+    const extIds = extensionPanels.map((p) => p.id);
+    setPanelState((prev) => {
+      const validIds = new Set([...PANEL_IDS, ...extIds]);
+      const order = prev.order.filter((id) => validIds.has(id));
+      for (const id of extIds) if (!order.includes(id)) order.push(id);
+      const collapsed: Record<PanelId, boolean> = {};
+      const sizes: Record<PanelId, number> = {};
+      for (const id of order) {
+        collapsed[id] = prev.collapsed[id] ?? false;
+        sizes[id] = prev.sizes[id] ?? 1;
+      }
+      return { order, collapsed, sizes };
+    });
+  }, [extensionPanels]);
   const [dragPanelId, setDragPanelId] = useState<PanelId | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ id: PanelId; edge: "top" | "bottom" } | null>(
     null,
@@ -306,7 +336,8 @@ export default function Sidebar({
   const panelTitle = (id: PanelId): string => {
     if (id === "sessions") return mode === "sessions" ? "Sessions" : "Directories";
     if (id === "ports") return "Ports";
-    return filesRootDir ?? "Files";
+    if (id === "files") return filesRootDir ?? "Files";
+    return extensionPanels.find((p) => p.id === id)?.title ?? id;
   };
 
   const panelActions = (id: PanelId) => {
@@ -344,11 +375,14 @@ export default function Sidebar({
         </button>
       );
     }
-    return (
-      <button className="icon-button" title="Refresh" onClick={onFilesRefresh}>
-        <Icon name="refresh" />
-      </button>
-    );
+    if (id === "files") {
+      return (
+        <button className="icon-button" title="Refresh" onClick={onFilesRefresh}>
+          <Icon name="refresh" />
+        </button>
+      );
+    }
+    return null;
   };
 
   const panelContent = (id: PanelId) => {
@@ -379,21 +413,27 @@ export default function Sidebar({
     if (id === "ports") {
       return <PortsPanel refreshKey={portsRefreshKey} />;
     }
-    return (
-      <FileTree
-        rootDir={filesRootDir}
-        showGitStatus={showGitStatus}
-        onDropFiles={onDropFiles}
-        refreshKey={filesRefreshKey}
-        onOpenFile={onOpenFile}
-        onPreviewFile={onPreviewFile}
-        onBranchChange={setFilesBranch}
-        onShowMenu={onShowMenu}
-        fileMenuItems={fileMenuItems}
-        fileTreeRootMenuItems={fileTreeRootMenuItems}
-        prunePath={prunePath}
-      />
-    );
+    if (id === "files") {
+      return (
+        <FileTree
+          rootDir={filesRootDir}
+          showGitStatus={showGitStatus}
+          onDropFiles={onDropFiles}
+          refreshKey={filesRefreshKey}
+          onOpenFile={onOpenFile}
+          onPreviewFile={onPreviewFile}
+          onBranchChange={setFilesBranch}
+          onShowMenu={onShowMenu}
+          fileMenuItems={fileMenuItems}
+          fileTreeRootMenuItems={fileTreeRootMenuItems}
+          prunePath={prunePath}
+        />
+      );
+    }
+    const panel = extensionPanels.find((p) => p.id === id);
+    if (!panel) return null;
+    const PanelComponent = panel.component;
+    return <PanelComponent />;
   };
 
   // Converts a pointer drag into flex-grow weights for the two panels

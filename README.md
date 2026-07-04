@@ -10,6 +10,7 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 - **FILES panel** — browse the active window's working directory, drag-and-drop upload (files or folders, with conflict handling and progress), git status badges, and a context menu for creating, renaming, deleting, downloading (folders as zip), and copying paths. Clicking a file opens it in the pane's running `nvim`, or a new window if it's busy.
 - **tmux-backed scrollbar** — draggable, since tmux (not the browser) owns scrollback.
 - **Theming** — matches VS Code's Plastic Legacy theme and IBM Plex Mono by default; configurable via the in-app Settings dialog (font, size, cursor style, etc.).
+- **Extensions** — install VS Code color themes and icon themes unchanged, or a small custom extension that adds a command, a file viewer, a sidebar panel, and a server route. See [Extensions](#extensions) below.
 - **Auto-reconnect** — a dropped connection (server restart, laptop sleep) reconnects automatically instead of losing the tab; open tabs also survive a browser reload.
 - **Installable PWA** — installable app shell with offline caching for the UI; terminal/session traffic (`/api`, `/ws`) is always network-only.
 
@@ -101,12 +102,69 @@ node tunnel.mjs --url https://myhost --header 'Cookie: session=...' 3000
 
 The nginx config above needs no changes — `/ws/tunnel` is covered by the same `location /` WebSocket proxy block as terminal sessions. Note that if a proxy strips the `Cookie`/`Authorization` header before forwarding upstream (some hardening configs explicitly clear `Authorization`), the panel has no way to detect that and will silently omit the header — same as if there were no auth layer at all.
 
+## Extensions
+
+Extensions live as folders under `~/.config/tmux-server/extensions/<folder>/` — either drop one in directly (the server picks it up on next scan/restart), or install a packed `.vsix` from the Settings dialog's **Extensions** section, which also lists what's installed and lets you enable/disable or uninstall each one. A worked example covering every surface below is in [`examples/hello-extension`](examples/hello-extension).
+
+### Manifest format
+
+Each extension has a `package.json` — a subset of the real VS Code extension manifest, plus one custom field:
+
+```json
+{
+  "name": "my-extension",
+  "publisher": "me",
+  "version": "1.0.0",
+  "displayName": "My Extension",
+  "description": "What it does",
+  "contributes": {
+    "themes": [{ "label": "My Theme", "uiTheme": "vs-dark", "path": "./themes/my-theme-color-theme.json" }],
+    "iconThemes": [{ "id": "my-icons", "label": "My Icons", "path": "./themes/my-icon-theme.json" }]
+  },
+  "tmuxServer": {
+    "client": "./client.js",
+    "server": "./server.js"
+  }
+}
+```
+
+The extension's id is `publisher.name` (falling back to its folder name). `contributes.themes`/`contributes.iconThemes` point at real, unmodified VS Code color-theme / icon-theme JSON — comments and trailing commas are tolerated, and one level of `include` is resolved. `tmuxServer.client`/`tmuxServer.server` are both optional; either, neither, or both may be set.
+
+### Color themes
+
+A theme JSON's `colors` map is read via VS Code's own workbench keys (`editor.background`, `tab.activeBackground`, `list.hoverBackground`, `button.background`, `terminal.ansiRed`, …) — anything not set falls back to the built-in Plastic Legacy value for that slot, so a partial theme never breaks the UI. Applies live, no reload — both the app chrome and the terminal palette.
+
+### Icon themes
+
+Both icon styles VS Code themes use are supported: font-glyph (`fontCharacter`/`fontColor`, the bundled Seti default's style — the theme's own font is loaded at runtime via `FontFace`) and SVG (`iconPath`, the Material Icon Theme style). Matched by filename, then extension, then a theme-wide default, same as VS Code.
+
+### Functionality
+
+`tmuxServer.client` is a plain ESM module (no JSX, no bundler) exporting `activate(ctx)`:
+
+- `ctx.React` — the app's own React instance (use `React.createElement`, or a JSX build step of your own that targets it)
+- `ctx.registerCommand({ id, label, defaultBinding?, run })` — joins the built-in command list and the Keyboard settings section, auto-namespaced to `ext.<extensionId>.<id>`
+- `ctx.registerFileViewer({ id, extensions, component })` — a component rendered full-tab for files with one of the given extensions (no override authority over the built-in image/media/PDF viewers)
+- `ctx.registerSidebarPanel({ id, title, component })` — joins the sidebar accordion alongside SESSIONS/FILES/PORTS
+- `ctx.app.getActiveContext()` / `ctx.app.onDidChangeContext(cb)` — the active tab's session name / window index / cwd
+- `ctx.app.openFileTab(path)` — opens a path through the same dispatch a FILES-tree click uses
+- `ctx.serverFetch(path, init?)` — `fetch()` scoped to this extension's own server route
+
+`tmuxServer.server` is a plain ESM module exporting `activate({ router, log })` — `router` is an Express router mounted at `/api/ext/<extensionId>` for as long as the extension stays enabled; disabling/uninstalling unmounts the routes immediately, though the loaded module itself stays resident until the server restarts (Node can't unload an ES module) — the Settings dialog shows a restart hint for this case.
+
+A client entry activates once at page load; enabling, disabling, or installing one takes a page reload to fully apply. Themes and icon themes need no reload.
+
+### Security
+
+Installing an extension with a `tmuxServer.server` entry runs its code as the server process's user, and a `tmuxServer.client` entry runs with full access to the page (same origin, same DOM) — identical in kind to the access this app already gives you through the terminal itself, but only install extensions you trust.
+
 ## Project layout
 
 ```
 server/   Express + ws + node-pty — REST API for tmux operations, WS bridge to a PTY running `tmux attach`
 client/   React + TypeScript + xterm.js — the browser UI
 cli/      tunnel.mjs — standalone port-forwarding client, served at GET /tunnel.mjs
+examples/ hello-extension — a reference extension covering every surface in Extensions
 plans/    Design docs written during development
 ```
 

@@ -1,14 +1,20 @@
 import { useEffect, useState } from "react";
+import * as api from "../api";
+import { useExtensionRegistry } from "../extensions";
 import {
   COMMANDS,
   formatBinding,
   recorderState,
   resolveBindings,
   serializeEvent,
+  type Command,
   type KeybindingOverrides,
 } from "../keybindings";
 import type { AppSettings } from "../settings";
 import { DEFAULT_SETTINGS } from "../settings";
+import { listColorThemeOptions } from "../theme";
+import type { ExtensionInfo } from "../types";
+import { listIconThemeOptions } from "../utils/iconThemes";
 import Icon from "./Icon";
 
 interface Props {
@@ -17,15 +23,18 @@ interface Props {
   onSettingsChange: (settings: AppSettings) => void;
   keybindingOverrides: KeybindingOverrides;
   onKeybindingOverridesChange: (overrides: KeybindingOverrides) => void;
+  extensions: ExtensionInfo[];
+  onReloadExtensions: () => void;
 }
 
-type Section = "terminal" | "behavior" | "ui" | "keyboard";
+type Section = "terminal" | "behavior" | "ui" | "keyboard" | "extensions";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
   { id: "keyboard", label: "Keyboard" },
+  { id: "extensions", label: "Extensions" },
 ];
 
 // Draft so intermediate keystrokes ("1" on the way to "18") don't get
@@ -72,18 +81,40 @@ export default function SettingsView({
   onSettingsChange,
   keybindingOverrides,
   onKeybindingOverridesChange,
+  extensions,
+  onReloadExtensions,
 }: Props) {
   const [section, setSection] = useState<Section>("terminal");
   const [filter, setFilter] = useState("");
   const [recordingId, setRecordingId] = useState<string | null>(null);
+  const [pendingUninstallId, setPendingUninstallId] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [extensionsError, setExtensionsError] = useState<string | null>(null);
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onSettingsChange({ ...settings, [key]: value });
 
-  const resolved = resolveBindings(keybindingOverrides);
-  // combo → command ids sharing it, for the conflict warning.
+  // Extension-registered commands join the built-in list everywhere this
+  // section lists/resolves/records commands — see App.tsx's matching merge
+  // for the dispatcher side.
+  const { commands: extCommands } = useExtensionRegistry();
+  const extCommandDefs: Command[] = extCommands.map((c) => ({
+    id: c.id,
+    label: c.label,
+    defaultBinding: c.defaultBinding ?? "",
+    scope: "global",
+  }));
+  const allCommands: Command[] = [...COMMANDS, ...extCommandDefs];
+
+  const resolved = resolveBindings(keybindingOverrides, extCommandDefs);
+  // combo → command ids sharing it, for the conflict warning. An empty
+  // binding (an extension command with no defaultBinding, never assigned
+  // one) is intentionally excluded — several of those otherwise look like
+  // mutual conflicts under the shared "" key.
   const byBinding: Record<string, string[]> = {};
-  for (const cmd of COMMANDS) (byBinding[resolved[cmd.id]] ??= []).push(cmd.id);
+  for (const cmd of allCommands) {
+    if (resolved[cmd.id]) (byBinding[resolved[cmd.id]] ??= []).push(cmd.id);
+  }
 
   // Chord recorder. The window-level capture listener plus the module-level
   // recorderState flag (checked by App's dispatcher and read here) means the
@@ -100,7 +131,7 @@ export default function SettingsView({
       }
       const combo = serializeEvent(e);
       if (!combo) return; // modifier alone — keep waiting for the chord
-      const cmd = COMMANDS.find((c) => c.id === recordingId);
+      const cmd = allCommands.find((c) => c.id === recordingId);
       const next = { ...keybindingOverrides };
       // Recording the default back is "no override", so a future default
       // change still reaches this command.
@@ -128,7 +159,7 @@ export default function SettingsView({
   };
 
   const filterLower = filter.trim().toLowerCase();
-  const visibleCommands = COMMANDS.filter(
+  const visibleCommands = allCommands.filter(
     (cmd) =>
       !filterLower ||
       cmd.label.toLowerCase().includes(filterLower) ||
@@ -303,6 +334,36 @@ export default function SettingsView({
             <h2 className="settings-section-title">UI</h2>
 
             <label className="settings-row">
+              <span className="settings-label">Color theme</span>
+              <select
+                className="dialog-input settings-select"
+                value={settings.colorTheme}
+                onChange={(e) => set("colorTheme", e.target.value)}
+              >
+                {listColorThemeOptions(extensions).map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="settings-row">
+              <span className="settings-label">Icon theme</span>
+              <select
+                className="dialog-input settings-select"
+                value={settings.iconTheme}
+                onChange={(e) => set("iconTheme", e.target.value)}
+              >
+                {listIconThemeOptions(extensions).map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="settings-row">
               <span className="settings-label">On-screen key bar (touch)</span>
               <select
                 className="dialog-input settings-select"
@@ -342,9 +403,9 @@ export default function SettingsView({
                 const binding = resolved[cmd.id];
                 const overridden = keybindingOverrides[cmd.id] !== undefined;
                 const isRecording = recordingId === cmd.id;
-                const conflicts = byBinding[binding].filter((id) => id !== cmd.id);
+                const conflicts = (byBinding[binding] ?? []).filter((id) => id !== cmd.id);
                 const conflictLabels = conflicts
-                  .map((id) => COMMANDS.find((c) => c.id === id)?.label ?? id)
+                  .map((id) => allCommands.find((c) => c.id === id)?.label ?? id)
                   .join(", ");
                 return (
                   <div
@@ -389,7 +450,113 @@ export default function SettingsView({
           </>
         )}
 
-        <div className="settings-footer">
+        {section === "extensions" && (
+          <>
+            <h2 className="settings-section-title">Extensions</h2>
+
+            <label className="dialog-button secondary extension-install-button">
+              {installing ? "Installing…" : "Install from .vsix"}
+              <input
+                type="file"
+                accept=".vsix"
+                disabled={installing}
+                style={{ display: "none" }}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  setInstalling(true);
+                  setExtensionsError(null);
+                  try {
+                    await api.installExtensionVsix(file);
+                    onReloadExtensions();
+                  } catch (err) {
+                    setExtensionsError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setInstalling(false);
+                  }
+                }}
+              />
+            </label>
+            <span className="settings-hint">
+              Or drop an extension folder into ~/.config/tmux-server/extensions/ and reopen this tab.
+            </span>
+
+            {extensionsError && <div className="extension-error">{extensionsError}</div>}
+
+            <div className="extension-list">
+              {extensions.length === 0 && (
+                <div className="keybinding-empty">No extensions installed</div>
+              )}
+              {extensions.map((ext) => (
+                <div key={ext.id} className="extension-row">
+                  <label className="checkbox-row extension-row-toggle">
+                    <input
+                      type="checkbox"
+                      checked={ext.enabled}
+                      onChange={(e) => {
+                        api
+                          .setExtensionEnabled(ext.id, e.target.checked)
+                          .then(onReloadExtensions)
+                          .catch((err) => setExtensionsError(err instanceof Error ? err.message : String(err)));
+                      }}
+                    />
+                  </label>
+                  <div className="extension-row-info">
+                    <div className="extension-row-title">
+                      {ext.displayName} <span className="extension-row-version">v{ext.version}</span>
+                    </div>
+                    {ext.description && <div className="extension-row-description">{ext.description}</div>}
+                    <div className="extension-row-contributes">
+                      {ext.themes.length > 0 && <span>{ext.themes.length} color theme(s)</span>}
+                      {ext.iconThemes.length > 0 && <span>{ext.iconThemes.length} icon theme(s)</span>}
+                      {ext.hasClient && <span>UI functionality</span>}
+                      {ext.hasServer && <span>Server functionality</span>}
+                    </div>
+                    {ext.hasClient && (
+                      <div className="settings-hint">Reload the page for a change here to take effect.</div>
+                    )}
+                    {ext.hasServer && !ext.enabled && (
+                      <div className="settings-hint">
+                        Restart the tmux-server server to fully unload a disabled extension's server code.
+                      </div>
+                    )}
+                  </div>
+                  {pendingUninstallId === ext.id ? (
+                    <div className="extension-row-confirm">
+                      <span>Uninstall?</span>
+                      <button
+                        className="dialog-button primary"
+                        onClick={() => {
+                          api
+                            .uninstallExtension(ext.id)
+                            .then(onReloadExtensions)
+                            .catch((err) => setExtensionsError(err instanceof Error ? err.message : String(err)))
+                            .finally(() => setPendingUninstallId(null));
+                        }}
+                      >
+                        Yes
+                      </button>
+                      <button className="dialog-button secondary" onClick={() => setPendingUninstallId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="icon-button keybinding-action"
+                      title="Uninstall"
+                      onClick={() => setPendingUninstallId(ext.id)}
+                    >
+                      <Icon name="trash" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="settings-footer" style={section === "extensions" ? { display: "none" } : undefined}>
           {section === "keyboard" ? (
             <button
               className="dialog-button secondary"

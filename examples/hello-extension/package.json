@@ -1,0 +1,27 @@
+{
+  "name": "hello-extension",
+  "publisher": "tmux-server-samples",
+  "version": "1.0.0",
+  "displayName": "Hello Extension",
+  "description": "Reference extension: a color theme, an icon theme, and functionality (command, .demo file viewer, sidebar panel, server route).",
+  "contributes": {
+    "themes": [
+      {
+        "label": "Hello Purple",
+        "uiTheme": "vs-dark",
+        "path": "./themes/hello-purple-color-theme.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "hello-icons",
+        "label": "Hello Icons",
+        "path": "./themes/hello-icon-theme.json"
+      }
+    ]
+  },
+  "tmuxServer": {
+    "client": "./client.js",
+    "server": "./server.js"
+  }
+}

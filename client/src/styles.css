@@ -35,6 +35,39 @@
   --error: #d74e42;
   --hover: #a9b2c31a;
   --selection: #a9b2c333;
+
+  /* Granular surface vars for extension color themes (see theme.ts's
+     workbench-key mapping). Each defaults to the base tone it already
+     equals today, so introducing them is a pure refactor — a theme can
+     override any subset and the rest keep falling back to a base tone. Not
+     every var(--accent)/var(--hover) usage below was moved onto one of
+     these: drag-reorder indicators and one-off accent buttons (e.g. the
+     ports panel's copy button) intentionally stay on the base tones, since
+     they're a different existing color choice, not this concept. */
+  --tab-bar-bg: var(--panel-bg);
+  --tab-inactive-bg: var(--panel-bg);
+  --tab-inactive-fg: var(--fg-inactive);
+  --tab-active-bg: var(--bg);
+  --tab-active-fg: var(--fg-bright);
+  --tab-active-border: var(--accent);
+  --tab-border: var(--border);
+
+  --list-hover-bg: var(--hover);
+  --list-active-bg: var(--selection);
+  --list-active-fg: #ffffff;
+  --sidebar-header-bg: var(--bg);
+
+  --scrollbar-thumb-bg: var(--hover);
+  --scrollbar-thumb-hover-bg: var(--selection);
+
+  --input-border: var(--border);
+  --focus-border: var(--accent);
+
+  --button-bg: var(--button);
+  --button-fg: #ffffff;
+
+  --badge-bg: var(--hover);
+  --badge-fg: var(--fg-inactive);
 }
 
 * {
@@ -54,7 +87,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--hover) transparent;
+  scrollbar-color: var(--scrollbar-thumb-bg) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -67,12 +100,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--hover);
+  background: var(--scrollbar-thumb-bg);
 }
 
 ::-webkit-scrollbar-thumb:hover,
 ::-webkit-scrollbar-thumb:active {
-  background: var(--selection);
+  background: var(--scrollbar-thumb-hover-bg);
 }
 
 ::-webkit-scrollbar-corner {
@@ -134,8 +167,8 @@ body.resizing {
 }
 
 .mode-button.active {
-  color: #ffffff;
-  background: var(--selection);
+  color: var(--list-active-fg);
+  background: var(--list-active-bg);
 }
 
 .sidebar-topbar {
@@ -175,13 +208,13 @@ body.resizing {
   gap: 4px;
   padding: 0 4px;
   cursor: pointer;
-  background: var(--bg);
+  background: var(--sidebar-header-bg);
   border-top: 2px solid transparent;
   border-bottom: 2px solid transparent;
 }
 
 .panel-header:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .panel-header.dragging {
@@ -242,8 +275,8 @@ body.resizing-row {
   white-space: nowrap;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--hover);
-  color: var(--fg-inactive);
+  background: var(--badge-bg);
+  color: var(--badge-fg);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: normal;
@@ -276,7 +309,7 @@ body.resizing-row {
 }
 
 .icon-button:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .icon-button:disabled {
@@ -299,7 +332,7 @@ body.resizing-row {
   margin: 2px 8px 6px;
   padding: 4px 6px;
   background: var(--input-bg);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--focus-border);
   border-radius: 2px;
   color: var(--fg);
   font-size: 14px;
@@ -320,7 +353,7 @@ body.resizing-row {
 }
 
 .session-row:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .session-item {
@@ -365,7 +398,7 @@ body.resizing-row {
 }
 
 .row-add-button:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
   color: var(--fg-bright);
 }
 
@@ -401,11 +434,11 @@ body.resizing-row {
 }
 
 .window-item:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .window-item.active-window .window-label {
-  color: #ffffff;
+  color: var(--list-active-fg);
   font-weight: 600;
 }
 
@@ -457,7 +490,7 @@ body.resizing-row {
 }
 
 .window-kill-button:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
   color: var(--fg-bright);
 }
 
@@ -467,8 +500,8 @@ body.resizing-row {
 }
 
 .session-item.active {
-  background: var(--selection);
-  color: #ffffff;
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
 }
 
 .session-dot {
@@ -506,7 +539,7 @@ body.resizing-row {
 }
 
 .file-tree.drag-over {
-  background: var(--hover);
+  background: var(--list-hover-bg);
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
 }
@@ -530,7 +563,7 @@ body.resizing-row {
 
 .file-tree-dir:hover,
 .file-tree-dir.drag-over {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .file-tree-dir.drag-over {
@@ -543,7 +576,7 @@ body.resizing-row {
 }
 
 .file-tree-file:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 /* Groups the preview button + git badge as one flex item, pushed right as a
@@ -584,7 +617,7 @@ body.resizing-row {
 }
 
 .file-tree-preview-button:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
   color: var(--fg-bright);
 }
 
@@ -604,18 +637,24 @@ body.resizing-row {
   min-width: 14px;
 }
 
+/* font-family is set inline per-icon now (utils/iconThemes.ts resolves it
+   per icon theme) — the built-in Seti theme still resolves to "seti", so
+   this is a pure refactor, not a behavior change. Also doubles as the sizing
+   box for an SVG icon theme's <img> (Material Icon Theme's style), which
+   gets the same className directly rather than a font glyph. */
 .file-tree-folder-icon,
 .file-tree-file-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 17px;
+  height: 17px;
   min-width: 17px;
-  font-family: "seti";
   font-size: 17px;
   line-height: 1;
   text-align: center;
   flex-shrink: 0;
+  object-fit: contain;
 }
 
 
@@ -680,7 +719,7 @@ body.resizing-row {
 .tab-bar {
   display: flex;
   align-items: stretch;
-  background: var(--panel-bg);
+  background: var(--tab-bar-bg);
   min-height: 35px;
 }
 
@@ -713,10 +752,10 @@ body.resizing-row {
   align-items: center;
   gap: 6px;
   padding: 0 8px 0 12px;
-  background: var(--panel-bg);
-  border-right: 1px solid var(--border);
+  background: var(--tab-inactive-bg);
+  border-right: 1px solid var(--tab-border);
   border-left: 1px solid transparent;
-  color: var(--fg-inactive);
+  color: var(--tab-inactive-fg);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
@@ -724,9 +763,9 @@ body.resizing-row {
 }
 
 .tab.active {
-  background: var(--bg);
-  color: var(--fg-bright);
-  box-shadow: inset 0 1px 0 var(--accent);
+  background: var(--tab-active-bg);
+  color: var(--tab-active-fg);
+  box-shadow: inset 0 1px 0 var(--tab-active-border);
 }
 
 .tab.dragging {
@@ -766,7 +805,7 @@ body.resizing-row {
 }
 
 .tab-close:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 /* ---- Terminals ---- */
@@ -1116,7 +1155,7 @@ body.resizing-row {
   width: 100%;
   padding: 4px 24px 4px 8px;
   background: var(--input-bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border);
   border-radius: 4px;
   color: var(--fg);
   font-size: 12.5px;
@@ -1124,7 +1163,7 @@ body.resizing-row {
 }
 
 .json-search-input:focus {
-  border-color: var(--accent);
+  border-color: var(--focus-border);
 }
 
 .json-search-clear {
@@ -1466,7 +1505,7 @@ body.scrollbar-dragging {
   width: 180px;
   padding: 4px 6px;
   background: var(--input-bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border);
   border-radius: 2px;
   color: var(--fg);
   font-size: 12px;
@@ -1474,7 +1513,7 @@ body.scrollbar-dragging {
 }
 
 .terminal-search-input:focus {
-  border-color: var(--accent);
+  border-color: var(--focus-border);
 }
 
 .terminal-search-btn {
@@ -1678,7 +1717,7 @@ body.scrollbar-dragging {
 }
 
 .csv-hidden-panel-item:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .csv-hidden-panel-item-name {
@@ -1710,7 +1749,7 @@ body.scrollbar-dragging {
   max-width: 260px;
   padding: 3px 8px;
   background: var(--input-bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border);
   border-radius: 4px;
   color: var(--fg);
   font-size: 12.5px;
@@ -1718,7 +1757,7 @@ body.scrollbar-dragging {
 }
 
 .csv-find-input:focus {
-  border-color: var(--accent);
+  border-color: var(--focus-border);
 }
 
 .csv-find-input-error {
@@ -2177,8 +2216,8 @@ body.scrollbar-dragging {
 }
 
 .context-menu-item:hover {
-  background: var(--selection);
-  color: #ffffff;
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
 }
 
 .context-menu-item.danger {
@@ -2186,7 +2225,7 @@ body.scrollbar-dragging {
 }
 
 .context-menu-item.danger:hover {
-  background: var(--selection);
+  background: var(--list-active-bg);
   color: var(--error);
 }
 
@@ -2229,7 +2268,7 @@ body.scrollbar-dragging {
   width: 100%;
   padding: 6px 8px;
   background: var(--input-bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border);
   border-radius: 4px;
   color: var(--fg);
   font-size: 13px;
@@ -2237,7 +2276,7 @@ body.scrollbar-dragging {
 }
 
 .dialog-input:focus {
-  border-color: var(--accent);
+  border-color: var(--focus-border);
 }
 
 .dialog-buttons {
@@ -2256,9 +2295,9 @@ body.scrollbar-dragging {
 }
 
 .dialog-button.primary {
-  background: var(--button);
-  color: #ffffff;
-  border-color: var(--button);
+  background: var(--button-bg);
+  color: var(--button-fg);
+  border-color: var(--button-bg);
 }
 
 .dialog-button.primary:hover {
@@ -2272,11 +2311,11 @@ body.scrollbar-dragging {
 }
 
 .dialog-button.secondary:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .dialog-button:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 1px solid var(--focus-border);
   outline-offset: 1px;
 }
 
@@ -2317,12 +2356,12 @@ body.scrollbar-dragging {
 }
 
 .settings-nav-item:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .settings-nav-item.active {
-  background: var(--selection);
-  color: #ffffff;
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
 }
 
 .settings-content {
@@ -2368,7 +2407,7 @@ body.scrollbar-dragging {
 }
 
 .keybinding-row:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .keybinding-label {
@@ -2386,13 +2425,13 @@ body.scrollbar-dragging {
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--hover);
+  background: var(--badge-bg);
   color: var(--fg-bright);
 }
 
 .keybinding-chip.recording {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--focus-border);
+  color: var(--focus-border);
   font-family: inherit;
 }
 
@@ -2468,7 +2507,7 @@ body.scrollbar-dragging {
 }
 
 .checkbox-row input {
-  accent-color: var(--accent);
+  accent-color: var(--focus-border);
   margin-top: 2px;
 }
 
@@ -2477,6 +2516,87 @@ body.scrollbar-dragging {
   font-size: 11px;
   color: var(--fg-inactive);
   margin-top: 2px;
+}
+
+.extension-install-button {
+  display: inline-block;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+
+.extension-error {
+  margin: 8px 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--error);
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.extension-list {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.extension-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 4px;
+  background: var(--panel-bg);
+}
+
+.extension-row-toggle {
+  margin: 2px 0 0;
+}
+
+.extension-row-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.extension-row-title {
+  font-weight: 600;
+  color: var(--fg-bright);
+}
+
+.extension-row-version {
+  font-weight: normal;
+  color: var(--fg-inactive);
+  font-size: 11px;
+}
+
+.extension-row-description {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.extension-row-contributes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.extension-row-contributes span {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  font-size: 10.5px;
+}
+
+.extension-row-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-bright);
+  flex-shrink: 0;
 }
 
 /* ---- Upload progress banner ---- */
@@ -2553,12 +2673,12 @@ body.scrollbar-dragging {
 }
 
 .port-item:hover {
-  background: var(--hover);
+  background: var(--list-hover-bg);
 }
 
 .port-item.selected {
-  background: var(--selection);
-  color: #ffffff;
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
 }
 
 .port-number {
@@ -2579,8 +2699,8 @@ body.scrollbar-dragging {
   font-size: 12px;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--hover);
-  color: var(--fg-inactive);
+  background: var(--badge-bg);
+  color: var(--badge-fg);
 }
 
 .port-address {
@@ -2667,7 +2787,7 @@ body.scrollbar-dragging {
   padding: 12px 14px;
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--input-border);
   color: var(--fg-bright);
   font-size: 14px;
   outline: none;
@@ -2698,7 +2818,7 @@ body.scrollbar-dragging {
 }
 
 .quick-switcher-item.selected {
-  background: var(--hover);
+  background: var(--list-hover-bg);
   color: var(--fg-bright);
 }
 
