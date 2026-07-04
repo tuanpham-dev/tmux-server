@@ -139,7 +139,7 @@
 
 .json-search-result-path {
   flex-shrink: 0;
-  color: var(--accent);
+  color: var(--fg-accent);
   font-family: "IBM Plex Mono", monospace;
 }
 
@@ -190,7 +190,7 @@
 }
 
 .json-tree-label {
-  color: var(--accent);
+  color: var(--fg-accent);
 }
 
 .json-tree-label-clickable {

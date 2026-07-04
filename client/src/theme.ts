@@ -92,6 +92,14 @@ const CSS_VAR_KEY_CHAINS: Record<string, string[]> = {
   "--border": ["panel.border", "sideBar.border", "widget.border"],
   "--input-bg": ["input.background"],
   "--accent": ["focusBorder"],
+  // Distinct from --accent: focusBorder is a border/outline color (VS Code
+  // itself only ever renders it as a thin ring or 1-2px edge), so a theme is
+  // free to make it low-contrast against the editor background — One Dark
+  // Pro's focusBorder (#3e4452 on #282c34, ~1.4:1) is nearly invisible as
+  // body text. textLink.foreground is the workbench key VS Code themes
+  // actually design to be read as text, so anything rendering an accent
+  // color AS TEXT (not a border) should use --fg-accent instead.
+  "--fg-accent": ["textLink.foreground"],
   "--button": ["button.background"],
   "--error": ["errorForeground"],
   "--hover": ["list.hoverBackground"],

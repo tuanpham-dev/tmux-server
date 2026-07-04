@@ -73,7 +73,7 @@
 }
 
 .csv-toolbar-btn-active {
-  color: var(--accent);
+  color: var(--fg-accent);
   background: var(--hover);
 }
 
@@ -471,7 +471,7 @@
 }
 
 .csv-sort-active {
-  color: var(--accent);
+  color: var(--fg-accent);
 }
 
 .csv-row:hover .csv-td {
@@ -528,7 +528,7 @@
 }
 
 .csv-rownum-button-selected {
-  color: var(--accent);
+  color: var(--fg-accent);
   font-weight: 600;
 }
 

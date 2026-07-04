@@ -68,7 +68,7 @@
 }
 
 .markdown-body a {
-  color: var(--accent);
+  color: var(--fg-accent);
   text-decoration: none;
 }
 
