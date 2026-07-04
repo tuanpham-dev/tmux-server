@@ -110,6 +110,18 @@ export default function App() {
     if (activeTabId) localStorage.setItem("activeTabId", activeTabId);
     else localStorage.removeItem("activeTabId");
   }, [activeTabId]);
+
+  // Activation history, most recent first — closing the active tab returns
+  // to the previously active tab (VS Code behavior) rather than a positional
+  // neighbor. A ref: only read inside closeTab's state updater.
+  const mruTabIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    if (!activeTabId) return;
+    mruTabIdsRef.current = [
+      activeTabId,
+      ...mruTabIdsRef.current.filter((tid) => tid !== activeTabId),
+    ];
+  }, [activeTabId]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [error, setError] = useState<string | null>(null);
   // TabBar's right-side actions container — an image tab portals its zoom
@@ -432,6 +444,10 @@ export default function App() {
         const next = prev.filter((t) => t.id !== id);
         setActiveTabId((current) => {
           if (current !== id) return current;
+          const previous = mruTabIdsRef.current.find(
+            (tid) => tid !== id && next.some((t) => t.id === tid),
+          );
+          if (previous) return previous;
           const neighbor = next[Math.min(idx, next.length - 1)];
           return neighbor ? neighbor.id : null;
         });
