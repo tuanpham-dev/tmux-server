@@ -64,6 +64,7 @@ interface Props {
   sessionMenuItems: (name: string) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
   onOpenSettings: () => void;
+  showGitStatus: boolean;
   onCollapse: () => void;
   filesRootDir: string | null;
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
@@ -92,6 +93,7 @@ export default function Sidebar({
   sessionMenuItems,
   windowMenuItems,
   onOpenSettings,
+  showGitStatus,
   onCollapse,
   filesRootDir,
   onDropFiles,
@@ -380,6 +382,7 @@ export default function Sidebar({
     return (
       <FileTree
         rootDir={filesRootDir}
+        showGitStatus={showGitStatus}
         onDropFiles={onDropFiles}
         refreshKey={filesRefreshKey}
         onOpenFile={onOpenFile}

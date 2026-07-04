@@ -98,13 +98,14 @@ export async function listSessions(): Promise<TmuxSession[]> {
   return [...sessions.values()];
 }
 
-export async function createSession(name?: string): Promise<TmuxSession> {
+export async function createSession(name?: string, cwd?: string): Promise<TmuxSession> {
   const args = ["new-session", "-d", "-P", "-F", "#{session_name}"];
   // Without -c, tmux starts the session in this server process's own cwd
-  // (the server/ folder) — same pitfall as createWindow below. NEW_SESSION_CWD
-  // comes from server/.env (loaded in index.ts).
-  const cwd = process.env.NEW_SESSION_CWD;
-  if (cwd) args.push("-c", cwd);
+  // (the server/ folder) — same pitfall as createWindow below. A caller-
+  // provided cwd (the client's "default new session dir" setting, validated
+  // in api.ts) wins over NEW_SESSION_CWD from server/.env.
+  const dir = cwd || process.env.NEW_SESSION_CWD;
+  if (dir) args.push("-c", dir);
   if (name) args.push("-s", name);
   const createdName = (await tmux(args)).trim();
   const sessions = await listSessions();

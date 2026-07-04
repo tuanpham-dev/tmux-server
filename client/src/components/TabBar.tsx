@@ -240,6 +240,7 @@ export default function TabBar({
               }}
             >
               {activity(tab) && <span className="activity-dot" />}
+              {tab.settingsView && <Icon name="settings-gear" className="tab-type-icon" />}
               <span className="tab-title">{label(tab)}</span>
               <button
                 className="tab-close"

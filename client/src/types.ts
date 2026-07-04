@@ -45,6 +45,9 @@ export interface Tab {
   // and the same tmux-path safety as imagePath above. A tab has at most one
   // of imagePath/previewPath set; see isRealTab/tabVirtualPath in App.tsx.
   previewPath?: string;
+  // Marks the (singleton) settings tab — the third virtual-tab kind, same
+  // "" sessionName/attachName convention as imagePath/previewPath.
+  settingsView?: true;
 }
 
 export interface MenuItem {

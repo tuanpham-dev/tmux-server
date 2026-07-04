@@ -18,8 +18,9 @@ import {
   uniquePath,
   walkFiles,
 } from "./files.js";
-import { getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
+import { getRepoBranch, getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
 import { listTmuxPorts } from "./ports.js";
+import { readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
 import {
   createSession,
   createWindow,
@@ -63,8 +64,39 @@ api.post("/sessions", async (req, res) => {
   const name = typeof req.body?.name === "string" && req.body.name.trim() !== ""
     ? req.body.name.trim()
     : undefined;
+  // Optional cwd from the client's "default new session dir" setting. The
+  // setting can point at a path that doesn't exist (typo, different
+  // machine) — fall back to the server default rather than failing the
+  // create over a preference.
+  const rawCwd = typeof req.body?.cwd === "string" && req.body.cwd.trim() !== ""
+    ? req.body.cwd.trim()
+    : undefined;
+  let cwd: string | undefined;
+  if (rawCwd) {
+    const expanded = expandHome(rawCwd);
+    if (await isDirectory(expanded)) cwd = expanded;
+  }
   try {
-    res.status(201).json(await createSession(name));
+    res.status(201).json(await createSession(name, cwd));
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// Settings persistence: one JSON document, client-owned schema (see
+// settingsStore.ts). Lives under /api so the host/origin guards apply.
+api.get("/settings", async (_req, res) => {
+  try {
+    res.json(await readSettingsDoc());
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+api.put("/settings", async (req, res) => {
+  try {
+    await writeSettingsDoc(req.body);
+    res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }
@@ -280,7 +312,11 @@ api.get("/fs", async (req, res) => {
       return;
     }
     const entries = await listDir(dirPath);
-    const repo = await getRepoStatuses(dirPath);
+    // git=0 (the "show git status" setting turned off) skips the porcelain
+    // status scan — the expensive part on large repos — but still resolves
+    // the branch so the sidebar's branch pill keeps working.
+    const withGit = req.query.git !== "0";
+    const repo = withGit ? await getRepoStatuses(dirPath) : null;
     const withStatus = repo
       ? entries.map((entry) => {
           const relPath = path.relative(repo.root, path.join(dirPath, entry.name));
@@ -288,7 +324,8 @@ api.get("/fs", async (req, res) => {
           return gitStatus ? { ...entry, gitStatus } : entry;
         })
       : entries;
-    res.json({ path: dirPath, entries: withStatus, branch: repo?.branch ?? null });
+    const branch = repo ? repo.branch : withGit ? null : await getRepoBranch(dirPath);
+    res.json({ path: dirPath, entries: withStatus, branch });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

@@ -5,6 +5,7 @@ import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
+import { serializeEvent } from "../keybindings";
 import type { AppSettings } from "../settings";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
@@ -17,6 +18,9 @@ interface Props {
   attachName: string;
   active: boolean;
   settings: AppSettings;
+  // Resolved command-id → combo map (keybindings.ts); the terminal.* entries
+  // drive the custom key handler below, so rebinds apply live via a ref.
+  bindings: Record<string, string>;
   onExit: () => void;
   onError: (err: unknown) => void;
   // tmux-native navigation inside this attach, reported (and already
@@ -34,6 +38,7 @@ export default function TerminalView({
   attachName,
   active,
   settings,
+  bindings,
   onExit,
   onError,
   onWindowSwitch,
@@ -45,6 +50,8 @@ export default function TerminalView({
   const scrollTrackRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const refitRef = useRef<(() => void) | null>(null);
+  const bindingsRef = useRef(bindings);
+  bindingsRef.current = bindings;
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
   const onErrorRef = useRef(onError);
@@ -167,10 +174,13 @@ export default function TerminalView({
         fontSize: initialSettings.current.fontSize,
         fontFamily: initialSettings.current.fontFamily,
         fontWeightBold: initialSettings.current.fontWeightBold,
-        // VS Code/code-server default (terminal.integrated.minimumContrastRatio).
-        // Without it, e.g. lazygit's selected row keeps its original foreground
-        // colors on the blue selection background and becomes unreadable.
-        minimumContrastRatio: 4.5,
+        lineHeight: initialSettings.current.lineHeight,
+        letterSpacing: initialSettings.current.letterSpacing,
+        // Default (4.5) mirrors VS Code/code-server
+        // (terminal.integrated.minimumContrastRatio). Without it, e.g.
+        // lazygit's selected row keeps its original foreground colors on the
+        // blue selection background and becomes unreadable.
+        minimumContrastRatio: initialSettings.current.minimumContrastRatio,
         // On Mac, xterm's SelectionService only force-starts local selection
         // for Option+click/drag, ignoring Shift entirely (shouldForceSelection
         // branches on Browser.isMac). The drag/Shift+drag swap below needs
@@ -533,15 +543,20 @@ export default function TerminalView({
       // browser's default action unless we preventDefault it ourselves — for
       // Enter that default is inserting a literal newline into the textarea,
       // which xterm then reads and forwards as a second, unwanted Enter.
+      // Combos come from the rebindable keybindings map (via bindingsRef so
+      // a rebind applies without re-mounting the terminal).
       term.attachCustomKeyEventHandler((e) => {
         if (e.type !== "keydown") return true;
-        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === "KeyC") {
+        const combo = serializeEvent(e);
+        if (!combo) return true;
+        const b = bindingsRef.current;
+        if (combo === b["terminal.copy"]) {
           e.preventDefault();
           const selection = term.getSelection();
           if (selection) copyText(selection).catch((err) => onErrorRef.current(err));
           return false;
         }
-        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === "KeyF") {
+        if (combo === b["terminal.find"]) {
           e.preventDefault();
           // Toggle: closing here (rather than just opening) needs the
           // ref-forwarded handler since this handler is set up once and
@@ -550,7 +565,7 @@ export default function TerminalView({
           else setSearchOpen(true);
           return false;
         }
-        if (e.shiftKey && e.key === "Enter" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (combo === b["terminal.newline"]) {
           e.preventDefault();
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "input", data: "\n" }));
@@ -788,7 +803,10 @@ export default function TerminalView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Apply settings changes to the live terminal without reconnecting.
+  // Apply settings changes to the live terminal without reconnecting. All of
+  // these hot-apply: xterm's RenderService subscribes to each (including
+  // lineHeight/letterSpacing/minimumContrastRatio) and does a full clear +
+  // re-measure + refresh on change.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -797,6 +815,9 @@ export default function TerminalView({
     term.options.fontWeightBold = settings.fontWeightBold;
     term.options.cursorStyle = settings.cursorStyle;
     term.options.cursorBlink = settings.cursorBlink;
+    term.options.lineHeight = settings.lineHeight;
+    term.options.letterSpacing = settings.letterSpacing;
+    term.options.minimumContrastRatio = settings.minimumContrastRatio;
     refitRef.current?.();
   }, [settings]);
 

@@ -10,24 +10,32 @@ import MarkdownView from "./components/MarkdownView";
 import MediaView from "./components/MediaView";
 import PdfView from "./components/PdfView";
 import QuickSwitcher from "./components/QuickSwitcher";
-import SettingsDialog from "./components/SettingsDialog";
+import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
 import { isCsvPath, isImagePath, isJsonPath, isMediaPath, isPdfPath, isPreviewablePath, isYamlPath } from "./fileKinds";
-import { loadSettings, saveSettings, type AppSettings } from "./settings";
+import { recorderState, resolveBindings, serializeEvent, type KeybindingOverrides } from "./keybindings";
+import {
+  DEFAULT_SETTINGS,
+  loadKeybindingOverrides,
+  loadSettings,
+  saveKeybindingOverrides,
+  saveSettings,
+  type AppSettings,
+} from "./settings";
 import type { MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
 import { collectDropped, uploadAll, type DroppedItems } from "./upload";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
 
-// A "virtual" tab (image viewer, markdown preview, …) has no tmux session
-// behind it — sessionName/attachName are "". Centralized here so a future
-// third virtual-tab kind only needs to extend this one place, not every
+// A "virtual" tab (image viewer, markdown preview, settings, …) has no tmux
+// session behind it — sessionName/attachName are "". Centralized here so a
+// future virtual-tab kind only needs to extend this one place, not every
 // imagePath-only check that predates it.
 function isRealTab(tab: Tab): boolean {
-  return tab.imagePath === undefined && tab.previewPath === undefined;
+  return tab.imagePath === undefined && tab.previewPath === undefined && tab.settingsView === undefined;
 }
 
 function tabVirtualPath(tab: Tab): string | undefined {
@@ -147,7 +155,6 @@ export default function App() {
   }, [sidebarVisible]);
 
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
-  const [showSettings, setShowSettings] = useState(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -165,37 +172,66 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
 
-  // Capture phase so this wins over xterm's own key handling. Shift
-  // distinguishes it from tmux's Ctrl+B prefix, so it's safe to fire even
-  // when the terminal is focused.
+  // Keybinding overrides (command id → serialized combo), resolved over the
+  // defaults in keybindings.ts. Same localStorage flow as settings above,
+  // including the skip-initial-persist rationale.
+  const [keybindingOverrides, setKeybindingOverrides] =
+    useState<KeybindingOverrides>(loadKeybindingOverrides);
+  const resolvedBindings = resolveBindings(keybindingOverrides);
+  const bindingsRef = useRef(resolvedBindings);
+  bindingsRef.current = resolvedBindings;
+
+  const keybindingsMounted = useRef(false);
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyB") return;
-      e.preventDefault();
-      e.stopPropagation();
-      setSidebarVisible((v) => !v);
+    if (!keybindingsMounted.current) {
+      keybindingsMounted.current = true;
+      return;
+    }
+    saveKeybindingOverrides(keybindingOverrides);
+  }, [keybindingOverrides]);
+
+  // Server-side persistence (~/.config/tmux-server/settings.json via
+  // /api/settings): localStorage renders instantly at mount, then the server
+  // copy — the cross-device source of truth — wins once fetched. Write-backs
+  // are held until that first GET resolves, so a stale localStorage snapshot
+  // can never clobber the server doc.
+  const serverSyncReady = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .fetchSettingsDoc()
+      .then((doc) => {
+        if (cancelled) return;
+        if (doc.settings && typeof doc.settings === "object") {
+          setSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) });
+        }
+        if (doc.keybindings && typeof doc.keybindings === "object") {
+          setKeybindingOverrides(doc.keybindings);
+        }
+        serverSyncReady.current = true;
+      })
+      .catch(() => {
+        // Server unreachable (offline PWA) — localStorage stays authoritative
+        // for this visit, and nothing gets pushed up.
+      });
+    return () => {
+      cancelled = true;
     };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
+
+  // Debounced write-back of the whole doc. Last-write-wins across devices —
+  // accepted for a single-user tool. Errors are swallowed: localStorage
+  // already has the change, and a persistent server failure would otherwise
+  // toast on every keystroke in a settings input.
+  useEffect(() => {
+    if (!serverSyncReady.current) return;
+    const timer = window.setTimeout(() => {
+      api.putSettingsDoc({ settings, keybindings: keybindingOverrides }).catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [settings, keybindingOverrides]);
 
   const [showSwitcher, setShowSwitcher] = useState(false);
-
-  // Capture phase + preventDefault to suppress the browser's print dialog,
-  // which owns Ctrl+P by default. Works in mainstream browsers; in a
-  // browser that refuses to let a page override it, the installed PWA
-  // (which reserves the combo for the app, same as Ctrl+Tab/Ctrl+W) is the
-  // guaranteed-clean path.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyP") return;
-      e.preventDefault();
-      e.stopPropagation();
-      setShowSwitcher((v) => !v);
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
 
   // Right-click anywhere without a dedicated context menu (empty terminal
   // space, tab bar gaps, etc.) would otherwise show the browser's native
@@ -204,20 +240,6 @@ export default function App() {
     const onContextMenu = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("contextmenu", onContextMenu);
     return () => window.removeEventListener("contextmenu", onContextMenu);
-  }, []);
-
-  // Chrome/Firefox bind Ctrl+Shift+C to "inspect element", stealing it before
-  // it can be used as an in-app shortcut. Calling preventDefault in a capture
-  // listener suppresses that browser default (unlike F12, which can't be
-  // suppressed this way). No stopPropagation: the event still needs to reach
-  // xterm's own key handler in TerminalView, which does the actual copy.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey || e.code !== "KeyC") return;
-      e.preventDefault();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
   // Only the FILES panel is a real drop target; it calls preventDefault +
@@ -389,6 +411,21 @@ export default function App() {
     });
   }, []);
 
+  // Singleton settings tab — the third virtual-tab kind. Activate-or-create
+  // like openImageTab, keyed on the marker itself since there's only one.
+  const openSettingsTab = useCallback(() => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.settingsView);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const tab: Tab = { id: crypto.randomUUID(), sessionName: "", attachName: "", settingsView: true };
+      setActiveTabId(tab.id);
+      return [...prev, tab];
+    });
+  }, []);
+
   const openWindowTab = useCallback(
     async (session: string, index: number) => {
       const existing = tabs.find((t) => t.sessionName === session && t.windowIndex === index);
@@ -444,10 +481,12 @@ export default function App() {
         const next = prev.filter((t) => t.id !== id);
         setActiveTabId((current) => {
           if (current !== id) return current;
-          const previous = mruTabIdsRef.current.find(
-            (tid) => tid !== id && next.some((t) => t.id === tid),
-          );
-          if (previous) return previous;
+          if (settingsRef.current.tabCloseActivation === "recent") {
+            const previous = mruTabIdsRef.current.find(
+              (tid) => tid !== id && next.some((t) => t.id === tid),
+            );
+            if (previous) return previous;
+          }
           const neighbor = next[Math.min(idx, next.length - 1)];
           return neighbor ? neighbor.id : null;
         });
@@ -457,34 +496,61 @@ export default function App() {
     [tabs, confirmDialog],
   );
 
-  // Tab switching/closing. Unlike the shortcuts above, these must never
-  // reach xterm — Ctrl+Tab would otherwise feed a literal Tab to tmux and
-  // Ctrl+W would send ^W to the shell in addition to closing the tab — so
-  // both preventDefault and stopPropagation are needed. Only works in the
-  // installed PWA: a regular browser tab reserves all three combos for
-  // itself and preventDefault can't override that.
+  const cycleTab = (delta: number) => {
+    if (tabs.length < 2 || !activeTabId) return;
+    const idx = tabs.findIndex((t) => t.id === activeTabId);
+    if (idx === -1) return;
+    setActiveTabId(tabs[(idx + delta + tabs.length) % tabs.length].id);
+  };
+
+  // Every global shortcut in one capture-phase dispatcher, driven by the
+  // rebindable keybindings map (keybindings.ts). A matched combo gets
+  // preventDefault + stopPropagation so it wins over both browser defaults
+  // (Ctrl+P print; Ctrl+Tab/Ctrl+W are overridable only in the installed
+  // PWA) and xterm's own key handling — Ctrl+Tab reaching tmux would feed it
+  // a literal Tab, Ctrl+W would send ^W to the shell. The terminal.* combos
+  // are dispatched inside TerminalView's xterm handler instead, with one
+  // exception: whatever combo terminal.copy is bound to gets a window-level
+  // preventDefault (no stop — the event must still reach xterm, which does
+  // the actual copy) to suppress Chrome/Firefox's Ctrl+Shift+C "inspect
+  // element" default. Freshness via refs so the mount-once listener always
+  // sees current bindings and handlers.
+  const globalCommandsRef = useRef<Record<string, () => void>>({});
+  globalCommandsRef.current = {
+    "sidebar.toggle": () => setSidebarVisible((v) => !v),
+    "quickSwitcher.toggle": () => setShowSwitcher((v) => !v),
+    "tab.next": () => cycleTab(1),
+    "tab.previous": () => cycleTab(-1),
+    "tab.close": () => {
+      if (activeTabId) closeTab(activeTabId);
+    },
+    "settings.open": openSettingsTab,
+  };
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === "Tab") {
+      // The Keyboard settings recorder owns the keyboard while capturing a
+      // chord — recording Ctrl+W must not also close the tab.
+      if (recorderState.recording) return;
+      const combo = serializeEvent(e);
+      if (!combo) return;
+      const bindings = bindingsRef.current;
+      if (combo === bindings["terminal.copy"]) {
         e.preventDefault();
-        e.stopPropagation();
-        if (tabs.length < 2 || !activeTabId) return;
-        const idx = tabs.findIndex((t) => t.id === activeTabId);
-        if (idx === -1) return;
-        const delta = e.shiftKey ? -1 : 1;
-        const next = tabs[(idx + delta + tabs.length) % tabs.length];
-        setActiveTabId(next.id);
         return;
       }
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === "KeyW") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (activeTabId) closeTab(activeTabId);
+      for (const [id, run] of Object.entries(globalCommandsRef.current)) {
+        if (bindings[id] === combo) {
+          e.preventDefault();
+          e.stopPropagation();
+          run();
+          return;
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [tabs, activeTabId, closeTab]);
+  }, []);
 
   const moveTab = useCallback((draggedId: string, toIndex: number) => {
     setTabs((prev) => {
@@ -552,7 +618,7 @@ export default function App() {
   const createSession = useCallback(
     async (name?: string) => {
       try {
-        const created = await api.createSession(name);
+        const created = await api.createSession(name, settingsRef.current.newSessionCwd);
         await refresh();
         openSession(created.name);
       } catch (err) {
@@ -564,7 +630,11 @@ export default function App() {
 
   const killSession = useCallback(
     async (name: string) => {
-      if (!(await confirmDialog(`Kill tmux session "${name}"?`, "Kill Session"))) return;
+      if (
+        settingsRef.current.confirmBeforeKill &&
+        !(await confirmDialog(`Kill tmux session "${name}"?`, "Kill Session"))
+      )
+        return;
       try {
         await api.killSession(name);
         for (const t of tabs) {
@@ -646,6 +716,7 @@ export default function App() {
   const killWindow = useCallback(
     async (session: string, index: number) => {
       if (
+        settingsRef.current.confirmBeforeKill &&
         !(await confirmDialog(
           `Kill window ${index} of session "${session}"?`,
           "Kill Window",
@@ -873,6 +944,7 @@ export default function App() {
 
   const tabLabel = useCallback(
     (tab: Tab): string => {
+      if (tab.settingsView) return "Settings";
       const virtualPath = tabVirtualPath(tab);
       if (virtualPath !== undefined) {
         return virtualPath.slice(virtualPath.lastIndexOf("/") + 1);
@@ -1109,7 +1181,8 @@ export default function App() {
             onShowMenu={showMenu}
             sessionMenuItems={sessionMenuItems}
             windowMenuItems={windowMenuItems}
-            onOpenSettings={() => setShowSettings(true)}
+            onOpenSettings={openSettingsTab}
+            showGitStatus={settings.fileTreeGitStatus}
             onCollapse={() => setSidebarVisible(false)}
             filesRootDir={filesRootDir}
             onDropFiles={handleFileTreeDrop}
@@ -1147,6 +1220,18 @@ export default function App() {
         <div className="terminals">
           {tabs.map((tab) => {
             const active = tab.id === activeTabId;
+            if (tab.settingsView) {
+              return (
+                <SettingsView
+                  key={tab.id}
+                  active={active}
+                  settings={settings}
+                  onSettingsChange={setSettings}
+                  keybindingOverrides={keybindingOverrides}
+                  onKeybindingOverridesChange={setKeybindingOverrides}
+                />
+              );
+            }
             if (tab.imagePath !== undefined) {
               return (
                 <ImageView
@@ -1209,6 +1294,7 @@ export default function App() {
                 attachName={tab.attachName}
                 active={active}
                 settings={settings}
+                bindings={resolvedBindings}
                 onExit={() => closeTab(tab.id)}
                 onError={showError}
                 // A tmux-native window switch inside this window tab — the
@@ -1241,13 +1327,6 @@ export default function App() {
           onOpenFile={openFileOrViewer}
           onOpenFileSecondary={openFileOrViewerSecondary}
           onClose={() => setShowSwitcher(false)}
-        />
-      )}
-      {showSettings && (
-        <SettingsDialog
-          settings={settings}
-          onChange={setSettings}
-          onClose={() => setShowSettings(false)}
         />
       )}
       {uploadProgress && (

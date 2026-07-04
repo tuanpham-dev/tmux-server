@@ -56,6 +56,18 @@ async function getBranch(root: string): Promise<string | null> {
   }
 }
 
+// Branch-only variant of getRepoStatuses, for callers that skip the (much
+// more expensive) porcelain status scan but still want the branch pill
+// populated — i.e. /api/fs?git=0 when the git-status setting is off.
+export async function getRepoBranch(anyDirInRepo: string): Promise<string | null> {
+  try {
+    const root = (await git(["rev-parse", "--show-toplevel"], anyDirInRepo)).trim();
+    return await getBranch(root);
+  } catch {
+    return null;
+  }
+}
+
 export interface RepoStatus {
   root: string;
   branch: string | null;

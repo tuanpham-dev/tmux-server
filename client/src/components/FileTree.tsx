@@ -8,6 +8,9 @@ import { getFileIconInfo, getFolderIconInfo } from "../utils/setiIcons";
 
 interface Props {
   rootDir: string | null;
+  // Off = request listings with git=0, skipping the server's status scan
+  // (badges and row colors disappear; the branch pill stays).
+  showGitStatus: boolean;
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
   refreshKey: number;
   onOpenFile: (path: string) => void;
@@ -60,6 +63,7 @@ const HOVER_EXPAND_MS = 1000;
 
 export default function FileTree({
   rootDir,
+  showGitStatus,
   onDropFiles,
   refreshKey,
   onOpenFile,
@@ -84,6 +88,10 @@ export default function FileTree({
   // Tracks the last prunePath object already applied, so an unrelated
   // refreshKey bump (e.g. the 3s session poll) doesn't re-run the prune scan.
   const lastPrunedRef = useRef<{ path: string } | null>(null);
+  // Read at fetch time (fetchDir is mount-stable) so a toggle applies to
+  // every fetch from then on without rebuilding the callback.
+  const showGitStatusRef = useRef(showGitStatus);
+  showGitStatusRef.current = showGitStatus;
 
   const fetchDir = useCallback((dirPath: string) => {
     setDirCache((prev) => {
@@ -92,7 +100,7 @@ export default function FileTree({
       return next;
     });
     api
-      .listDir(dirPath)
+      .listDir(dirPath, showGitStatusRef.current)
       .then((listing) => {
         setDirCache((prev) => new Map(prev).set(dirPath, {
           entries: listing.entries,
@@ -146,6 +154,22 @@ export default function FileTree({
     // are already handled by their own effects above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey, prunePath]);
+
+  // Git-status setting flipped: refetch everything currently visible so
+  // badges/colors appear or clear immediately, not on the next refresh.
+  const gitToggleMounted = useRef(false);
+  useEffect(() => {
+    if (!gitToggleMounted.current) {
+      gitToggleMounted.current = true;
+      return;
+    }
+    if (!rootDir) return;
+    fetchDir(rootDir);
+    for (const dirPath of expanded) fetchDir(dirPath);
+    // Refetch only on the toggle itself — rootDir/expanded changes are
+    // handled by the effects above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showGitStatus]);
 
   const cancelExpandTimer = () => {
     if (expandTimer.current) {

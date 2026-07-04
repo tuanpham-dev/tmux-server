@@ -31,11 +31,30 @@ export function fetchTunnelAuth(): Promise<TunnelAuth> {
   return request("/api/tunnel-auth");
 }
 
-export function createSession(name?: string): Promise<TmuxSession> {
+export function createSession(name?: string, cwd?: string): Promise<TmuxSession> {
   return request("/api/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, cwd: cwd || undefined }),
+  });
+}
+
+// The server-persisted settings document (~/.config/tmux-server/settings.json).
+// Schema is client-owned: settings.ts fields + keybindings.ts overrides.
+export interface SettingsDoc {
+  settings?: unknown;
+  keybindings?: Record<string, string>;
+}
+
+export function fetchSettingsDoc(): Promise<SettingsDoc> {
+  return request("/api/settings");
+}
+
+export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
+  return request("/api/settings", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(doc),
   });
 }
 
@@ -99,8 +118,10 @@ export function renameSession(name: string, newName: string): Promise<void> {
   });
 }
 
-export function listDir(dirPath: string): Promise<FsListing> {
-  return request(`/api/fs?path=${encodeURIComponent(dirPath)}`);
+export function listDir(dirPath: string, gitStatus = true): Promise<FsListing> {
+  // git=0 skips the server's porcelain status scan (the expensive part on
+  // large repos) while still resolving the branch for the pill.
+  return request(`/api/fs?path=${encodeURIComponent(dirPath)}${gitStatus ? "" : "&git=0"}`);
 }
 
 export function listFiles(dirPath: string): Promise<FsFilesListing> {
