@@ -8,6 +8,7 @@
 import * as ReactNS from "react";
 import { extensionApiBase, extensionFileUrl, fetchExtensions } from "./api";
 import type { ExtensionInfo, MenuItem } from "./types";
+import { getFileExtension } from "./utils/fileExtension";
 
 export interface ActiveContext {
   sessionName: string | null;
@@ -134,8 +135,7 @@ export function findFileViewerFor(
   viewers: RegisteredFileViewer[],
   mode: FileViewerMode,
 ): RegisteredFileViewer | null {
-  const dot = filePath.lastIndexOf(".");
-  const ext = dot === -1 ? "" : filePath.slice(dot + 1).toLowerCase();
+  const ext = getFileExtension(filePath);
   if (!ext) return null;
   const matches = viewers.filter((v) => v.mode === mode && v.extensions.includes(ext));
   if (matches.length <= 1) return matches[0] ?? null;

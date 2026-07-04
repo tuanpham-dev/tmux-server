@@ -121,6 +121,14 @@ const CSS_VAR_KEY_CHAINS: Record<string, string[]> = {
 
   "--badge-bg": ["badge.background"],
   "--badge-fg": ["badge.foreground"],
+
+  "--git-modified-fg": ["gitDecoration.modifiedResourceForeground"],
+  "--git-added-fg": ["gitDecoration.addedResourceForeground"],
+  "--git-untracked-fg": ["gitDecoration.untrackedResourceForeground"],
+  "--git-renamed-fg": ["gitDecoration.renamedResourceForeground"],
+  "--status-idle-bg": ["charts.yellow"],
+  "--status-active-bg": ["charts.green"],
+  "--warning": ["editorWarning.foreground"],
 };
 
 const ALL_THEME_VAR_NAMES = Object.keys(CSS_VAR_KEY_CHAINS);

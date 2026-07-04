@@ -9,6 +9,7 @@ import * as ReactNS from "react";
 import { extensionFileUrl } from "../api";
 import { joinRelPath, parseJsonc } from "../theme";
 import type { ExtensionInfo } from "../types";
+import { getFileExtension } from "./fileExtension";
 
 interface IconDef {
   fontCharacter?: string;
@@ -31,10 +32,65 @@ interface IconThemeDoc {
   fileNames?: Record<string, string>;
   folderNames?: Record<string, string>;
   folderNamesExpanded?: Record<string, string>;
+  languageIds?: Record<string, string>;
   file?: string;
   folder?: string;
   folderExpanded?: string;
 }
+
+// Maps a file extension to the VS Code languageId an icon theme's
+// `languageIds` map keys on — covers common languages that lack a dedicated
+// `fileExtensions` entry in some icon themes (e.g. vscode-icons keys several
+// less-common extensions only by languageId). Not exhaustive: an extension
+// missing from this table just falls through to the theme's own default file
+// icon, same as today.
+const LANGUAGE_ID_BY_EXTENSION: Record<string, string> = {
+  ts: "typescript",
+  tsx: "typescriptreact",
+  js: "javascript",
+  jsx: "javascriptreact",
+  mjs: "javascript",
+  cjs: "javascript",
+  py: "python",
+  rs: "rust",
+  go: "go",
+  rb: "ruby",
+  php: "php",
+  java: "java",
+  kt: "kotlin",
+  kts: "kotlin",
+  swift: "swift",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  cc: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  cs: "csharp",
+  css: "css",
+  scss: "scss",
+  less: "less",
+  html: "html",
+  htm: "html",
+  json: "json",
+  jsonc: "jsonc",
+  yaml: "yaml",
+  yml: "yaml",
+  xml: "xml",
+  md: "markdown",
+  sh: "shellscript",
+  bash: "shellscript",
+  zsh: "shellscript",
+  ps1: "powershell",
+  sql: "sql",
+  lua: "lua",
+  pl: "perl",
+  r: "r",
+  dart: "dart",
+  vue: "vue",
+  toml: "toml",
+  ini: "ini",
+};
 
 export type IconResult =
   | { kind: "font"; char: string; color: string; fontFamily: string }
@@ -167,10 +223,15 @@ export function getFileIconResult(fileName: string): IconResult {
   const lowerName = fileName.toLowerCase();
   const doc = active.doc;
   let iconKey = doc.fileNames?.[lowerName];
+  const lastExt = getFileExtension(lowerName);
   if (!iconKey) {
     const parts = lowerName.split(".");
     if (parts.length > 2) iconKey = doc.fileExtensions?.[parts.slice(-2).join(".")];
-    if (!iconKey && parts.length > 1) iconKey = doc.fileExtensions?.[parts[parts.length - 1]];
+    if (!iconKey && lastExt) iconKey = doc.fileExtensions?.[lastExt];
+  }
+  if (!iconKey && lastExt) {
+    const languageId = LANGUAGE_ID_BY_EXTENSION[lastExt];
+    if (languageId) iconKey = doc.languageIds?.[languageId];
   }
   if (!iconKey) iconKey = doc.file;
   return resolveIconKey(iconKey, "#d4d7d6");

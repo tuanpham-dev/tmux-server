@@ -47,6 +47,14 @@
 
   --badge-bg: var(--hover);
   --badge-fg: var(--fg-inactive);
+
+  --git-modified-fg: #e2c08d;
+  --git-added-fg: #73c991;
+  --git-untracked-fg: #73c991;
+  --git-renamed-fg: #4fc1ff;
+  --status-idle-bg: #e5c07b;
+  --status-active-bg: #98c379;
+  --warning: #e5c07b;
 }
 
 * {
@@ -395,7 +403,7 @@ body.resizing-row {
 }
 
 .chevron:hover {
-  color: #ffffff;
+  color: var(--fg-bright);
 }
 
 .window-item {
@@ -430,7 +438,7 @@ body.resizing-row {
   height: 6px;
   min-width: 6px;
   border-radius: 50%;
-  background: #e5c07b;
+  background: var(--status-idle-bg);
 }
 
 .item-cwd {
@@ -500,8 +508,8 @@ body.resizing-row {
 }
 
 .session-dot.attached {
-  background: #98c379;
-  border-color: #98c379;
+  background: var(--status-active-bg);
+  border-color: var(--status-active-bg);
 }
 
 .session-name {
@@ -658,12 +666,15 @@ body.resizing-row {
 }
 
 .file-tree-row.git-status-modified {
-  color: #e2c08d;
+  color: var(--git-modified-fg);
 }
 
-.file-tree-row.git-status-added,
+.file-tree-row.git-status-added {
+  color: var(--git-added-fg);
+}
+
 .file-tree-row.git-status-untracked {
-  color: #73c991;
+  color: var(--git-untracked-fg);
 }
 
 .file-tree-row.git-status-deleted {
@@ -671,7 +682,7 @@ body.resizing-row {
 }
 
 .file-tree-row.git-status-renamed {
-  color: #4fc1ff;
+  color: var(--git-renamed-fg);
 }
 
 .file-tree-row.git-status-conflicted {
@@ -1223,7 +1234,7 @@ body.scrollbar-dragging {
 
 .keybinding-conflict {
   flex-shrink: 0;
-  color: #e5c07b;
+  color: var(--warning);
   display: inline-flex;
   align-items: center;
 }
