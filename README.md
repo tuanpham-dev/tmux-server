@@ -135,7 +135,13 @@ Each extension has a `package.json` — a subset of the real VS Code extension m
   "contributes": {
     "themes": [{ "label": "My Theme", "uiTheme": "vs-dark", "path": "./themes/my-theme-color-theme.json" }],
     "iconThemes": [{ "id": "my-icons", "label": "My Icons", "path": "./themes/my-icon-theme.json" }],
-    "fonts": [{ "group": "My Fonts", "fonts": [{ "family": "My Mono", "src": [{ "path": "./fonts/MyMono-Regular.woff2", "format": "woff2" }] }] }]
+    "fonts": [{ "group": "My Fonts", "fonts": [{ "family": "My Mono", "src": [{ "path": "./fonts/MyMono-Regular.woff2", "format": "woff2" }] }] }],
+    "configuration": {
+      "title": "My Extension",
+      "properties": {
+        "myExtension.greeting": { "type": "string", "default": "Hello!", "description": "Greeting text" }
+      }
+    }
   },
   "tmuxServer": {
     "client": "./client.js",
@@ -179,6 +185,37 @@ The font-family select only lists fonts this app can actually guarantee: "Use fa
 
 Unlike themes, fonts aren't mutually exclusive and aren't all loaded up front: a family's `FontFace`s are only fetched once that family is actually present in the stack — whether it got there via a group selection or a hand-typed fallback — and are dropped again if it's removed or its extension is disabled/uninstalled, the same selected-only-loads policy color and icon themes already follow; this is per-family, so a stack that keeps only one member of a group never loads the other. Registers under each family's real name (unlike icon-theme fonts, which load under an internal namespaced family), so you can reference it directly in the fallback field. Applies live, no reload.
 
+### Settings
+
+`contributes.configuration` is VS Code's real manifest shape — a single object or an array of them (each with an optional `title` and a `properties` map), which lets one extension group its settings under more than one heading. Each property key is the full dotted name the extension will read back (no shared prefix is required, but `myExtension.foo` is the usual convention):
+
+```json
+"contributes": {
+  "configuration": {
+    "title": "My Extension",
+    "properties": {
+      "myExtension.greeting": { "type": "string", "default": "Hello!", "description": "Greeting text" },
+      "myExtension.shout": { "type": "boolean", "default": false, "description": "Shout the greeting" },
+      "myExtension.repeatCount": { "type": "integer", "default": 1, "minimum": 1, "maximum": 5 },
+      "myExtension.mood": {
+        "type": "string",
+        "enum": ["neutral", "excited"],
+        "enumItemLabels": ["Neutral", "Excited"],
+        "enumDescriptions": ["Plain greeting", "Adds an exclamation"],
+        "default": "neutral"
+      }
+    }
+  }
+}
+```
+
+Supported `type`s are `boolean`, `number`, `integer`, and `string` (with `enum` for a picker) — a property with any other `type` (or missing one) is dropped; `array`/`object` values aren't supported. An `enum` property's options are labeled with `enumItemLabels[i]` (falling back to the raw value) with `enumDescriptions[i]` shown as that option's tooltip, matching VS Code. `description` (or `markdownDescription`, rendered as plain text) is shown as the setting's label.
+
+Extensions with at least one enabled, valid property get their own entry in the Settings nav (below a divider, under the built-in sections), titled by the manifest's `displayName`. Only non-default values are ever persisted — same as keybinding overrides — so a later change to an extension's declared default still reaches a user who never touched that setting; a value survives the extension being disabled or uninstalled. Applies live, no reload, on both sides:
+
+- Client: `ctx.settings.get(key)` returns the current value (declared default, or the user's override); `ctx.settings.onDidChange(cb)` fires `cb()` (no arguments — call `get()` again for whatever you care about) whenever any of this extension's settings change, returning an unsubscribe function.
+- Server: the server hook's `activate({ router, log, getSettings })` gains `getSettings()`, returning a `Promise` of this extension's full key→value map (declared defaults merged with the user's overrides). Read fresh on every call, so there's no cache to invalidate — a change reaches the next request without a server restart.
+
 ### Functionality
 
 `tmuxServer.client` is a plain ESM module (no JSX, no bundler) exporting `activate(ctx)`:
@@ -195,8 +232,9 @@ Unlike themes, fonts aren't mutually exclusive and aren't all loaded up front: a
 - `ctx.app.openFileTab(path)` — opens a path through the same dispatch a FILES-tree click uses
 - `ctx.serverFetch(path, init?)` — `fetch()` scoped to this extension's own server route
 - `ctx.assetUrl(relPath)` — resolves an extension-relative path (e.g. a bundled stylesheet) to a fetchable URL, the same route the client entry itself is loaded from
+- `ctx.settings.get(key)` / `ctx.settings.onDidChange(cb)` — this extension's `contributes.configuration` values — see [Settings](#settings) above
 
-`tmuxServer.server` is a plain ESM module exporting `activate({ router, log })` — `router` is an Express router mounted at `/api/ext/<extensionId>` for as long as the extension stays enabled; disabling/uninstalling unmounts the routes immediately, though the loaded module itself stays resident until the server restarts (Node can't unload an ES module) — the Settings dialog shows a restart hint for this case.
+`tmuxServer.server` is a plain ESM module exporting `activate({ router, log, getSettings })` — `router` is an Express router mounted at `/api/ext/<extensionId>` for as long as the extension stays enabled; disabling/uninstalling unmounts the routes immediately, though the loaded module itself stays resident until the server restarts (Node can't unload an ES module) — the Settings dialog shows a restart hint for this case. `getSettings()` returns this extension's current settings — see [Settings](#settings) above.
 
 A client entry activates once at page load; enabling, disabling, or installing one takes a page reload to fully apply. Themes and icon themes need no reload.
 

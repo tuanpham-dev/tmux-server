@@ -12,6 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Router, type NextFunction, type Request, type Response } from "express";
+import { readSettingsDoc } from "./settingsStore.js";
 
 const configDir = path.join(
   process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
@@ -79,6 +80,29 @@ interface FontGroupContribution {
   fonts: FontEntry[];
 }
 
+// VS Code's contributes.configuration shape. `type` supports the four
+// primitive kinds a plain HTML control can render; `array`/`object`
+// properties (and anything else malformed) are dropped during normalization
+// — see normalizeConfiguration. enumItemLabels/enumDescriptions mirror VS
+// Code: the former is the option's visible label (falls back to the raw
+// enum value), the latter its tooltip.
+interface ConfigurationProperty {
+  type?: "boolean" | "number" | "integer" | "string";
+  default?: unknown;
+  description?: string;
+  markdownDescription?: string;
+  enum?: string[];
+  enumItemLabels?: string[];
+  enumDescriptions?: string[];
+  minimum?: number;
+  maximum?: number;
+}
+
+interface ConfigurationContribution {
+  title?: string;
+  properties?: Record<string, ConfigurationProperty>;
+}
+
 interface ExtensionManifest {
   name?: string;
   publisher?: string;
@@ -89,11 +113,70 @@ interface ExtensionManifest {
     themes?: ThemeContribution[];
     iconThemes?: IconThemeContribution[];
     fonts?: FontGroupContribution[];
+    // VS Code allows either a single object or an array of them (one per
+    // logical group); normalizeConfiguration accepts both and flattens to
+    // one ordered property list.
+    configuration?: ConfigurationContribution | ConfigurationContribution[];
   };
   tmuxServer?: {
     client?: string;
     server?: string;
   };
+}
+
+// The normalized, ordered form of a manifest's contributes.configuration —
+// keys are the full dotted property name exactly as declared (no shared
+// prefix is assumed). Sent to the client as-is so Settings can render
+// controls without loading any extension code, and consumed server-side by
+// getSettings() to know each property's default.
+export interface ExtensionConfigurationProperty {
+  key: string;
+  type: "boolean" | "number" | "integer" | "string";
+  default: unknown;
+  description: string;
+  enum?: string[];
+  enumItemLabels?: string[];
+  enumDescriptions?: string[];
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface ExtensionConfigurationSection {
+  title?: string;
+  properties: ExtensionConfigurationProperty[];
+}
+
+const CONFIG_PROPERTY_TYPES = new Set(["boolean", "number", "integer", "string"]);
+
+// Tolerant like the fonts normalization above: a malformed or unsupported
+// (array/object type) property is skipped rather than failing the whole
+// extension's manifest.
+function normalizeConfiguration(
+  configuration: ConfigurationContribution | ConfigurationContribution[] | undefined,
+): ExtensionConfigurationSection[] {
+  if (!configuration) return [];
+  const sections = Array.isArray(configuration) ? configuration : [configuration];
+  const result: ExtensionConfigurationSection[] = [];
+  for (const section of sections) {
+    if (!section.properties || typeof section.properties !== "object") continue;
+    const properties: ExtensionConfigurationProperty[] = [];
+    for (const [key, prop] of Object.entries(section.properties)) {
+      if (!prop || typeof prop.type !== "string" || !CONFIG_PROPERTY_TYPES.has(prop.type)) continue;
+      properties.push({
+        key,
+        type: prop.type,
+        default: prop.default,
+        description: prop.description || prop.markdownDescription || "",
+        enum: Array.isArray(prop.enum) ? prop.enum : undefined,
+        enumItemLabels: Array.isArray(prop.enumItemLabels) ? prop.enumItemLabels : undefined,
+        enumDescriptions: Array.isArray(prop.enumDescriptions) ? prop.enumDescriptions : undefined,
+        minimum: typeof prop.minimum === "number" ? prop.minimum : undefined,
+        maximum: typeof prop.maximum === "number" ? prop.maximum : undefined,
+      });
+    }
+    if (properties.length > 0) result.push({ title: section.title, properties });
+  }
+  return result;
 }
 
 export interface ExtensionInfo {
@@ -105,6 +188,7 @@ export interface ExtensionInfo {
   themes: { label: string; path: string }[];
   iconThemes: { id: string; label: string; path: string }[];
   fonts: { group: string; fonts: FontEntry[] }[];
+  configuration: ExtensionConfigurationSection[];
   // Extension-relative path to the client ESM entry, or null if this
   // extension has no client contribution — the client dynamic-imports it
   // via extensionFileUrl(id, clientEntry). hasServer stays a plain boolean:
@@ -225,6 +309,7 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, built
           })),
       }))
       .filter((g) => g.fonts.length > 0),
+    configuration: normalizeConfiguration(manifest.contributes?.configuration),
     clientEntry: manifest.tmuxServer?.client ?? null,
     hasClient: Boolean(manifest.tmuxServer?.client),
     hasServer: Boolean(manifest.tmuxServer?.server),
@@ -377,6 +462,30 @@ export function extensionHookMiddleware(req: Request, res: Response, next: NextF
   router(req, res, next);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Manifest defaults (from contributes.configuration) overridden by the
+// user's stored extensionSettings[id], scoped to this extension only — see
+// the client-side ExtensionSettingsValues shape in client/src/settings.ts,
+// which this mirrors. Read fresh on every call rather than cached: the file
+// read is cheap and avoids cache-invalidation plumbing for a value that only
+// changes when the user edits Settings.
+async function getExtensionSettings(id: string, manifest: ExtensionManifest): Promise<Record<string, unknown>> {
+  const defaults: Record<string, unknown> = {};
+  for (const section of normalizeConfiguration(manifest.contributes?.configuration)) {
+    for (const prop of section.properties) defaults[prop.key] = prop.default;
+  }
+  const doc = await readSettingsDoc();
+  const allOverrides = doc.extensionSettings;
+  const overrides =
+    isPlainObject(allOverrides) && isPlainObject(allOverrides[id])
+      ? (allOverrides[id] as Record<string, unknown>)
+      : {};
+  return { ...defaults, ...overrides };
+}
+
 export async function mountServerHookIfNeeded(
   id: string,
   folderPath: string,
@@ -397,6 +506,7 @@ export async function mountServerHookIfNeeded(
     activate({
       router,
       log: (...args: unknown[]) => console.log(`[ext:${id}]`, ...args),
+      getSettings: () => getExtensionSettings(id, manifest),
     });
     serverHooks.set(id, router);
   } catch (err) {

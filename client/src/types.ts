@@ -150,6 +150,27 @@ export interface ExtensionFontGroupContribution {
   fonts: ExtensionFontEntry[];
 }
 
+// Mirrors server/src/extensions.ts's ExtensionConfigurationProperty — the
+// server has already normalized/validated the manifest, so the client just
+// renders a control per property. `key` is the full dotted name exactly as
+// declared (no shared prefix assumed).
+export interface ExtensionConfigurationProperty {
+  key: string;
+  type: "boolean" | "number" | "integer" | "string";
+  default: unknown;
+  description: string;
+  enum?: string[];
+  enumItemLabels?: string[];
+  enumDescriptions?: string[];
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface ExtensionConfigurationSection {
+  title?: string;
+  properties: ExtensionConfigurationProperty[];
+}
+
 export interface ExtensionInfo {
   id: string;
   displayName: string;
@@ -159,6 +180,7 @@ export interface ExtensionInfo {
   themes: ExtensionThemeContribution[];
   iconThemes: ExtensionIconThemeContribution[];
   fonts: ExtensionFontGroupContribution[];
+  configuration: ExtensionConfigurationSection[];
   clientEntry: string | null;
   hasClient: boolean;
   hasServer: boolean;

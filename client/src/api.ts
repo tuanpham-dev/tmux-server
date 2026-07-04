@@ -47,10 +47,15 @@ export function createSession(name?: string, cwd?: string): Promise<TmuxSession>
 }
 
 // The server-persisted settings document (~/.config/tmux-server/settings.json).
-// Schema is client-owned: settings.ts fields + keybindings.ts overrides.
+// Schema is client-owned: settings.ts fields + keybindings.ts overrides +
+// extensionSettings.ts overrides. The index signature lets a save preserve
+// any top-level key this client build doesn't know about yet (see App.tsx's
+// read-merge-write save) — the server itself stays schema-oblivious.
 export interface SettingsDoc {
   settings?: unknown;
   keybindings?: Record<string, string>;
+  extensionSettings?: unknown;
+  [key: string]: unknown;
 }
 
 export function fetchSettingsDoc(): Promise<SettingsDoc> {

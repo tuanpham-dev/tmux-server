@@ -7,6 +7,7 @@
 // extension code, since they're just JSON.
 import * as ReactNS from "react";
 import { extensionApiBase, extensionFileUrl, fetchExtensions } from "./api";
+import type { ExtensionSettingsValues } from "./settings";
 import type { ExtensionInfo, MenuItem } from "./types";
 import { getFileExtension } from "./utils/fileExtension";
 
@@ -105,6 +106,15 @@ export interface ExtensionContext {
   // a fetchable URL — same route registerFileViewer's own client entry is
   // dynamic-imported from.
   assetUrl(relPath: string): string;
+  // This extension's contributes.configuration values (declared default,
+  // overridden by whatever the user set in Settings). get() takes the full
+  // dotted key exactly as declared in the manifest. onDidChange fires with
+  // no arguments — call get() again for whichever key you care about — same
+  // as subscribeExtensionRegistry's plain re-render nudge.
+  settings: {
+    get(key: string): unknown;
+    onDidChange(cb: () => void): () => void;
+  };
 }
 
 export const extensionCommands: RegisteredCommand[] = [];
@@ -191,6 +201,50 @@ export function getInstalledExtensions(): ExtensionInfo[] {
   return installedExtensions;
 }
 
+// Sparse overrides as last pushed from App.tsx (see setExtensionSettingsOverrides),
+// and the resolved (override ?? manifest default) values per extension id —
+// recomputed on every push so ctx.settings.get() is a plain lookup. Kept as
+// a NEW object per extension on every push (never mutated in place) so the
+// shallow-equal comparison below can actually detect "nothing changed".
+let extensionSettingsOverrides: ExtensionSettingsValues = {};
+let resolvedExtensionSettings: Record<string, Record<string, unknown>> = {};
+const extensionSettingsListeners = new Map<string, Set<() => void>>();
+
+function resolveExtensionSettings(ext: ExtensionInfo, overrides: ExtensionSettingsValues): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const section of ext.configuration) {
+    for (const prop of section.properties) values[prop.key] = prop.default;
+  }
+  Object.assign(values, overrides[ext.id]);
+  return values;
+}
+
+function shallowEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const aKeys = Object.keys(a);
+  if (aKeys.length !== Object.keys(b).length) return false;
+  return aKeys.every((k) => a[k] === b[k]);
+}
+
+// Called from App.tsx whenever extension settings change (initial load,
+// server doc arriving, or a user edit in Settings) — recomputes every
+// installed extension's resolved values and notifies only the extensions
+// whose resolved values actually changed.
+export function setExtensionSettingsOverrides(
+  overrides: ExtensionSettingsValues,
+  extensions: ExtensionInfo[],
+): void {
+  extensionSettingsOverrides = overrides;
+  const prev = resolvedExtensionSettings;
+  const next: Record<string, Record<string, unknown>> = {};
+  for (const ext of extensions) next[ext.id] = resolveExtensionSettings(ext, overrides);
+  resolvedExtensionSettings = next;
+  for (const [id, values] of Object.entries(next)) {
+    if (prev[id] && shallowEqual(prev[id], values)) continue;
+    const listeners = extensionSettingsListeners.get(id);
+    if (listeners) for (const l of listeners) l();
+  }
+}
+
 function makeContext(ext: ExtensionInfo): ExtensionContext {
   return {
     React: ReactNS,
@@ -230,6 +284,20 @@ function makeContext(ext: ExtensionInfo): ExtensionContext {
     serverFetch(path, init) {
       return fetch(`${extensionApiBase(ext.id)}${path}`, init);
     },
+    settings: {
+      get(key) {
+        return resolvedExtensionSettings[ext.id]?.[key];
+      },
+      onDidChange(cb) {
+        let listeners = extensionSettingsListeners.get(ext.id);
+        if (!listeners) {
+          listeners = new Set();
+          extensionSettingsListeners.set(ext.id, listeners);
+        }
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+    },
     assetUrl(relPath) {
       return extensionFileUrl(ext.id, relPath);
     },
@@ -259,11 +327,16 @@ async function activateClientExtension(ext: ExtensionInfo): Promise<void> {
 
 // Fetches the list once and activates every enabled extension's client
 // entry. Themes/icon themes need no activation step — see the module
-// comment — so this only concerns commands/viewers/panels.
-export async function loadExtensions(): Promise<ExtensionInfo[]> {
+// comment — so this only concerns commands/viewers/panels. onListLoaded, if
+// given, fires right after the list is known but before any client entry
+// activates — App.tsx uses this to push extension-settings overrides into
+// this module's store first, so ctx.settings.get() already resolves
+// correctly the very first time an activating extension reads it.
+export async function loadExtensions(onListLoaded?: (list: ExtensionInfo[]) => void): Promise<ExtensionInfo[]> {
   const list = await fetchExtensions();
   installedExtensions = list;
   notify();
+  onListLoaded?.(list);
   await Promise.all(
     list.filter((ext) => ext.enabled && ext.hasClient).map((ext) => activateClientExtension(ext)),
   );

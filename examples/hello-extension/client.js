@@ -1,10 +1,23 @@
 // Reference client entry — exercises every v1 extension API surface:
 // a command with a default keybinding, a file viewer for a made-up ".demo"
-// extension, and a sidebar panel that talks to this same extension's
-// server hook. Plain ESM, no build step — ctx.React is how it gets React
+// extension, a sidebar panel that talks to this same extension's server
+// hook, and contributes.configuration settings (see package.json's "hello.*"
+// properties). Plain ESM, no build step — ctx.React is how it gets React
 // without bundling its own copy.
 export function activate(ctx) {
-  const { React, registerCommand, registerFileViewer, registerSidebarPanel, app, serverFetch } = ctx;
+  const { React, registerCommand, registerFileViewer, registerSidebarPanel, app, serverFetch, settings } = ctx;
+
+  // Reads this extension's current setting values (declared default,
+  // overridden by whatever the user set in Settings → Hello Extension) and
+  // composes them into the greeting text.
+  function buildGreeting() {
+    const base = settings.get("hello.greeting");
+    const mood = settings.get("hello.mood");
+    let text =
+      mood === "excited" ? `${base} 🎉` : mood === "formal" ? `${base} Sincerely, Hello Extension.` : base;
+    if (settings.get("hello.shout")) text = `${text.toUpperCase()}!!!`;
+    return Array.from({ length: settings.get("hello.repeatCount") }, () => text).join(" ");
+  }
 
   registerCommand({
     id: "sayHello",
@@ -13,7 +26,7 @@ export function activate(ctx) {
     run: () => {
       const active = app.getActiveContext();
       const where = active.cwd ? ` (active window's cwd: ${active.cwd})` : "";
-      window.alert(`Hello from the sample extension!${where}`);
+      window.alert(`${buildGreeting()}${where}`);
     },
   });
 
@@ -50,6 +63,14 @@ export function activate(ctx) {
     title: "Hello",
     component: function HelloPanel() {
       const [message, setMessage] = React.useState("Loading…");
+      // Live-apply demo: settings.onDidChange fires with no arguments
+      // whenever any of this extension's settings change (a user edit in
+      // Settings → Hello Extension, or the server doc syncing in) — re-read
+      // via settings.get() rather than relying on the callback's payload.
+      // No reload needed; try changing "Tone of the greeting" while this
+      // panel is open.
+      const [greeting, setGreeting] = React.useState(buildGreeting);
+      React.useEffect(() => settings.onDidChange(() => setGreeting(buildGreeting())), []);
       React.useEffect(() => {
         let cancelled = false;
         serverFetch("/hello")
@@ -64,7 +85,12 @@ export function activate(ctx) {
           cancelled = true;
         };
       }, []);
-      return React.createElement("div", { style: { padding: "8px 12px", fontSize: 13 } }, message);
+      return React.createElement(
+        "div",
+        { style: { padding: "8px 12px", fontSize: 13 } },
+        React.createElement("div", { style: { marginBottom: 6 } }, greeting),
+        message,
+      );
     },
   });
 }

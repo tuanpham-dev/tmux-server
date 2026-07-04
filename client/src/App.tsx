@@ -12,6 +12,7 @@ import {
   findFileViewerFor,
   loadExtensions,
   setActiveContext,
+  setExtensionSettingsOverrides,
   setOpenFileTabHandler,
   useExtensionRegistry,
 } from "./extensions";
@@ -24,12 +25,15 @@ import {
 } from "./keybindings";
 import {
   DEFAULT_SETTINGS,
+  loadExtensionSettings,
   loadKeybindingOverrides,
   loadSettings,
   migrateSettings,
+  saveExtensionSettings,
   saveKeybindingOverrides,
   saveSettings,
   type AppSettings,
+  type ExtensionSettingsValues,
 } from "./settings";
 import {
   applyColorThemeCssVars,
@@ -223,6 +227,23 @@ export default function App() {
     saveKeybindingOverrides(keybindingOverrides);
   }, [keybindingOverrides]);
 
+  // Sparse per-extension setting overrides (extensionId -> key -> value) —
+  // same localStorage flow as settings/keybindings above, including the
+  // skip-initial-persist rationale.
+  const [extensionSettings, setExtensionSettings] =
+    useState<ExtensionSettingsValues>(loadExtensionSettings);
+  const extensionSettingsRef = useRef(extensionSettings);
+  extensionSettingsRef.current = extensionSettings;
+
+  const extensionSettingsMounted = useRef(false);
+  useEffect(() => {
+    if (!extensionSettingsMounted.current) {
+      extensionSettingsMounted.current = true;
+      return;
+    }
+    saveExtensionSettings(extensionSettings);
+  }, [extensionSettings]);
+
   // Server-side persistence (~/.config/tmux-server/settings.json via
   // /api/settings): localStorage renders instantly at mount, then the server
   // copy — the cross-device source of truth — wins once fetched. Write-backs
@@ -241,6 +262,13 @@ export default function App() {
         if (doc.keybindings && typeof doc.keybindings === "object") {
           setKeybindingOverrides(doc.keybindings);
         }
+        if (
+          doc.extensionSettings &&
+          typeof doc.extensionSettings === "object" &&
+          !Array.isArray(doc.extensionSettings)
+        ) {
+          setExtensionSettings(doc.extensionSettings as ExtensionSettingsValues);
+        }
         serverSyncReady.current = true;
       })
       .catch(() => {
@@ -252,17 +280,27 @@ export default function App() {
     };
   }, []);
 
-  // Debounced write-back of the whole doc. Last-write-wins across devices —
-  // accepted for a single-user tool. Errors are swallowed: localStorage
-  // already has the change, and a persistent server failure would otherwise
-  // toast on every keystroke in a settings input.
+  // Debounced write-back of the whole doc. Read-merge-write: fetches the
+  // current doc first and preserves any top-level key this client doesn't
+  // own (e.g. extensionSettings written by a newer client while an older
+  // tab is still open) instead of blindly overwriting it — falls back to
+  // writing just the three known keys if the pre-fetch fails. Last-write-
+  // wins across devices for the keys this client does own — accepted for a
+  // single-user tool. Errors are swallowed: localStorage already has the
+  // change, and a persistent server failure would otherwise toast on every
+  // keystroke in a settings input.
   useEffect(() => {
     if (!serverSyncReady.current) return;
     const timer = window.setTimeout(() => {
-      api.putSettingsDoc({ settings, keybindings: keybindingOverrides }).catch(() => {});
+      api
+        .fetchSettingsDoc()
+        .then((doc) => ({ ...doc, settings, keybindings: keybindingOverrides, extensionSettings }))
+        .catch(() => ({ settings, keybindings: keybindingOverrides, extensionSettings }))
+        .then((doc) => api.putSettingsDoc(doc))
+        .catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [settings, keybindingOverrides]);
+  }, [settings, keybindingOverrides, extensionSettings]);
 
   // Extensions: fetches the installed list and activates every enabled
   // client entry (commands/viewers/panels register themselves into
@@ -272,13 +310,26 @@ export default function App() {
   // stay current without a full page reload.
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
   const reloadExtensions = useCallback(() => {
-    loadExtensions()
+    // Pushes the current (localStorage-seeded, or already-merged-with-server)
+    // overrides into extensions.ts's module-level store as soon as the list
+    // is fetched — before any client entry's activate() runs — so
+    // ctx.settings.get() already resolves correctly the first time an
+    // extension reads it, rather than only after this component re-renders.
+    loadExtensions((list) => setExtensionSettingsOverrides(extensionSettingsRef.current, list))
       .then(setExtensions)
       .catch(() => {});
   }, []);
   useEffect(() => {
     reloadExtensions();
   }, [reloadExtensions]);
+
+  // Keeps the module-level resolved-settings store (and any already-
+  // activated extension's onDidChange subscribers) current whenever the
+  // overrides themselves change (a user edit, or the server doc arriving)
+  // or the extension list changes (enable/disable, install/uninstall).
+  useEffect(() => {
+    setExtensionSettingsOverrides(extensionSettings, extensions);
+  }, [extensionSettings, extensions]);
 
   // Active color theme: resolves settings.colorTheme against the installed
   // extension list, loads+parses the theme JSON (cached in theme.ts), then
@@ -1412,6 +1463,8 @@ export default function App() {
                   onKeybindingOverridesChange={setKeybindingOverrides}
                   extensions={extensions}
                   onReloadExtensions={reloadExtensions}
+                  extensionSettings={extensionSettings}
+                  onExtensionSettingsChange={setExtensionSettings}
                 />
               );
             }

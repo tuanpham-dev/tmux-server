@@ -1162,6 +1162,12 @@ body.scrollbar-dragging {
   color: var(--list-active-fg);
 }
 
+.settings-nav-divider {
+  height: 1px;
+  margin: 8px 4px;
+  background: var(--border);
+}
+
 .settings-content {
   flex: 1;
   min-width: 0;
@@ -1175,6 +1181,17 @@ body.scrollbar-dragging {
   font-size: 16px;
   font-weight: 600;
   color: var(--fg-bright);
+}
+
+.settings-subsection-title {
+  margin: 20px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-bright);
+}
+
+.settings-subsection-title:first-child {
+  margin-top: 0;
 }
 
 .settings-footer {

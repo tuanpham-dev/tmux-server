@@ -93,6 +93,7 @@ export function migrateSettings(settings: AppSettings): AppSettings {
 
 const KEY = "settings";
 const KEYBINDINGS_KEY = "keybindings";
+const EXTENSION_SETTINGS_KEY = "extensionSettings";
 
 export function loadSettings(): AppSettings {
   try {
@@ -120,4 +121,32 @@ export function loadKeybindingOverrides(): Record<string, string> {
 
 export function saveKeybindingOverrides(overrides: Record<string, string>): void {
   localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(overrides));
+}
+
+// Sparse per-extension setting overrides: `extensionId -> key -> value`.
+// Only values that differ from the manifest's declared default are stored —
+// same rationale as keybinding overrides above — so a future default change
+// still reaches a user who never customized that setting.
+export type ExtensionSettingsValues = Record<string, Record<string, unknown>>;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function loadExtensionSettings(): ExtensionSettingsValues {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(EXTENSION_SETTINGS_KEY) ?? "{}");
+    if (!isPlainObject(parsed)) return {};
+    const result: ExtensionSettingsValues = {};
+    for (const [extId, values] of Object.entries(parsed)) {
+      if (isPlainObject(values)) result[extId] = values;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function saveExtensionSettings(values: ExtensionSettingsValues): void {
+  localStorage.setItem(EXTENSION_SETTINGS_KEY, JSON.stringify(values));
 }
