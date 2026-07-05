@@ -260,6 +260,8 @@ function JsonView({ filePath, active, toolbarTarget, openInEditor, fontSize = 14
   );
 }
 
+let removeStylesheet: (() => void) | null = null;
+
 export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
@@ -269,11 +271,16 @@ export function activate(ctx: {
   }) => void;
   assetUrl: (relPath: string) => string;
 }) {
-  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "jsonViewer",
     extensions: ["json", ...YAML_EXTENSIONS],
     mode: "preview",
     component: JsonView,
   });
+}
+
+export function deactivate() {
+  removeStylesheet?.();
+  removeStylesheet = null;
 }

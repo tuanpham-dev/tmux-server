@@ -878,9 +878,6 @@ export default function SettingsView({
                       {ext.hasClient && <span>UI functionality</span>}
                       {ext.hasServer && <span>Server functionality</span>}
                     </div>
-                    {ext.hasClient && (
-                      <div className="settings-hint">Reload the page for a change here to take effect.</div>
-                    )}
                     {ext.hasServer && !ext.enabled && (
                       <div className="settings-hint">
                         Restart the tmux-server server to fully unload a disabled extension's server code.

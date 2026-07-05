@@ -166,6 +166,8 @@ function HtmlPreview({ filePath, active, toolbarTarget, openInEditor }: Props) {
   );
 }
 
+let removeStylesheet: (() => void) | null = null;
+
 export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
@@ -179,11 +181,16 @@ export function activate(ctx: {
   extSettings = ctx.settings;
   const match = ctx.assetUrl("x").match(/^(\/api\/extensions\/[^/]+)\/file\//);
   hookBase = match ? match[1].replace("/extensions/", "/ext/") : "";
-  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "livePreview",
     extensions: ["html", "htm"],
     mode: "preview",
     component: HtmlPreview,
   });
+}
+
+export function deactivate() {
+  removeStylesheet?.();
+  removeStylesheet = null;
 }

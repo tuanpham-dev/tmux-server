@@ -31,6 +31,7 @@ let openViewerTab: ((viewerId: string, path: string, opts?: { title?: string }) 
 let openFileTab: ((path: string) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
 let extSettings: SettingsApi | null = null;
+let removeStylesheet: (() => void) | null = null;
 
 // Credentials from a successful push/pull/sync retry, kept in memory only
 // (never localStorage, never the remote URL) so repeated syncs in the same
@@ -702,9 +703,14 @@ export function activate(ctx: {
   refreshFiles = ctx.app.refreshFiles;
   extSettings = ctx.settings;
 
-  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerSidebarPanel({ id: "git", title: "Source Control", component: GitPanel });
   // extensions: [] — never auto-matched to a file; reached only via
   // ctx.app.openViewerTab from GitPanel's row clicks (see openDiff above).
   ctx.registerFileViewer({ id: "diff", extensions: [], mode: "default", component: DiffView });
+}
+
+export function deactivate() {
+  removeStylesheet?.();
+  removeStylesheet = null;
 }

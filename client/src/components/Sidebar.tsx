@@ -123,6 +123,15 @@ export default function Sidebar({
   );
   const [collapsedWindows, setCollapsedWindows] = useState<Set<string>>(new Set());
   const [panelState, setPanelState] = useState<PanelState>(loadPanelState);
+  // Teardown for an in-progress splitter drag's window listeners — invoked by
+  // both the drag's own pointerup/pointercancel AND, as a safety net, by the
+  // unmount effect below if Sidebar unmounts mid-drag (e.g. the whole sidebar
+  // is hidden) so the listeners/body-class never outlive the component.
+  const panelResizeCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => panelResizeCleanupRef.current?.();
+  }, []);
+
   const panelRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
     sessions: null,
     files: null,
@@ -488,8 +497,10 @@ export default function Sidebar({
     const startHeightB = bEl.getBoundingClientRect().height;
     const totalHeight = startHeightA + startHeightB;
     const startY = e.clientY;
+    const pointerId = e.pointerId;
 
     const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
       const dy = ev.clientY - startY;
       const newHeightA = Math.min(
         totalHeight - MIN_PANEL_HEIGHT,
@@ -501,14 +512,19 @@ export default function Sidebar({
         sizes: { ...prev.sizes, [aId]: newHeightA, [bId]: newHeightB },
       }));
     };
-    const onUp = () => {
+    const end = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
       document.body.classList.remove("resizing-row");
+      panelResizeCleanupRef.current = null;
     };
     document.body.classList.add("resizing-row");
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    panelResizeCleanupRef.current = () => end({ pointerId } as PointerEvent);
   };
 
   const PANEL_DRAG_TYPE = "application/x-tmux-panel";

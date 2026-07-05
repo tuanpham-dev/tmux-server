@@ -81,6 +81,12 @@ export default function TabBar({
     return indicator.edge === "left" ? idx : idx + 1;
   };
 
+  const removeWindowListeners = () => {
+    window.removeEventListener("pointermove", onPointerMoveWindow);
+    window.removeEventListener("pointerup", onPointerUpWindow);
+    window.removeEventListener("pointercancel", onPointerCancelWindow);
+  };
+
   const endSession = () => {
     const session = sessionRef.current;
     if (session?.longPressTimer) clearTimeout(session.longPressTimer);
@@ -88,6 +94,20 @@ export default function TabBar({
     setDragTabId(null);
     setDropIndicator(null);
   };
+
+  // Safety net: if TabBar unmounts mid-drag (session still active), the
+  // gesture's own pointerup/pointercancel will never fire to remove these —
+  // tear them down here directly (no setState — the component is gone).
+  useEffect(() => {
+    return () => {
+      const session = sessionRef.current;
+      if (!session) return;
+      if (session.longPressTimer) clearTimeout(session.longPressTimer);
+      removeWindowListeners();
+      sessionRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const startDragging = () => {
     const session = sessionRef.current;

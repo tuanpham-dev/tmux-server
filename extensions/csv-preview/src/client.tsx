@@ -1071,6 +1071,8 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
   );
 }
 
+let removeStylesheet: (() => void) | null = null;
+
 export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
@@ -1080,11 +1082,16 @@ export function activate(ctx: {
   }) => void;
   assetUrl: (relPath: string) => string;
 }) {
-  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "csvViewer",
     extensions: ["csv", "tsv"],
     mode: "preview",
     component: CsvView,
   });
+}
+
+export function deactivate() {
+  removeStylesheet?.();
+  removeStylesheet = null;
 }

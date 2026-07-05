@@ -143,6 +143,8 @@ function MarkdownView({ filePath, active, toolbarTarget, openInEditor }: Props) 
   );
 }
 
+let removeStylesheet: (() => void) | null = null;
+
 export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
@@ -154,11 +156,16 @@ export function activate(ctx: {
   settings: SettingsApi;
 }) {
   extSettings = ctx.settings;
-  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "markdownViewer",
     extensions: ["md", "markdown"],
     mode: "preview",
     component: MarkdownView,
   });
+}
+
+export function deactivate() {
+  removeStylesheet?.();
+  removeStylesheet = null;
 }

@@ -15,6 +15,8 @@ function PdfView({ filePath, active }: { filePath: string; active: boolean }) {
   );
 }
 
+let removeStylesheet: (() => void) | null = null;
+
 export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
@@ -25,7 +27,7 @@ export function activate(ctx: {
   }) => void;
   assetUrl: (relPath: string) => string;
 }) {
-  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "pdfViewer",
     extensions: ["pdf"],
@@ -35,4 +37,9 @@ export function activate(ctx: {
     editorFallback: false,
     component: PdfView,
   });
+}
+
+export function deactivate() {
+  removeStylesheet?.();
+  removeStylesheet = null;
 }

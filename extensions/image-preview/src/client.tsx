@@ -223,6 +223,8 @@ function ImageView({ filePath, active, toolbarTarget }: Props) {
   );
 }
 
+let removeStylesheet: (() => void) | null = null;
+
 export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
@@ -232,11 +234,16 @@ export function activate(ctx: {
   }) => void;
   assetUrl: (relPath: string) => string;
 }) {
-  injectStylesheet(ctx.assetUrl, "dist/client.css");
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "imageViewer",
     extensions: IMAGE_EXTENSIONS,
     mode: "default",
     component: ImageView,
   });
+}
+
+export function deactivate() {
+  removeStylesheet?.();
+  removeStylesheet = null;
 }

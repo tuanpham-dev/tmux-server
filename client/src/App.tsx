@@ -700,6 +700,7 @@ export default function App() {
       if (tab?.windowIndex !== undefined) {
         api.closeWindowTab(tab.attachName).catch(() => {});
       }
+      mruTabIdsRef.current = mruTabIdsRef.current.filter((tid) => tid !== id);
       setTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === id);
         const next = prev.filter((t) => t.id !== id);
@@ -798,10 +799,12 @@ export default function App() {
         const ok = await confirmDialog("Some tabs have unsaved changes. Close all others anyway?", "Close All");
         if (!ok) return;
       }
+      const closedIds = new Set(toClose.map((t) => t.id));
       for (const t of toClose) {
         dirtyTabsRef.current.delete(t.id);
         if (t.windowIndex !== undefined) api.closeWindowTab(t.attachName).catch(() => {});
       }
+      mruTabIdsRef.current = mruTabIdsRef.current.filter((tid) => !closedIds.has(tid));
       setTabs((prev) => prev.filter((t) => t.id === id));
       setActiveTabId(id);
     },

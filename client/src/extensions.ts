@@ -286,7 +286,7 @@ export function setExtensionSettingsOverrides(
   }
 }
 
-function makeContext(ext: ExtensionInfo): ExtensionContext {
+function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionContext {
   return {
     React: ReactNS,
     registerCommand(cmd) {
@@ -316,7 +316,14 @@ function makeContext(ext: ExtensionInfo): ExtensionContext {
       getActiveContext: () => activeContextValue,
       onDidChangeContext(cb) {
         contextListeners.add(cb);
-        return () => contextListeners.delete(cb);
+        // Tracked per-extension (not just the shared Set above) so
+        // deactivateClientExtension can unsubscribe exactly this extension's
+        // callbacks without touching any other extension's.
+        runtime.contextListeners.add(cb);
+        return () => {
+          contextListeners.delete(cb);
+          runtime.contextListeners.delete(cb);
+        };
       },
       openFileTab(path) {
         openFileTabHandler?.(path);
@@ -351,25 +358,73 @@ function makeContext(ext: ExtensionInfo): ExtensionContext {
   };
 }
 
+interface ExtensionRuntime {
+  // The dynamically-imported client-entry module, so deactivate (below) can
+  // call its optional `deactivate` export.
+  module: unknown;
+  // This extension's own onDidChangeContext callbacks — a subset of the
+  // shared contextListeners Set, tracked separately so deactivation can
+  // remove exactly these without touching other extensions' callbacks.
+  contextListeners: Set<(ctx: ActiveContext) => void>;
+}
+
 const activatedIds = new Set<string>();
+const extensionRuntimes = new Map<string, ExtensionRuntime>();
 
 async function activateClientExtension(ext: ExtensionInfo): Promise<void> {
   if (activatedIds.has(ext.id) || !ext.clientEntry) return;
   activatedIds.add(ext.id);
+  const runtime: ExtensionRuntime = { module: null, contextListeners: new Set() };
+  extensionRuntimes.set(ext.id, runtime);
   try {
     const url = extensionFileUrl(ext.id, ext.clientEntry);
     // Vite must not try to statically analyze/pre-bundle this — the path is
     // only known at runtime, from the server's extension list.
     const mod: unknown = await import(/* @vite-ignore */ url);
+    runtime.module = mod;
     const activate = (mod as { activate?: unknown }).activate;
     if (typeof activate !== "function") {
       console.error(`extension ${ext.id}: client entry has no activate() export`);
       return;
     }
-    (activate as (ctx: ExtensionContext) => void)(makeContext(ext));
+    (activate as (ctx: ExtensionContext) => void)(makeContext(ext, runtime));
   } catch (err) {
     console.error(`extension ${ext.id}: failed to load client entry:`, err);
   }
+}
+
+// Reverses activateClientExtension: calls the module's optional deactivate()
+// export (e.g. to remove an injected stylesheet), removes this extension's
+// entries from the command/file-viewer/sidebar-panel registries, unsubscribes
+// its onDidChangeContext and settings.onDidChange callbacks, and clears
+// activatedIds so a later re-enable calls activate() again instead of
+// silently no-oping against the stale guard.
+function deactivateClientExtension(extId: string): void {
+  if (!activatedIds.has(extId)) return;
+  const runtime = extensionRuntimes.get(extId);
+  const deactivate = (runtime?.module as { deactivate?: unknown } | null)?.deactivate;
+  if (typeof deactivate === "function") {
+    try {
+      (deactivate as () => void)();
+    } catch (err) {
+      console.error(`extension ${extId}: deactivate() threw:`, err);
+    }
+  }
+  const prefix = `ext.${extId}.`;
+  for (let i = extensionCommands.length - 1; i >= 0; i--) {
+    if (extensionCommands[i].id.startsWith(prefix)) extensionCommands.splice(i, 1);
+  }
+  for (let i = extensionFileViewers.length - 1; i >= 0; i--) {
+    if (extensionFileViewers[i].extensionId === extId) extensionFileViewers.splice(i, 1);
+  }
+  for (let i = extensionSidebarPanels.length - 1; i >= 0; i--) {
+    if (extensionSidebarPanels[i].id.startsWith(prefix)) extensionSidebarPanels.splice(i, 1);
+  }
+  if (runtime) for (const cb of runtime.contextListeners) contextListeners.delete(cb);
+  extensionSettingsListeners.delete(extId);
+  extensionRuntimes.delete(extId);
+  activatedIds.delete(extId);
+  notify();
 }
 
 // Fetches the list once and activates every enabled extension's client
@@ -381,6 +436,14 @@ async function activateClientExtension(ext: ExtensionInfo): Promise<void> {
 // correctly the very first time an activating extension reads it.
 export async function loadExtensions(onListLoaded?: (list: ExtensionInfo[]) => void): Promise<ExtensionInfo[]> {
   const list = await fetchExtensions();
+  const enabledIds = new Set(list.filter((ext) => ext.enabled).map((ext) => ext.id));
+  // Disabled or uninstalled since the last load: tear this extension down
+  // before installedExtensions/notify reflect the new list, so nothing
+  // observes a moment where a now-gone extension's panel/viewer is still
+  // registered but its backing extension info has already disappeared.
+  for (const id of [...activatedIds]) {
+    if (!enabledIds.has(id)) deactivateClientExtension(id);
+  }
   installedExtensions = list;
   notify();
   onListLoaded?.(list);
