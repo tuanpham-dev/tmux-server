@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { MenuItem, Tab } from "../types";
+import type { MenuItem, Tab, TabGroupState } from "../types";
+import { adjustForContrast, GROUP_COLORS, groupColorHex } from "../utils/groupColor";
 import Icon from "./Icon";
 
 interface Props {
@@ -17,6 +18,14 @@ interface Props {
   // Code/code-server style editor-actions on the right of the tab strip.
   actionsRef: (el: HTMLDivElement | null) => void;
   onToggleSidebar: () => void;
+  // Chrome-style tab groups (settings.tabGroupsBySession) — see
+  // plans/tab-groups-by-session.md. groupKey returns null for a tab that
+  // isn't grouped (settings/extension-viewer tabs).
+  groupingEnabled: boolean;
+  groupKey: (tab: Tab) => string | null;
+  groupState: Record<string, TabGroupState>;
+  onToggleGroupCollapsed: (sessionName: string) => void;
+  groupMenuItems: (sessionName: string) => MenuItem[];
 }
 
 // Long-press delay (touch/pen) before a hold starts a drag instead of letting
@@ -28,6 +37,30 @@ const MOVE_SLOP_PX = 8;
 const MOUSE_DRAG_THRESHOLD_PX = 5;
 
 type DropIndicator = { id: string; edge: "left" | "right" };
+
+// Restricts drag-drop candidates when tab groups are enabled: a grouped tab
+// may only reorder within its own group (members are always kept contiguous
+// by App.tsx's normalizeTabGroups), and an ungrouped tab may only drop at a
+// group's edge, never wedged between its members.
+function computeGroupConstrainedOrder(
+  order: Tab[],
+  draggedTab: Tab,
+  groupingEnabled: boolean,
+  groupKey: (tab: Tab) => string | null,
+): Tab[] {
+  if (!groupingEnabled) return order;
+  const draggedKey = groupKey(draggedTab);
+  if (draggedKey !== null) {
+    return order.filter((t) => groupKey(t) === draggedKey);
+  }
+  return order.filter((t, i) => {
+    const key = groupKey(t);
+    if (key === null) return true;
+    const prevKey = i > 0 ? groupKey(order[i - 1]) : undefined;
+    const nextKey = i < order.length - 1 ? groupKey(order[i + 1]) : undefined;
+    return prevKey !== key || nextKey !== key;
+  });
+}
 
 export default function TabBar({
   tabs,
@@ -41,12 +74,38 @@ export default function TabBar({
   onReorder,
   actionsRef,
   onToggleSidebar,
+  groupingEnabled,
+  groupKey,
+  groupState,
+  onToggleGroupCollapsed,
+  groupMenuItems,
 }: Props) {
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
+  const tabBarRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const justDraggedRef = useRef(false);
+
+  // Resolved tab-bar background, used to contrast-adjust group colors
+  // against whatever the active color theme actually renders (a fixed
+  // palette tuned for the bundled dark theme could otherwise wash out
+  // against a light one) — see utils/groupColor's adjustForContrast.
+  // Recomputed on mount and whenever a color theme applies its CSS vars
+  // (theme.ts's applyColorThemeCssVars sets them directly on
+  // document.documentElement.style, so observing that attribute catches
+  // every theme swap without new props threaded down from App).
+  const [barBg, setBarBg] = useState("#21252b");
+  useEffect(() => {
+    const recompute = () => {
+      const el = tabBarRef.current;
+      if (el) setBarBg(getComputedStyle(el).backgroundColor);
+    };
+    recompute();
+    const observer = new MutationObserver(recompute);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
+    return () => observer.disconnect();
+  }, []);
 
   // Mutable drag session state — kept out of React state since it updates on
   // every pointermove and must be readable synchronously from window
@@ -63,7 +122,11 @@ export default function TabBar({
   } | null>(null);
 
   const computeInsertion = (clientX: number, draggedId: string): DropIndicator | null => {
-    const order = tabs.filter((t) => t.id !== draggedId);
+    const fullOrder = tabs.filter((t) => t.id !== draggedId);
+    const draggedTab = tabs.find((t) => t.id === draggedId);
+    const order = draggedTab
+      ? computeGroupConstrainedOrder(fullOrder, draggedTab, groupingEnabled, groupKey)
+      : fullOrder;
     if (order.length === 0) return null;
     for (const t of order) {
       const el = tabRefs.current.get(t.id);
@@ -226,55 +289,113 @@ export default function TabBar({
     tabRefs.current.get(activeTabId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeTabId, tabs]);
 
+  // Per-group contrast-adjusted line color and aggregated activity — one
+  // pass over `tabs`, computed only while grouping is on.
+  const groupColorFor: Record<string, string> = {};
+  const groupHasActivity: Record<string, boolean> = {};
+  if (groupingEnabled) {
+    for (const tab of tabs) {
+      const key = groupKey(tab);
+      if (key === null) continue;
+      if (!(key in groupColorFor)) {
+        groupColorFor[key] = adjustForContrast(groupColorHex(groupState[key]?.color ?? GROUP_COLORS[0].key), barBg);
+      }
+      if (activity(tab)) groupHasActivity[key] = true;
+    }
+  }
+
+  const renderTab = (tab: Tab, groupLineColor?: string) => {
+    const indicatorClass =
+      dropIndicator?.id === tab.id ? ` drop-indicator-${dropIndicator.edge}` : "";
+    const draggingClass = dragTabId === tab.id ? " dragging" : "";
+    const groupedClass = groupLineColor ? " grouped" : "";
+    return (
+      <div
+        key={tab.id}
+        ref={(el) => {
+          if (el) tabRefs.current.set(tab.id, el);
+          else tabRefs.current.delete(tab.id);
+        }}
+        className={`tab${tab.id === activeTabId ? " active" : ""}${indicatorClass}${draggingClass}${groupedClass}`}
+        style={groupLineColor ? ({ "--group-color": groupLineColor } as React.CSSProperties) : undefined}
+        onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+        onClick={() => handleTabClick(tab.id)}
+        onDoubleClick={(e) => {
+          if ((e.target as HTMLElement).closest(".tab-close")) return;
+          onToggleSidebar();
+        }}
+        onAuxClick={(e) => {
+          if (e.button === 1) onClose(tab.id);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onShowMenu(e.clientX, e.clientY, tabMenuItems(tab));
+        }}
+      >
+        {activity(tab) && <span className="activity-dot" />}
+        {tab.settingsView && <Icon name="settings-gear" className="tab-type-icon" />}
+        <span className="tab-title">{label(tab)}</span>
+        <button
+          className="tab-close"
+          title="Close tab"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose(tab.id);
+          }}
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+    );
+  };
+
+  const renderChip = (sessionName: string) => {
+    const state = groupState[sessionName];
+    const collapsed = state?.collapsed ?? false;
+    const rawColor = groupColorHex(state?.color ?? GROUP_COLORS[0].key);
+    return (
+      <div
+        key={`group:${sessionName}`}
+        className="tab-group-chip"
+        style={{ background: rawColor }}
+        onClick={() => onToggleGroupCollapsed(sessionName)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onShowMenu(e.clientX, e.clientY, groupMenuItems(sessionName));
+        }}
+      >
+        <Icon name={collapsed ? "chevron-right" : "chevron-down"} className="tab-group-chip-arrow" />
+        <span className="tab-group-chip-label">{sessionName}</span>
+        {groupHasActivity[sessionName] && <span className="activity-dot" />}
+      </div>
+    );
+  };
+
+  const nodes: React.ReactNode[] = [];
+  const chippedGroups = new Set<string>();
+  for (const tab of tabs) {
+    const key = groupingEnabled ? groupKey(tab) : null;
+    if (key === null) {
+      nodes.push(renderTab(tab));
+      continue;
+    }
+    if (!chippedGroups.has(key)) {
+      chippedGroups.add(key);
+      nodes.push(renderChip(key));
+    }
+    if (!(groupState[key]?.collapsed ?? false)) {
+      nodes.push(renderTab(tab, groupColorFor[key]));
+    }
+  }
+
   return (
-    <div className="tab-bar">
+    <div className="tab-bar" ref={tabBarRef}>
       <div
         className="tab-strip"
         ref={barRef}
         onTouchMove={handleBarTouchMove}
       >
-        {tabs.map((tab) => {
-          const indicatorClass =
-            dropIndicator?.id === tab.id ? ` drop-indicator-${dropIndicator.edge}` : "";
-          const draggingClass = dragTabId === tab.id ? " dragging" : "";
-          return (
-            <div
-              key={tab.id}
-              ref={(el) => {
-                if (el) tabRefs.current.set(tab.id, el);
-                else tabRefs.current.delete(tab.id);
-              }}
-              className={`tab${tab.id === activeTabId ? " active" : ""}${indicatorClass}${draggingClass}`}
-              onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
-              onClick={() => handleTabClick(tab.id)}
-              onDoubleClick={(e) => {
-                if ((e.target as HTMLElement).closest(".tab-close")) return;
-                onToggleSidebar();
-              }}
-              onAuxClick={(e) => {
-                if (e.button === 1) onClose(tab.id);
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                onShowMenu(e.clientX, e.clientY, tabMenuItems(tab));
-              }}
-            >
-              {activity(tab) && <span className="activity-dot" />}
-              {tab.settingsView && <Icon name="settings-gear" className="tab-type-icon" />}
-              <span className="tab-title">{label(tab)}</span>
-              <button
-                className="tab-close"
-                title="Close tab"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onClose(tab.id);
-                }}
-              >
-                <Icon name="close" />
-              </button>
-            </div>
-          );
-        })}
+        {nodes}
       </div>
       <div className="tab-bar-actions" ref={actionsRef} />
     </div>

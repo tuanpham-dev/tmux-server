@@ -807,6 +807,56 @@ body.resizing-row {
   background: var(--list-hover-bg);
 }
 
+/* Chrome-style tab-group chip — one per session with tabGroupsBySession on.
+   Fixed dark text: the palette (utils/groupColor.ts) is chosen to read
+   legibly with it regardless of which color is picked. */
+.tab-group-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin: 6px 2px;
+  padding: 0 10px;
+  border-radius: 4px;
+  color: #1e2227;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab-group-chip:hover {
+  filter: brightness(1.1);
+}
+
+.tab-group-chip .codicon {
+  font-size: 13px;
+}
+
+.tab-group-chip-label {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-group-chip .activity-dot {
+  background: #1e2227;
+}
+
+/* A grouped tab's top-edge accent line — color is contrast-adjusted at
+   render time (TabBar.tsx) against the resolved tab-bar background, so a
+   light color theme can't wash it out. */
+.tab.grouped {
+  box-shadow: inset 0 2px 0 var(--group-color);
+}
+
+.tab.grouped.active {
+  box-shadow:
+    inset 0 2px 0 var(--group-color),
+    inset 0 1px 0 var(--tab-active-border);
+}
+
 /* ---- Terminals ---- */
 
 .terminals {
@@ -1025,6 +1075,26 @@ body.scrollbar-dragging {
 .context-menu-item.danger:hover {
   background: var(--list-active-bg);
   color: var(--error);
+}
+
+/* Tab-group color picker row (tab-group chip's context menu) */
+.context-menu-swatches {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.swatch.selected {
+  border-color: var(--fg-bright);
 }
 
 /* ---- Dialogs ---- */

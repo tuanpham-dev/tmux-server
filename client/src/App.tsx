@@ -44,9 +44,18 @@ import {
   terminalTheme as builtInTerminalTheme,
   type ResolvedColorTheme,
 } from "./theme";
-import type { ExtensionInfo, MenuItem, MenuState, Tab, TmuxSession, TmuxWindow } from "./types";
+import type {
+  ExtensionInfo,
+  MenuItem,
+  MenuState,
+  Tab,
+  TabGroupState,
+  TmuxSession,
+  TmuxWindow,
+} from "./types";
 import { collectDropped, uploadAll, type DroppedItems } from "./upload";
 import { applyExtensionFonts, useExtensionFontsVersion } from "./utils/fonts";
+import { GROUP_COLORS, nextAutoColor } from "./utils/groupColor";
 import { resolveIconThemeValue, setActiveIconTheme } from "./utils/iconThemes";
 
 const SIDEBAR_MIN = 180;
@@ -67,6 +76,49 @@ function isRealTab(tab: Tab): boolean {
 
 function tabVirtualPath(tab: Tab): string | undefined {
   return tab.imagePath ?? tab.previewPath ?? tab.extViewerPath;
+}
+
+// Chrome-style tab groups (plans/tab-groups-by-session.md): a real tab's
+// group is simply its session. A viewer tab (image/markdown/etc.) joins the
+// group of the real session it was opened from (originSessionName, cleared
+// once that session no longer exists — see the effect in App() that strips
+// it). The settings tab is never grouped — it's a global singleton, not
+// tied to any one session.
+function groupKeyForTab(tab: Tab): string | null {
+  if (isRealTab(tab)) return tab.sessionName;
+  return tab.originSessionName ?? null;
+}
+
+// Reorders `tabs` so every group's members sit contiguously, anchored at the
+// position of the group's first-encountered tab, with every ungrouped
+// ("singleton") tab — settings, or a preview tab whose origin session went
+// away — pushed after every group, in their own original relative order.
+// Returns the same array reference when the order is already normalized, so
+// callers can safely bail a setState on it.
+function normalizeTabGroups(tabs: Tab[]): Tab[] {
+  const groups = new Map<string, Tab[]>();
+  const ungrouped: Tab[] = [];
+  for (const tab of tabs) {
+    const key = groupKeyForTab(tab);
+    if (key === null) {
+      ungrouped.push(tab);
+      continue;
+    }
+    const members = groups.get(key);
+    if (members) members.push(tab);
+    else groups.set(key, [tab]);
+  }
+  const consumed = new Set<string>();
+  const next: Tab[] = [];
+  for (const tab of tabs) {
+    const key = groupKeyForTab(tab);
+    if (key === null || consumed.has(key)) continue;
+    consumed.add(key);
+    next.push(...groups.get(key)!);
+  }
+  next.push(...ungrouped);
+  const changed = next.some((t, i) => t.id !== tabs[i]?.id);
+  return changed ? next : tabs;
 }
 
 // Keeps tabs pointed at the right session/window across an out-of-band
@@ -126,6 +178,18 @@ function loadStoredTabs(): Tab[] {
   }
 }
 
+// Per-device, not server-synced (like `tabs` itself) — group color/collapse
+// state is meaningless without the device's own tab list.
+function loadStoredTabGroupState(): Record<string, TabGroupState> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("tabGroupState") ?? "{}");
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
 export default function App() {
   const [sessions, setSessions] = useState<TmuxSession[]>([]);
   // Restored tabs whose session no longer exists self-heal: attaching to a
@@ -133,6 +197,11 @@ export default function App() {
   // the normal onExit handler closes that tab — no separate validation pass
   // needed here.
   const [tabs, setTabs] = useState<Tab[]>(loadStoredTabs);
+  // Snapshot of `tabs` for effects/callbacks that must not themselves
+  // depend on `tabs` (would either widen their run cadence or create a
+  // stale closure) — same rationale as activeTabIdRef below.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
   const [activeTabId, setActiveTabId] = useState<string | null>(
     () => localStorage.getItem("activeTabId"),
   );
@@ -142,6 +211,23 @@ export default function App() {
   // "afterActive" placement wants. Same pattern as settingsRef.
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  // Virtual tabs (image/markdown preview) have no tmux session, so sidebar
+  // context (the FILES tree root, the lazygit branch pill, "new window in
+  // dir") keeps reflecting whichever real (terminal) tab was open most
+  // recently instead of collapsing to empty while a virtual tab is active.
+  // Mutated during render — same pattern as onBranchChangeRef in FileTree —
+  // so it's always current without an effect's one-render lag. Declared
+  // here (rather than by the activeRealTab derivation that reads it below)
+  // so openExtViewerTab can pin a new viewer tab's origin session to it too.
+  // Seeded from any real tab restored on this mount (useRef's initializer
+  // only runs once) so a reload that lands back on a virtual tab doesn't
+  // leave the sidebar empty until the user manually switches tabs.
+  const lastRealTabIdRef = useRef<string | null>(tabs.find(isRealTab)?.id ?? null);
+  if (activeTab && isRealTab(activeTab)) {
+    lastRealTabIdRef.current = activeTab.id;
+  }
 
   useEffect(() => {
     localStorage.setItem("tabs", JSON.stringify(tabs));
@@ -204,6 +290,68 @@ export default function App() {
     }
     saveSettings(settings);
   }, [settings]);
+
+  // Chrome-style tab-group UI state (color/collapsed), keyed by session
+  // name — see groupKeyForTab above and plans/tab-groups-by-session.md.
+  const [tabGroupState, setTabGroupState] = useState<Record<string, TabGroupState>>(
+    loadStoredTabGroupState,
+  );
+  useEffect(() => {
+    localStorage.setItem("tabGroupState", JSON.stringify(tabGroupState));
+  }, [tabGroupState]);
+
+  // Keeps tabGroupState in sync with which sessions actually have tabs open:
+  // prunes entries for sessions with no tab left (forgets color/collapsed,
+  // same as Chrome forgetting a closed group), and — only while grouping is
+  // enabled — auto-assigns a fresh palette color to any session that gained
+  // tabs without one yet.
+  useEffect(() => {
+    setTabGroupState((prev) => {
+      const sessionNames = new Set(tabs.filter(isRealTab).map((t) => t.sessionName));
+      let changed = false;
+      const next: Record<string, TabGroupState> = {};
+      for (const [name, state] of Object.entries(prev)) {
+        if (sessionNames.has(name)) next[name] = state;
+        else changed = true;
+      }
+      if (settingsRef.current.tabGroupsBySession) {
+        let colorCount = Object.keys(next).length;
+        for (const name of sessionNames) {
+          if (!next[name]) {
+            next[name] = { color: nextAutoColor(colorCount), collapsed: false };
+            colorCount++;
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tabs, settings.tabGroupsBySession]);
+
+  // Enforces group contiguity while grouping is enabled — reorders `tabs` so
+  // each session's tabs sit adjacent to each other (see normalizeTabGroups).
+  // A no-op (same array reference) once already normalized, so this can't
+  // loop: setTabs bails on an unchanged reference.
+  useEffect(() => {
+    if (!settings.tabGroupsBySession) return;
+    setTabs((prev) => normalizeTabGroups(prev));
+  }, [tabs, settings.tabGroupsBySession]);
+
+  // A tab activated while its group is collapsed must not stay hidden
+  // behind its own chip — expand its group so the active tab is always
+  // reachable (quick switcher, sidebar, tab cycling, dedupe-activation all
+  // funnel through setActiveTabId, so this one effect covers every path).
+  useEffect(() => {
+    if (!activeTabId) return;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    const key = tab ? groupKeyForTab(tab) : null;
+    if (!key) return;
+    setTabGroupState((prev) => {
+      const state = prev[key];
+      if (!state?.collapsed) return prev;
+      return { ...prev, [key]: { ...state, collapsed: false } };
+    });
+  }, [activeTabId, tabs]);
 
   // Keybinding overrides (command id → serialized combo), resolved over the
   // defaults in keybindings.ts. Same localStorage flow as settings above,
@@ -578,6 +726,13 @@ export default function App() {
   // the only virtual-file-tab opener — see findFileViewerFor for how a path
   // resolves to a viewer.
   const openExtViewerTab = useCallback((viewerId: string, filePath: string, title?: string) => {
+    // Pins the viewer tab to whichever real tab it was opened "from" — same
+    // sticky lookup the FILES panel itself uses (lastRealTabIdRef), so a
+    // preview opened while another viewer tab is active still attributes to
+    // the last real session, not none — so it can join that session's tab
+    // group (groupKeyForTab). Undefined origin (no real tab ever opened)
+    // just means the tab stays ungrouped, same as today.
+    const origin = tabsRef.current.find((t) => t.id === lastRealTabIdRef.current);
     setTabs((prev) => {
       const existing = prev.find((t) => t.extViewerId === viewerId && t.extViewerPath === filePath);
       if (existing) {
@@ -597,6 +752,8 @@ export default function App() {
         extViewerId: viewerId,
         extViewerPath: filePath,
         extViewerTitle: title,
+        originSessionName: origin?.sessionName,
+        originSessionId: origin?.sessionId,
       };
       setActiveTabId(tab.id);
       return insertTab(prev, tab);
@@ -834,11 +991,138 @@ export default function App() {
     [tabs, confirmDialog],
   );
 
+  // Toggles a group's collapsed state. Collapsing the group holding the
+  // active tab hands activation to the MRU tab outside it (same fallback
+  // order as closeTab), falling back to the nearest tab outside the group;
+  // if the group contains every open tab, there's nothing to hand off to —
+  // silent no-op rather than stranding the active tab with no visible tab.
+  const toggleGroupCollapsed = useCallback((sessionName: string) => {
+    setTabGroupState((prev) => {
+      const state = prev[sessionName];
+      if (!state) return prev;
+      const collapsing = !state.collapsed;
+      if (collapsing) {
+        const memberIds = new Set(
+          tabsRef.current.filter((t) => groupKeyForTab(t) === sessionName).map((t) => t.id),
+        );
+        const hasOutside = tabsRef.current.some((t) => !memberIds.has(t.id));
+        if (!hasOutside) return prev;
+        setActiveTabId((current) => {
+          if (!current || !memberIds.has(current)) return current;
+          const previous = mruTabIdsRef.current.find(
+            (tid) => !memberIds.has(tid) && tabsRef.current.some((t) => t.id === tid),
+          );
+          if (previous) return previous;
+          const neighbor = tabsRef.current.find((t) => !memberIds.has(t.id));
+          return neighbor ? neighbor.id : current;
+        });
+      }
+      return { ...prev, [sessionName]: { ...state, collapsed: collapsing } };
+    });
+  }, []);
+
+  const closeGroupTabs = useCallback(
+    async (sessionName: string) => {
+      const toClose = tabs.filter((t) => groupKeyForTab(t) === sessionName);
+      if (toClose.length === 0) return;
+      const anyDirty = toClose.some((t) => dirtyTabsRef.current.has(t.id));
+      if (anyDirty) {
+        const ok = await confirmDialog("Some tabs have unsaved changes. Close this group anyway?", "Close Group");
+        if (!ok) return;
+      }
+      const closedIds = new Set(toClose.map((t) => t.id));
+      for (const t of toClose) {
+        dirtyTabsRef.current.delete(t.id);
+        if (t.windowIndex !== undefined) api.closeWindowTab(t.attachName).catch(() => {});
+      }
+      mruTabIdsRef.current = mruTabIdsRef.current.filter((tid) => !closedIds.has(tid));
+      setTabs((prev) => {
+        const idx = prev.findIndex((t) => closedIds.has(t.id));
+        const next = prev.filter((t) => !closedIds.has(t.id));
+        setActiveTabId((current) => {
+          if (!current || !closedIds.has(current)) return current;
+          if (settingsRef.current.tabCloseActivation === "recent") {
+            const previous = mruTabIdsRef.current.find(
+              (tid) => tid !== current && next.some((t) => t.id === tid),
+            );
+            if (previous) return previous;
+          }
+          const neighbor = next[Math.min(idx, next.length - 1)];
+          return neighbor ? neighbor.id : null;
+        });
+        return next;
+      });
+    },
+    [tabs, confirmDialog],
+  );
+
+  const groupMenuItems = useCallback(
+    (sessionName: string): MenuItem[] => {
+      const state = tabGroupState[sessionName];
+      const collapsed = state?.collapsed ?? false;
+      return [
+        {
+          label: collapsed ? "Expand Group" : "Collapse Group",
+          onClick: () => toggleGroupCollapsed(sessionName),
+        },
+        {
+          label: "",
+          onClick: () => {},
+          swatches: {
+            colors: GROUP_COLORS.map((c) => ({ key: c.key, hex: c.hex })),
+            selected: state?.color ?? GROUP_COLORS[0].key,
+            onPick: (color) =>
+              setTabGroupState((prev) => {
+                const s = prev[sessionName];
+                if (!s) return prev;
+                return { ...prev, [sessionName]: { ...s, color } };
+              }),
+          },
+        },
+        { label: "Close Group", danger: true, onClick: () => closeGroupTabs(sessionName) },
+      ];
+    },
+    [tabGroupState, toggleGroupCollapsed, closeGroupTabs],
+  );
+
   // Runs every poll: rewrites any tab whose session/window drifted from an
   // out-of-band rename or renumber. See reconcileTabs above.
   useEffect(() => {
     if (!sessionsLoadedRef.current) return;
-    setTabs((prev) => reconcileTabs(prev, sessions));
+    // An out-of-band rename (detected via stable session id, same as
+    // reconcileTabs itself) also carries the group's color/collapsed state
+    // along — computed from tabsRef rather than adding `tabs` as a
+    // dependency, so this effect keeps running only on the sessions poll.
+    const renames = new Map<string, string>();
+    for (const tab of tabsRef.current) {
+      if (!tab.sessionId) continue;
+      const session = sessions.find((s) => s.id === tab.sessionId);
+      if (session && session.name !== tab.sessionName) renames.set(tab.sessionName, session.name);
+    }
+    if (renames.size > 0) {
+      setTabGroupState((prev) => {
+        const next: Record<string, TabGroupState> = {};
+        for (const [name, state] of Object.entries(prev)) {
+          next[renames.get(name) ?? name] = state;
+        }
+        return next;
+      });
+    }
+    setTabs((prev) => {
+      const reconciled = reconcileTabs(prev, sessions);
+      // A viewer tab's originSessionName (see openExtViewerTab) follows the
+      // same rename — otherwise it'd silently drop out of its group the
+      // instant the session it was opened from gets renamed.
+      if (renames.size === 0) return reconciled;
+      let changed = false;
+      const next = reconciled.map((tab) => {
+        const renamed = tab.originSessionName && renames.get(tab.originSessionName);
+        if (!renamed) return tab;
+        changed = true;
+        return { ...tab, originSessionName: renamed };
+      });
+      return changed ? next : reconciled;
+    });
   }, [sessions]);
 
   // A window-tab's pinned window can disappear for reasons we can't
@@ -865,6 +1149,29 @@ export default function App() {
       if (!stillExists) closeTab(tab.id);
     }
   }, [sessions, tabs, closeTab]);
+
+  // A viewer tab's origin session (see openExtViewerTab) can go away —
+  // killed, or its last real tab closed independently of the viewer tab.
+  // The viewer tab itself has no live tmux process to lose, so it stays
+  // open; it just ungroups (clears origin) rather than keeping a chip for a
+  // session that no longer exists.
+  useEffect(() => {
+    if (!sessionsLoadedRef.current) return;
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((tab) => {
+        if (tab.originSessionName === undefined) return tab;
+        const stillExists = tab.originSessionId
+          ? sessions.some((s) => s.id === tab.originSessionId)
+          : sessions.some((s) => s.name === tab.originSessionName);
+        if (stillExists) return tab;
+        changed = true;
+        const { originSessionName: _n, originSessionId: _i, ...rest } = tab;
+        return rest;
+      });
+      return changed ? next : prev;
+    });
+  }, [sessions]);
 
   const createSession = useCallback(
     async (name?: string) => {
@@ -911,6 +1218,12 @@ export default function App() {
         setTabs((prev) =>
           prev.map((t) => (t.sessionName === name ? { ...t, sessionName: newName } : t)),
         );
+        setTabGroupState((prev) => {
+          const state = prev[name];
+          if (!state) return prev;
+          const { [name]: _moved, ...rest } = prev;
+          return { ...rest, [newName]: state };
+        });
         await refresh();
       } catch (err) {
         showError(err);
@@ -1139,22 +1452,8 @@ export default function App() {
     [createFileInDir, createFolderInDir],
   );
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  // Virtual tabs (image/markdown preview) have no tmux session, so sidebar
-  // context (the FILES tree root, the lazygit branch pill, "new window in
-  // dir") keeps reflecting whichever real (terminal) tab was open most
-  // recently instead of collapsing to empty while a virtual tab is active.
-  // Mutated during render — same pattern as onBranchChangeRef in FileTree —
-  // so it's always current without an effect's one-render lag.
-  // Seeded from any real tab restored on this mount (useRef's initializer
-  // only runs once) so a reload that lands back on a virtual tab doesn't
-  // leave the sidebar empty until the user manually switches tabs.
-  const lastRealTabIdRef = useRef<string | null>(
-    tabs.find(isRealTab)?.id ?? null,
-  );
-  if (activeTab && isRealTab(activeTab)) {
-    lastRealTabIdRef.current = activeTab.id;
-  }
+  // activeTab/lastRealTabIdRef are declared earlier (right after
+  // activeTabIdRef) so openExtViewerTab can also read lastRealTabIdRef.
   const activeRealTab =
     activeTab && isRealTab(activeTab)
       ? activeTab
@@ -1499,6 +1798,11 @@ export default function App() {
           onReorder={moveTab}
           actionsRef={setTabActionsEl}
           onToggleSidebar={() => setSidebarVisible((v) => !v)}
+          groupingEnabled={settings.tabGroupsBySession}
+          groupKey={groupKeyForTab}
+          groupState={tabGroupState}
+          onToggleGroupCollapsed={toggleGroupCollapsed}
+          groupMenuItems={groupMenuItems}
         />
         <div className="terminals">
           {tabs.map((tab) => {

@@ -25,6 +25,9 @@ export interface AppSettings {
   // Where a newly opened tab is inserted: appended at the end of the tab
   // bar, or immediately to the right of the active tab.
   newTabPlacement: "end" | "afterActive";
+  // Chrome-style tab groups: each session's tabs sit behind a colored,
+  // collapsible chip in the tab bar. Off by default — pure opt-in.
+  tabGroupsBySession: boolean;
   // Default cwd for new sessions. Empty = server default (NEW_SESSION_CWD
   // from server/.env, else the server's own cwd). Validated server-side; a
   // non-existent path silently falls back rather than failing the create.
@@ -70,6 +73,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",
+  tabGroupsBySession: false,
   newSessionCwd: "",
   fileTreeGitStatus: true,
   colorTheme: "tmux-server.plastic-legacy-theme:Plastic Legacy",

@@ -40,18 +40,35 @@ export default function ContextMenu({ menu, onClose }: Props) {
 
   return (
     <div ref={ref} className="context-menu" style={{ left: pos.x, top: pos.y }}>
-      {menu.items.map((item) => (
-        <button
-          key={item.label}
-          className={`context-menu-item${item.danger ? " danger" : ""}`}
-          onClick={() => {
-            onClose();
-            item.onClick();
-          }}
-        >
-          {item.label}
-        </button>
-      ))}
+      {menu.items.map((item, i) =>
+        item.swatches ? (
+          <div key={i} className="context-menu-swatches">
+            {item.swatches.colors.map((c) => (
+              <button
+                key={c.key}
+                className={`swatch${item.swatches!.selected === c.key ? " selected" : ""}`}
+                title={c.key}
+                style={{ background: c.hex }}
+                onClick={() => {
+                  onClose();
+                  item.swatches!.onPick(c.key);
+                }}
+              />
+            ))}
+          </div>
+        ) : (
+          <button
+            key={i}
+            className={`context-menu-item${item.danger ? " danger" : ""}`}
+            onClick={() => {
+              onClose();
+              item.onClick();
+            }}
+          >
+            {item.label}
+          </button>
+        ),
+      )}
     </div>
   );
 }

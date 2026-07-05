@@ -650,6 +650,15 @@ export default function SettingsView({
               </select>
             </label>
 
+            <label className="settings-row checkbox-row">
+              <input
+                type="checkbox"
+                checked={settings.tabGroupsBySession}
+                onChange={(e) => set("tabGroupsBySession", e.target.checked)}
+              />
+              <span>Group tabs by session in the tab bar</span>
+            </label>
+
             <label className="settings-row">
               <span className="settings-label">Default new-session directory</span>
               <input

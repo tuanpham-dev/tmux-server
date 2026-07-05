@@ -62,12 +62,40 @@ export interface Tab {
   // "App.tsx (Working Tree)" instead of the bare basename tabLabel derives
   // by default. Absent for every other viewer tab.
   extViewerTitle?: string;
+  // Only on a viewer tab (extViewerPath set): the real session it was
+  // opened "from" (App.tsx's openExtViewerTab), pinned at creation time so
+  // it can join that session's Chrome-style tab group — see groupKeyForTab
+  // in App.tsx. originSessionId mirrors sessionId's rename-survival role;
+  // both are cleared once the origin session no longer exists (the viewer
+  // tab itself is left open and just ungroups — previews aren't tied to a
+  // live tmux process the way window-tabs are). Absent for a settings tab,
+  // for a viewer tab opened with no real tab ever active, or one restored
+  // from localStorage before this shipped.
+  originSessionName?: string;
+  originSessionId?: string;
 }
 
 export interface MenuItem {
   label: string;
   danger?: boolean;
   onClick: () => void;
+  // Renders a row of color swatches instead of the normal label/click row —
+  // used by a tab-group chip's context menu to pick the group's color.
+  // label/onClick are unused placeholders on a swatches item; ContextMenu
+  // checks `swatches` first.
+  swatches?: {
+    colors: { key: string; hex: string }[];
+    selected: string;
+    onPick: (key: string) => void;
+  };
+}
+
+// Per-session tab-group UI state (client/src/App.tsx's tabGroupState),
+// keyed by sessionName — see App.tsx's rename-migration comment for why
+// name, not the stable session id, is the key.
+export interface TabGroupState {
+  color: string; // a utils/groupColor.ts GROUP_COLORS key
+  collapsed: boolean;
 }
 
 export interface MenuState {
