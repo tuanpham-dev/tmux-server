@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSlug from "rehype-slug";
 import remarkGfm from "remark-gfm";
 import { common } from "lowlight";
 import apache from "highlight.js/lib/languages/apache";
@@ -10,7 +13,7 @@ import ini from "highlight.js/lib/languages/ini";
 import nginx from "highlight.js/lib/languages/nginx";
 import "highlight.js/styles/github-dark.css";
 import "./style.css";
-import { fetchFileText } from "../../_shared/fileApi";
+import { fetchFileText, downloadUrl } from "../../_shared/fileApi";
 import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
 
@@ -31,6 +34,47 @@ const rehypeHighlightPlugin: [typeof rehypeHighlight, { languages: Record<string
   rehypeHighlight,
   { languages: { ...common, nginx, dockerfile, apache, toml: ini } },
 ];
+
+// rehypeRaw parses embedded HTML (e.g. <details>/<summary>, which react-
+// markdown otherwise drops) into real elements; rehypeSlug then gives every
+// heading a GitHub-style id (react-markdown doesn't do this on its own, so
+// in-document `[text](#heading)` links otherwise have nothing to jump to);
+// rehypeSanitize then strips anything dangerous (script tags, event
+// handlers, javascript: URLs) since this pane renders into the host app's
+// own DOM/origin, not a sandboxed iframe — the previewed file may be
+// untrusted content, unlike an installed extension. defaultSchema's
+// clobberPrefix rewrites every id/name (including rehypeSlug's) to
+// "user-content-<slug>" as a DOM-clobbering defense — same as GitHub's own
+// renderer — so links to those ids need the same prefix; see resolveHref.
+const rehypeSanitizePlugin: [typeof rehypeSanitize, typeof defaultSchema] = [rehypeSanitize, defaultSchema];
+
+// GitHub's own renderer resolves an in-document `#heading` link against the
+// clobber-prefixed id above by rewriting the link href, not by leaving the
+// id unprefixed — mirrored here so `[text](#heading)` actually scrolls.
+// External/absolute links and non-fragment paths pass through untouched.
+function resolveHref(href: string): string {
+  if (!href.startsWith("#") || href.startsWith("#user-content-")) return href;
+  return `#user-content-${href.slice(1)}`;
+}
+
+// react-markdown renders an image's `src` verbatim, so a relative path like
+// "docs/screenshots/foo.png" would otherwise resolve against the app's own
+// URL in the browser rather than the previewed file's directory on disk.
+// Absolute URLs (http(s):, data:, etc.) and root-relative paths pass through
+// as-is; everything else is joined against the markdown file's directory and
+// routed through the download API, same as image-preview's <img src>.
+function resolveImageSrc(markdownFilePath: string, src: string): string {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("//")) return src;
+  const dir = markdownFilePath.slice(0, markdownFilePath.lastIndexOf("/"));
+  const full = src.startsWith("/") ? src : `${dir}/${src}`;
+  const parts: string[] = [];
+  for (const part of full.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return downloadUrl(`/${parts.join("/")}`);
+}
 
 function readFontSize(): number {
   return Number(extSettings?.get("markdown.previewFontSize")) || 14;
@@ -132,7 +176,16 @@ function MarkdownView({ filePath, active, toolbarTarget, openInEditor }: Props) 
         {!error && content === null && <div className="markdown-status">Loading…</div>}
         {!error && content !== null && (
           <div className="markdown-body" data-hl={hl} style={{ fontSize: `${fontSize}px` }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlightPlugin]}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeRaw, rehypeSlug, rehypeSanitizePlugin, rehypeHighlightPlugin]}
+              components={{
+                img: ({ src, ...props }) => (
+                  <img {...props} src={src ? resolveImageSrc(filePath, src) : src} />
+                ),
+                a: ({ href, ...props }) => <a {...props} href={href ? resolveHref(href) : href} />,
+              }}
+            >
               {content}
             </ReactMarkdown>
           </div>
