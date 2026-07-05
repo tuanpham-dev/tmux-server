@@ -1117,6 +1117,12 @@ body.scrollbar-dragging {
   outline-offset: 1px;
 }
 
+.auth-gate-error {
+  color: var(--error);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
 /* ---- Settings tab ---- */
 
 .settings-host {

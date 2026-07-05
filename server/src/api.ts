@@ -384,6 +384,13 @@ api.get("/tunnel-auth", (req, res) => {
   });
 });
 
+// Probed by the client's AuthGate on boot. Reaching this handler at all
+// means the request already cleared the auth gate middleware in index.ts
+// (or the gate is off) — there's nothing left to check here.
+api.get("/auth", (_req, res) => {
+  res.status(204).end();
+});
+
 api.get("/fs", async (req, res) => {
   const raw = typeof req.query.path === "string" ? req.query.path : "";
   if (!raw) {

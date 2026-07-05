@@ -5,7 +5,16 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
 import { loadEnabledServerHooks } from "./extensions.js";
-import { isAllowedHost, isAllowedOrigin, isOriginExemptPath } from "./security.js";
+import {
+  AUTH_COOKIE_NAME,
+  isAllowedHost,
+  isAllowedOrigin,
+  isAuthExemptPath,
+  isAuthGateEnabled,
+  isOriginExemptPath,
+  isValidAuthToken,
+  tokenFromRequest,
+} from "./security.js";
 import { startViewSweeper } from "./viewSweeper.js";
 import { handleAttach } from "./wsAttach.js";
 import { handleTunnel } from "./wsTunnel.js";
@@ -44,6 +53,45 @@ app.use((req, res, next) => {
   }
   next();
 });
+// Optional shared-secret gate (off unless AUTH_TOKEN is set — see
+// security.ts). A valid ?token= on ANY path (not just /api) mints the
+// cookie, since the entry point is typically the SPA shell at "/". Only
+// /api/* is actually rejected without it: the SPA shell and /tunnel.mjs are
+// public code with nothing to protect, and /api/ext/*/public/* enforces its
+// own capability token (see isAuthExemptPath).
+app.use((req, res, next) => {
+  if (!isAuthGateEnabled()) {
+    next();
+    return;
+  }
+  const queryToken = typeof req.query.token === "string" ? req.query.token : undefined;
+  if (queryToken && isValidAuthToken(queryToken)) {
+    const forwardedProto = req.headers["x-forwarded-proto"];
+    const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+    res.cookie(AUTH_COOKIE_NAME, queryToken, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: proto?.split(",")[0]?.trim() === "https",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      path: "/",
+    });
+  }
+  if (!req.path.startsWith("/api/") || isAuthExemptPath(req.path)) {
+    next();
+    return;
+  }
+  const authHeader = req.headers["x-auth-token"];
+  const token = tokenFromRequest(
+    req.headers.cookie,
+    Array.isArray(authHeader) ? authHeader[0] : authHeader,
+    queryToken,
+  );
+  if (!isValidAuthToken(token)) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  next();
+});
 app.use(express.json());
 app.use("/api", api);
 
@@ -68,7 +116,20 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  const { pathname } = new URL(req.url ?? "", "http://localhost");
+  const { pathname, searchParams } = new URL(req.url ?? "", "http://localhost");
+  if (isAuthGateEnabled()) {
+    const authHeader = req.headers["x-auth-token"];
+    const token = tokenFromRequest(
+      req.headers.cookie,
+      Array.isArray(authHeader) ? authHeader[0] : authHeader,
+      searchParams.get("token") ?? undefined,
+    );
+    if (!isValidAuthToken(token)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+  }
   if (pathname === "/ws/attach") {
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleAttach(ws, req);

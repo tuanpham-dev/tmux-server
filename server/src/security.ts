@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+
 // WebSockets ignore same-origin policy: any page open in a browser on this
 // machine can open ws://127.0.0.1:3001/ws/attach and inject keystrokes into
 // tmux, regardless of the server's bind address. A handful of no-body POST
@@ -71,4 +73,81 @@ export function isAllowedOrigin(originHeader: string | undefined): boolean {
 // bypasses exactly the protection those would need.
 export function isOriginExemptPath(path: string): boolean {
   return /^\/api\/ext\/[^/]+\/public\//.test(path);
+}
+
+// --- Auth gate -------------------------------------------------------------
+// Optional shared-secret gate, OpenClaw-style: unset AUTH_TOKEN and every
+// function below is a no-op, preserving today's behavior exactly. Set it and
+// opening the app with ?token=<secret> mints an HttpOnly cookie (see
+// index.ts) that authorizes all subsequent /api and WebSocket traffic —
+// necessary because several endpoints are consumed as raw URLs (img/iframe
+// src, dynamic import()) that can't carry a custom header.
+
+export const AUTH_COOKIE_NAME = "tmux_server_token";
+
+function authToken(): string | undefined {
+  const token = process.env.AUTH_TOKEN;
+  return token && token.length > 0 ? token : undefined;
+}
+
+export function isAuthGateEnabled(): boolean {
+  return authToken() !== undefined;
+}
+
+// Constant-time compare against the configured secret. Deliberately does NOT
+// short-circuit on length mismatch before hashing both to a fixed size, so
+// wrong-length guesses don't leak timing info either.
+export function isValidAuthToken(candidate: string | undefined): boolean {
+  const expected = authToken();
+  if (!expected || !candidate) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) {
+    // Compare against itself so this branch takes comparable time to the
+    // equal-length path, then report false.
+    timingSafeEqual(a, a);
+    return false;
+  }
+  return timingSafeEqual(a, b);
+}
+
+function parseCookies(header: string | undefined): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  if (!header) return cookies;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const name = part.slice(0, eq).trim();
+    if (!name) continue;
+    try {
+      cookies[name] = decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      cookies[name] = part.slice(eq + 1).trim();
+    }
+  }
+  return cookies;
+}
+
+// Accepts the token from, in order: the first-party cookie (normal browser
+// traffic once minted), an x-auth-token header (the tunnel CLI / curl,
+// which can't hold cookies across separate invocations), or a ?token= query
+// param (the initial entry URL, and anywhere else a header isn't practical).
+export function tokenFromRequest(
+  cookieHeader: string | undefined,
+  authTokenHeader: string | string[] | undefined,
+  queryToken: string | undefined,
+): string | undefined {
+  const cookieToken = parseCookies(cookieHeader)[AUTH_COOKIE_NAME];
+  if (cookieToken) return cookieToken;
+  if (typeof authTokenHeader === "string" && authTokenHeader) return authTokenHeader;
+  if (queryToken) return queryToken;
+  return undefined;
+}
+
+// Routes that must stay reachable without the auth cookie even when the gate
+// is on — currently identical to the Origin exemption (see its module
+// comment): a capability-token-protected /public/ route under an
+// extension's own namespace.
+export function isAuthExemptPath(path: string): boolean {
+  return isOriginExemptPath(path);
 }

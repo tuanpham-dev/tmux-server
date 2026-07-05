@@ -45,7 +45,7 @@ npm run build
 npm start          # listens on 127.0.0.1:3001 by default
 ```
 
-Override the port with `PORT=<port> npm start`. The server always binds to `127.0.0.1` — there's no built-in authentication, so it's meant to be used locally or fronted by a reverse proxy (see below).
+Override the port with `PORT=<port> npm start`. The server always binds to `127.0.0.1` and has no authentication by default, so it's meant to be used locally, fronted by a reverse-proxy auth layer, or gated with `AUTH_TOKEN` (see [Authentication](#authentication) below).
 
 ### Behind nginx
 
@@ -58,6 +58,7 @@ location / {
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
 
     # Terminals are long-lived WebSocket connections.
     proxy_read_timeout 1d;
@@ -71,7 +72,30 @@ The server only accepts requests whose `Host` (and, for browser requests, `Origi
 ALLOWED_HOSTS=tmux.example.com npm start
 ```
 
-The `Host $host` line in the nginx config above forwards the real hostname through, so this only needs to be set once per domain.
+The `Host $host` line in the nginx config above forwards the real hostname through, so this only needs to be set once per domain. The `X-Forwarded-Proto` line lets the server mark the auth cookie (see below) `Secure` when you're serving over HTTPS.
+
+### Authentication
+
+Set `AUTH_TOKEN` to require a shared secret before anything under `/api` or either WebSocket endpoint (`/ws/attach`, `/ws/tunnel`) is reachable:
+
+```bash
+AUTH_TOKEN=<a-long-random-secret> npm start
+```
+
+Open the app with the token in the URL once:
+
+```
+https://tmux.example.com/?token=<a-long-random-secret>
+```
+
+The server mints an HttpOnly cookie from that request and strips `?token=` from the address bar; every later request in that browser rides the cookie automatically. Visiting without a valid token shows a login form asking for it instead of the app.
+
+Notes:
+
+- **Off by default.** Leaving `AUTH_TOKEN` unset disables the gate entirely — identical to today's behavior.
+- **The token appears once in plaintext** — in the URL you opened, and in your browser history unless you clear it. Treat that URL like a credential; don't paste it into chat or a public issue.
+- **Scripts and the tunnel CLI** can't hold a cookie across invocations — pass the token as a header instead: `curl -H 'x-auth-token: <secret>' ...` or `node tunnel.mjs --header 'x-auth-token: <secret>' ...`. The PORTS panel's copy button already bakes in whatever `Cookie`/`Authorization` your browser session is carrying (see [Port forwarding](#port-forwarding) below), so the auth cookie — including one minted by `AUTH_TOKEN` — rides along automatically when you copy its generated command.
+- **Static assets and `/tunnel.mjs`** stay reachable without a token — they're public code with nothing to protect. An extension's own `/api/ext/<id>/public/*` routes are likewise exempt from the gate, the same way they're exempt from the Origin check.
 
 ## Port forwarding
 
