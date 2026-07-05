@@ -136,6 +136,12 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(
     () => localStorage.getItem("activeTabId"),
   );
+  // Mirror for insertTab below: every opener activates its new tab only
+  // after computing where to insert it, so this ref still holds the
+  // *previous* active tab at insertion time — exactly the anchor
+  // "afterActive" placement wants. Same pattern as settingsRef.
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
 
   useEffect(() => {
     localStorage.setItem("tabs", JSON.stringify(tabs));
@@ -525,6 +531,18 @@ export default function App() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  // Inserts a newly opened tab per the newTabPlacement setting. `anchorId`
+  // overrides the active-tab-ref anchor for callers that need to snapshot
+  // it before an await (see openWindowTab) rather than reading it fresh at
+  // insertion time; omit it to use activeTabIdRef.current.
+  const insertTab = useCallback((prev: Tab[], tab: Tab, anchorId?: string | null): Tab[] => {
+    if (settingsRef.current.newTabPlacement !== "afterActive") return [...prev, tab];
+    const anchor = anchorId !== undefined ? anchorId : activeTabIdRef.current;
+    const index = anchor ? prev.findIndex((t) => t.id === anchor) : -1;
+    if (index === -1) return [...prev, tab];
+    return [...prev.slice(0, index + 1), tab, ...prev.slice(index + 1)];
+  }, []);
+
   const openSession = useCallback(
     (name: string) => {
       setTabs((prev) => {
@@ -546,10 +564,10 @@ export default function App() {
         }
         const tab: Tab = { id: crypto.randomUUID(), sessionName: name, attachName: name };
         setActiveTabId(tab.id);
-        return [...prev, tab];
+        return insertTab(prev, tab);
       });
     },
-    [sessions],
+    [sessions, insertTab],
   );
 
   // Activate-or-create, keyed on (viewerId, path) — viewerId is stored on
@@ -581,9 +599,9 @@ export default function App() {
         extViewerTitle: title,
       };
       setActiveTabId(tab.id);
-      return [...prev, tab];
+      return insertTab(prev, tab);
     });
-  }, []);
+  }, [insertTab]);
 
   // The "Preview" escape hatch (hover icon / context-menu item / Shift+Enter)
   // for a path some "preview"-mode viewer claims — markdown/json/yaml/csv
@@ -645,9 +663,9 @@ export default function App() {
       }
       const tab: Tab = { id: crypto.randomUUID(), sessionName: "", attachName: "", settingsView: true };
       setActiveTabId(tab.id);
-      return [...prev, tab];
+      return insertTab(prev, tab);
     });
-  }, []);
+  }, [insertTab]);
 
   const openWindowTab = useCallback(
     async (session: string, index: number) => {
@@ -670,16 +688,21 @@ export default function App() {
           return;
         }
       }
+      // Snapshotted before the await below: if the user switches the active
+      // tab while this request is in flight, the new tab still lands next to
+      // whichever tab they initiated it from, not whatever became active
+      // meanwhile.
+      const anchorId = activeTabIdRef.current;
       try {
         const { attachName } = await api.openWindowTab(session, index);
         const tab: Tab = { id: crypto.randomUUID(), sessionName: session, attachName, windowIndex: index };
-        setTabs((prev) => [...prev, tab]);
+        setTabs((prev) => insertTab(prev, tab, anchorId));
         setActiveTabId(tab.id);
       } catch (err) {
         showError(err);
       }
     },
-    [tabs, sessions, showError],
+    [tabs, sessions, showError, insertTab],
   );
 
   // Tabs with unsaved edits (currently only csv-preview's editable grid

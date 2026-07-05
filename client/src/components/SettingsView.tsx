@@ -637,6 +637,20 @@ export default function SettingsView({
             </label>
 
             <label className="settings-row">
+              <span className="settings-label">Open new tabs</span>
+              <select
+                className="dialog-input settings-select"
+                value={settings.newTabPlacement}
+                onChange={(e) =>
+                  set("newTabPlacement", e.target.value as AppSettings["newTabPlacement"])
+                }
+              >
+                <option value="end">At the end of the tab bar</option>
+                <option value="afterActive">To the right of the active tab</option>
+              </select>
+            </label>
+
+            <label className="settings-row">
               <span className="settings-label">Default new-session directory</span>
               <input
                 className="dialog-input"

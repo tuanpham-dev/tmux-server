@@ -22,6 +22,9 @@ export interface AppSettings {
   // What closing the active tab activates: the previously active tab (VS
   // Code-style MRU) or the positional neighbor.
   tabCloseActivation: "recent" | "adjacent";
+  // Where a newly opened tab is inserted: appended at the end of the tab
+  // bar, or immediately to the right of the active tab.
+  newTabPlacement: "end" | "afterActive";
   // Default cwd for new sessions. Empty = server default (NEW_SESSION_CWD
   // from server/.env, else the server's own cwd). Validated server-side; a
   // non-existent path silently falls back rather than failing the create.
@@ -66,6 +69,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   touchKeyBar: "auto",
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
+  newTabPlacement: "end",
   newSessionCwd: "",
   fileTreeGitStatus: true,
   colorTheme: "tmux-server.plastic-legacy-theme:Plastic Legacy",
