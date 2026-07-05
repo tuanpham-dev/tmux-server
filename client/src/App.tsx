@@ -14,6 +14,8 @@ import {
   setActiveContext,
   setExtensionSettingsOverrides,
   setOpenFileTabHandler,
+  setOpenViewerTabHandler,
+  setRefreshFilesHandler,
   useExtensionRegistry,
 } from "./extensions";
 import {
@@ -383,13 +385,21 @@ export default function App() {
   }, [settings.fontFamily, extensions]);
   const fontsVersion = useExtensionFontsVersion();
 
-  // Non-terminal UI elements that want "whatever monospace font the user
-  // actually configured" (styles.css's .terminal-link-tooltip) read this var
-  // instead of hard-coding a font name — keeps them in sync with the picker
-  // without needing their own settings plumbing.
+  // Non-terminal UI elements that want "whatever monospace metrics the user
+  // actually configured for the terminal" (styles.css's .terminal-link-
+  // tooltip; git-scm's diff viewer) read these vars instead of hard-coding
+  // their own — keeps them in sync with the Settings pickers without
+  // needing their own settings plumbing. Units are baked in here (xterm's
+  // own fontSize/letterSpacing options are plain pixel numbers, lineHeight
+  // a unitless multiplier — same as CSS's own line-height) so a consumer
+  // never has to guess.
   useEffect(() => {
-    document.documentElement.style.setProperty("--terminal-font", settings.fontFamily);
-  }, [settings.fontFamily]);
+    const root = document.documentElement.style;
+    root.setProperty("--terminal-font", settings.fontFamily);
+    root.setProperty("--terminal-font-size", `${settings.fontSize}px`);
+    root.setProperty("--terminal-line-height", `${settings.lineHeight}`);
+    root.setProperty("--terminal-letter-spacing", `${settings.letterSpacing}px`);
+  }, [settings.fontFamily, settings.fontSize, settings.lineHeight, settings.letterSpacing]);
 
   const [showSwitcher, setShowSwitcher] = useState(false);
 
@@ -549,11 +559,17 @@ export default function App() {
   // json/yaml/csv) is itself an extension-registered viewer now, so this is
   // the only virtual-file-tab opener — see findFileViewerFor for how a path
   // resolves to a viewer.
-  const openExtViewerTab = useCallback((viewerId: string, filePath: string) => {
+  const openExtViewerTab = useCallback((viewerId: string, filePath: string, title?: string) => {
     setTabs((prev) => {
       const existing = prev.find((t) => t.extViewerId === viewerId && t.extViewerPath === filePath);
       if (existing) {
         setActiveTabId(existing.id);
+        // Re-opening an already-open viewer tab still applies a freshly
+        // passed title — e.g. git-scm's diff viewer toggling Working Tree
+        // <-> Staged on the same path.
+        if (title !== undefined && existing.extViewerTitle !== title) {
+          return prev.map((t) => (t.id === existing.id ? { ...t, extViewerTitle: title } : t));
+        }
         return prev;
       }
       const tab: Tab = {
@@ -562,6 +578,7 @@ export default function App() {
         attachName: "",
         extViewerId: viewerId,
         extViewerPath: filePath,
+        extViewerTitle: title,
       };
       setActiveTabId(tab.id);
       return [...prev, tab];
@@ -1167,6 +1184,7 @@ export default function App() {
   const tabLabel = useCallback(
     (tab: Tab): string => {
       if (tab.settingsView) return "Settings";
+      if (tab.extViewerTitle !== undefined) return tab.extViewerTitle;
       const virtualPath = tabVirtualPath(tab);
       if (virtualPath !== undefined) {
         return virtualPath.slice(virtualPath.lastIndexOf("/") + 1);
@@ -1301,6 +1319,13 @@ export default function App() {
   useEffect(() => {
     setOpenFileTabHandler(openFileOrViewer);
   }, [openFileOrViewer]);
+
+  // ctx.app.openViewerTab/refreshFiles (extensions.ts) — see
+  // openExtViewerTab's title param and filesRefreshKey above.
+  useEffect(() => {
+    setOpenViewerTabHandler(openExtViewerTab);
+    setRefreshFilesHandler(() => setFilesRefreshKey((k) => k + 1));
+  }, [openExtViewerTab]);
 
   // Quick switcher's Shift+Enter action (also terminal ctrl+shift+click —
   // see TerminalView's onOpenFileSecondary). Mirrors the "Preview" escape

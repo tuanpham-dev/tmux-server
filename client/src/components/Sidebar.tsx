@@ -130,22 +130,34 @@ export default function Sidebar({
   });
   const [portsRefreshKey, setPortsRefreshKey] = useState(0);
 
-  // Keeps panelState in sync as extensions activate/deactivate: appends any
+  // Keeps panelState in sync as extensions register panels: appends any
   // newly-registered panel id (collapsed/size default to the same values a
-  // fresh built-in gets), and drops any id no longer registered — a
-  // disabled/uninstalled extension's panel simply disappears rather than
-  // leaving an empty row.
+  // fresh built-in gets). Purely additive and idempotent — it must never
+  // remove an id, however things look at the moment it happens to run.
+  //
+  // Extension activation is async (App.tsx's loadExtensions), so on every
+  // mount `extensionPanels` is transiently `[]` before an extension's
+  // panel(s) register, and (under StrictMode's dev-only double effect
+  // invocation) this can run an unpredictable number of times with
+  // different extIds before things settle. An earlier version pruned
+  // `order`/`collapsed`/`sizes` down to just the ids visible in extIds at
+  // the time — which reliably discarded a dragged panel's saved position
+  // (and, before that, its saved collapsed/size) on *some* reloads and not
+  // others, since it depended on exactly when each run happened to fire.
+  // Gating the prune on an "extensions have settled" flag only narrowed the
+  // window rather than closing it. The actual fix is to never prune here at
+  // all — a disabled/uninstalled extension's stale id is filtered out at
+  // render time instead (see visibleOrder below), so keeping it around in
+  // storage is harmless and the reconciliation itself can't race.
   useEffect(() => {
-    const extIds = extensionPanels.map((p) => p.id);
     setPanelState((prev) => {
-      const validIds = new Set([...PANEL_IDS, ...extIds]);
-      const order = prev.order.filter((id) => validIds.has(id));
-      for (const id of extIds) if (!order.includes(id)) order.push(id);
-      const collapsed: Record<PanelId, boolean> = {};
-      const sizes: Record<PanelId, number> = {};
-      for (const id of order) {
-        collapsed[id] = prev.collapsed[id] ?? false;
-        sizes[id] = prev.sizes[id] ?? 1;
+      const order = [...prev.order];
+      for (const panel of extensionPanels) if (!order.includes(panel.id)) order.push(panel.id);
+      const collapsed = { ...prev.collapsed };
+      const sizes = { ...prev.sizes };
+      for (const panel of extensionPanels) {
+        if (!(panel.id in collapsed)) collapsed[panel.id] = false;
+        if (!(panel.id in sizes)) sizes[panel.id] = 1;
       }
       return { order, collapsed, sizes };
     });
@@ -155,6 +167,29 @@ export default function Sidebar({
     null,
   );
   const [filesBranch, setFilesBranch] = useState<string | null>(null);
+  // Per-panel header actions container, keyed by panel id — the portal
+  // target an extension panel renders its header-row buttons into (mirrors
+  // TabBar's actionsRef/tabActionsEl for file-viewer toolbars). State (not
+  // a plain ref) so a newly-mounted header re-renders the panel content
+  // with the now-available DOM node.
+  const [extPanelActionsEls, setExtPanelActionsEls] = useState<Record<PanelId, HTMLDivElement | null>>({});
+  // A fresh inline `ref={(el) => ...}` closure every render makes React
+  // detach+reattach the ref on every render (ref identity changed), which
+  // re-triggered setExtPanelActionsEls every time and looped forever
+  // ("Maximum update depth exceeded") — caught via a live browser check,
+  // not by type-checking. Caching one stable callback per panel id avoids
+  // the identity churn.
+  const actionsRefCallbacks = useRef<Record<PanelId, (el: HTMLDivElement | null) => void>>({});
+  const getActionsRefCallback = (id: PanelId) => {
+    let cb = actionsRefCallbacks.current[id];
+    if (!cb) {
+      cb = (el) => {
+        setExtPanelActionsEls((prev) => (prev[id] === el ? prev : { ...prev, [id]: el }));
+      };
+      actionsRefCallbacks.current[id] = cb;
+    }
+    return cb;
+  };
 
   useEffect(() => {
     localStorage.setItem("sidebarMode", mode);
@@ -436,7 +471,7 @@ export default function Sidebar({
     const panel = extensionPanels.find((p) => p.id === id);
     if (!panel) return null;
     const PanelComponent = panel.component;
-    return <PanelComponent />;
+    return <PanelComponent actionsTarget={extPanelActionsEls[id] ?? null} />;
   };
 
   // Converts a pointer drag into flex-grow weights for the two panels
@@ -559,7 +594,11 @@ export default function Sidebar({
                 {filesBranch}
               </button>
             )}
-            <div className="sidebar-actions" onClick={(e) => e.stopPropagation()}>
+            <div
+              className="sidebar-actions"
+              ref={getActionsRefCallback(id)}
+              onClick={(e) => e.stopPropagation()}
+            >
               {panelActions(id)}
             </div>
           </div>
@@ -575,6 +614,15 @@ export default function Sidebar({
     );
   };
 
+  // panelState.order can contain a stale extension panel id — one whose
+  // extension is still activating (see the reconciliation effect above) or
+  // has since been disabled/uninstalled. Rather than mutate stored order to
+  // drop it (which is what raced), just don't render it: built-ins are
+  // always valid, an extension id is valid only while it's currently
+  // registered.
+  const extPanelIds = new Set(extensionPanels.map((p) => p.id));
+  const visibleOrder = panelState.order.filter((id) => PANEL_IDS.includes(id) || extPanelIds.has(id));
+
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="sidebar-topbar">
@@ -586,7 +634,7 @@ export default function Sidebar({
         </button>
       </div>
       <div className="sidebar-panels">
-        {panelState.order.map((id, idx) => renderPanel(id, panelState.order[idx + 1] ?? null))}
+        {visibleOrder.map((id, idx) => renderPanel(id, visibleOrder[idx + 1] ?? null))}
       </div>
     </aside>
   );

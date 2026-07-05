@@ -57,6 +57,11 @@ export interface Tab {
   // set (imagePath/previewPath only appear pre-migration — see above).
   extViewerId?: string;
   extViewerPath?: string;
+  // Optional override for the tab-bar label, set via ctx.app.openViewerTab's
+  // `title` option — e.g. git-scm's diff viewer titles its tab
+  // "App.tsx (Working Tree)" instead of the bare basename tabLabel derives
+  // by default. Absent for every other viewer tab.
+  extViewerTitle?: string;
 }
 
 export interface MenuItem {

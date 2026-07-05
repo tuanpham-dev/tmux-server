@@ -68,11 +68,20 @@ export interface RegisteredFileViewer {
   component: ReactNS.ComponentType<FileViewerHostProps>;
 }
 
+export interface SidebarPanelHostProps {
+  // The panel header's actions container — same portal mechanism
+  // FileViewerHostProps.toolbarTarget uses for tab-bar controls. Lets a
+  // panel put its own header-row buttons (refresh, sync, …) next to its
+  // title instead of inside its scrollable body. null until the header
+  // has mounted.
+  actionsTarget?: HTMLDivElement | null;
+}
+
 export interface RegisteredSidebarPanel {
   // Namespaced ext.<extensionId>.<id> — used as the sidebar's PanelId.
   id: string;
   title: string;
-  component: ReactNS.ComponentType<Record<string, never>>;
+  component: ReactNS.ComponentType<SidebarPanelHostProps>;
 }
 
 export interface ExtensionContext {
@@ -91,12 +100,26 @@ export interface ExtensionContext {
   registerSidebarPanel(panel: {
     id: string;
     title: string;
-    component: ReactNS.ComponentType<Record<string, never>>;
+    component: ReactNS.ComponentType<SidebarPanelHostProps>;
   }): void;
   app: {
     getActiveContext(): ActiveContext;
     onDidChangeContext(cb: (ctx: ActiveContext) => void): () => void;
     openFileTab(path: string): void;
+    // Opens (or activates, if already open) a tab for one of this
+    // extension's own registered file viewers, bypassing the normal
+    // extension-matching a FILES-tree click goes through — for a viewer
+    // that's never auto-matched to a file extension (registerFileViewer's
+    // `extensions: []`) and is only ever reached this way, e.g. a diff
+    // viewer opened from a source-control panel. opts.title overrides the
+    // tab-bar label (default: the path's basename); re-calling this for an
+    // already-open (viewerId, path) tab also updates its title, e.g. to
+    // reflect a working-tree/staged toggle.
+    openViewerTab(viewerId: string, path: string, opts?: { title?: string }): void;
+    // Bumps the FILES tree's refresh key so its git-status badges reflect a
+    // change this extension just made (stage/commit/discard/pull) without
+    // waiting for the tree's own poll.
+    refreshFiles(): void;
   };
   // fetch() scoped to this extension's own server hook, mounted at
   // /api/ext/<extensionId> — 404s if the extension has no server entry or
@@ -195,6 +218,24 @@ export function setOpenFileTabHandler(handler: (path: string) => void): void {
   openFileTabHandler = handler;
 }
 
+let openViewerTabHandler:
+  | ((namespacedViewerId: string, path: string, title?: string) => void)
+  | null = null;
+
+// Wired once from App.tsx to openExtViewerTab — see ExtensionContext.app.openViewerTab.
+export function setOpenViewerTabHandler(
+  handler: (namespacedViewerId: string, path: string, title?: string) => void,
+): void {
+  openViewerTabHandler = handler;
+}
+
+let refreshFilesHandler: (() => void) | null = null;
+
+// Wired once from App.tsx to bump filesRefreshKey — see ExtensionContext.app.refreshFiles.
+export function setRefreshFilesHandler(handler: () => void): void {
+  refreshFilesHandler = handler;
+}
+
 let installedExtensions: ExtensionInfo[] = [];
 
 export function getInstalledExtensions(): ExtensionInfo[] {
@@ -279,6 +320,12 @@ function makeContext(ext: ExtensionInfo): ExtensionContext {
       },
       openFileTab(path) {
         openFileTabHandler?.(path);
+      },
+      openViewerTab(viewerId, path, opts) {
+        openViewerTabHandler?.(`ext.${ext.id}.${viewerId}`, path, opts?.title);
+      },
+      refreshFiles() {
+        refreshFilesHandler?.();
       },
     },
     serverFetch(path, init) {

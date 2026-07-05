@@ -1,0 +1,364 @@
+.git-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+}
+
+.git-empty {
+  padding: 8px 12px;
+  color: var(--fg-inactive);
+  font-size: 13px;
+}
+
+.git-error {
+  margin: 6px 8px 0;
+  padding: 6px 8px;
+  background: var(--error);
+  color: #ffffff;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.git-commit-box {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.git-commit-message {
+  resize: vertical;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 6px 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.git-commit-message:focus {
+  border-color: var(--focus-border);
+}
+
+.git-commit-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 8px;
+  background: var(--button-bg);
+  color: var(--button-fg);
+  border: none;
+  border-radius: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.git-commit-button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.git-commit-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.git-sync-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.git-sync-button:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.git-sync-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.git-sync-counts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+}
+
+.git-credential-form,
+.git-confirm {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 8px 8px;
+  padding: 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 3px;
+}
+
+.git-credential-error,
+.git-confirm-text {
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.git-credential-input {
+  padding: 5px 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  color: var(--fg);
+  font-size: 13px;
+  outline: none;
+}
+
+.git-credential-input:focus {
+  border-color: var(--focus-border);
+}
+
+.git-credential-buttons,
+.git-confirm-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.git-credential-cancel,
+.git-credential-submit,
+.git-confirm-discard {
+  padding: 4px 10px;
+  border-radius: 2px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--input-border);
+  background: var(--panel-bg);
+  color: var(--fg);
+}
+
+.git-credential-submit,
+.git-confirm-discard {
+  background: var(--button-bg);
+  color: var(--button-fg);
+  border-color: var(--button-bg);
+}
+
+.git-credential-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.git-groups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.git-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-inactive);
+}
+
+.git-group-title {
+  flex-shrink: 0;
+}
+
+.git-group-count {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.git-group-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.git-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.git-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.git-row-status {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.git-row-status.git-status-modified {
+  color: var(--git-modified-fg);
+}
+.git-row-status.git-status-added {
+  color: var(--git-added-fg);
+}
+.git-row-status.git-status-untracked {
+  color: var(--git-untracked-fg);
+}
+.git-row-status.git-status-deleted {
+  color: var(--error);
+}
+.git-row-status.git-status-renamed {
+  color: var(--git-renamed-fg);
+}
+.git-row-status.git-status-conflicted {
+  color: var(--button);
+}
+
+.git-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-row-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  direction: rtl;
+  text-align: left;
+}
+
+.git-row-actions {
+  flex-shrink: 0;
+  /* Always laid out (never display:none) so the row's flex sizing doesn't
+     change on hover — display:none/flex toggling here reserved zero width
+     while hidden, so revealing the buttons shifted git-row-dir's ellipsis
+     and made the whole row appear to jump. visibility keeps the space
+     reserved at all times. */
+  visibility: hidden;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.git-row:hover .git-row-actions {
+  visibility: visible;
+}
+
+/* --- Diff view --- */
+
+.git-diff-host {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+  background: var(--bg);
+}
+
+.git-diff-host.hidden {
+  display: none;
+}
+
+.git-diff-status {
+  padding: 12px;
+  color: var(--fg-inactive);
+  font-size: 13px;
+}
+
+.git-diff-error {
+  color: var(--error);
+}
+
+.git-diff-raw {
+  margin: 0;
+  padding: 12px;
+  color: var(--fg-inactive);
+  font-family: var(--terminal-font, monospace);
+  font-size: var(--terminal-font-size, 13px);
+  line-height: var(--terminal-line-height, 1.4);
+  letter-spacing: var(--terminal-letter-spacing, 0);
+  white-space: pre-wrap;
+}
+
+.git-diff-body {
+  flex: 1;
+  overflow: auto;
+  font-family: var(--terminal-font, monospace);
+  font-size: var(--terminal-font-size, 13px);
+  line-height: var(--terminal-line-height, 1.4);
+  letter-spacing: var(--terminal-letter-spacing, 0);
+}
+
+.git-diff-hunk {
+  border-bottom: 1px solid var(--border);
+}
+
+.git-diff-hunk-header {
+  padding: 2px 10px;
+  background: var(--sidebar-header-bg);
+  color: var(--fg-accent);
+  font-size: 12px;
+}
+
+.git-diff-line {
+  display: flex;
+  white-space: pre;
+  padding: 0 10px;
+}
+
+.git-diff-line-marker {
+  flex-shrink: 0;
+  width: 16px;
+  color: var(--fg-inactive);
+}
+
+.git-diff-line-add {
+  background: color-mix(in srgb, var(--git-added-fg) 18%, transparent);
+}
+
+.git-diff-line-del {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+}
+
+.git-diff-line-add .git-diff-line-marker {
+  color: var(--git-added-fg);
+}
+
+.git-diff-line-del .git-diff-line-marker {
+  color: var(--error);
+}

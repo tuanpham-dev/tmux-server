@@ -87,14 +87,15 @@ export default function QuickSwitcher({
     for (const tab of tabs) {
       const virtualPath = tab.imagePath ?? tab.previewPath ?? tab.extViewerPath;
       const label =
-        virtualPath !== undefined
+        tab.extViewerTitle ??
+        (virtualPath !== undefined
           ? virtualPath.slice(virtualPath.lastIndexOf("/") + 1)
           : tab.windowIndex === undefined
             ? tab.sessionName
             : `${tab.sessionName}:${
                 sessions.find((s) => s.name === tab.sessionName)?.windows.find((w) => w.index === tab.windowIndex)
                   ?.name ?? `window ${tab.windowIndex}`
-              }`;
+              }`);
       list.push({ key: `tab:${tab.id}`, label, group: "tab", run: () => onActivateTab(tab.id) });
     }
     for (const session of sessions) {
