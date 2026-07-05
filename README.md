@@ -2,17 +2,57 @@
 
 A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them as tabbed terminals, and manage sessions/windows — all from the browser via [xterm.js](https://xtermjs.org/) and WebSockets.
 
+![Sidebar, FILES panel, Source Control panel, and an nvim tab with inline git blame](docs/screenshots/overview.png)
+
+<details>
+<summary>More screenshots</summary>
+
+| | |
+|---|---|
+| ![Colorized terminal output in a tab](docs/screenshots/tabs-and-logs.png) | ![git log and status in a terminal tab](docs/screenshots/git-shell.png) |
+| ![Extensions settings panel](docs/screenshots/extensions.png) | ![Ctrl+P quick switcher for tabs, windows, and sessions](docs/screenshots/quick-switcher.png) |
+
+</details>
+
 ## Features
 
-- **Sidebar** — sessions and windows as a tree, or grouped by working directory. Resizable, collapsible (`Ctrl+Shift+B`), shows attached/activity status.
-- **Tabbed terminals** — open a whole session or a single window as its own tab, switch between them, close individually or all-but-one. Drag to reorder (long-press then drag on touch). In the installed PWA: `Ctrl+Tab`/`Ctrl+Shift+Tab` to cycle tabs, `Ctrl+W` to close the active one.
+- **Sidebar** — sessions and windows as a tree, or grouped by working directory. Panels (SESSIONS, FILES, PORTS, and extension-contributed ones like SOURCE CONTROL) are reorderable by drag and independently resizable. Resizable, collapsible (`Ctrl+Shift+B`), shows attached/activity status.
+- **Quick switcher (`Ctrl+P`)** — fuzzy-search and jump to any open tab, window, or session, or search files by name. `Enter` opens a file in the editor; `Shift+Enter` opens it in its preview viewer instead.
+- **Tabbed terminals** — open a whole session or a single window as its own tab, switch between them, close individually or all-but-one. Drag to reorder (long-press then drag on touch), middle-click to close, double-click a tab to toggle the sidebar. Background tabs with new output get an activity dot; closing the active tab reactivates the most-recently-used one. In the installed PWA: `Ctrl+Tab`/`Ctrl+Shift+Tab` to cycle tabs, `Ctrl+W` to close the active one.
 - **Session & window management** — create, rename, kill sessions and windows via context menu or hover buttons.
-- **FILES panel** — browse the active window's working directory, drag-and-drop upload (files or folders, with conflict handling and progress), git status badges, and a context menu for creating, renaming, deleting, downloading (folders as zip), and copying paths. Clicking a file opens it in the pane's running `nvim`, or a new window if it's busy.
+- **FILES panel** — browse the active window's working directory, drag-and-drop upload (files or folders, with conflict handling and progress), git status badges, and a context menu for creating, renaming, deleting, downloading (folders as zip), and copying paths. Clicking a file opens it in the pane's running `nvim`, or a new window if it's busy; hovering a previewable file (image, PDF, Markdown, JSON/YAML, CSV, HTML) shows a Preview icon that opens it in a rendered tab instead. The current git branch shows as a pill in the FILES header — click it to open (or jump to) `lazygit` as a tab.
+- **File viewer tabs** — image (zoom/pan), audio/video, PDF, and rendered Markdown previews, plus editable CSV and JSON/YAML tree viewers with save-back to disk.
+- **SOURCE CONTROL panel** — stage/unstage/discard changes, commit, push/pull/sync with ahead/behind counts, publish a new branch, and open a unified diff view — all without leaving the browser. Bundled as the `git-scm` extension.
+- **Live Preview** — a sandboxed, auto-reloading preview tab for local HTML files. Bundled as the `live-preview` extension.
+- **Terminal niceties** — `Ctrl+click` (`Cmd+click` on Mac) opens URLs, local file paths (with `:line[:col]` jumping), and hyperlinked text; scrollback search (`Ctrl+Shift+F`); Shift+drag for browser text selection instead of tmux copy-mode; an on-screen key bar (Esc, Tab, arrows, Ctrl+C, sticky Ctrl) on touch devices.
 - **tmux-backed scrollbar** — draggable, since tmux (not the browser) owns scrollback.
-- **Theming** — matches VS Code's Plastic Legacy theme and IBM Plex Mono by default; configurable via the in-app Settings dialog (font, size, cursor style, etc.).
+- **Theming** — matches VS Code's Plastic Legacy theme and IBM Plex Mono by default; configurable via the in-app Settings dialog (font, size, cursor style, etc.). Settings are persisted server-side, so they follow you across browsers/devices.
+- **Rebindable keybindings** — every shortcut can be remapped from Settings → Keyboard; see [Keyboard & mouse](#keyboard--mouse) below for the defaults.
 - **Extensions** — install VS Code color themes and icon themes unchanged, contribute custom terminal fonts, or a small custom extension that adds a command, a file viewer, a sidebar panel, and a server route. See [Extensions](#extensions) below.
 - **Auto-reconnect** — a dropped connection (server restart, laptop sleep) reconnects automatically instead of losing the tab; open tabs also survive a browser reload.
 - **Installable PWA** — installable app shell with offline caching for the UI; terminal/session traffic (`/api`, `/ws`) is always network-only.
+
+## Keyboard & mouse
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+B` | Toggle sidebar |
+| `Ctrl+P` | Toggle quick switcher |
+| `Ctrl+Tab` * | Next tab |
+| `Ctrl+Shift+Tab` * | Previous tab |
+| `Ctrl+W` * | Close active tab |
+| `Ctrl+,` | Open Settings |
+| `Ctrl+Shift+C` | Copy terminal selection |
+| `Ctrl+Shift+F` | Scrollback search |
+| `Shift+Enter` | Insert a literal newline in the terminal |
+
+\* Browser-reserved outside the installed PWA — bind a different combo in Settings → Keyboard if you're using tmux-server as a regular browser tab.
+
+- **`Ctrl`+click** (`Cmd`+click on Mac) a URL, local file path, or hyperlink in the terminal to open it; add `Shift` to open a file in its preview viewer instead of the editor.
+- **Drag** in the terminal makes a tmux copy-mode selection; **Shift+drag** makes a normal browser text selection.
+- **Shift+scroll** (or a trackpad's horizontal scroll) sends horizontal scroll events to `nvim`.
+
+All of the above are defaults — remap any of them, including extension-contributed commands, from Settings → Keyboard.
 
 ## Requirements
 
@@ -45,7 +85,7 @@ npm run build
 npm start          # listens on 127.0.0.1:3001 by default
 ```
 
-Override the port with `PORT=<port> npm start`. The server always binds to `127.0.0.1` and has no authentication by default, so it's meant to be used locally, fronted by a reverse-proxy auth layer, or gated with `AUTH_TOKEN` (see [Authentication](#authentication) below).
+Override the port with `PORT=<port> npm start`. The server always binds to `127.0.0.1` and has no authentication by default, so it's meant to be used locally, fronted by a reverse-proxy auth layer, or gated with `AUTH_TOKEN` (see [Authentication](#authentication) below). Set `NEW_SESSION_CWD` to change the working directory new sessions start in — without it, tmux falls back to the server process's own cwd. (The client's own "default new session directory" setting, if set, wins over both.)
 
 ### Behind nginx
 
@@ -130,13 +170,13 @@ The nginx config above needs no changes — `/ws/tunnel` is covered by the same 
 
 Extensions live as folders under `~/.config/tmux-server/extensions/<folder>/` — either drop one in directly (the server picks it up on next scan/restart), or install a packed `.tsix` from the Settings dialog's **Extensions** section, which also lists what's installed and lets you enable/disable or uninstall each one. A worked example covering every surface below is in [`examples/hello-extension`](examples/hello-extension).
 
-Every built-in file preview (image, media, PDF, markdown, JSON/YAML, CSV) — and the app's default color theme, icon theme, and terminal font — is itself a bundled extension under the repo's own [`extensions/`](extensions) directory, discovered alongside `~/.config/tmux-server/extensions/` — see [Bundled extensions](#bundled-extensions) below. A user-installed extension with the same id always takes precedence over a bundled one.
+Every built-in file preview (image, media, PDF, markdown, JSON/YAML, CSV, HTML) — the SOURCE CONTROL panel — and the app's default color theme, icon theme, and terminal font — is itself a bundled extension under the repo's own [`extensions/`](extensions) directory, discovered alongside `~/.config/tmux-server/extensions/` — see [Bundled extensions](#bundled-extensions) below. A user-installed extension with the same id always takes precedence over a bundled one.
 
 ### Bundled extensions
 
 Two shapes of bundled extension live under `extensions/<name>/`:
 
-- **Functionality extensions** (one per built-in preview: `image-preview`, `media-preview`, `pdf-preview`, `markdown-preview`, `json-preview`, `csv-preview`) ship a normal extension manifest plus a `src/client.tsx` built by `extensions/build.mjs` into `dist/client.js` (+ `dist/client.css` if it imports any CSS). `npm run build`/`npm run dev` build these automatically (`prebuild`/`predev` hooks); `npm run build:extensions` builds them standalone, and `node extensions/build.mjs --watch` rebuilds on save (what `npm run dev` runs in the background).
+- **Functionality extensions** (one per built-in preview — `image-preview`, `media-preview`, `pdf-preview`, `markdown-preview`, `json-preview`, `csv-preview` — plus `git-scm`, the SOURCE CONTROL panel, and `live-preview`, the sandboxed HTML preview) ship a normal extension manifest plus a `src/client.tsx` built by `extensions/build.mjs` into `dist/client.js` (+ `dist/client.css` if it imports any CSS). `npm run build`/`npm run dev` build these automatically (`prebuild`/`predev` hooks); `npm run build:extensions` builds them standalone, and `node extensions/build.mjs --watch` rebuilds on save (what `npm run dev` runs in the background).
 - **Asset-only extensions** (`plastic-legacy-theme`, `seti-icons`, `ibm-plex-mono` — the app's default color theme, icon theme, and terminal font) have no `src/client.tsx`, so `build.mjs` skips them entirely; their manifest just points at theme/font files directly. All three are enabled by default, giving a fresh install the same look it always had, but each is now independently disable-/uninstallable/overridable like any other extension — a hard-coded fallback (styles.css's `:root` values, "no icon theme", generic `monospace`) covers the gap if one is off.
 
 Bundled extensions are enabled by default and show a **Built-in** badge in Settings. Uninstalling one doesn't delete repo files — it's tombstoned in `~/.config/tmux-server/extensions-state.json` (hidden from the list until you install a `.tsix` with the same id, which restores or overrides it, or you remove the tombstone entry from that file by hand).
@@ -273,7 +313,7 @@ Installing an extension with a `tmuxServer.server` entry runs its code as the se
 ```
 server/     Express + ws + node-pty — REST API for tmux operations, WS bridge to a PTY running `tmux attach`
 client/     React + TypeScript + xterm.js — the browser UI
-extensions/ Bundled extensions (image/media/pdf/markdown/json/csv preview) — see Bundled extensions
+extensions/ Bundled extensions (image/media/pdf/markdown/json/csv/html preview, git source control) — see Bundled extensions
 cli/        tunnel.mjs — standalone port-forwarding client, served at GET /tunnel.mjs
 examples/   hello-extension — a reference extension covering every surface in Extensions
 plans/      Design docs written during development
