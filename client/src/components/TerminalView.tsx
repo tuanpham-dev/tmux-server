@@ -206,7 +206,21 @@ export default function TerminalView({
       // clipping half the glyph. Unicode 11 tables classify them correctly.
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = "11";
+
+      // xterm 5.5.0's CoreBrowserService registers a `window` "resize"
+      // listener during open() but never removes it in dispose() — every
+      // terminal ever opened leaks its whole buffer/renderer graph via that
+      // listener's closure until the page reloads. Capture it here (this
+      // intercept is strictly synchronous around open(), nothing else runs
+      // in between) and remove it ourselves in cleanup below.
+      const leakedResizeListeners: [EventListenerOrEventListenerObject, boolean | AddEventListenerOptions | undefined][] = [];
+      const realAddEventListener = window.addEventListener;
+      window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+        if (type === "resize") leakedResizeListeners.push([listener, options]);
+        return realAddEventListener.call(window, type, listener, options);
+      }) as typeof window.addEventListener;
       term.open(container);
+      window.addEventListener = realAddEventListener;
       termRef.current = term;
 
       // Ctrl+click (Cmd+click on Mac) links: URLs and local file paths
@@ -800,6 +814,9 @@ export default function TerminalView({
         ws.onclose = null;
         ws.close();
         term.dispose();
+        for (const [listener, options] of leakedResizeListeners) {
+          window.removeEventListener("resize", listener, options);
+        }
         termRef.current = null;
         refitRef.current = null;
       };
