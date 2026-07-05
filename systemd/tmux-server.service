@@ -1,0 +1,16 @@
+[Unit]
+Description=tmux-server (web UI for tmux)
+Documentation=https://github.com/tuanpham-dev/tmux-server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/tmux-server/bin/tmux-server run
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tmux-server
+
+[Install]
+WantedBy=default.target

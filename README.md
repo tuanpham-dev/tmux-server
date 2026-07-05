@@ -60,7 +60,32 @@ All of the above are defaults — remap any of them, including extension-contrib
 - `tmux` installed and on `PATH`
 - A C/C++ toolchain (`node-pty` compiles a native addon on install)
 
-## Setup
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tuanpham-dev/tmux-server/main/install.sh | bash
+```
+
+Clones the repo to `~/.local/share/tmux-server`, builds it, and symlinks a `tmux-server` command into `~/.local/bin`. On systemd systems, it also installs and starts a user service (`~/.config/systemd/user/tmux-server.service`) with linger enabled, so it survives logout and starts on boot. No `sudo`, nothing written outside `$HOME`. Re-running the same command later updates an existing install instead of failing.
+
+The installer checks for Node 20+, `tmux`, `git`, and a C/C++ toolchain up front and exits with distro-specific hints if anything's missing, rather than trying to install them itself.
+
+### The `tmux-server` command
+
+| Command | What it does |
+|---|---|
+| `tmux-server start` / `stop` / `restart` | Start, stop, or restart the service |
+| `tmux-server status` | Whether it's running, and whether it's actually responding |
+| `tmux-server logs` | Follow the server's logs |
+| `tmux-server enable` / `disable` | Install and enable (or disable) the systemd service |
+| `tmux-server update` | Pull the latest code, reinstall, rebuild, and restart |
+| `tmux-server doctor` | Check dependencies and install health, and troubleshoot problems |
+
+Config (`PORT`, `AUTH_TOKEN`, `ALLOWED_HOSTS`, `NEW_SESSION_CWD`) goes in `~/.local/share/tmux-server/server/.env` — see [Production](#production) below for what each does. Without systemd (e.g. on macOS), `start`/`stop`/`restart` fall back to running the server in the background directly instead of managing a service.
+
+## Manual setup (from source)
+
+Prefer [Install](#install) above for a managed, updatable install. To run from a clone directly instead:
 
 ```bash
 npm install
@@ -315,6 +340,8 @@ server/     Express + ws + node-pty — REST API for tmux operations, WS bridge 
 client/     React + TypeScript + xterm.js — the browser UI
 extensions/ Bundled extensions (image/media/pdf/markdown/json/csv/html preview, git source control) — see Bundled extensions
 cli/        tunnel.mjs — standalone port-forwarding client, served at GET /tunnel.mjs
+bin/        tmux-server — CLI for managing an installed instance, see Install
+systemd/    tmux-server.service — the user-mode systemd unit installed by install.sh
 examples/   hello-extension — a reference extension covering every surface in Extensions
 plans/      Design docs written during development
 ```

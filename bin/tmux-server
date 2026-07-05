@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+# tmux-server CLI — start/stop/status/logs/update/doctor for a tmux-server
+# install. Lives inside the cloned repo (this file's own path, resolved
+# through the ~/.local/bin symlink, is how it finds REPO_DIR) so `update`
+# updates this script along with everything else.
+set -euo pipefail
+
+# --- locate the repo this script lives in, following the install symlink ---
+resolve_self() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -h "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+BIN_DIR="$(resolve_self)"
+REPO_DIR="$(cd "$BIN_DIR/.." && pwd)"
+SELF="$BIN_DIR/tmux-server"
+
+UNIT_NAME="tmux-server.service"
+UNIT_SRC="$REPO_DIR/systemd/$UNIT_NAME"
+UNIT_DIR="$HOME/.config/systemd/user"
+UNIT_DEST="$UNIT_DIR/$UNIT_NAME"
+
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+PID_FILE="$RUNTIME_DIR/tmux-server.pid"
+LOG_FILE="$RUNTIME_DIR/tmux-server.log"
+
+# --- output helpers (color only when attached to a terminal) -------------
+if [ -t 1 ]; then
+  C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_BOLD=$'\033[1m'; C_RESET=$'\033[0m'
+else
+  C_GREEN=""; C_YELLOW=""; C_RED=""; C_BOLD=""; C_RESET=""
+fi
+ok()   { printf '%s[ ok ]%s %s\n' "$C_GREEN" "$C_RESET" "$1"; }
+warn() { printf '%s[warn]%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
+fail() { printf '%s[fail]%s %s\n' "$C_RED" "$C_RESET" "$1"; }
+info() { printf '%s\n' "$1"; }
+heading() { printf '\n%s%s%s\n' "$C_BOLD" "$1" "$C_RESET"; }
+
+# --- shared environment/config helpers ------------------------------------
+read_port() {
+  # Mirrors the server's own resolution order (server/src/index.ts): an
+  # actual PORT env var beats server/.env, which beats the 3001 default.
+  if [ -n "${PORT:-}" ]; then
+    echo "$PORT"
+    return
+  fi
+  local env_file="$REPO_DIR/server/.env"
+  local port
+  if [ -f "$env_file" ]; then
+    port="$(sed -n 's/^PORT=//p' "$env_file" | tail -n1 | tr -d '[:space:]')"
+  fi
+  echo "${port:-3001}"
+}
+
+app_url() { echo "http://127.0.0.1:$(read_port)"; }
+
+# --- dependency checks (shared by `doctor` and the installer) -------------
+check_required_cmd() {
+  local name="$1" hint="$2"
+  if command -v "$name" >/dev/null 2>&1; then
+    ok "$name found ($(command -v "$name"))"
+    return 0
+  fi
+  fail "$name not found — $hint"
+  return 1
+}
+
+check_node_version() {
+  if ! command -v node >/dev/null 2>&1; then
+    fail "node not found — install Node.js 20+ (https://nodejs.org)"
+    return 1
+  fi
+  local ver major
+  ver="$(node --version)"
+  major="$(echo "$ver" | sed -E 's/^v([0-9]+).*/\1/')"
+  if [ "$major" -ge 20 ] 2>/dev/null; then
+    ok "node $ver (>= 20 required)"
+    return 0
+  fi
+  fail "node $ver found, but 20+ is required — install Node.js 20+ (https://nodejs.org)"
+  return 1
+}
+
+check_toolchain() {
+  local cc_ok=1 make_ok=1 py_ok=1
+  { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1; } || cc_ok=0
+  command -v make >/dev/null 2>&1 || make_ok=0
+  { command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; } || py_ok=0
+  if [ "$cc_ok" -eq 1 ] && [ "$make_ok" -eq 1 ] && [ "$py_ok" -eq 1 ]; then
+    ok "C/C++ toolchain found (needed to build node-pty's native addon)"
+    return 0
+  fi
+  fail "missing C/C++ toolchain pieces (need a C compiler, make, and python3) — node-pty won't build. Debian/Ubuntu: apt install build-essential python3. macOS: xcode-select --install"
+  return 1
+}
+
+# --- systemd (user) detection ----------------------------------------------
+has_systemd_user() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user list-units >/dev/null 2>&1
+}
+
+unit_installed() { [ -f "$UNIT_DEST" ]; }
+
+is_managed() { has_systemd_user && unit_installed; }
+
+ensure_unit_installed() {
+  mkdir -p "$UNIT_DIR"
+  if [ ! -f "$UNIT_DEST" ] || ! cmp -s "$UNIT_SRC" "$UNIT_DEST"; then
+    cp "$UNIT_SRC" "$UNIT_DEST"
+    systemctl --user daemon-reload
+  fi
+}
+
+# --- fallback (non-systemd) process management -----------------------------
+fallback_running_pid() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid="$(cat "$PID_FILE")"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "$pid"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+fallback_start() {
+  if fallback_running_pid >/dev/null; then
+    info "already running (pid $(cat "$PID_FILE")), logs: $LOG_FILE"
+    return 0
+  fi
+  # `npm start` at the repo root runs "npm run start -w server", which spawns
+  # a *separate* nested npm process for the workspace script rather than
+  # exec-replacing itself — so a plain SIGTERM to the outer process doesn't
+  # reliably reach the actual tsx/node process underneath (confirmed: it
+  # left an orphaned listener behind). setsid makes the pid we capture into
+  # a process-group leader that every descendant inherits, so fallback_stop
+  # can signal the whole tree at once via that group instead of relying on
+  # npm's own signal forwarding.
+  #
+  # Backgrounding `setsid "$SELF" run &` directly (not inside a `cmd && ... &`
+  # subshell) keeps pid capture exact: setsid calls setsid(2) on itself and
+  # then execs "$SELF" in place (no fork, since a plain background job here
+  # isn't yet its own process group leader) — so $! is both the new session
+  # leader's pid *and* the new pgid every descendant inherits.
+  if ! command -v setsid >/dev/null 2>&1; then
+    warn "setsid not found — stopping may not clean up every child process"
+    nohup "$SELF" run >>"$LOG_FILE" 2>&1 < /dev/null &
+  else
+    setsid "$SELF" run >>"$LOG_FILE" 2>&1 < /dev/null &
+  fi
+  local pid=$!
+  disown "$pid" 2>/dev/null || true
+  echo "$pid" > "$PID_FILE"
+  sleep 1
+  if fallback_running_pid >/dev/null; then
+    ok "started (pid $pid) — logs: $LOG_FILE"
+    info "$(app_url)"
+  else
+    fail "failed to start — check $LOG_FILE"
+    return 1
+  fi
+}
+
+fallback_stop() {
+  local pid
+  if pid="$(fallback_running_pid)"; then
+    # Signal the whole process group (see fallback_start) so nested
+    # npm/tsx/node children die too, not just the tracked leader pid.
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+    ok "stopped"
+  else
+    info "not running"
+  fi
+}
+
+# --- subcommands -------------------------------------------------------
+cmd_run() {
+  cd "$REPO_DIR"
+  exec npm start
+}
+
+cmd_start() {
+  if has_systemd_user; then
+    ensure_unit_installed
+    systemctl --user start "$UNIT_NAME"
+    ok "started via systemd — $(app_url)"
+  else
+    fallback_start
+  fi
+}
+
+cmd_stop() {
+  if is_managed; then
+    systemctl --user stop "$UNIT_NAME"
+    ok "stopped"
+  else
+    fallback_stop
+  fi
+}
+
+cmd_restart() {
+  if has_systemd_user; then
+    ensure_unit_installed
+    systemctl --user restart "$UNIT_NAME"
+    ok "restarted via systemd — $(app_url)"
+  else
+    fallback_stop
+    fallback_start
+  fi
+}
+
+cmd_status() {
+  if is_managed; then
+    systemctl --user status "$UNIT_NAME" --no-pager || true
+  elif fallback_running_pid >/dev/null; then
+    info "running in foreground-fallback mode (pid $(fallback_running_pid))"
+  else
+    info "not running"
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS -o /dev/null --max-time 2 "$(app_url)"; then
+      ok "responding at $(app_url)"
+    else
+      warn "not responding at $(app_url)"
+    fi
+  fi
+}
+
+cmd_logs() {
+  if is_managed; then
+    journalctl --user -u "$UNIT_NAME" -f --no-pager
+  elif [ -f "$LOG_FILE" ]; then
+    tail -n 50 -f "$LOG_FILE"
+  else
+    info "no logs yet — nothing has been started in foreground-fallback mode"
+  fi
+}
+
+cmd_enable() {
+  if ! has_systemd_user; then
+    fail "no systemd user session available on this system"
+    exit 1
+  fi
+  ensure_unit_installed
+  systemctl --user enable --now "$UNIT_NAME"
+  ok "enabled and started — will start on login"
+  if command -v loginctl >/dev/null 2>&1; then
+    if loginctl enable-linger "$(whoami)" >/dev/null 2>&1; then
+      ok "linger enabled — will also start on boot, before login"
+    else
+      warn "couldn't enable linger automatically — run this to start on boot without logging in: loginctl enable-linger $(whoami)"
+    fi
+  fi
+}
+
+cmd_disable() {
+  if ! has_systemd_user; then
+    info "no systemd user session — nothing to disable"
+    return 0
+  fi
+  systemctl --user disable --now "$UNIT_NAME" 2>/dev/null || true
+  ok "disabled"
+}
+
+cmd_update() {
+  info "updating $REPO_DIR..."
+  git -C "$REPO_DIR" pull --ff-only
+  ( cd "$REPO_DIR" && npm install && npm run build )
+  ok "updated"
+  if is_managed && systemctl --user is-active --quiet "$UNIT_NAME"; then
+    systemctl --user restart "$UNIT_NAME"
+    ok "restarted"
+  elif fallback_running_pid >/dev/null; then
+    fallback_stop
+    fallback_start
+  fi
+}
+
+cmd_path() { echo "$REPO_DIR"; }
+
+cmd_doctor() {
+  local required_failed=0
+
+  heading "Required"
+  check_node_version || required_failed=1
+  check_required_cmd tmux "install it via your package manager (e.g. apt install tmux, brew install tmux)" || required_failed=1
+  check_required_cmd git "install it via your package manager" || required_failed=1
+  check_toolchain || required_failed=1
+
+  heading "Install health"
+  if [ -d "$REPO_DIR/node_modules" ]; then
+    ok "dependencies installed"
+  else
+    fail "node_modules missing — run: tmux-server update  (or cd $REPO_DIR && npm install)"
+    required_failed=1
+  fi
+  if [ -d "$REPO_DIR/server/node_modules/node-pty" ] || [ -d "$REPO_DIR/node_modules/node-pty" ]; then
+    if ( cd "$REPO_DIR/server" && node -e "require('node-pty')" >/dev/null 2>&1 ); then
+      ok "node-pty native addon loads"
+    else
+      fail "node-pty is installed but fails to load — its native addon likely needs rebuilding for this Node version. Run: tmux-server update"
+      required_failed=1
+    fi
+  else
+    fail "node-pty not installed — run: tmux-server update"
+    required_failed=1
+  fi
+  if [ -f "$REPO_DIR/client/dist/index.html" ]; then
+    ok "client build present"
+  else
+    fail "client/dist missing — run: cd $REPO_DIR && npm run build"
+    required_failed=1
+  fi
+
+  heading "Runtime"
+  if has_systemd_user; then
+    ok "systemd user session available"
+    if unit_installed; then
+      ok "service unit installed"
+      if systemctl --user is-enabled --quiet "$UNIT_NAME" 2>/dev/null; then
+        ok "service enabled (starts on login)"
+      else
+        warn "service not enabled — run: tmux-server enable"
+      fi
+      if systemctl --user is-active --quiet "$UNIT_NAME" 2>/dev/null; then
+        ok "service active"
+      else
+        warn "service not running — run: tmux-server start"
+        journalctl --user -u "$UNIT_NAME" -n 10 --no-pager 2>/dev/null | sed 's/^/    /' || true
+      fi
+    else
+      warn "service unit not installed — run: tmux-server enable"
+    fi
+    if loginctl show-user "$(whoami)" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
+      ok "linger enabled (starts on boot without login)"
+    else
+      warn "linger not enabled — service only runs while you have an active login session. Run: loginctl enable-linger $(whoami)"
+    fi
+  else
+    warn "no systemd user session — falling back to foreground/background mode (tmux-server start/stop)"
+  fi
+  if command -v curl >/dev/null 2>&1 && curl -fsS -o /dev/null --max-time 2 "$(app_url)"; then
+    ok "responding at $(app_url)"
+  else
+    warn "not responding at $(app_url) — is it started?"
+  fi
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH" ;;
+    *) warn "$BIN_DIR is not on PATH — add it to your shell profile, e.g.: export PATH=\"$BIN_DIR:\$PATH\"" ;;
+  esac
+
+  heading "Optional features"
+  if command -v nvim >/dev/null 2>&1; then
+    ok "nvim found — FILES-panel click-to-edit will work"
+  else
+    warn "nvim not found — clicking a file in the FILES panel needs it. Install: https://neovim.io"
+  fi
+  if command -v lazygit >/dev/null 2>&1; then
+    ok "lazygit found — the FILES-panel branch pill will work"
+  else
+    warn "lazygit not found — the branch pill's lazygit integration needs it. Install: https://github.com/jesseduffield/lazygit"
+  fi
+
+  echo
+  if [ "$required_failed" -eq 0 ]; then
+    ok "all required checks passed"
+  else
+    fail "one or more required checks failed — see above"
+    exit 1
+  fi
+}
+
+cmd_help() {
+  cat <<'EOF'
+tmux-server — manage a tmux-server install
+
+Usage: tmux-server <command>
+
+Commands:
+  start      Start the server (via systemd if available, else in the background)
+  stop       Stop the server
+  restart    Restart the server
+  status     Show whether it's running and responding
+  logs       Follow the server's logs
+  enable     Install + enable the systemd service (starts on login/boot)
+  disable    Disable the systemd service
+  update     Pull the latest code, reinstall, rebuild, and restart
+  doctor     Check dependencies, install health, and troubleshoot problems
+  run        Run in the foreground (used internally by the systemd service)
+  path       Print the install directory
+  help       Show this help
+EOF
+}
+
+main() {
+  local cmd="${1:-help}"
+  case "$cmd" in
+    run) cmd_run ;;
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    restart) cmd_restart ;;
+    status) cmd_status ;;
+    logs) cmd_logs ;;
+    enable) cmd_enable ;;
+    disable) cmd_disable ;;
+    update) cmd_update ;;
+    doctor) cmd_doctor ;;
+    path) cmd_path ;;
+    help|-h|--help) cmd_help ;;
+    *)
+      fail "unknown command: $cmd"
+      cmd_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
