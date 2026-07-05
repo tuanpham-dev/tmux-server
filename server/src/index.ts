@@ -5,7 +5,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
 import { loadEnabledServerHooks } from "./extensions.js";
-import { isAllowedHost, isAllowedOrigin } from "./security.js";
+import { isAllowedHost, isAllowedOrigin, isOriginExemptPath } from "./security.js";
 import { startViewSweeper } from "./viewSweeper.js";
 import { handleAttach } from "./wsAttach.js";
 import { handleTunnel } from "./wsTunnel.js";
@@ -35,7 +35,10 @@ app.use((req, res, next) => {
     res.status(403).json({ error: "forbidden host" });
     return;
   }
-  if (!isAllowedOrigin(req.headers.origin)) {
+  // /public/ routes (e.g. live-preview's serve/mtime) enforce their own
+  // capability-token authorization instead of trusting Origin — see
+  // isOriginExemptPath's module comment for why that's safe.
+  if (!isOriginExemptPath(req.path) && !isAllowedOrigin(req.headers.origin)) {
     res.status(403).json({ error: "forbidden origin" });
     return;
   }

@@ -48,3 +48,27 @@ export function isAllowedOrigin(originHeader: string | undefined): boolean {
     return false;
   }
 }
+
+// A sandboxed iframe (sandbox="allow-scripts", deliberately no
+// allow-same-origin) sends Origin: null on every request, including its own
+// subresource loads — isAllowedOrigin rejects that unconditionally, same as
+// any other unrecognized origin. An extension that embeds previewed content
+// this way (e.g. live-preview) needs its serving routes reachable from that
+// opaque origin, but relaxing the Origin check for those routes generally
+// would let ANY website's page do the same sandboxed-iframe trick against
+// them.
+//
+// The fix is a narrow, reusable convention: a route mounted under its
+// extension's own "/public/" prefix opts out of the Origin check (Host is
+// still always checked) IF AND ONLY IF it enforces its own capability-based
+// authorization — e.g. a random per-resource token that can only ever be
+// minted by a request that itself passed the normal Origin check. That
+// asymmetry (minting requires Origin; serving does not) is what keeps an
+// attacker's page from reaching anything: it can reproduce the null-origin
+// trick, but it can never have first obtained a valid token through it.
+// Never use this for a route that trusts ambient browser state (cookies,
+// session, Referer) instead of an explicit capability — Origin exemption
+// bypasses exactly the protection those would need.
+export function isOriginExemptPath(path: string): boolean {
+  return /^\/api\/ext\/[^/]+\/public\//.test(path);
+}
