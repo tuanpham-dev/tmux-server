@@ -5,11 +5,26 @@
   "version": "1.0.0",
   "displayName": "Markdown Preview",
   "description": "Built-in rendered Markdown preview (bundled — see extensions/build.mjs).",
+  "contributes": {
+    "configuration": {
+      "title": "Markdown Preview",
+      "properties": {
+        "markdown.previewFontSize": {
+          "type": "integer",
+          "default": 14,
+          "minimum": 10,
+          "maximum": 24,
+          "description": "Font size (px) for the rendered Markdown preview body."
+        }
+      }
+    }
+  },
   "tmuxServer": {
     "client": "./dist/client.js"
   },
   "dependencies": {
     "highlight.js": "^11.11.1",
+    "lowlight": "^3.3.0",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1"

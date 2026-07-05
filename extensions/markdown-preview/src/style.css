@@ -110,6 +110,10 @@
   font-size: 0.9em;
 }
 
+.markdown-body :not(pre) > code {
+  color: var(--warning);
+}
+
 .markdown-body pre {
   background: var(--input-bg);
   border: 1px solid var(--border);
@@ -129,6 +133,68 @@
    to the app's own .markdown-body pre background above instead. */
 .markdown-body .hljs {
   background: transparent;
+}
+
+/* github-dark (imported in client.tsx) stays the default/dark path — this
+   overrides just the token colors with a github-light-derived palette when
+   the active UI theme is light (see computeHl() in client.tsx). Covers the
+   common token classes; an uncommon one falls back to the inherited body
+   color rather than github-dark's (unreadable-on-light) value. */
+.markdown-body[data-hl="light"] .hljs {
+  color: #24292e;
+}
+
+.markdown-body[data-hl="light"] .hljs-comment,
+.markdown-body[data-hl="light"] .hljs-quote {
+  color: #6a737d;
+}
+
+.markdown-body[data-hl="light"] .hljs-keyword,
+.markdown-body[data-hl="light"] .hljs-selector-tag,
+.markdown-body[data-hl="light"] .hljs-literal {
+  color: #d73a49;
+}
+
+.markdown-body[data-hl="light"] .hljs-string,
+.markdown-body[data-hl="light"] .hljs-doctag {
+  color: #032f62;
+}
+
+.markdown-body[data-hl="light"] .hljs-title,
+.markdown-body[data-hl="light"] .hljs-section,
+.markdown-body[data-hl="light"] .hljs-name {
+  color: #6f42c1;
+}
+
+.markdown-body[data-hl="light"] .hljs-attr,
+.markdown-body[data-hl="light"] .hljs-attribute,
+.markdown-body[data-hl="light"] .hljs-variable,
+.markdown-body[data-hl="light"] .hljs-number {
+  color: #005cc5;
+}
+
+.markdown-body[data-hl="light"] .hljs-built_in,
+.markdown-body[data-hl="light"] .hljs-type {
+  color: #e36209;
+}
+
+.markdown-body[data-hl="light"] .hljs-meta {
+  color: #22863a;
+}
+
+.markdown-body[data-hl="light"] .hljs-symbol,
+.markdown-body[data-hl="light"] .hljs-bullet {
+  color: #e36209;
+}
+
+.markdown-body[data-hl="light"] .hljs-deletion {
+  color: #b31d28;
+  background: #ffeef0;
+}
+
+.markdown-body[data-hl="light"] .hljs-addition {
+  color: #22863a;
+  background: #f0fff4;
 }
 
 .markdown-body table {
