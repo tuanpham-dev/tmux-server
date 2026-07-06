@@ -1,29 +1,14 @@
 import { useEffect, useState } from "react";
-import * as api from "../api";
-import { useExtensionRegistry } from "../extensions";
-import {
-  COMMANDS,
-  formatBinding,
-  recorderState,
-  resolveBindings,
-  serializeEvent,
-  type Command,
-  type KeybindingOverrides,
-} from "../keybindings";
-import type { AppSettings, ExtensionSettingsValues } from "../settings";
-import { DEFAULT_SETTINGS } from "../settings";
-import { listColorThemeOptions } from "../theme";
+import type { KeybindingOverrides } from "../keybindings";
+import { DEFAULT_SETTINGS, type AppSettings, type ExtensionSettingsValues } from "../settings";
 import type { ExtensionInfo } from "../types";
-import { listExtensionFontOptions } from "../utils/fonts";
-import {
-  composeFontStack,
-  FALLBACK_ONLY_VALUE,
-  NO_SECONDARY_VALUE,
-  splitFontStack,
-  type FontStackOption,
-} from "../utils/fontStack";
-import { listIconThemeOptions } from "../utils/iconThemes";
-import Icon from "./Icon";
+import BehaviorSection from "./settings/BehaviorSection";
+import { SettingsProvider } from "./settings/context";
+import ExtensionConfigSection from "./settings/ExtensionConfigSection";
+import ExtensionsSection from "./settings/ExtensionsSection";
+import KeyboardSection from "./settings/KeyboardSection";
+import TerminalSection from "./settings/TerminalSection";
+import UiSection from "./settings/UiSection";
 
 interface Props {
   active: boolean;
@@ -49,280 +34,6 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "extensions", label: "Extensions" },
 ];
 
-// Draft so intermediate keystrokes ("1" on the way to "18") don't get
-// rejected by validation and snap the controlled input back — same pattern
-// the old settings dialog used for font size.
-function NumberField({
-  value,
-  min,
-  max,
-  step,
-  onCommit,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onCommit: (value: number) => void;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-  return (
-    <input
-      className="dialog-input settings-number"
-      type="number"
-      min={min}
-      max={max}
-      step={step}
-      value={draft}
-      onChange={(e) => {
-        setDraft(e.target.value);
-        const v = Number(e.target.value);
-        if (Number.isFinite(v) && v >= min && v <= max) onCommit(v);
-      }}
-      onBlur={() => setDraft(String(value))}
-    />
-  );
-}
-
-interface FontOption extends FontStackOption {
-  label: string;
-}
-
-// Only fonts this app actually ships — every one, including IBM Plex Mono,
-// is now an extension (see extensions/ibm-plex-mono and friends), bundled
-// and enabled by default but otherwise no different from a third-party
-// font extension. A locally installed system font (Menlo, JetBrains Mono,
-// …) isn't guaranteed to exist on whatever machine opens this page next, so
-// it's not offered as a selectable option; type it into the fallback field
-// instead. "Use fallback fonts" always leads (the neutral/no-pick state —
-// see FALLBACK_ONLY_VALUE), then extension-contributed groups (a group of
-// 2+ families — e.g. a mono font plus a Nerd Font symbols companion — is
-// ONE option here, expanding to every family in the group when selected).
-function buildFontOptions(extensions: ExtensionInfo[]): FontOption[] {
-  const options: FontOption[] = [{ value: FALLBACK_ONLY_VALUE, families: [], label: "Use fallback fonts" }];
-  const seen = new Set<string>();
-  const push = (value: string, families: string[], label: string) => {
-    if (seen.has(value)) return;
-    seen.add(value);
-    options.push({ value, families, label });
-  };
-  for (const opt of listExtensionFontOptions(extensions)) {
-    push(opt.value, opt.families, opt.label);
-  }
-  return options;
-}
-
-// Font family selector + an optional secondary-font selector (e.g. a
-// powerline/Nerd Font companion picked deliberately rather than typed by
-// hand) + a plain fallback-fonts text field, all reading and writing the
-// same settings.fontFamily CSS stack string via splitFontStack/
-// composeFontStack — there's only one stored value, so the three views can
-// never drift from each other or from a stack a user hand-edited elsewhere.
-// A stored value that doesn't match any option (a font typed by hand, or
-// whose extension got disabled) just shows as "Use fallback fonts" (primary)
-// or "None" (secondary) with the leftover sitting in the fallback field —
-// no separate custom-entry mode.
-function FontFamilyPicker({
-  value,
-  onChange,
-  extensions,
-}: {
-  value: string;
-  onChange: (next: string) => void;
-  extensions: ExtensionInfo[];
-}) {
-  const options = buildFontOptions(extensions);
-  const split = splitFontStack(value, options);
-
-  return (
-    <>
-      <label className="settings-row">
-        <span className="settings-label">Font family</span>
-        <select
-          className="dialog-input settings-select"
-          value={split.primaryValue}
-          onChange={(e) => {
-            const opt = options.find((o) => o.value === e.target.value);
-            if (opt) {
-              onChange(composeFontStack(opt.families, split.secondaryFamilies, split.fallback));
-            }
-          }}
-        >
-          {options.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label className="settings-row">
-        <span className="settings-label">Secondary font</span>
-        <select
-          className="dialog-input settings-select"
-          value={split.secondaryValue}
-          onChange={(e) => {
-            if (e.target.value === NO_SECONDARY_VALUE) {
-              onChange(composeFontStack(split.primaryFamilies, [], split.fallback));
-              return;
-            }
-            const opt = options.find((o) => o.value === e.target.value);
-            if (opt) {
-              onChange(composeFontStack(split.primaryFamilies, opt.families, split.fallback));
-            }
-          }}
-        >
-          <option value={NO_SECONDARY_VALUE}>None</option>
-          {options
-            .filter((o) => o.value !== split.primaryValue && o.families.length > 0)
-            .map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-        </select>
-      </label>
-
-      <FallbackFontsField
-        // Remounts (resetting its own draft state) when the primary or
-        // secondary selection changes — the fallback text is only ever
-        // meant to track its own edits, not a picker swap that just
-        // happened.
-        key={`${split.primaryValue}:${split.secondaryValue}`}
-        value={split.fallback}
-        onChange={(next) => onChange(composeFontStack(split.primaryFamilies, split.secondaryFamilies, next))}
-      />
-    </>
-  );
-}
-
-// Draft-buffered like NumberField above: keystrokes shouldn't fight a value
-// that's re-derived (via splitFontStack) from what was just typed. Commits
-// on blur/Enter rather than every keystroke, so mid-edit text (an unfinished
-// family name before its trailing comma) is never re-parsed and reformatted
-// out from under the user.
-function FallbackFontsField({ value, onChange }: { value: string; onChange: (next: string) => void }) {
-  const [draft, setDraft] = useState(value);
-  const commit = () => {
-    if (draft !== value) onChange(draft);
-  };
-  return (
-    <label className="settings-row">
-      <span className="settings-label">Fallback fonts</span>
-      <input
-        className="dialog-input"
-        value={draft}
-        placeholder="e.g. Menlo, monospace"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
-      />
-    </label>
-  );
-}
-
-// Renders one control per declared contributes.configuration property,
-// grouped by the manifest's own configuration sections (title optional).
-// Write-back is sparse: setting a value back to its declared default removes
-// the override entirely (see setValue) — same rationale as keybinding
-// overrides, so a future manifest default change still reaches a user who
-// never customized that property. Bounds default to a wide ±1e9 when the
-// schema omits minimum/maximum, since NumberField requires both.
-function ExtensionSettingsSection({
-  ext,
-  overrides,
-  onChange,
-}: {
-  ext: ExtensionInfo;
-  overrides: Record<string, unknown>;
-  onChange: (next: Record<string, unknown>) => void;
-}) {
-  const setValue = (key: string, value: unknown, def: unknown) => {
-    const next = { ...overrides };
-    if (value === def) delete next[key];
-    else next[key] = value;
-    onChange(next);
-  };
-
-  return (
-    <>
-      {ext.configuration.map((section, sectionIndex) => (
-        <div key={sectionIndex}>
-          {section.title && <h3 className="settings-subsection-title">{section.title}</h3>}
-          {section.properties.map((prop) => {
-            const value = prop.key in overrides ? overrides[prop.key] : prop.default;
-            const label = prop.description || prop.key;
-
-            if (prop.type === "boolean") {
-              return (
-                <label key={prop.key} className="settings-row checkbox-row" title={prop.key}>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(value)}
-                    onChange={(e) => setValue(prop.key, e.target.checked, prop.default)}
-                  />
-                  <span>{label}</span>
-                </label>
-              );
-            }
-
-            if (prop.type === "number" || prop.type === "integer") {
-              const numericValue = typeof value === "number" ? value : Number(prop.default) || 0;
-              return (
-                <label key={prop.key} className="settings-row" title={prop.key}>
-                  <span className="settings-label">{label}</span>
-                  <NumberField
-                    value={numericValue}
-                    min={prop.minimum ?? -1e9}
-                    max={prop.maximum ?? 1e9}
-                    step={prop.type === "integer" ? 1 : 0.1}
-                    onCommit={(v) => setValue(prop.key, prop.type === "integer" ? Math.round(v) : v, prop.default)}
-                  />
-                </label>
-              );
-            }
-
-            if (prop.enum && prop.enum.length > 0) {
-              return (
-                <label key={prop.key} className="settings-row" title={prop.key}>
-                  <span className="settings-label">{label}</span>
-                  <select
-                    className="dialog-input settings-select"
-                    value={String(value)}
-                    onChange={(e) => setValue(prop.key, e.target.value, prop.default)}
-                  >
-                    {prop.enum.map((opt, optIndex) => (
-                      <option key={opt} value={opt} title={prop.enumDescriptions?.[optIndex]}>
-                        {prop.enumItemLabels?.[optIndex] ?? opt}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              );
-            }
-
-            return (
-              <label key={prop.key} className="settings-row" title={prop.key}>
-                <span className="settings-label">{label}</span>
-                <input
-                  className="dialog-input"
-                  value={typeof value === "string" ? value : String(value ?? "")}
-                  onChange={(e) => setValue(prop.key, e.target.value, prop.default)}
-                />
-              </label>
-            );
-          })}
-        </div>
-      ))}
-    </>
-  );
-}
-
 export default function SettingsView({
   active,
   settings,
@@ -335,122 +46,9 @@ export default function SettingsView({
   onExtensionSettingsChange,
 }: Props) {
   const [section, setSection] = useState<Section>("terminal");
-  const [filter, setFilter] = useState("");
-  const [recordingId, setRecordingId] = useState<string | null>(null);
-  const [pendingUninstallId, setPendingUninstallId] = useState<string | null>(null);
-  const [installing, setInstalling] = useState(false);
-  const [extensionsError, setExtensionsError] = useState<string | null>(null);
-  const [extensionSearch, setExtensionSearch] = useState("");
-  const [extensionStatusFilter, setExtensionStatusFilter] = useState<"all" | "enabled" | "disabled">("all");
-  const [extensionSourceFilter, setExtensionSourceFilter] = useState<"all" | "builtin" | "installed">("all");
-  const [extensionContributesFilter, setExtensionContributesFilter] = useState<
-    "all" | "themes" | "iconThemes" | "fonts" | "client" | "server"
-  >("all");
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     onSettingsChange({ ...settings, [key]: value });
-
-  // Extension-registered commands join the built-in list everywhere this
-  // section lists/resolves/records commands — see App.tsx's matching merge
-  // for the dispatcher side.
-  const { commands: extCommands } = useExtensionRegistry();
-  const extCommandDefs: Command[] = extCommands.map((c) => ({
-    id: c.id,
-    label: c.label,
-    defaultBinding: c.defaultBinding ?? "",
-    scope: "global",
-  }));
-  const allCommands: Command[] = [...COMMANDS, ...extCommandDefs];
-
-  const resolved = resolveBindings(keybindingOverrides, extCommandDefs);
-  // combo → command ids sharing it, for the conflict warning. An empty
-  // binding (an extension command with no defaultBinding, never assigned
-  // one) is intentionally excluded — several of those otherwise look like
-  // mutual conflicts under the shared "" key.
-  const byBinding: Record<string, string[]> = {};
-  for (const cmd of allCommands) {
-    if (resolved[cmd.id]) (byBinding[resolved[cmd.id]] ??= []).push(cmd.id);
-  }
-
-  // Chord recorder. The window-level capture listener plus the module-level
-  // recorderState flag (checked by App's dispatcher and read here) means the
-  // captured combo never also triggers the command it's currently bound to.
-  useEffect(() => {
-    recorderState.recording = recordingId !== null;
-    if (recordingId === null) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        setRecordingId(null);
-        return;
-      }
-      const combo = serializeEvent(e);
-      if (!combo) return; // modifier alone — keep waiting for the chord
-      const cmd = allCommands.find((c) => c.id === recordingId);
-      const next = { ...keybindingOverrides };
-      // Recording the default back is "no override", so a future default
-      // change still reaches this command.
-      if (cmd && combo === cmd.defaultBinding) delete next[recordingId];
-      else next[recordingId] = combo;
-      onKeybindingOverridesChange(next);
-      setRecordingId(null);
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown, true);
-      recorderState.recording = false;
-    };
-  }, [recordingId, keybindingOverrides, onKeybindingOverridesChange]);
-
-  // Leaving the tab (or the Keyboard section) mid-recording cancels it.
-  useEffect(() => {
-    if (!active || section !== "keyboard") setRecordingId(null);
-  }, [active, section]);
-
-  const resetBinding = (id: string) => {
-    const next = { ...keybindingOverrides };
-    delete next[id];
-    onKeybindingOverridesChange(next);
-  };
-
-  const filterLower = filter.trim().toLowerCase();
-  const visibleCommands = allCommands.filter(
-    (cmd) =>
-      !filterLower ||
-      cmd.label.toLowerCase().includes(filterLower) ||
-      formatBinding(resolved[cmd.id]).toLowerCase().includes(filterLower),
-  );
-
-  const extensionSearchLower = extensionSearch.trim().toLowerCase();
-  const visibleExtensions = extensions.filter((ext) => {
-    if (
-      extensionSearchLower &&
-      !ext.displayName.toLowerCase().includes(extensionSearchLower) &&
-      !ext.description.toLowerCase().includes(extensionSearchLower) &&
-      !ext.id.toLowerCase().includes(extensionSearchLower)
-    ) {
-      return false;
-    }
-    if (extensionStatusFilter === "enabled" && !ext.enabled) return false;
-    if (extensionStatusFilter === "disabled" && ext.enabled) return false;
-    if (extensionSourceFilter === "builtin" && !ext.builtin) return false;
-    if (extensionSourceFilter === "installed" && ext.builtin) return false;
-    switch (extensionContributesFilter) {
-      case "themes":
-        return ext.themes.length > 0;
-      case "iconThemes":
-        return ext.iconThemes.length > 0;
-      case "fonts":
-        return ext.fonts.length > 0;
-      case "client":
-        return ext.hasClient;
-      case "server":
-        return ext.hasServer;
-      default:
-        return true;
-    }
-  });
 
   // Only enabled extensions with at least one normalized property get a nav
   // entry — a disabled extension's settings aren't in effect (parallels its
@@ -475,526 +73,89 @@ export default function SettingsView({
     : undefined;
 
   return (
-    <div className={`settings-host${active ? "" : " hidden"}`}>
-      <nav className="settings-nav">
-        {SECTIONS.map((s) => (
-          <button
-            key={s.id}
-            className={`settings-nav-item${section === s.id ? " active" : ""}`}
-            onClick={() => setSection(s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
-        {configurableExtensions.length > 0 && (
-          <>
-            <div className="settings-nav-divider" />
-            {configurableExtensions.map((ext) => (
-              <button
-                key={ext.id}
-                className={`settings-nav-item${section === `ext:${ext.id}` ? " active" : ""}`}
-                onClick={() => setSection(`ext:${ext.id}`)}
-              >
-                {ext.displayName}
-              </button>
-            ))}
-          </>
-        )}
-      </nav>
-
-      <div className="settings-content">
-        {section === "terminal" && (
-          <>
-            <h2 className="settings-section-title">Terminal</h2>
-
-            <FontFamilyPicker
-              value={settings.fontFamily}
-              onChange={(v) => set("fontFamily", v)}
-              extensions={extensions}
-            />
-
-            <label className="settings-row">
-              <span className="settings-label">Font size</span>
-              <NumberField
-                value={settings.fontSize}
-                min={8}
-                max={32}
-                step={1}
-                onCommit={(v) => set("fontSize", Math.round(v))}
-              />
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Line height</span>
-              <NumberField
-                value={settings.lineHeight}
-                min={1}
-                max={2}
-                step={0.1}
-                onCommit={(v) => set("lineHeight", v)}
-              />
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Letter spacing (px)</span>
-              <NumberField
-                value={settings.letterSpacing}
-                min={-2}
-                max={8}
-                step={0.5}
-                onCommit={(v) => set("letterSpacing", v)}
-              />
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Bold text weight</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.fontWeightBold}
-                onChange={(e) => set("fontWeightBold", e.target.value as AppSettings["fontWeightBold"])}
-              >
-                <option value="normal">normal</option>
-                <option value="bold">bold</option>
-              </select>
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Cursor style</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.cursorStyle}
-                onChange={(e) => set("cursorStyle", e.target.value as AppSettings["cursorStyle"])}
-              >
-                <option value="block">block</option>
-                <option value="bar">bar</option>
-                <option value="underline">underline</option>
-              </select>
-            </label>
-
-            <label className="settings-row checkbox-row">
-              <input
-                type="checkbox"
-                checked={settings.cursorBlink}
-                onChange={(e) => set("cursorBlink", e.target.checked)}
-              />
-              <span>Cursor blink</span>
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Minimum contrast ratio</span>
-              <select
-                className="dialog-input settings-select"
-                value={String(settings.minimumContrastRatio)}
-                onChange={(e) => set("minimumContrastRatio", Number(e.target.value))}
-              >
-                <option value="1">Off</option>
-                <option value="4.5">4.5 (WCAG AA)</option>
-                <option value="7">7 (WCAG AAA)</option>
-                <option value="21">21 (maximum)</option>
-              </select>
-            </label>
-          </>
-        )}
-
-        {section === "behavior" && (
-          <>
-            <h2 className="settings-section-title">Behavior</h2>
-
-            <label className="settings-row">
-              <span className="settings-label">On upload name conflict</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.uploadConflict}
-                onChange={(e) => set("uploadConflict", e.target.value as AppSettings["uploadConflict"])}
-              >
-                <option value="rename">Keep both (rename new file)</option>
-                <option value="overwrite">Overwrite existing file</option>
-                <option value="ask">Ask every time</option>
-              </select>
-            </label>
-
-            <label className="settings-row checkbox-row">
-              <input
-                type="checkbox"
-                checked={settings.confirmBeforeKill}
-                onChange={(e) => set("confirmBeforeKill", e.target.checked)}
-              />
-              <span>Confirm before killing sessions and windows</span>
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">After closing the active tab</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.tabCloseActivation}
-                onChange={(e) =>
-                  set("tabCloseActivation", e.target.value as AppSettings["tabCloseActivation"])
-                }
-              >
-                <option value="recent">Activate previously used tab</option>
-                <option value="adjacent">Activate adjacent tab</option>
-              </select>
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Open new tabs</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.newTabPlacement}
-                onChange={(e) =>
-                  set("newTabPlacement", e.target.value as AppSettings["newTabPlacement"])
-                }
-              >
-                <option value="end">At the end of the tab bar</option>
-                <option value="afterActive">To the right of the active tab</option>
-              </select>
-            </label>
-
-            <label className="settings-row checkbox-row">
-              <input
-                type="checkbox"
-                checked={settings.tabGroupsBySession}
-                onChange={(e) => set("tabGroupsBySession", e.target.checked)}
-              />
-              <span>Group tabs by session in the tab bar</span>
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Default new-session directory</span>
-              <input
-                className="dialog-input"
-                placeholder="Server default"
-                value={settings.newSessionCwd}
-                onChange={(e) => set("newSessionCwd", e.target.value)}
-              />
-            </label>
-          </>
-        )}
-
-        {section === "ui" && (
-          <>
-            <h2 className="settings-section-title">UI</h2>
-
-            <label className="settings-row">
-              <span className="settings-label">Color theme</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.colorTheme}
-                onChange={(e) => set("colorTheme", e.target.value)}
-              >
-                {listColorThemeOptions(extensions).map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">Icon theme</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.iconTheme}
-                onChange={(e) => set("iconTheme", e.target.value)}
-              >
-                {listIconThemeOptions(extensions).map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="settings-row">
-              <span className="settings-label">On-screen key bar (touch)</span>
-              <select
-                className="dialog-input settings-select"
-                value={settings.touchKeyBar}
-                onChange={(e) => set("touchKeyBar", e.target.value as AppSettings["touchKeyBar"])}
-              >
-                <option value="auto">Auto (touch devices only)</option>
-                <option value="always">Always show</option>
-                <option value="never">Never show</option>
-              </select>
-            </label>
-
-            <label className="settings-row checkbox-row">
-              <input
-                type="checkbox"
-                checked={settings.fileTreeGitStatus}
-                onChange={(e) => set("fileTreeGitStatus", e.target.checked)}
-              />
-              <span>Show git status in files tree</span>
-            </label>
-          </>
-        )}
-
-        {section === "keyboard" && (
-          <>
-            <h2 className="settings-section-title">Keyboard Shortcuts</h2>
-
-            <input
-              className="dialog-input keybinding-filter"
-              placeholder="Type to search keybindings"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-
-            <div className="keybinding-table">
-              {visibleCommands.map((cmd) => {
-                const binding = resolved[cmd.id];
-                const overridden = keybindingOverrides[cmd.id] !== undefined;
-                const isRecording = recordingId === cmd.id;
-                const conflicts = (byBinding[binding] ?? []).filter((id) => id !== cmd.id);
-                const conflictLabels = conflicts
-                  .map((id) => allCommands.find((c) => c.id === id)?.label ?? id)
-                  .join(", ");
-                return (
-                  <div
-                    key={cmd.id}
-                    className="keybinding-row"
-                    onDoubleClick={() => setRecordingId(cmd.id)}
-                  >
-                    <span className="keybinding-label">{cmd.label}</span>
-                    {conflicts.length > 0 && !isRecording && (
-                      <span
-                        className="keybinding-conflict"
-                        title={`Also bound to: ${conflictLabels}`}
-                      >
-                        <Icon name="warning" />
-                      </span>
-                    )}
-                    <span className={`keybinding-chip${isRecording ? " recording" : ""}`}>
-                      {isRecording ? "Press key combination…" : formatBinding(binding)}
-                    </span>
-                    <button
-                      className="icon-button keybinding-action"
-                      title={isRecording ? "Cancel recording (Esc)" : "Change keybinding"}
-                      onClick={() => setRecordingId(isRecording ? null : cmd.id)}
-                    >
-                      <Icon name="edit" />
-                    </button>
-                    <button
-                      className="icon-button keybinding-action"
-                      title="Reset to default"
-                      style={{ visibility: overridden ? "visible" : "hidden" }}
-                      onClick={() => resetBinding(cmd.id)}
-                    >
-                      <Icon name="discard" />
-                    </button>
-                  </div>
-                );
-              })}
-              {visibleCommands.length === 0 && (
-                <div className="keybinding-empty">No matching keybindings</div>
-              )}
-            </div>
-          </>
-        )}
-
-        {section === "extensions" && (
-          <>
-            <h2 className="settings-section-title">Extensions</h2>
-
-            <label className="dialog-button secondary extension-install-button">
-              {installing ? "Installing…" : "Install from .tsix"}
-              <input
-                type="file"
-                accept=".tsix"
-                disabled={installing}
-                style={{ display: "none" }}
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = "";
-                  if (!file) return;
-                  setInstalling(true);
-                  setExtensionsError(null);
-                  try {
-                    await api.installExtensionTsix(file);
-                    onReloadExtensions();
-                  } catch (err) {
-                    setExtensionsError(err instanceof Error ? err.message : String(err));
-                  } finally {
-                    setInstalling(false);
-                  }
-                }}
-              />
-            </label>
-            <span className="settings-hint">
-              Or drop an extension folder into ~/.config/tmux-server/extensions/ and reopen this tab.
-            </span>
-
-            {extensionsError && <div className="extension-error">{extensionsError}</div>}
-
-            <div className="extension-filter-row">
-              <input
-                className="dialog-input extension-filter-search"
-                placeholder="Search extensions"
-                value={extensionSearch}
-                onChange={(e) => setExtensionSearch(e.target.value)}
-              />
-              <select
-                className="dialog-input settings-select extension-filter-select"
-                value={extensionStatusFilter}
-                onChange={(e) => setExtensionStatusFilter(e.target.value as typeof extensionStatusFilter)}
-              >
-                <option value="all">All statuses</option>
-                <option value="enabled">Enabled</option>
-                <option value="disabled">Disabled</option>
-              </select>
-              <select
-                className="dialog-input settings-select extension-filter-select"
-                value={extensionSourceFilter}
-                onChange={(e) => setExtensionSourceFilter(e.target.value as typeof extensionSourceFilter)}
-              >
-                <option value="all">All sources</option>
-                <option value="builtin">Built-in</option>
-                <option value="installed">Installed</option>
-              </select>
-              <select
-                className="dialog-input settings-select extension-filter-select"
-                value={extensionContributesFilter}
-                onChange={(e) =>
-                  setExtensionContributesFilter(e.target.value as typeof extensionContributesFilter)
-                }
-              >
-                <option value="all">All contributions</option>
-                <option value="themes">Color themes</option>
-                <option value="iconThemes">Icon themes</option>
-                <option value="fonts">Fonts</option>
-                <option value="client">UI functionality</option>
-                <option value="server">Server functionality</option>
-              </select>
-            </div>
-
-            <div className="extension-list">
-              {extensions.length === 0 && (
-                <div className="keybinding-empty">No extensions installed</div>
-              )}
-              {extensions.length > 0 && visibleExtensions.length === 0 && (
-                <div className="keybinding-empty">No extensions match your search</div>
-              )}
-              {visibleExtensions.map((ext) => (
-                <div key={ext.id} className="extension-row">
-                  <label className="checkbox-row extension-row-toggle">
-                    <input
-                      type="checkbox"
-                      checked={ext.enabled}
-                      onChange={(e) => {
-                        api
-                          .setExtensionEnabled(ext.id, e.target.checked)
-                          .then(onReloadExtensions)
-                          .catch((err) => setExtensionsError(err instanceof Error ? err.message : String(err)));
-                      }}
-                    />
-                  </label>
-                  <div className="extension-row-info">
-                    <div className="extension-row-title">
-                      {ext.displayName} <span className="extension-row-version">v{ext.version}</span>
-                      {ext.builtin && <span className="extension-row-builtin">Built-in</span>}
-                    </div>
-                    {ext.description && <div className="extension-row-description">{ext.description}</div>}
-                    <div className="extension-row-contributes">
-                      {ext.themes.length > 0 && <span>{ext.themes.length} color theme(s)</span>}
-                      {ext.iconThemes.length > 0 && <span>{ext.iconThemes.length} icon theme(s)</span>}
-                      {ext.fonts.length > 0 && <span>{ext.fonts.length} font(s)</span>}
-                      {ext.hasClient && <span>UI functionality</span>}
-                      {ext.hasServer && <span>Server functionality</span>}
-                    </div>
-                    {ext.hasServer && !ext.enabled && (
-                      <div className="settings-hint">
-                        Restart the tmux-server server to fully unload a disabled extension's server code.
-                      </div>
-                    )}
-                  </div>
-                  {pendingUninstallId === ext.id ? (
-                    <div className="extension-row-confirm">
-                      <span>
-                        {ext.builtin
-                          ? "Uninstall this built-in? You can restore it later by installing its .tsix again."
-                          : "Uninstall?"}
-                      </span>
-                      <button
-                        className="dialog-button primary"
-                        onClick={() => {
-                          api
-                            .uninstallExtension(ext.id)
-                            .then(onReloadExtensions)
-                            .catch((err) => setExtensionsError(err instanceof Error ? err.message : String(err)))
-                            .finally(() => setPendingUninstallId(null));
-                        }}
-                      >
-                        Yes
-                      </button>
-                      <button className="dialog-button secondary" onClick={() => setPendingUninstallId(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      className="icon-button keybinding-action"
-                      title="Uninstall"
-                      onClick={() => setPendingUninstallId(ext.id)}
-                    >
-                      <Icon name="trash" />
-                    </button>
-                  )}
-                </div>
+    <SettingsProvider
+      value={{
+        settings,
+        set,
+        onSettingsChange,
+        keybindingOverrides,
+        onKeybindingOverridesChange,
+        extensions,
+        onReloadExtensions,
+        extensionSettings,
+        onExtensionSettingsChange,
+      }}
+    >
+      <div className={`settings-host${active ? "" : " hidden"}`}>
+        <nav className="settings-nav">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              className={`settings-nav-item${section === s.id ? " active" : ""}`}
+              onClick={() => setSection(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+          {configurableExtensions.length > 0 && (
+            <>
+              <div className="settings-nav-divider" />
+              {configurableExtensions.map((ext) => (
+                <button
+                  key={ext.id}
+                  className={`settings-nav-item${section === `ext:${ext.id}` ? " active" : ""}`}
+                  onClick={() => setSection(`ext:${ext.id}`)}
+                >
+                  {ext.displayName}
+                </button>
               ))}
-            </div>
-          </>
-        )}
-
-        {activeExtension && (
-          <>
-            <h2 className="settings-section-title">{activeExtension.displayName}</h2>
-            <ExtensionSettingsSection
-              ext={activeExtension}
-              overrides={extensionSettings[activeExtension.id] ?? {}}
-              onChange={(next) => {
-                const nextAll = { ...extensionSettings };
-                if (Object.keys(next).length === 0) delete nextAll[activeExtension.id];
-                else nextAll[activeExtension.id] = next;
-                onExtensionSettingsChange(nextAll);
-              }}
-            />
-          </>
-        )}
-
-        <div
-          className="settings-footer"
-          style={section === "extensions" ? { display: "none" } : undefined}
-        >
-          {section === "keyboard" ? (
-            <button
-              className="dialog-button secondary"
-              disabled={Object.keys(keybindingOverrides).length === 0}
-              onClick={() => onKeybindingOverridesChange({})}
-            >
-              Reset All Keybindings
-            </button>
-          ) : activeExtension ? (
-            <button
-              className="dialog-button secondary"
-              disabled={Object.keys(extensionSettings[activeExtension.id] ?? {}).length === 0}
-              onClick={() => {
-                const next = { ...extensionSettings };
-                delete next[activeExtension.id];
-                onExtensionSettingsChange(next);
-              }}
-            >
-              Reset {activeExtension.displayName} Settings to Defaults
-            </button>
-          ) : (
-            <button
-              className="dialog-button secondary"
-              onClick={() => onSettingsChange({ ...DEFAULT_SETTINGS })}
-            >
-              Reset Settings to Defaults
-            </button>
+            </>
           )}
+        </nav>
+
+        <div className="settings-content">
+          {section === "terminal" && <TerminalSection />}
+          {section === "behavior" && <BehaviorSection />}
+          {section === "ui" && <UiSection />}
+          {section === "keyboard" && <KeyboardSection active={active} />}
+          {section === "extensions" && <ExtensionsSection />}
+          {activeExtension && <ExtensionConfigSection ext={activeExtension} />}
+
+          <div
+            className="settings-footer"
+            style={section === "extensions" ? { display: "none" } : undefined}
+          >
+            {section === "keyboard" ? (
+              <button
+                className="dialog-button secondary"
+                disabled={Object.keys(keybindingOverrides).length === 0}
+                onClick={() => onKeybindingOverridesChange({})}
+              >
+                Reset All Keybindings
+              </button>
+            ) : activeExtension ? (
+              <button
+                className="dialog-button secondary"
+                disabled={Object.keys(extensionSettings[activeExtension.id] ?? {}).length === 0}
+                onClick={() => {
+                  const next = { ...extensionSettings };
+                  delete next[activeExtension.id];
+                  onExtensionSettingsChange(next);
+                }}
+              >
+                Reset {activeExtension.displayName} Settings to Defaults
+              </button>
+            ) : (
+              <button
+                className="dialog-button secondary"
+                onClick={() => onSettingsChange({ ...DEFAULT_SETTINGS })}
+              >
+                Reset Settings to Defaults
+              </button>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </SettingsProvider>
   );
 }
