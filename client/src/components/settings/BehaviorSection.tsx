@@ -76,6 +76,15 @@ export default function BehaviorSection() {
           onChange={(e) => set("newSessionCwd", e.target.value)}
         />
       </label>
+
+      <label className="settings-row checkbox-row">
+        <input
+          type="checkbox"
+          checked={settings.paletteSortByUsage}
+          onChange={(e) => set("paletteSortByUsage", e.target.checked)}
+        />
+        <span>Sort command palette by most-used</span>
+      </label>
     </>
   );
 }

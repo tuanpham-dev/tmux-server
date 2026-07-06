@@ -4,16 +4,19 @@ import type { RegisteredCommand } from "../extensions";
 import { resolveBindings, type Command, type KeybindingOverrides } from "../keybindings";
 import {
   DEFAULT_SETTINGS,
+  loadCommandUsage,
   loadExtensionSettings,
   loadKeybindingOverrides,
   loadPinnedSessions,
   loadSettings,
   migrateSettings,
+  saveCommandUsage,
   saveExtensionSettings,
   saveKeybindingOverrides,
   savePinnedSessions,
   saveSettings,
   type AppSettings,
+  type CommandUsage,
   type ExtensionSettingsValues,
 } from "../settings";
 import type { PinnedSession } from "../types";
@@ -100,6 +103,20 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     savePinnedSessions(pinnedSessions);
   }, [pinnedSessions]);
 
+  // Command palette usage stats (count/last per command id) — same
+  // localStorage-first + skip-initial-persist + server-doc flow as
+  // pinnedSessions above, and for the same reason: its own top-level doc key
+  // outside AppSettings so a settings reset can't erase it.
+  const [commandUsage, setCommandUsage] = useState<CommandUsage>(loadCommandUsage);
+  const commandUsageMounted = useRef(false);
+  useEffect(() => {
+    if (!commandUsageMounted.current) {
+      commandUsageMounted.current = true;
+      return;
+    }
+    saveCommandUsage(commandUsage);
+  }, [commandUsage]);
+
   // Server-side persistence (~/.config/tmux-server/settings.json via
   // /api/settings): localStorage renders instantly at mount, then the server
   // copy — the cross-device source of truth — wins once fetched. Write-backs
@@ -136,6 +153,20 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
             ),
           );
         }
+        if (doc.commandUsage && typeof doc.commandUsage === "object" && !Array.isArray(doc.commandUsage)) {
+          const usage: CommandUsage = {};
+          for (const [id, entry] of Object.entries(doc.commandUsage as Record<string, unknown>)) {
+            if (
+              typeof entry === "object" &&
+              entry !== null &&
+              typeof (entry as { count?: unknown }).count === "number" &&
+              typeof (entry as { last?: unknown }).last === "number"
+            ) {
+              usage[id] = entry as { count: number; last: number };
+            }
+          }
+          setCommandUsage(usage);
+        }
         serverSyncReady.current = true;
       })
       .catch(() => {
@@ -167,18 +198,20 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           keybindings: keybindingOverrides,
           extensionSettings,
           pinnedSessions,
+          commandUsage,
         }))
         .catch(() => ({
           settings,
           keybindings: keybindingOverrides,
           extensionSettings,
           pinnedSessions,
+          commandUsage,
         }))
         .then((doc) => api.putSettingsDoc(doc))
         .catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [settings, keybindingOverrides, extensionSettings, pinnedSessions]);
+  }, [settings, keybindingOverrides, extensionSettings, pinnedSessions, commandUsage]);
 
   return {
     settings,
@@ -193,5 +226,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     extensionSettingsRef,
     pinnedSessions,
     setPinnedSessions,
+    commandUsage,
+    setCommandUsage,
   };
 }

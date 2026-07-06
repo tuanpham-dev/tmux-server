@@ -48,6 +48,11 @@ export interface AppSettings {
   // bundled tmux-server.seti-icons extension; "" means no icon theme (blank
   // spacer icons, not a fallback to Seti).
   iconTheme: string;
+  // When true, the command palette (QuickSwitcher's ">" mode) sorts commands
+  // by usage count instead of their static COMMANDS order — see App.tsx's
+  // paletteCommands memo and commandUsage below. The single most-recently-run
+  // command always pins to row 1 regardless of this setting.
+  paletteSortByUsage: boolean;
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
@@ -80,6 +85,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fileTreeGitStatus: true,
   colorTheme: "tmux-server.plastic-legacy-theme:Plastic Legacy",
   iconTheme: "tmux-server.seti-icons:seti",
+  paletteSortByUsage: false,
 };
 
 // A stored value from before the built-in theme/icon theme/font were
@@ -179,4 +185,41 @@ export function loadPinnedSessions(): PinnedSession[] {
 
 export function savePinnedSessions(pins: PinnedSession[]): void {
   localStorage.setItem(PINNED_SESSIONS_KEY, JSON.stringify(pins));
+}
+
+// Command palette usage stats, keyed by command id (same ids as
+// keybindings.ts' COMMANDS / extension command ids) — count for the
+// paletteSortByUsage sort, last (epoch ms) for the always-on "pin last-used
+// to row 1" behavior. Lives outside AppSettings, like pinnedSessions above,
+// so "Reset Settings to Defaults" (which writes {...DEFAULT_SETTINGS}) can't
+// wipe it. A stale id (uninstalled extension) is harmless — App.tsx's
+// paletteCommands memo only looks up ids it's currently listing.
+export type CommandUsage = Record<string, { count: number; last: number }>;
+
+const COMMAND_USAGE_KEY = "commandUsage";
+
+function isUsageEntry(value: unknown): value is { count: number; last: number } {
+  return (
+    isPlainObject(value) &&
+    typeof value.count === "number" &&
+    typeof value.last === "number"
+  );
+}
+
+export function loadCommandUsage(): CommandUsage {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(COMMAND_USAGE_KEY) ?? "{}");
+    if (!isPlainObject(parsed)) return {};
+    const result: CommandUsage = {};
+    for (const [id, entry] of Object.entries(parsed)) {
+      if (isUsageEntry(entry)) result[id] = entry;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function saveCommandUsage(usage: CommandUsage): void {
+  localStorage.setItem(COMMAND_USAGE_KEY, JSON.stringify(usage));
 }

@@ -1811,9 +1811,28 @@ body.scrollbar-dragging {
   color: var(--fg-bright);
 }
 
+.quick-switcher-item.disabled {
+  color: var(--fg-inactive);
+  cursor: default;
+}
+
+.quick-switcher-item.disabled.selected {
+  background: none;
+}
+
 .quick-switcher-loading {
   cursor: default;
   color: var(--fg-inactive);
+}
+
+.quick-switcher-binding {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  color: var(--fg-inactive);
+  background: var(--input-bg);
 }
 
 .quick-switcher-tag {

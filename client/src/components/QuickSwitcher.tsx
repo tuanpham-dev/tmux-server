@@ -1,11 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
+import { serializeEvent } from "../keybindings";
 import type { Tab, TmuxSession } from "../types";
+
+// A palette row — built by App.tsx from keybindings.ts' COMMANDS plus
+// extension commands (see paletteCommands there). `enabled` false means the
+// command has no context to act on right now (e.g. Window: Rename with no
+// active window) — the row renders muted and runEntry ignores it.
+export interface PaletteCommand {
+  id: string;
+  label: string;
+  binding: string;
+  enabled: boolean;
+  run: () => void;
+}
 
 interface Props {
   sessions: TmuxSession[];
   tabs: Tab[];
   filesRootDir: string | null;
+  // Seeds the input on open — "" for a plain switch, ">" to land straight in
+  // command-palette mode (see App.tsx's commandPalette.toggle handler).
+  initialQuery: string;
+  commands: PaletteCommand[];
+  // Resolved command-id → combo map (keybindings.ts), same prop TerminalView
+  // takes for its terminal.* commands — quickSwitcher.selectNext/Previous are
+  // compared against it directly here rather than through the window-level
+  // dispatcher (useGlobalKeybindings), since they only make sense while this
+  // component owns the input.
+  bindings: Record<string, string>;
   onActivateTab: (id: string) => void;
   onOpenWindow: (session: string, index: number) => void;
   onOpenSession: (name: string) => void;
@@ -17,11 +40,15 @@ interface Props {
 interface Entry {
   key: string;
   label: string;
-  group: "tab" | "window" | "session" | "file";
+  group: "tab" | "window" | "session" | "file" | "command";
   // secondary is true for Shift+Enter/Shift+click. Only file entries branch
-  // on it (see App.tsx's openFileOrViewerSecondary); tab/window/session
-  // entries ignore the argument since they have no secondary action.
+  // on it (see App.tsx's openFileOrViewerSecondary); tab/window/session/
+  // command entries ignore the argument since they have no secondary action.
   run: (secondary: boolean) => void;
+  // Command entries only: shown as a chip on the right, and false disables
+  // the row (muted, Enter/click inert) — see PaletteCommand.
+  binding?: string;
+  disabled?: boolean;
 }
 
 // Rendering unbounded fuzzy-matched results from a large repo would make
@@ -47,6 +74,9 @@ export default function QuickSwitcher({
   sessions,
   tabs,
   filesRootDir,
+  initialQuery,
+  commands,
+  bindings,
   onActivateTab,
   onOpenWindow,
   onOpenSession,
@@ -54,12 +84,14 @@ export default function QuickSwitcher({
   onOpenFileSecondary,
   onClose,
 }: Props) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [selected, setSelected] = useState(0);
   const [files, setFiles] = useState<string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  const isCommandMode = query.startsWith(">");
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -67,15 +99,16 @@ export default function QuickSwitcher({
 
   // Fetched once when the switcher opens (the list is only as stale as that
   // moment, which is fine for a picker) rather than on every keystroke.
+  // Skipped in command mode — the palette never lists files.
   useEffect(() => {
-    if (!filesRootDir) return;
+    if (!filesRootDir || isCommandMode) return;
     setFilesLoading(true);
     api
       .listFiles(filesRootDir)
       .then((listing) => setFiles(listing.files))
       .catch(() => setFiles([]))
       .finally(() => setFilesLoading(false));
-  }, [filesRootDir]);
+  }, [filesRootDir, isCommandMode]);
 
   // Group precedence (open tabs, then windows, then whole sessions) doubles
   // as the ranking: entries are built in that order and the filter is
@@ -130,9 +163,9 @@ export default function QuickSwitcher({
   // Files only show up once a query narrows them down — an empty query
   // would otherwise drown the tabs/windows/sessions list under thousands of
   // rows. Ranked after those groups and capped so a big repo can't make
-  // rendering feel sluggish.
+  // rendering feel sluggish. None in command mode.
   const fileEntries = useMemo<Entry[]>(() => {
-    if (!query || !filesRootDir) return [];
+    if (isCommandMode || !query || !filesRootDir) return [];
     const matched: Entry[] = [];
     for (const rel of files) {
       if (matched.length >= MAX_FILE_MATCHES) break;
@@ -145,14 +178,34 @@ export default function QuickSwitcher({
       });
     }
     return matched;
-  }, [files, query, filesRootDir, onOpenFile, onOpenFileSecondary]);
+  }, [isCommandMode, files, query, filesRootDir, onOpenFile, onOpenFileSecondary]);
+
+  // Command mode ("> …"): fuzzy-match the part after ">" against every
+  // palette command's label instead of the tab/window/session/file list.
+  const commandEntries = useMemo<Entry[]>(() => {
+    if (!isCommandMode) return [];
+    const q = query.slice(1).trim();
+    return commands
+      .filter((c) => fuzzyMatch(q, c.label))
+      .map((c) => ({
+        key: `command:${c.id}`,
+        label: c.label,
+        group: "command" as const,
+        binding: c.binding,
+        disabled: !c.enabled,
+        run: () => c.run(),
+      }));
+  }, [isCommandMode, commands, query]);
 
   const filtered = useMemo(
-    () => [...entries.filter((e) => fuzzyMatch(query, e.label)), ...fileEntries],
-    [entries, fileEntries, query],
+    () =>
+      isCommandMode
+        ? commandEntries
+        : [...entries.filter((e) => fuzzyMatch(query, e.label)), ...fileEntries],
+    [isCommandMode, commandEntries, entries, fileEntries, query],
   );
 
-  const showFilesLoading = filesRootDir !== null && query.length > 0 && filesLoading;
+  const showFilesLoading = !isCommandMode && filesRootDir !== null && query.length > 0 && filesLoading;
 
   // Filtering can shrink the list out from under a selection made against a
   // longer one — clamp rather than let it point past the end.
@@ -163,7 +216,10 @@ export default function QuickSwitcher({
   }, [clampedSelected]);
 
   const runEntry = (entry: Entry | undefined, secondary: boolean) => {
-    if (!entry) return;
+    if (!entry || entry.disabled) return;
+    // Close before running: a kill/rename command's confirm dialog
+    // autofocuses on mount, and that only sticks if the switcher has already
+    // unmounted rather than stealing focus back afterward.
     onClose();
     entry.run(secondary);
   };
@@ -174,17 +230,18 @@ export default function QuickSwitcher({
         <input
           ref={inputRef}
           className="quick-switcher-input"
-          placeholder="Go to tab, window, or session…"
+          placeholder={isCommandMode ? "Type a command…" : "Go to tab, window, or session… (\">\" for commands)"}
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
             setSelected(0);
           }}
           onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
+            const combo = serializeEvent(e.nativeEvent);
+            if (e.key === "ArrowDown" || (combo && combo === bindings["quickSwitcher.selectNext"])) {
               e.preventDefault();
               setSelected((s) => Math.min(s + 1, filtered.length - 1));
-            } else if (e.key === "ArrowUp") {
+            } else if (e.key === "ArrowUp" || (combo && combo === bindings["quickSwitcher.selectPrevious"])) {
               e.preventDefault();
               setSelected((s) => Math.max(s - 1, 0));
             } else if (e.key === "Enter") {
@@ -203,7 +260,7 @@ export default function QuickSwitcher({
           {filtered.map((entry, i) => (
             <div
               key={entry.key}
-              className={`quick-switcher-item${i === clampedSelected ? " selected" : ""}`}
+              className={`quick-switcher-item${i === clampedSelected ? " selected" : ""}${entry.disabled ? " disabled" : ""}`}
               onMouseEnter={() => setSelected(i)}
               onClick={(e) => runEntry(entry, e.shiftKey)}
             >
@@ -211,6 +268,7 @@ export default function QuickSwitcher({
                 {entry.group}
               </span>
               <span className="quick-switcher-label">{entry.label}</span>
+              {entry.binding && <span className="quick-switcher-binding">{entry.binding}</span>}
             </div>
           ))}
           {showFilesLoading && (

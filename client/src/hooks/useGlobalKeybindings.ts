@@ -1,4 +1,4 @@
-import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import type { RegisteredCommand } from "../extensions";
 import { recorderState, serializeEvent } from "../keybindings";
 
@@ -14,26 +14,20 @@ import { recorderState, serializeEvent } from "../keybindings";
 // the actual copy) to suppress Chrome/Firefox's Ctrl+Shift+C "inspect
 // element" default. Freshness via refs so the mount-once listener always
 // sees current bindings and handlers.
+//
+// `handlers` is built by the caller (App.tsx), which owns every action hook
+// (session/window CRUD, tab management) this dispatcher needs to invoke —
+// keeping the construction there avoids this hook's parameter list growing
+// with every new command, and lets App.tsx reuse the exact same record for
+// the command palette's entries.
 export function useGlobalKeybindings(
   bindingsRef: MutableRefObject<Record<string, string>>,
-  setSidebarVisible: Dispatch<SetStateAction<boolean>>,
-  setShowSwitcher: Dispatch<SetStateAction<boolean>>,
-  cycleTab: (delta: number) => void,
-  activeTabId: string | null,
-  closeTab: (id: string) => void,
-  openSettingsTab: () => void,
+  handlers: Record<string, () => void>,
   extCommands: RegisteredCommand[],
 ) {
   const globalCommandsRef = useRef<Record<string, () => void>>({});
   globalCommandsRef.current = {
-    "sidebar.toggle": () => setSidebarVisible((v) => !v),
-    "quickSwitcher.toggle": () => setShowSwitcher((v) => !v),
-    "tab.next": () => cycleTab(1),
-    "tab.previous": () => cycleTab(-1),
-    "tab.close": () => {
-      if (activeTabId) closeTab(activeTabId);
-    },
-    "settings.open": openSettingsTab,
+    ...handlers,
     ...Object.fromEntries(extCommands.map((c) => [c.id, c.run])),
   };
 

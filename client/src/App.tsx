@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
-import QuickSwitcher from "./components/QuickSwitcher";
+import QuickSwitcher, { type PaletteCommand } from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
@@ -12,6 +12,7 @@ import { useDialogs } from "./hooks/useDialogs";
 import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
+import { COMMANDS, formatBinding } from "./keybindings";
 import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
 import { useSettingsSync } from "./hooks/useSettingsSync";
@@ -23,6 +24,11 @@ import { groupKeyForTab } from "./lib/tabs";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
+
+// Commands that exist for Settings → Keyboard (rebindable) and their own
+// component's direct dispatch, but make no sense as a palette entry to
+// "run" — see paletteCommands' comment below.
+const NON_PALETTE_IDS = new Set(["quickSwitcher.selectNext", "quickSwitcher.selectPrevious"]);
 
 export default function App() {
   // Declared first so useSessions (which needs showError) and the files
@@ -92,6 +98,8 @@ export default function App() {
     extensionSettingsRef,
     pinnedSessions,
     setPinnedSessions,
+    commandUsage,
+    setCommandUsage,
   } = useSettingsSync(extCommands);
 
   const { dialog, confirmDialog, promptDialog } = useDialogs();
@@ -161,7 +169,9 @@ export default function App() {
   const { extensions, reloadExtensions, activeTerminalTheme, fontsVersion } =
     useThemeAssets(settings, extensionSettings, extensionSettingsRef);
 
-  const [showSwitcher, setShowSwitcher] = useState(false);
+  // null = closed; otherwise the string to seed the switcher's input with —
+  // "" for a plain tab/window/session switch, ">" for the command palette.
+  const [switcherQuery, setSwitcherQuery] = useState<string | null>(null);
 
   // Right-click anywhere without a dedicated context menu (empty terminal
   // space, tab bar gaps, etc.) would otherwise show the browser's native
@@ -204,17 +214,6 @@ export default function App() {
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  useGlobalKeybindings(
-    bindingsRef,
-    setSidebarVisible,
-    setShowSwitcher,
-    cycleTab,
-    activeTabId,
-    closeTab,
-    openSettingsTab,
-    extCommands,
-  );
-
   const showMenu = useCallback((x: number, y: number, items: MenuItem[]) => {
     setMenu({ x, y, items });
   }, []);
@@ -227,6 +226,7 @@ export default function App() {
     selectWindowInSession,
     renameWindow,
     killWindow,
+    togglePinSession,
     restorePinnedSession,
     sessionMenuItems,
     windowMenuItems,
@@ -249,6 +249,165 @@ export default function App() {
     pinnedSessions,
     setPinnedSessions,
   );
+
+  // Session/window commands need an active real tab (a session/window, not a
+  // settings/viewer tab) to act on; window.* additionally needs the derived
+  // active window (see useTabs' activeWindow — falls back to the session's
+  // own active window when the tab isn't pinned to one specific window).
+  // Both the keyboard dispatcher (handlers below) and the palette (built
+  // further down) share these same guards, so a bound chord fired with no
+  // context and a palette row with no context behave identically: a no-op.
+  const globalHandlers = useMemo<Record<string, () => void>>(
+    () => ({
+      "sidebar.toggle": () => setSidebarVisible((v) => !v),
+      "quickSwitcher.toggle": () => setSwitcherQuery((q) => (q === null ? "" : null)),
+      "commandPalette.toggle": () => setSwitcherQuery((q) => (q === null ? ">" : null)),
+      "tab.next": () => cycleTab(1),
+      "tab.previous": () => cycleTab(-1),
+      "tab.close": () => {
+        if (activeTabId) closeTab(activeTabId);
+      },
+      "tab.closeOthers": () => {
+        if (activeTabId) closeOtherTabs(activeTabId);
+      },
+      "settings.open": openSettingsTab,
+      "session.new": () => createSession(),
+      "session.kill": () => {
+        if (activeRealTab) killSession(activeRealTab.sessionName);
+      },
+      "session.rename": () => {
+        if (activeRealTab) renameSession(activeRealTab.sessionName);
+      },
+      "session.togglePin": () => {
+        if (activeRealTab) togglePinSession(activeRealTab.sessionName);
+      },
+      "window.new": () => {
+        if (activeRealTab) createWindow(activeRealTab.sessionName);
+      },
+      "window.kill": () => {
+        if (activeRealTab && activeWindow) killWindow(activeRealTab.sessionName, activeWindow.index);
+      },
+      "window.rename": () => {
+        if (activeRealTab && activeWindow) renameWindow(activeRealTab.sessionName, activeWindow);
+      },
+    }),
+    [
+      activeRealTab,
+      activeWindow,
+      activeTabId,
+      closeTab,
+      closeOtherTabs,
+      cycleTab,
+      openSettingsTab,
+      createSession,
+      killSession,
+      renameSession,
+      togglePinSession,
+      createWindow,
+      killWindow,
+      renameWindow,
+    ],
+  );
+
+  useGlobalKeybindings(bindingsRef, globalHandlers, extCommands);
+
+  // Bumps commandUsage[id] on every palette-invoked run (not chord
+  // dispatches — see paletteCommands' comment on recording scope). Read by
+  // the memo below for the always-on "pin last-used to row 1" behavior and
+  // the opt-in paletteSortByUsage sort.
+  const recordCommandUsage = useCallback(
+    (id: string) => {
+      setCommandUsage((prev) => ({
+        ...prev,
+        [id]: { count: (prev[id]?.count ?? 0) + 1, last: Date.now() },
+      }));
+    },
+    [setCommandUsage],
+  );
+
+  // Palette entries mirror globalHandlers 1:1 for the built-in commands, plus
+  // extension commands — terminal.* is excluded since those are dispatched
+  // from xterm's own key handler (see useGlobalKeybindings' module comment)
+  // and make no sense invoked from an overlay that has stolen focus.
+  // quickSwitcher.selectNext/Previous are excluded for the same reason: they
+  // only mean anything as a keypress while the switcher's own input owns
+  // focus (QuickSwitcher compares its `bindings` prop directly — see its
+  // onKeyDown), so "running" them from the list they navigate would be a
+  // no-op with no globalHandlers entry to back it.
+  //
+  // Ordering: only palette-invoked runs are recorded (a chord-run favorite
+  // shouldn't crowd out what you actually pick from the list), so usage
+  // reflects palette habits specifically. The single most-recently-run
+  // command always pins to row 0 — ties on `last` (only possible via a
+  // hand-edited settings doc) break by higher `count`, then static order.
+  // paletteSortByUsage additionally reorders everything else by `count` desc
+  // (stable, so ties keep the static COMMANDS order).
+  const paletteCommands = useMemo<PaletteCommand[]>(() => {
+    const hasSession = activeRealTab !== null;
+    const hasWindow = activeWindow !== undefined;
+    const contextRequirement: Record<string, boolean> = {
+      "session.kill": hasSession,
+      "session.rename": hasSession,
+      "session.togglePin": hasSession,
+      "window.new": hasSession,
+      "window.kill": hasSession && hasWindow,
+      "window.rename": hasSession && hasWindow,
+    };
+    const builtins = COMMANDS.filter((c) => c.scope === "global" && !NON_PALETTE_IDS.has(c.id)).map((c) => ({
+      id: c.id,
+      label: c.label,
+      binding: formatBinding(resolvedBindings[c.id] ?? ""),
+      enabled: contextRequirement[c.id] ?? true,
+      run: () => {
+        recordCommandUsage(c.id);
+        globalHandlers[c.id]?.();
+      },
+    }));
+    const extEntries = extCommands.map((c) => ({
+      id: c.id,
+      label: c.label,
+      binding: formatBinding(resolvedBindings[c.id] ?? ""),
+      enabled: true,
+      run: () => {
+        recordCommandUsage(c.id);
+        c.run();
+      },
+    }));
+    const all = [...builtins, ...extEntries];
+
+    const sorted = settings.paletteSortByUsage
+      ? [...all].sort((a, b) => (commandUsage[b.id]?.count ?? 0) - (commandUsage[a.id]?.count ?? 0))
+      : all;
+
+    let lastUsedIndex = -1;
+    for (let i = 0; i < sorted.length; i++) {
+      const usage = commandUsage[sorted[i].id];
+      if (!usage) continue;
+      if (lastUsedIndex === -1) {
+        lastUsedIndex = i;
+        continue;
+      }
+      const best = commandUsage[sorted[lastUsedIndex].id];
+      if (
+        usage.last > best.last ||
+        (usage.last === best.last && usage.count > best.count)
+      ) {
+        lastUsedIndex = i;
+      }
+    }
+    if (lastUsedIndex <= 0) return sorted;
+    const lastUsed = sorted[lastUsedIndex];
+    return [lastUsed, ...sorted.slice(0, lastUsedIndex), ...sorted.slice(lastUsedIndex + 1)];
+  }, [
+    activeRealTab,
+    activeWindow,
+    resolvedBindings,
+    globalHandlers,
+    extCommands,
+    commandUsage,
+    settings.paletteSortByUsage,
+    recordCommandUsage,
+  ]);
 
   const newWindowInDir = (cwd: string) => {
     if (!activeRealTab) return;
@@ -456,17 +615,20 @@ export default function App() {
       </main>
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
       {dialog && <Dialog dialog={dialog} />}
-      {showSwitcher && (
+      {switcherQuery !== null && (
         <QuickSwitcher
           sessions={sessions}
           tabs={tabs}
           filesRootDir={filesRootDir}
+          initialQuery={switcherQuery}
+          commands={paletteCommands}
+          bindings={resolvedBindings}
           onActivateTab={setActiveTabId}
           onOpenWindow={openWindowTab}
           onOpenSession={openSession}
           onOpenFile={openFileOrViewer}
           onOpenFileSecondary={openFileOrViewerSecondary}
-          onClose={() => setShowSwitcher(false)}
+          onClose={() => setSwitcherQuery(null)}
         />
       )}
       {uploadProgress && (

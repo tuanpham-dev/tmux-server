@@ -17,7 +17,7 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 ## Features
 
 - **Sidebar** — sessions and windows as a tree, or grouped by working directory. Panels (SESSIONS, FILES, PORTS, and extension-contributed ones like SOURCE CONTROL) are reorderable by drag and independently resizable. Resizable, collapsible (`Ctrl+Shift+B`), shows attached/activity status.
-- **Quick switcher (`Ctrl+P`)** — fuzzy-search and jump to any open tab, window, or session, or search files by name. `Enter` opens a file in the editor; `Shift+Enter` opens it in its preview viewer instead.
+- **Quick switcher (`Ctrl+P`)** — fuzzy-search and jump to any open tab, window, or session, or search files by name. `Enter` opens a file in the editor; `Shift+Enter` opens it in its preview viewer instead; `Alt+J`/`Alt+K` move the selection (in addition to the arrow keys). Type `>` as the first character (or press `Ctrl+Shift+P`) to switch it into a **command palette** — every keyboard-bindable command, including extension-contributed ones, searchable by name and runnable without a bound key. The command you last ran from the palette always appears first; enable "Sort command palette by most-used" in Settings → Behavior to order the rest by usage instead of their default order.
 - **Tabbed terminals** — open a whole session or a single window as its own tab, switch between them, close individually or all-but-one. Drag to reorder (long-press then drag on touch), middle-click to close, double-click a tab to toggle the sidebar. Background tabs with new output get an activity dot; closing the active tab reactivates the most-recently-used one. In the installed PWA: `Ctrl+Tab`/`Ctrl+Shift+Tab` to cycle tabs, `Ctrl+W` to close the active one. Optional Chrome-style **tab groups** (Settings → Behavior) collect each session's tabs — plus any preview tab opened from it — behind a colored, collapsible chip; pick the chip's color, collapse/expand, or reorder groups from its context menu, or drag a chip to reorder it directly.
 - **Session & window management** — click a session to open every one of its windows as its own tab; create, rename, kill sessions and windows via context menu or hover buttons. **Pin a session** (context menu) to keep it in the sidebar after it's killed — a dimmed row with a pin icon that restores the session (and its saved working directory) with one click or "New Window".
 - **FILES panel** — browse the active window's working directory, drag-and-drop upload (files or folders, with conflict handling and progress), git status badges, and a context menu for creating, renaming, deleting, downloading (folders as zip), and copying paths. Clicking a file opens it in the pane's running `nvim`, or a new window if it's busy; hovering a previewable file (image, PDF, Markdown, JSON/YAML, CSV, HTML) shows a Preview icon that opens it in a rendered tab instead. The current git branch shows as a pill in the FILES header — click it to open (or jump to) `lazygit` as a tab.
@@ -38,6 +38,7 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 |---|---|
 | `Ctrl+Shift+B` | Toggle sidebar |
 | `Ctrl+P` | Toggle quick switcher |
+| `Ctrl+Shift+P` † | Show command palette |
 | `Ctrl+Tab` * | Next tab |
 | `Ctrl+Shift+Tab` * | Previous tab |
 | `Ctrl+W` * | Close active tab |
@@ -47,6 +48,10 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 | `Shift+Enter` | Insert a literal newline in the terminal |
 
 \* Browser-reserved outside the installed PWA — bind a different combo in Settings → Keyboard if you're using tmux-server as a regular browser tab.
+
+† Firefox reserves `Ctrl+Shift+P` for opening a private window and won't let pages intercept it — rebind it in Settings → Keyboard, or just type `>` into the `Ctrl+P` quick switcher instead.
+
+The command palette also lists eight session/window actions — **New Session**, **Kill Current Session**, **Rename Current Session…**, **Pin/Unpin Current Session**, **New Window**, **Kill Current Window**, **Rename Current Window…**, and **Close Other Tabs** — that ship with no default key so they don't collide with anything; bind any of them from Settings → Keyboard if you use them often. They stay accessible from the sidebar's context menus and hover buttons either way.
 
 - **`Ctrl`+click** (`Cmd`+click on Mac) a URL, local file path, or hyperlink in the terminal to open it; add `Shift` to open a file in its preview viewer instead of the editor.
 - **Drag** in the terminal makes a tmux copy-mode selection; **Shift+drag** makes a normal browser text selection.
