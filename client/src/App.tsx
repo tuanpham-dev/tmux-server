@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
-import Dialog, { type DialogRequest } from "./components/Dialog";
+import Dialog from "./components/Dialog";
 import QuickSwitcher from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
@@ -10,53 +10,20 @@ import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
 import {
   findFileViewerFor,
-  loadExtensions,
   setActiveContext,
-  setExtensionSettingsOverrides,
   setOpenFileTabHandler,
   setOpenViewerTabHandler,
   setRefreshFilesHandler,
   useExtensionRegistry,
 } from "./extensions";
-import {
-  recorderState,
-  resolveBindings,
-  serializeEvent,
-  type Command,
-  type KeybindingOverrides,
-} from "./keybindings";
-import {
-  DEFAULT_SETTINGS,
-  loadExtensionSettings,
-  loadKeybindingOverrides,
-  loadSettings,
-  migrateSettings,
-  saveExtensionSettings,
-  saveKeybindingOverrides,
-  saveSettings,
-  type AppSettings,
-  type ExtensionSettingsValues,
-} from "./settings";
-import {
-  applyColorThemeCssVars,
-  loadColorTheme,
-  resolveColorThemeValue,
-  terminalTheme as builtInTerminalTheme,
-  type ResolvedColorTheme,
-} from "./theme";
-import type {
-  ExtensionInfo,
-  MenuItem,
-  MenuState,
-  Tab,
-  TabGroupState,
-  TmuxSession,
-  TmuxWindow,
-} from "./types";
+import { useDialogs } from "./hooks/useDialogs";
+import { useSessions } from "./hooks/useSessions";
+import { useSettingsSync } from "./hooks/useSettingsSync";
+import { useThemeAssets } from "./hooks/useThemeAssets";
+import { recorderState, serializeEvent } from "./keybindings";
+import type { MenuItem, MenuState, Tab, TabGroupState, TmuxWindow } from "./types";
 import { collectDropped, uploadAll, type DroppedItems } from "./upload";
-import { applyExtensionFonts, useExtensionFontsVersion } from "./utils/fonts";
 import { GROUP_COLORS, nextAutoColor } from "./utils/groupColor";
-import { resolveIconThemeValue, setActiveIconTheme } from "./utils/iconThemes";
 import {
   groupKeyForTab,
   isRealTab,
@@ -71,7 +38,30 @@ const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
 
 export default function App() {
-  const [sessions, setSessions] = useState<TmuxSession[]>([]);
+  // Declared first so useSessions (which needs showError) and the files
+  // concern below (filesRefreshKey, piggybacked on the session poll) are
+  // both available before that hook call.
+  const [error, setError] = useState<string | null>(null);
+  const showError = useCallback((err: unknown) => {
+    setError(err instanceof Error ? err.message : String(err));
+  }, []);
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
+
+  const [filesRefreshKey, setFilesRefreshKey] = useState(0);
+  // Piggybacks on the session poll so git status badges in the FILES panel
+  // stay live (e.g. after a commit or save in the terminal) without a
+  // second timer. Must be a stable useCallback, not an inline arrow — an
+  // unstable identity here would change useSessions' internal `refresh`
+  // callback's identity every render, retriggering its mount effect (and
+  // firing a fresh fetch) on every render instead of once every 3s.
+  const onSessionsRefreshed = useCallback(() => setFilesRefreshKey((k) => k + 1), []);
+
+  const { sessions, refresh, sessionsLoadedRef } = useSessions(showError, onSessionsRefreshed);
+
   // Restored tabs whose session no longer exists self-heal: attaching to a
   // dead session makes tmux exit immediately, the server relays "exit", and
   // the normal onExit handler closes that tab — no separate validation pass
@@ -130,7 +120,6 @@ export default function App() {
     ];
   }, [activeTabId]);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // TabBar's right-side actions container — an image tab portals its zoom
   // toolbar into this while active (VS Code/code-server editor-actions
   // placement). State (not a plain ref) because the portaling viewer needs
@@ -153,23 +142,25 @@ export default function App() {
     localStorage.setItem("sidebarVisible", String(sidebarVisible));
   }, [sidebarVisible]);
 
-  const [settings, setSettings] = useState<AppSettings>(loadSettings);
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
+  // Extension-registered commands/viewers/panels (extensions.ts) — commands
+  // join the built-in list inside useSettingsSync (always "global" scope in
+  // v1, namespaced ext.<extensionId>.<cmd> so they can't collide with a
+  // built-in id); fileViewers/sidebarPanels are consumed further down.
+  const { commands: extCommands, fileViewers: extFileViewers, sidebarPanels: extSidebarPanels } =
+    useExtensionRegistry();
 
-  // Skip persisting on the initial mount: loadSettings() already merged in
-  // whatever DEFAULT_SETTINGS shipped, and writing that back immediately
-  // would lock a returning visitor onto today's defaults forever — any
-  // future default change (e.g. adding a fallback font) would then never
-  // reach them, since their localStorage entry would already have every key.
-  const settingsMounted = useRef(false);
-  useEffect(() => {
-    if (!settingsMounted.current) {
-      settingsMounted.current = true;
-      return;
-    }
-    saveSettings(settings);
-  }, [settings]);
+  const {
+    settings,
+    setSettings,
+    settingsRef,
+    keybindingOverrides,
+    setKeybindingOverrides,
+    resolvedBindings,
+    bindingsRef,
+    extensionSettings,
+    setExtensionSettings,
+    extensionSettingsRef,
+  } = useSettingsSync(extCommands);
 
   // Chrome-style tab-group UI state (color/collapsed), keyed by session
   // name — see groupKeyForTab above and plans/tab-groups-by-session.md.
@@ -233,207 +224,8 @@ export default function App() {
     });
   }, [activeTabId, tabs]);
 
-  // Keybinding overrides (command id → serialized combo), resolved over the
-  // defaults in keybindings.ts. Same localStorage flow as settings above,
-  // including the skip-initial-persist rationale.
-  const [keybindingOverrides, setKeybindingOverrides] =
-    useState<KeybindingOverrides>(loadKeybindingOverrides);
-  // Extension-registered commands/viewers/panels (extensions.ts) — commands
-  // join the built-in list below (always "global" scope in v1, namespaced
-  // ext.<extensionId>.<cmd> so they can't collide with a built-in id);
-  // fileViewers/sidebarPanels are consumed further down.
-  const { commands: extCommands, fileViewers: extFileViewers, sidebarPanels: extSidebarPanels } =
-    useExtensionRegistry();
-  const extCommandDefs: Command[] = extCommands.map((c) => ({
-    id: c.id,
-    label: c.label,
-    defaultBinding: c.defaultBinding ?? "",
-    scope: "global",
-  }));
-  const resolvedBindings = resolveBindings(keybindingOverrides, extCommandDefs);
-  const bindingsRef = useRef(resolvedBindings);
-  bindingsRef.current = resolvedBindings;
-
-  const keybindingsMounted = useRef(false);
-  useEffect(() => {
-    if (!keybindingsMounted.current) {
-      keybindingsMounted.current = true;
-      return;
-    }
-    saveKeybindingOverrides(keybindingOverrides);
-  }, [keybindingOverrides]);
-
-  // Sparse per-extension setting overrides (extensionId -> key -> value) —
-  // same localStorage flow as settings/keybindings above, including the
-  // skip-initial-persist rationale.
-  const [extensionSettings, setExtensionSettings] =
-    useState<ExtensionSettingsValues>(loadExtensionSettings);
-  const extensionSettingsRef = useRef(extensionSettings);
-  extensionSettingsRef.current = extensionSettings;
-
-  const extensionSettingsMounted = useRef(false);
-  useEffect(() => {
-    if (!extensionSettingsMounted.current) {
-      extensionSettingsMounted.current = true;
-      return;
-    }
-    saveExtensionSettings(extensionSettings);
-  }, [extensionSettings]);
-
-  // Server-side persistence (~/.config/tmux-server/settings.json via
-  // /api/settings): localStorage renders instantly at mount, then the server
-  // copy — the cross-device source of truth — wins once fetched. Write-backs
-  // are held until that first GET resolves, so a stale localStorage snapshot
-  // can never clobber the server doc.
-  const serverSyncReady = useRef(false);
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .fetchSettingsDoc()
-      .then((doc) => {
-        if (cancelled) return;
-        if (doc.settings && typeof doc.settings === "object") {
-          setSettings(migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }));
-        }
-        if (doc.keybindings && typeof doc.keybindings === "object") {
-          setKeybindingOverrides(doc.keybindings);
-        }
-        if (
-          doc.extensionSettings &&
-          typeof doc.extensionSettings === "object" &&
-          !Array.isArray(doc.extensionSettings)
-        ) {
-          setExtensionSettings(doc.extensionSettings as ExtensionSettingsValues);
-        }
-        serverSyncReady.current = true;
-      })
-      .catch(() => {
-        // Server unreachable (offline PWA) — localStorage stays authoritative
-        // for this visit, and nothing gets pushed up.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Debounced write-back of the whole doc. Read-merge-write: fetches the
-  // current doc first and preserves any top-level key this client doesn't
-  // own (e.g. extensionSettings written by a newer client while an older
-  // tab is still open) instead of blindly overwriting it — falls back to
-  // writing just the three known keys if the pre-fetch fails. Last-write-
-  // wins across devices for the keys this client does own — accepted for a
-  // single-user tool. Errors are swallowed: localStorage already has the
-  // change, and a persistent server failure would otherwise toast on every
-  // keystroke in a settings input.
-  useEffect(() => {
-    if (!serverSyncReady.current) return;
-    const timer = window.setTimeout(() => {
-      api
-        .fetchSettingsDoc()
-        .then((doc) => ({ ...doc, settings, keybindings: keybindingOverrides, extensionSettings }))
-        .catch(() => ({ settings, keybindings: keybindingOverrides, extensionSettings }))
-        .then((doc) => api.putSettingsDoc(doc))
-        .catch(() => {});
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [settings, keybindingOverrides, extensionSettings]);
-
-  // Extensions: fetches the installed list and activates every enabled
-  // client entry (commands/viewers/panels register themselves into
-  // extensions.ts's module-level registries — see useExtensionRegistry).
-  // reloadExtensions is re-called after install/uninstall/enable/disable in
-  // the Settings dialog so this list and the color/icon theme dropdowns
-  // stay current without a full page reload.
-  const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
-  const reloadExtensions = useCallback(() => {
-    // Pushes the current (localStorage-seeded, or already-merged-with-server)
-    // overrides into extensions.ts's module-level store as soon as the list
-    // is fetched — before any client entry's activate() runs — so
-    // ctx.settings.get() already resolves correctly the first time an
-    // extension reads it, rather than only after this component re-renders.
-    loadExtensions((list) => setExtensionSettingsOverrides(extensionSettingsRef.current, list))
-      .then(setExtensions)
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    reloadExtensions();
-  }, [reloadExtensions]);
-
-  // Keeps the module-level resolved-settings store (and any already-
-  // activated extension's onDidChange subscribers) current whenever the
-  // overrides themselves change (a user edit, or the server doc arriving)
-  // or the extension list changes (enable/disable, install/uninstall).
-  useEffect(() => {
-    setExtensionSettingsOverrides(extensionSettings, extensions);
-  }, [extensionSettings, extensions]);
-
-  // Active color theme: resolves settings.colorTheme against the installed
-  // extension list, loads+parses the theme JSON (cached in theme.ts), then
-  // applies its CSS vars to <html> and hands its terminal palette to every
-  // TerminalView. "" or an unresolvable value both mean "built-in".
-  const [colorTheme, setColorTheme] = useState<ResolvedColorTheme | null>(null);
-  useEffect(() => {
-    const target = resolveColorThemeValue(settings.colorTheme, extensions);
-    if (!target) {
-      setColorTheme(null);
-      applyColorThemeCssVars(null);
-      return;
-    }
-    let cancelled = false;
-    loadColorTheme(target.extensionId, target.path)
-      .then((resolved) => {
-        if (cancelled) return;
-        setColorTheme(resolved);
-        applyColorThemeCssVars(resolved.cssVars);
-      })
-      .catch((err) => {
-        console.error(`failed to load color theme "${settings.colorTheme}":`, err);
-        if (!cancelled) {
-          setColorTheme(null);
-          applyColorThemeCssVars(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [settings.colorTheme, extensions]);
-  const activeTerminalTheme = colorTheme?.terminalTheme ?? builtInTerminalTheme;
-
-  // Active icon theme: same resolve-against-installed-extensions shape as
-  // color themes above, but applied through iconThemes.ts's own module
-  // state (FileTree subscribes to it directly via useIconThemeVersion)
-  // rather than App-level React state, since nothing here needs the result.
-  useEffect(() => {
-    setActiveIconTheme(resolveIconThemeValue(settings.iconTheme, extensions)).catch(() => {});
-  }, [settings.iconTheme, extensions]);
-
-  // Extension-contributed terminal fonts: loads only the families actually
-  // present in settings.fontFamily (primary or fallback) — same selected-
-  // only asset policy as the color/icon theme effects above. Reconciles on
-  // both a font-picker change and an extension enable/disable/install/
-  // uninstall, so a font's FontFace is added/removed through one path.
-  // fontsVersion is handed to every TerminalView so it can force a re-
-  // measure once a face it's configured to use actually finishes loading.
-  useEffect(() => {
-    applyExtensionFonts(extensions, settings.fontFamily).catch(() => {});
-  }, [settings.fontFamily, extensions]);
-  const fontsVersion = useExtensionFontsVersion();
-
-  // Non-terminal UI elements that want "whatever monospace metrics the user
-  // actually configured for the terminal" (styles.css's .terminal-link-
-  // tooltip; git-scm's diff viewer) read these vars instead of hard-coding
-  // their own — keeps them in sync with the Settings pickers without
-  // needing their own settings plumbing. Units are baked in here (xterm's
-  // own fontSize/letterSpacing options are plain pixel numbers, lineHeight
-  // a unitless multiplier — same as CSS's own line-height) so a consumer
-  // never has to guess.
-  useEffect(() => {
-    const root = document.documentElement.style;
-    root.setProperty("--terminal-font", settings.fontFamily);
-    root.setProperty("--terminal-font-size", `${settings.fontSize}px`);
-    root.setProperty("--terminal-line-height", `${settings.lineHeight}`);
-    root.setProperty("--terminal-letter-spacing", `${settings.letterSpacing}px`);
-  }, [settings.fontFamily, settings.fontSize, settings.lineHeight, settings.letterSpacing]);
+  const { extensions, reloadExtensions, activeTerminalTheme, fontsVersion } =
+    useThemeAssets(settings, extensionSettings, extensionSettingsRef);
 
   const [showSwitcher, setShowSwitcher] = useState(false);
 
@@ -463,47 +255,13 @@ export default function App() {
     };
   }, []);
 
-  const [dialog, setDialog] = useState<DialogRequest | null>(null);
-
-  const confirmDialog = useCallback(
-    (message: string, confirmLabel = "OK") =>
-      new Promise<boolean>((res) => {
-        setDialog({
-          type: "confirm",
-          message,
-          danger: true,
-          confirmLabel,
-          resolve: (v) => {
-            setDialog(null);
-            res(Boolean(v));
-          },
-        });
-      }),
-    [],
-  );
-
-  const promptDialog = useCallback(
-    (message: string, defaultValue = "") =>
-      new Promise<string | null>((res) => {
-        setDialog({
-          type: "prompt",
-          message,
-          defaultValue,
-          resolve: (v) => {
-            setDialog(null);
-            res(v === null || v === false ? null : String(v));
-          },
-        });
-      }),
-    [],
-  );
+  const { dialog, confirmDialog, promptDialog } = useDialogs();
 
   const [uploadProgress, setUploadProgress] = useState<{
     currentName: string;
     loadedBytes: number;
     totalBytes: number;
   } | null>(null);
-  const [filesRefreshKey, setFilesRefreshKey] = useState(0);
   // Set whenever a delete/rename lands, so FileTree can drop the now-stale
   // path (and its descendants) from its expanded/dirCache state instead of
   // waiting for a refetch to notice it's gone.
@@ -523,41 +281,6 @@ export default function App() {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }, []);
-
-  const showError = useCallback((err: unknown) => {
-    setError(err instanceof Error ? err.message : String(err));
-  }, []);
-
-  useEffect(() => {
-    if (!error) return;
-    const t = setTimeout(() => setError(null), 6000);
-    return () => clearTimeout(t);
-  }, [error]);
-
-  // Guards the window-tab cleanup effect below against the very first
-  // render, where `sessions` is still its initial [] — without this, every
-  // restored window-tab would look "gone" and get closed before the first
-  // fetch even completes.
-  const sessionsLoadedRef = useRef(false);
-
-  const refresh = useCallback(async () => {
-    try {
-      setSessions(await api.fetchSessions());
-      sessionsLoadedRef.current = true;
-    } catch (err) {
-      showError(err);
-    }
-    // Piggybacks on the session poll so git status badges in the FILES
-    // panel stay live (e.g. after a commit or save in the terminal)
-    // without a second timer.
-    setFilesRefreshKey((k) => k + 1);
-  }, [showError]);
-
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 3000);
-    return () => clearInterval(t);
-  }, [refresh]);
 
   // Inserts a newly opened tab per the newTabPlacement setting. `anchorId`
   // overrides the active-tab-ref anchor for callers that need to snapshot
