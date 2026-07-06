@@ -358,7 +358,16 @@ export default function TabBar({
         key={`group:${sessionName}`}
         className="tab-group-chip"
         style={{ background: rawColor }}
+        role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
+        aria-label={`${sessionName} tab group, ${collapsed ? "collapsed" : "expanded"}`}
         onClick={() => onToggleGroupCollapsed(sessionName)}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          onToggleGroupCollapsed(sessionName);
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           onShowMenu(e.clientX, e.clientY, groupMenuItems(sessionName));

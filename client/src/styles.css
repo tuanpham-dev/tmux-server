@@ -830,6 +830,11 @@ body.resizing-row {
   filter: brightness(1.1);
 }
 
+.tab-group-chip:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
 .tab-group-chip .codicon {
   font-size: 13px;
 }
