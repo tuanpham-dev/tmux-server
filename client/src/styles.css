@@ -845,9 +845,12 @@ body.resizing-row {
   border-radius: 4px;
   /* Reserved, transparent by default — drag-a-chip's drop-indicator rules
      below only need to swap the color, same pattern as .tab's own left/
-     right border (unlike .tab, the chip has no border otherwise). */
-  border-left: 2px solid transparent;
-  border-right: 2px solid transparent;
+     right border (unlike .tab, the chip has no border otherwise). 3px, not
+     .tab's 2px: a chip's own background is one of 8 saturated palette
+     colors (not a neutral bar background), so the indicator needs more
+     width to stay noticeable against all of them. */
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
   color: #1e2227;
   font-size: 12px;
   font-weight: 600;
@@ -864,12 +867,16 @@ body.resizing-row {
   opacity: 0.4;
 }
 
+/* Not var(--accent) (#1085ff) — nearly identical to the "blue" group color
+   (#1a73e8), so it'd be invisible against that chip. Reuses the chip's own
+   dark text color instead — already validated to read against every entry
+   in the (bright/mid-saturation) group-color palette. */
 .tab-group-chip.drop-indicator-left {
-  border-left-color: var(--accent);
+  border-left-color: #1e2227;
 }
 
 .tab-group-chip.drop-indicator-right {
-  border-right-color: var(--accent);
+  border-right-color: #1e2227;
 }
 
 .tab-group-chip:focus-visible {
