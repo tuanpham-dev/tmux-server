@@ -40,7 +40,7 @@ type DropIndicator = { id: string; edge: "left" | "right" };
 
 // Restricts drag-drop candidates when tab groups are enabled: a grouped tab
 // may only reorder within its own group (members are always kept contiguous
-// by App.tsx's normalizeTabGroups), and an ungrouped tab may only drop at a
+// by lib/tabs.ts's normalizeTabGroups), and an ungrouped tab may only drop at a
 // group's edge, never wedged between its members.
 function computeGroupConstrainedOrder(
   order: Tab[],

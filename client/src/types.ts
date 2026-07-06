@@ -30,7 +30,7 @@ export interface Tab {
   windowIndex?: number;
   // Stable tmux ids for the tab's session/window, used to re-target
   // sessionName/windowIndex after an out-of-band rename or renumber
-  // (see App.tsx's reconcileTabIds). Absent for tabs restored from
+  // (see lib/tabs.ts's reconcileTabs). Absent for tabs restored from
   // localStorage before id-keying shipped, or a fresh open whose ids
   // haven't been resolved from the next poll yet — both self-heal on the
   // next successful id match.
@@ -65,7 +65,7 @@ export interface Tab {
   // Only on a viewer tab (extViewerPath set): the real session it was
   // opened "from" (App.tsx's openExtViewerTab), pinned at creation time so
   // it can join that session's Chrome-style tab group — see groupKeyForTab
-  // in App.tsx. originSessionId mirrors sessionId's rename-survival role;
+  // in lib/tabs.ts. originSessionId mirrors sessionId's rename-survival role;
   // both are cleared once the origin session no longer exists (the viewer
   // tab itself is left open and just ungroups — previews aren't tied to a
   // live tmux process the way window-tabs are). Absent for a settings tab,
