@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as api from "../api";
-import { groupKeyForTab, isRealTab, loadStoredTabGroupState, normalizeTabGroups } from "../lib/tabs";
+import { groupKeyForTab, isRealTab, loadStoredTabGroupState, moveGroup as moveGroupTabs, normalizeTabGroups, orderedGroupKeys } from "../lib/tabs";
 import type { AppSettings } from "../settings";
 import type { MenuItem, Tab, TabGroupState, TmuxSession } from "../types";
 import { GROUP_COLORS, nextAutoColor } from "../utils/groupColor";
@@ -136,6 +136,18 @@ export function useTabGroups(
     });
   }, [tabsRef, mruTabIdsRef, setActiveTabId]);
 
+  // Moves a whole group's block to a new position relative to the other
+  // groups — the drag-a-chip / "Move Group Left/Right" operation. See
+  // plans/reorder-tab-groups.md. No new persisted state: group order rides
+  // entirely on `tabs`' own array order, already persisted like any other
+  // tab-order change.
+  const moveGroup = useCallback(
+    (sessionName: string, toIndex: number) => {
+      setTabs((prev) => moveGroupTabs(prev, sessionName, toIndex));
+    },
+    [setTabs],
+  );
+
   const closeGroupTabs = useCallback(
     async (sessionName: string) => {
       const toClose = tabs.filter((t) => groupKeyForTab(t) === sessionName);
@@ -175,6 +187,18 @@ export function useTabGroups(
     (sessionName: string): MenuItem[] => {
       const state = tabGroupState[sessionName];
       const collapsed = state?.collapsed ?? false;
+      // Omitted entirely at each boundary (no "Move Left" for the first
+      // group, no "Move Right" for the last) rather than rendered disabled —
+      // MenuItem has no disabled field, and a two-item omit is simpler.
+      const order = orderedGroupKeys(tabs);
+      const index = order.indexOf(sessionName);
+      const moveItems: MenuItem[] = [];
+      if (index > 0) {
+        moveItems.push({ label: "Move Group Left", onClick: () => moveGroup(sessionName, index - 1) });
+      }
+      if (index !== -1 && index < order.length - 1) {
+        moveItems.push({ label: "Move Group Right", onClick: () => moveGroup(sessionName, index + 1) });
+      }
       return [
         {
           label: collapsed ? "Expand Group" : "Collapse Group",
@@ -194,10 +218,11 @@ export function useTabGroups(
               }),
           },
         },
+        ...moveItems,
         { label: "Close Group", danger: true, onClick: () => closeGroupTabs(sessionName) },
       ];
     },
-    [tabGroupState, toggleGroupCollapsed, closeGroupTabs],
+    [tabGroupState, tabs, toggleGroupCollapsed, moveGroup, closeGroupTabs],
   );
 
   // Synchronous counterpart to the out-of-band rename-migration effect above
@@ -213,5 +238,5 @@ export function useTabGroups(
     });
   }, []);
 
-  return { tabGroupState, toggleGroupCollapsed, closeGroupTabs, groupMenuItems, renameGroup };
+  return { tabGroupState, toggleGroupCollapsed, closeGroupTabs, groupMenuItems, renameGroup, moveGroup };
 }

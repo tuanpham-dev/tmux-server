@@ -843,6 +843,11 @@ body.resizing-row {
   margin: 6px 2px;
   padding: 0 10px;
   border-radius: 4px;
+  /* Reserved, transparent by default — drag-a-chip's drop-indicator rules
+     below only need to swap the color, same pattern as .tab's own left/
+     right border (unlike .tab, the chip has no border otherwise). */
+  border-left: 2px solid transparent;
+  border-right: 2px solid transparent;
   color: #1e2227;
   font-size: 12px;
   font-weight: 600;
@@ -853,6 +858,18 @@ body.resizing-row {
 
 .tab-group-chip:hover {
   filter: brightness(1.1);
+}
+
+.tab-group-chip.dragging {
+  opacity: 0.4;
+}
+
+.tab-group-chip.drop-indicator-left {
+  border-left-color: var(--accent);
+}
+
+.tab-group-chip.drop-indicator-right {
+  border-right-color: var(--accent);
 }
 
 .tab-group-chip:focus-visible {

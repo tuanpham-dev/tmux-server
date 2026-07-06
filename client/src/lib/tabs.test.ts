@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Tab, TmuxSession } from "../types";
-import { groupKeyForTab, normalizeTabGroups, reconcileTabs } from "./tabs";
+import { groupKeyForTab, moveGroup, normalizeTabGroups, orderedGroupKeys, reconcileTabs } from "./tabs";
 
 function makeTab(overrides: Partial<Tab>): Tab {
   return { id: "id", sessionName: "session", attachName: "session", ...overrides };
@@ -77,6 +77,70 @@ describe("normalizeTabGroups", () => {
     ];
     const next = normalizeTabGroups(tabs);
     expect(next.map((t) => t.id)).toEqual(["a1", "a2", "b1", "settings", "orphan"]);
+  });
+});
+
+describe("orderedGroupKeys", () => {
+  it("returns distinct group keys in first-appearance order, excluding singletons", () => {
+    const tabs = [
+      makeTab({ id: "settings", sessionName: "", attachName: "", settingsView: true }),
+      makeTab({ id: "b1", sessionName: "b" }),
+      makeTab({ id: "a1", sessionName: "a" }),
+      makeTab({ id: "b2", sessionName: "b", windowIndex: 0 }),
+    ];
+    expect(orderedGroupKeys(tabs)).toEqual(["b", "a"]);
+  });
+
+  it("returns an empty array when every tab is ungrouped", () => {
+    const tabs = [makeTab({ id: "settings", sessionName: "", attachName: "", settingsView: true })];
+    expect(orderedGroupKeys(tabs)).toEqual([]);
+  });
+});
+
+describe("moveGroup", () => {
+  function groupedTabs() {
+    return [
+      makeTab({ id: "a1", sessionName: "a" }),
+      makeTab({ id: "a2", sessionName: "a", windowIndex: 0 }),
+      makeTab({ id: "b1", sessionName: "b" }),
+      makeTab({ id: "c1", sessionName: "c" }),
+      makeTab({ id: "settings", sessionName: "", attachName: "", settingsView: true }),
+    ];
+  }
+
+  it("moves a group earlier, keeping its own tabs' relative order and singletons trailing", () => {
+    const next = moveGroup(groupedTabs(), "c", 0);
+    expect(next.map((t) => t.id)).toEqual(["c1", "a1", "a2", "b1", "settings"]);
+  });
+
+  it("moves a group later", () => {
+    const next = moveGroup(groupedTabs(), "a", 2);
+    expect(next.map((t) => t.id)).toEqual(["b1", "c1", "a1", "a2", "settings"]);
+  });
+
+  it("clamps an out-of-range target index to the end", () => {
+    const next = moveGroup(groupedTabs(), "a", 99);
+    expect(next.map((t) => t.id)).toEqual(["b1", "c1", "a1", "a2", "settings"]);
+  });
+
+  it("returns the same reference for an unknown group key", () => {
+    const tabs = groupedTabs();
+    expect(moveGroup(tabs, "nonexistent", 0)).toBe(tabs);
+  });
+
+  it("returns the same reference when the target index doesn't change anything", () => {
+    const tabs = groupedTabs();
+    expect(moveGroup(tabs, "a", 0)).toBe(tabs);
+  });
+
+  it("reorders a collapsed group identically to an expanded one — moveGroup never reads collapse state", () => {
+    // tabGroupState (color/collapsed) lives in useTabGroups, entirely
+    // separate from the Tab[] moveGroup operates on — collapsing a group
+    // has no representation here at all, so this just re-asserts the
+    // "moves earlier" case with a differently-named group standing in for
+    // "the one that happens to be collapsed" to document that intent.
+    const next = moveGroup(groupedTabs(), "b", 0);
+    expect(next.map((t) => t.id)).toEqual(["b1", "a1", "a2", "c1", "settings"]);
   });
 });
 

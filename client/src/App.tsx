@@ -143,7 +143,7 @@ export default function App() {
     setFilesRefreshKey,
   );
 
-  const { tabGroupState, toggleGroupCollapsed, closeGroupTabs, groupMenuItems, renameGroup } = useTabGroups(
+  const { tabGroupState, toggleGroupCollapsed, closeGroupTabs, groupMenuItems, renameGroup, moveGroup } = useTabGroups(
     tabs,
     tabsRef,
     setTabs,
@@ -362,6 +362,7 @@ export default function App() {
           groupState={tabGroupState}
           onToggleGroupCollapsed={toggleGroupCollapsed}
           groupMenuItems={groupMenuItems}
+          onReorderGroup={moveGroup}
         />
         <div className="terminals">
           {tabs.map((tab) => {

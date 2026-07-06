@@ -28,6 +28,37 @@ export function groupKeyForTab(tab: Tab): string | null {
   return tab.originSessionName ?? null;
 }
 
+// Every group's tabs as a contiguous block, keyed by group, in first-
+// appearance order, plus the trailing ungrouped ("singleton") tabs —
+// settings, or a preview tab whose origin session went away. The one
+// decomposition normalizeTabGroups, orderedGroupKeys, and moveGroup all
+// share, so "what order are the groups in" can't drift across call sites.
+function groupBlocks(tabs: Tab[]): { order: string[]; blocks: Map<string, Tab[]>; singletons: Tab[] } {
+  const order: string[] = [];
+  const blocks = new Map<string, Tab[]>();
+  const singletons: Tab[] = [];
+  for (const tab of tabs) {
+    const key = groupKeyForTab(tab);
+    if (key === null) {
+      singletons.push(tab);
+      continue;
+    }
+    const members = blocks.get(key);
+    if (members) members.push(tab);
+    else {
+      order.push(key);
+      blocks.set(key, [tab]);
+    }
+  }
+  return { order, blocks, singletons };
+}
+
+// The distinct group keys among `tabs`, in first-appearance order — the
+// same order normalizeTabGroups anchors on and moveGroup reorders.
+export function orderedGroupKeys(tabs: Tab[]): string[] {
+  return groupBlocks(tabs).order;
+}
+
 // Reorders `tabs` so every group's members sit contiguously, anchored at the
 // position of the group's first-encountered tab, with every ungrouped
 // ("singleton") tab — settings, or a preview tab whose origin session went
@@ -35,27 +66,32 @@ export function groupKeyForTab(tab: Tab): string | null {
 // Returns the same array reference when the order is already normalized, so
 // callers can safely bail a setState on it.
 export function normalizeTabGroups(tabs: Tab[]): Tab[] {
-  const groups = new Map<string, Tab[]>();
-  const ungrouped: Tab[] = [];
-  for (const tab of tabs) {
-    const key = groupKeyForTab(tab);
-    if (key === null) {
-      ungrouped.push(tab);
-      continue;
-    }
-    const members = groups.get(key);
-    if (members) members.push(tab);
-    else groups.set(key, [tab]);
-  }
-  const consumed = new Set<string>();
+  const { order, blocks, singletons } = groupBlocks(tabs);
   const next: Tab[] = [];
-  for (const tab of tabs) {
-    const key = groupKeyForTab(tab);
-    if (key === null || consumed.has(key)) continue;
-    consumed.add(key);
-    next.push(...groups.get(key)!);
-  }
-  next.push(...ungrouped);
+  for (const key of order) next.push(...blocks.get(key)!);
+  next.push(...singletons);
+  const changed = next.some((t, i) => t.id !== tabs[i]?.id);
+  return changed ? next : tabs;
+}
+
+// Moves a whole group's contiguous tab block to a new position relative to
+// the other groups — the drag-a-chip / "Move Group Left/Right" operation.
+// Mirrors moveTab's remove-then-splice pattern but at group-block
+// granularity; singletons always stay trailing every group, untouched.
+// Assumes `tabs` is already normalized (groups contiguous) — true whenever
+// grouping is enabled, the only time this is callable. Returns the same
+// array reference when the move is a no-op (unknown group key, or the
+// target position doesn't actually change anything).
+export function moveGroup(tabs: Tab[], groupKey: string, toIndex: number): Tab[] {
+  const { order, blocks, singletons } = groupBlocks(tabs);
+  if (!blocks.has(groupKey)) return tabs;
+  const withoutDragged = order.filter((k) => k !== groupKey);
+  const clamped = Math.max(0, Math.min(toIndex, withoutDragged.length));
+  const nextOrder = [...withoutDragged];
+  nextOrder.splice(clamped, 0, groupKey);
+  const next: Tab[] = [];
+  for (const key of nextOrder) next.push(...blocks.get(key)!);
+  next.push(...singletons);
   const changed = next.some((t, i) => t.id !== tabs[i]?.id);
   return changed ? next : tabs;
 }
