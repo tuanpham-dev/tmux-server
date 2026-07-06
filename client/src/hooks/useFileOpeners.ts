@@ -20,7 +20,7 @@ export function useFileOpeners(
   extFileViewers: RegisteredFileViewer[],
   showError: (err: unknown) => void,
   refresh: () => Promise<void>,
-  openWindowTab: (session: string, index: number) => Promise<void>,
+  openWindowTab: (session: string, index: number) => Promise<string | null>,
   setActiveTabId: (id: string) => void,
   openExtViewerTab: (viewerId: string, filePath: string, title?: string) => void,
   setFilesRefreshKey: (updater: (k: number) => number) => void,

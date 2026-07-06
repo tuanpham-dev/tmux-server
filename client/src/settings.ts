@@ -1,3 +1,5 @@
+import type { PinnedSession } from "./types";
+
 export interface AppSettings {
   fontFamily: string;
   fontSize: number;
@@ -102,6 +104,7 @@ export function migrateSettings(settings: AppSettings): AppSettings {
 const KEY = "settings";
 const KEYBINDINGS_KEY = "keybindings";
 const EXTENSION_SETTINGS_KEY = "extensionSettings";
+const PINNED_SESSIONS_KEY = "pinnedSessions";
 
 export function loadSettings(): AppSettings {
   try {
@@ -157,4 +160,23 @@ export function loadExtensionSettings(): ExtensionSettingsValues {
 
 export function saveExtensionSettings(values: ExtensionSettingsValues): void {
   localStorage.setItem(EXTENSION_SETTINGS_KEY, JSON.stringify(values));
+}
+
+// Pinned sessions live outside AppSettings on purpose — "Reset Settings to
+// Defaults" writes `{...DEFAULT_SETTINGS}` and must not wipe pins.
+export function loadPinnedSessions(): PinnedSession[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(PINNED_SESSIONS_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is PinnedSession =>
+        isPlainObject(p) && typeof p.name === "string" && typeof p.cwd === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function savePinnedSessions(pins: PinnedSession[]): void {
+  localStorage.setItem(PINNED_SESSIONS_KEY, JSON.stringify(pins));
 }

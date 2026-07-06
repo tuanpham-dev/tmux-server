@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { RegisteredSidebarPanel } from "../extensions";
-import type { MenuItem, SidebarMode, TmuxSession, TmuxWindow } from "../types";
+import { sessionRowsWithPins } from "../lib/sessions";
+import type { MenuItem, PinnedSession, SidebarMode, TmuxSession, TmuxWindow } from "../types";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
 import PortsPanel from "./PortsPanel";
@@ -60,7 +61,7 @@ interface Props {
   // to highlight that exact row instead of tmux's own (possibly diverged)
   // active-window flag.
   activeWindow: { sessionName: string; index: number } | null;
-  onOpen: (name: string) => void;
+  onOpenAllWindows: (session: string) => void;
   onOpenWindow: (session: string, index: number) => void;
   onCreate: (name?: string) => void;
   onKillWindow: (session: string, index: number) => void;
@@ -68,8 +69,10 @@ interface Props {
   onNewWindowInDir: (cwd: string) => void;
   onOpenLazygit: () => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
-  sessionMenuItems: (name: string) => MenuItem[];
+  sessionMenuItems: (name: string, dead: boolean) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
+  pinnedSessions: PinnedSession[];
+  onRestorePinned: (name: string, cwd: string) => void;
   onOpenSettings: () => void;
   showGitStatus: boolean;
   onCollapse: () => void;
@@ -91,7 +94,7 @@ export default function Sidebar({
   sessions,
   activeSessionName,
   activeWindow,
-  onOpen,
+  onOpenAllWindows,
   onOpenWindow,
   onCreate,
   onKillWindow,
@@ -101,6 +104,8 @@ export default function Sidebar({
   onShowMenu,
   sessionMenuItems,
   windowMenuItems,
+  pinnedSessions,
+  onRestorePinned,
   onOpenSettings,
   showGitStatus,
   onCollapse,
@@ -294,9 +299,33 @@ export default function Sidebar({
     );
   };
 
+  const sessionRows = sessionRowsWithPins(sessions, pinnedSessions);
+
   const sessionsTree = (
     <ul className="session-list">
-      {sessions.map((s) => {
+      {sessionRows.map((row) => {
+        if (row.dead) {
+          return (
+            <li key={`dead:${row.name}`}>
+              <div className="session-row">
+                <button
+                  className="session-item dead-session-item"
+                  title={`${row.cwd} (not running — click to restore)`}
+                  onClick={() => onRestorePinned(row.name, row.cwd)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    onShowMenu(e.clientX, e.clientY, sessionMenuItems(row.name, true));
+                  }}
+                >
+                  <Icon name="pinned" className="pin-indicator" />
+                  <span className="session-name">{row.name}</span>
+                  <span className="item-cwd">{row.cwd}</span>
+                </button>
+              </div>
+            </li>
+          );
+        }
+        const s = row.session;
         const activeWin = s.windows.find((w) => w.active);
         return (
           <li key={s.name}>
@@ -304,14 +333,15 @@ export default function Sidebar({
               <button
                 className={`session-item${s.name === activeSessionName ? " active" : ""}`}
                 title={activeWin ? activeWin.cwd : s.name}
-                onClick={() => onOpen(s.name)}
+                onClick={() => onOpenAllWindows(s.name)}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  onShowMenu(e.clientX, e.clientY, sessionMenuItems(s.name));
+                  onShowMenu(e.clientX, e.clientY, sessionMenuItems(s.name, false));
                 }}
               >
                 {chevron(s.name)}
                 <span className={`session-dot${s.attached > 0 ? " attached" : ""}`} />
+                {row.pinned && <Icon name="pinned" className="pin-indicator" />}
                 <span className="session-name">{s.name}</span>
                 {activeWin && <span className="item-cwd">{activeWin.cwd}</span>}
               </button>
@@ -328,7 +358,7 @@ export default function Sidebar({
           </li>
         );
       })}
-      {sessions.length === 0 && <li className="session-empty">No tmux sessions</li>}
+      {sessionRows.length === 0 && <li className="session-empty">No tmux sessions</li>}
     </ul>
   );
 

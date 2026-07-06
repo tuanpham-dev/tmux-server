@@ -2,13 +2,25 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 import * as api from "../api";
 import { isRealTab } from "../lib/tabs";
 import type { AppSettings } from "../settings";
-import type { MenuItem, Tab, TmuxWindow } from "../types";
+import type { MenuItem, PinnedSession, Tab, TmuxSession, TmuxWindow } from "../types";
 
-// Session/window CRUD (create/rename/kill) and the context menus built on
-// top of them (sessionMenuItems/windowMenuItems/tabMenuItems). Takes the
-// tab-closing primitives (closeTab/closeOtherTabs) and renameGroup from
-// useTabs/useTabGroups as explicit parameters rather than reaching into
-// those hooks directly.
+// createWindow's server call returns void (see server/src/tmux.ts), so the
+// window it just created isn't known until the next session list fetch —
+// unlike createSession/restorePinnedSession, whose own return value already
+// carries the fresh session's windows. A direct fetch rather than waiting on
+// the `sessions` prop: that's React state, still stale within this same
+// callback invocation right after refresh() resolves.
+async function findActiveWindowIndex(sessionName: string): Promise<number | undefined> {
+  const freshSessions = await api.fetchSessions();
+  return freshSessions.find((s) => s.name === sessionName)?.windows.find((w) => w.active)?.index;
+}
+
+// Session/window CRUD (create/rename/kill), pinning, and the context menus
+// built on top of them (sessionMenuItems/windowMenuItems/tabMenuItems).
+// Takes the tab-closing primitives (closeTab/closeOtherTabs) and renameGroup
+// from useTabs/useTabGroups, and openWindowTab/openAllWindows/pinnedSessions
+// state, as explicit parameters rather than reaching into those hooks
+// directly. See plans/session-open-all-and-pinned-sessions.md.
 export function useSessionActions(
   refresh: () => Promise<void>,
   showError: (err: unknown) => void,
@@ -17,22 +29,58 @@ export function useSessionActions(
   settingsRef: MutableRefObject<AppSettings>,
   tabs: Tab[],
   setTabs: Dispatch<SetStateAction<Tab[]>>,
+  sessions: TmuxSession[],
   openSession: (name: string) => void,
+  openWindowTab: (session: string, index: number) => Promise<string | null>,
+  openAllWindows: (session: string) => Promise<void>,
   closeTab: (id: string) => Promise<void>,
   closeOtherTabs: (id: string) => Promise<void>,
   renameGroup: (oldName: string, newName: string) => void,
+  pinnedSessions: PinnedSession[],
+  setPinnedSessions: Dispatch<SetStateAction<PinnedSession[]>>,
 ) {
+  // Every sidebar action that creates a session/window now ends by opening
+  // that window as a window-tab (not the shared whole-session tab) — see the
+  // plan's "Sidebar actions open window-tabs" decision. createSession and
+  // restorePinnedSession get the fresh session's windows for free from their
+  // own create call; createWindow needs findActiveWindowIndex's extra fetch.
   const createSession = useCallback(
     async (name?: string) => {
       try {
         const created = await api.createSession(name, settingsRef.current.newSessionCwd);
         await refresh();
-        openSession(created.name);
+        const activeIndex = created.windows.find((w) => w.active)?.index;
+        if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
       } catch (err) {
         showError(err);
       }
     },
-    [refresh, openSession, showError, settingsRef],
+    [refresh, openWindowTab, showError, settingsRef],
+  );
+
+  const togglePinSession = useCallback(
+    (name: string) => {
+      setPinnedSessions((prev) => {
+        if (prev.some((p) => p.name === name)) return prev.filter((p) => p.name !== name);
+        const cwd = sessions.find((s) => s.name === name)?.windows.find((w) => w.active)?.cwd ?? "";
+        return [...prev, { name, cwd }];
+      });
+    },
+    [sessions, setPinnedSessions],
+  );
+
+  const restorePinnedSession = useCallback(
+    async (name: string, cwd: string) => {
+      try {
+        const created = await api.createSession(name, cwd);
+        await refresh();
+        const activeIndex = created.windows.find((w) => w.active)?.index;
+        if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [refresh, openWindowTab, showError],
   );
 
   const killSession = useCallback(
@@ -68,12 +116,13 @@ export function useSessionActions(
           prev.map((t) => (t.sessionName === name ? { ...t, sessionName: newName } : t)),
         );
         renameGroup(name, newName);
+        setPinnedSessions((prev) => prev.map((p) => (p.name === name ? { ...p, name: newName } : p)));
         await refresh();
       } catch (err) {
         showError(err);
       }
     },
-    [refresh, showError, promptDialog, setTabs, renameGroup],
+    [refresh, showError, promptDialog, setTabs, renameGroup, setPinnedSessions],
   );
 
   const createWindow = useCallback(
@@ -85,11 +134,12 @@ export function useSessionActions(
         showError(err);
         return;
       }
-      // tmux makes a freshly created window the active one, so opening the
-      // session's tab is enough to land on it.
-      openSession(session);
+      // tmux makes a freshly created window the active one; findActiveWindowIndex
+      // fetches it fresh since createWindow's own response carries none.
+      const activeIndex = await findActiveWindowIndex(session);
+      if (activeIndex !== undefined) await openWindowTab(session, activeIndex);
     },
-    [refresh, openSession, showError],
+    [refresh, openWindowTab, showError],
   );
 
   // Switches which window the *shared* session tab follows (distinct from
@@ -149,14 +199,38 @@ export function useSessionActions(
     [refresh, showError, confirmDialog, tabs, closeTab, settingsRef],
   );
 
+  // `dead` (see lib/sessions.ts's SessionRow) selects the pinned-but-killed
+  // variant: no live tmux state to act on, so only restore/unpin apply.
   const sessionMenuItems = useCallback(
-    (name: string): MenuItem[] => [
-      { label: "Open", onClick: () => openSession(name) },
-      { label: "New Window", onClick: () => createWindow(name) },
-      { label: "Rename Session…", onClick: () => renameSession(name) },
-      { label: "Kill Session", danger: true, onClick: () => killSession(name) },
+    (name: string, dead: boolean): MenuItem[] => {
+      const pin = pinnedSessions.find((p) => p.name === name);
+      if (dead) {
+        const cwd = pin?.cwd ?? "";
+        return [
+          { label: "Open", onClick: () => restorePinnedSession(name, cwd) },
+          { label: "New Window", onClick: () => restorePinnedSession(name, cwd) },
+          { label: "Unpin Session", onClick: () => togglePinSession(name) },
+        ];
+      }
+      return [
+        { label: "Open All Windows", onClick: () => openAllWindows(name) },
+        { label: "New Window", onClick: () => createWindow(name) },
+        { label: "Rename Session…", onClick: () => renameSession(name) },
+        pin
+          ? { label: "Unpin Session", onClick: () => togglePinSession(name) }
+          : { label: "Pin Session", onClick: () => togglePinSession(name) },
+        { label: "Kill Session", danger: true, onClick: () => killSession(name) },
+      ];
+    },
+    [
+      pinnedSessions,
+      restorePinnedSession,
+      togglePinSession,
+      openAllWindows,
+      createWindow,
+      renameSession,
+      killSession,
     ],
-    [openSession, createWindow, renameSession, killSession],
   );
 
   const windowMenuItems = useCallback(
@@ -204,6 +278,8 @@ export function useSessionActions(
     selectWindowInSession,
     renameWindow,
     killWindow,
+    togglePinSession,
+    restorePinnedSession,
     sessionMenuItems,
     windowMenuItems,
     tabMenuItems,

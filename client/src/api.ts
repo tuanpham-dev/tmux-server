@@ -55,6 +55,7 @@ export interface SettingsDoc {
   settings?: unknown;
   keybindings?: Record<string, string>;
   extensionSettings?: unknown;
+  pinnedSessions?: unknown;
   [key: string]: unknown;
 }
 

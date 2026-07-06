@@ -209,12 +209,21 @@ export function useTabs(
     });
   }, [insertTab]);
 
+  // `anchorOverride` lets a caller that opens several window-tabs in one go
+  // (openAllWindows below) chain its own locally-tracked anchor instead of
+  // relying on activeTabIdRef — across a tight sequence of awaited calls,
+  // the ref isn't guaranteed to reflect the previous call's new tab by the
+  // time the next call reads it (React's re-render isn't synchronous with a
+  // resolved await), which produced a genuinely wrong tab order under
+  // newTabPlacement "afterActive" (caught live in QA, not by inspection).
+  // Returns the id of the tab that ends up focused (existing/folded/new), or
+  // null on failure, so callers can chain it as the next call's anchor.
   const openWindowTab = useCallback(
-    async (session: string, index: number) => {
+    async (session: string, index: number, anchorOverride?: string | null): Promise<string | null> => {
       const existing = tabs.find((t) => t.sessionName === session && t.windowIndex === index);
       if (existing) {
         setActiveTabId(existing.id);
-        return;
+        return existing.id;
       }
       // If this is the session's currently active window and a whole-session
       // tab is already open, that tab already shows this exact content —
@@ -227,24 +236,66 @@ export function useTabs(
         const wholeSessionTab = tabs.find((t) => t.sessionName === session && t.windowIndex === undefined);
         if (wholeSessionTab) {
           setActiveTabId(wholeSessionTab.id);
-          return;
+          return wholeSessionTab.id;
         }
       }
       // Snapshotted before the await below: if the user switches the active
       // tab while this request is in flight, the new tab still lands next to
       // whichever tab they initiated it from, not whatever became active
       // meanwhile.
-      const anchorId = activeTabIdRef.current;
+      const anchorId = anchorOverride !== undefined ? anchorOverride : activeTabIdRef.current;
       try {
         const { attachName } = await api.openWindowTab(session, index);
         const tab: Tab = { id: crypto.randomUUID(), sessionName: session, attachName, windowIndex: index };
         setTabs((prev) => insertTab(prev, tab, anchorId));
         setActiveTabId(tab.id);
+        return tab.id;
       } catch (err) {
         showError(err);
+        return null;
       }
     },
     [tabs, sessions, showError, insertTab],
+  );
+
+  // Opens every one of a session's windows as its own window-tab (the
+  // session-click behavior — see plans/session-open-all-and-pinned-
+  // sessions.md). Reuses openWindowTab per-window for its existing dedupe/
+  // fold-into-whole-session-tab logic; only the final "which tab ends up
+  // focused" step is extra, since opening windows one at a time otherwise
+  // leaves whichever window was opened last focused, not necessarily the
+  // tmux-active one. Windows are sorted by index before iterating — the
+  // server's `tmux list-windows -a` isn't guaranteed to return them in index
+  // order — and each call passes the previous call's own returned tab id as
+  // the next anchor, rather than trusting activeTabIdRef's render timing
+  // across a tight awaited sequence (see openWindowTab's anchorOverride).
+  const openAllWindows = useCallback(
+    async (session: string) => {
+      const target = sessions.find((s) => s.name === session);
+      if (!target) return;
+      const orderedWindows = [...target.windows].sort((a, b) => a.index - b.index);
+      let anchor = activeTabIdRef.current;
+      for (const w of orderedWindows) {
+        const tabId = await openWindowTab(session, w.index, anchor);
+        if (tabId) anchor = tabId;
+      }
+      const activeIndex = target.windows.find((w) => w.active)?.index;
+      if (activeIndex === undefined) return;
+      const activeWindowTab = tabsRef.current.find(
+        (t) => t.sessionName === session && t.windowIndex === activeIndex,
+      );
+      if (activeWindowTab) {
+        setActiveTabId(activeWindowTab.id);
+        return;
+      }
+      // The active window folded into an existing whole-session tab instead
+      // of getting its own window-tab (see openWindowTab).
+      const wholeSessionTab = tabsRef.current.find(
+        (t) => t.sessionName === session && t.windowIndex === undefined,
+      );
+      if (wholeSessionTab) setActiveTabId(wholeSessionTab.id);
+    },
+    [sessions, openWindowTab],
   );
 
   // Tabs with unsaved edits (currently only csv-preview's editable grid
@@ -499,6 +550,7 @@ export function useTabs(
     openExtViewerTab,
     openSettingsTab,
     openWindowTab,
+    openAllWindows,
     closeTab,
     cycleTab,
     moveTab,

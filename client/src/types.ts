@@ -19,6 +19,16 @@ export interface TmuxSession {
 
 export type SidebarMode = "sessions" | "dirs";
 
+// A pinned session survives its tmux session being killed: the sidebar keeps
+// showing a dead row for it, and recreating a session by this name restores
+// it in `cwd` (captured from the active window at pin time). Matched against
+// live sessions by name — the only key that survives a kill/recreate cycle,
+// since tmux's own session id doesn't.
+export interface PinnedSession {
+  name: string;
+  cwd: string;
+}
+
 export interface Tab {
   id: string;
   sessionName: string;

@@ -90,6 +90,8 @@ export default function App() {
     extensionSettings,
     setExtensionSettings,
     extensionSettingsRef,
+    pinnedSessions,
+    setPinnedSessions,
   } = useSettingsSync(extCommands);
 
   const { dialog, confirmDialog, promptDialog } = useDialogs();
@@ -109,6 +111,7 @@ export default function App() {
     openExtViewerTab,
     openSettingsTab,
     openWindowTab,
+    openAllWindows,
     closeTab,
     cycleTab,
     moveTab,
@@ -224,6 +227,7 @@ export default function App() {
     selectWindowInSession,
     renameWindow,
     killWindow,
+    restorePinnedSession,
     sessionMenuItems,
     windowMenuItems,
     tabMenuItems,
@@ -235,10 +239,15 @@ export default function App() {
     settingsRef,
     tabs,
     setTabs,
+    sessions,
     openSession,
+    openWindowTab,
+    openAllWindows,
     closeTab,
     closeOtherTabs,
     renameGroup,
+    pinnedSessions,
+    setPinnedSessions,
   );
 
   const newWindowInDir = (cwd: string) => {
@@ -299,7 +308,7 @@ export default function App() {
                 ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
                 : null
             }
-            onOpen={openSession}
+            onOpenAllWindows={openAllWindows}
             onOpenWindow={openWindowTab}
             onCreate={createSession}
             onKillWindow={killWindow}
@@ -309,6 +318,8 @@ export default function App() {
             onShowMenu={showMenu}
             sessionMenuItems={sessionMenuItems}
             windowMenuItems={windowMenuItems}
+            pinnedSessions={pinnedSessions}
+            onRestorePinned={restorePinnedSession}
             onOpenSettings={openSettingsTab}
             showGitStatus={settings.fileTreeGitStatus}
             onCollapse={() => setSidebarVisible(false)}

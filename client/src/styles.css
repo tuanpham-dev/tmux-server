@@ -526,6 +526,31 @@ body.resizing-row {
   color: var(--fg-inactive);
 }
 
+.pin-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  min-width: 13px;
+  color: var(--fg-inactive);
+}
+
+.pin-indicator .codicon {
+  font-size: 12px;
+}
+
+/* A pinned session with no live tmux session behind it — no chevron/window
+   list/kill affordances (nothing to expand or kill), dimmed to read as
+   inactive, restored via its own click/context-menu actions instead. */
+.dead-session-item {
+  opacity: 0.55;
+  padding-left: 20px;
+}
+
+.dead-session-item:hover {
+  opacity: 0.85;
+}
+
 /* ---- Files panel content ---- */
 
 .file-tree {

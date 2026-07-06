@@ -6,14 +6,17 @@ import {
   DEFAULT_SETTINGS,
   loadExtensionSettings,
   loadKeybindingOverrides,
+  loadPinnedSessions,
   loadSettings,
   migrateSettings,
   saveExtensionSettings,
   saveKeybindingOverrides,
+  savePinnedSessions,
   saveSettings,
   type AppSettings,
   type ExtensionSettingsValues,
 } from "../settings";
+import type { PinnedSession } from "../types";
 
 // Owns settings/keybindingOverrides/extensionSettings: localStorage-first
 // load, skip-initial-persist write-back, and the server-doc GET (server
@@ -84,6 +87,19 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     saveExtensionSettings(extensionSettings);
   }, [extensionSettings]);
 
+  // Pinned sessions — same localStorage-first + skip-initial-persist +
+  // server-doc flow as the three states above, but stored as its own
+  // top-level doc key rather than inside AppSettings (see settings.ts).
+  const [pinnedSessions, setPinnedSessions] = useState<PinnedSession[]>(loadPinnedSessions);
+  const pinnedSessionsMounted = useRef(false);
+  useEffect(() => {
+    if (!pinnedSessionsMounted.current) {
+      pinnedSessionsMounted.current = true;
+      return;
+    }
+    savePinnedSessions(pinnedSessions);
+  }, [pinnedSessions]);
+
   // Server-side persistence (~/.config/tmux-server/settings.json via
   // /api/settings): localStorage renders instantly at mount, then the server
   // copy — the cross-device source of truth — wins once fetched. Write-backs
@@ -108,6 +124,17 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           !Array.isArray(doc.extensionSettings)
         ) {
           setExtensionSettings(doc.extensionSettings as ExtensionSettingsValues);
+        }
+        if (Array.isArray(doc.pinnedSessions)) {
+          setPinnedSessions(
+            doc.pinnedSessions.filter(
+              (p): p is PinnedSession =>
+                typeof p === "object" &&
+                p !== null &&
+                typeof (p as PinnedSession).name === "string" &&
+                typeof (p as PinnedSession).cwd === "string",
+            ),
+          );
         }
         serverSyncReady.current = true;
       })
@@ -134,13 +161,24 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     const timer = window.setTimeout(() => {
       api
         .fetchSettingsDoc()
-        .then((doc) => ({ ...doc, settings, keybindings: keybindingOverrides, extensionSettings }))
-        .catch(() => ({ settings, keybindings: keybindingOverrides, extensionSettings }))
+        .then((doc) => ({
+          ...doc,
+          settings,
+          keybindings: keybindingOverrides,
+          extensionSettings,
+          pinnedSessions,
+        }))
+        .catch(() => ({
+          settings,
+          keybindings: keybindingOverrides,
+          extensionSettings,
+          pinnedSessions,
+        }))
         .then((doc) => api.putSettingsDoc(doc))
         .catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [settings, keybindingOverrides, extensionSettings]);
+  }, [settings, keybindingOverrides, extensionSettings, pinnedSessions]);
 
   return {
     settings,
@@ -153,5 +191,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     extensionSettings,
     setExtensionSettings,
     extensionSettingsRef,
+    pinnedSessions,
+    setPinnedSessions,
   };
 }
