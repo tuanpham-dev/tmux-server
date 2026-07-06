@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "./api";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
@@ -11,13 +11,13 @@ import { useExtensionRegistry } from "./extensions";
 import { useDialogs } from "./hooks/useDialogs";
 import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
+import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
 import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useThemeAssets } from "./hooks/useThemeAssets";
-import { recorderState, serializeEvent } from "./keybindings";
 import type { MenuItem, MenuState } from "./types";
 import { groupKeyForTab } from "./lib/tabs";
 
@@ -201,55 +201,16 @@ export default function App() {
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  // Every global shortcut in one capture-phase dispatcher, driven by the
-  // rebindable keybindings map (keybindings.ts). A matched combo gets
-  // preventDefault + stopPropagation so it wins over both browser defaults
-  // (Ctrl+P print; Ctrl+Tab/Ctrl+W are overridable only in the installed
-  // PWA) and xterm's own key handling — Ctrl+Tab reaching tmux would feed it
-  // a literal Tab, Ctrl+W would send ^W to the shell. The terminal.* combos
-  // are dispatched inside TerminalView's xterm handler instead, with one
-  // exception: whatever combo terminal.copy is bound to gets a window-level
-  // preventDefault (no stop — the event must still reach xterm, which does
-  // the actual copy) to suppress Chrome/Firefox's Ctrl+Shift+C "inspect
-  // element" default. Freshness via refs so the mount-once listener always
-  // sees current bindings and handlers.
-  const globalCommandsRef = useRef<Record<string, () => void>>({});
-  globalCommandsRef.current = {
-    "sidebar.toggle": () => setSidebarVisible((v) => !v),
-    "quickSwitcher.toggle": () => setShowSwitcher((v) => !v),
-    "tab.next": () => cycleTab(1),
-    "tab.previous": () => cycleTab(-1),
-    "tab.close": () => {
-      if (activeTabId) closeTab(activeTabId);
-    },
-    "settings.open": openSettingsTab,
-    ...Object.fromEntries(extCommands.map((c) => [c.id, c.run])),
-  };
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      // The Keyboard settings recorder owns the keyboard while capturing a
-      // chord — recording Ctrl+W must not also close the tab.
-      if (recorderState.recording) return;
-      const combo = serializeEvent(e);
-      if (!combo) return;
-      const bindings = bindingsRef.current;
-      if (combo === bindings["terminal.copy"]) {
-        e.preventDefault();
-        return;
-      }
-      for (const [id, run] of Object.entries(globalCommandsRef.current)) {
-        if (bindings[id] === combo) {
-          e.preventDefault();
-          e.stopPropagation();
-          run();
-          return;
-        }
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+  useGlobalKeybindings(
+    bindingsRef,
+    setSidebarVisible,
+    setShowSwitcher,
+    cycleTab,
+    activeTabId,
+    closeTab,
+    openSettingsTab,
+    extCommands,
+  );
 
   const showMenu = useCallback((x: number, y: number, items: MenuItem[]) => {
     setMenu({ x, y, items });
@@ -321,10 +282,6 @@ export default function App() {
     openPreviewViewerTab,
   );
 
-  // A tmux-native cross-session pick (choose-tree, Ctrl+B s) — the server
-  // already switched the client back to the tab's own session. Surface the
-  // target, preferring a tab pinned to the exact window the pick landed on
-  // over the whole-session tab.
   useEffect(() => {
     document.title = activeTab ? `${tabLabel(activeTab)} — tmux` : "tmux";
   }, [activeTab, tabLabel]);
