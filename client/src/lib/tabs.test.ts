@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Tab, TmuxSession } from "../types";
-import { groupKeyForTab, moveGroup, normalizeTabGroups, orderedGroupKeys, reconcileTabs } from "./tabs";
+import {
+  groupKeyForTab,
+  moveGroup,
+  moveId,
+  normalizeTabGroups,
+  orderedGroupKeys,
+  reconcileTabs,
+} from "./tabs";
 
 function makeTab(overrides: Partial<Tab>): Tab {
   return { id: "id", sessionName: "session", attachName: "session", ...overrides };
@@ -141,6 +148,30 @@ describe("moveGroup", () => {
     // "the one that happens to be collapsed" to document that intent.
     const next = moveGroup(groupedTabs(), "b", 0);
     expect(next.map((t) => t.id)).toEqual(["b1", "a1", "a2", "c1", "settings"]);
+  });
+});
+
+describe("moveId", () => {
+  it("moves an id earlier", () => {
+    expect(moveId(["a", "b", "c"], "c", 0)).toEqual(["c", "a", "b"]);
+  });
+
+  it("moves an id later", () => {
+    expect(moveId(["a", "b", "c"], "a", 2)).toEqual(["b", "c", "a"]);
+  });
+
+  it("clamps an out-of-range target index to the end", () => {
+    expect(moveId(["a", "b", "c"], "a", 99)).toEqual(["b", "c", "a"]);
+  });
+
+  it("returns the same reference for an unknown id", () => {
+    const order = ["a", "b", "c"];
+    expect(moveId(order, "nonexistent", 0)).toBe(order);
+  });
+
+  it("returns the same reference when the target index doesn't change anything", () => {
+    const order = ["a", "b", "c"];
+    expect(moveId(order, "a", 0)).toBe(order);
   });
 });
 

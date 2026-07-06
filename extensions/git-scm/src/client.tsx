@@ -677,7 +677,12 @@ function DiffView({ filePath, active, toolbarTarget, openInEditor }: DiffProps) 
 // ---- activate() ----
 
 export function activate(ctx: {
-  registerSidebarPanel: (p: { id: string; title: string; component: typeof GitPanel }) => void;
+  registerSidebarPanel: (p: {
+    id: string;
+    title: string;
+    icon?: string;
+    component: typeof GitPanel;
+  }) => void;
   registerFileViewer: (v: {
     id: string;
     extensions: string[];
@@ -704,7 +709,12 @@ export function activate(ctx: {
   extSettings = ctx.settings;
 
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
-  ctx.registerSidebarPanel({ id: "git", title: "Source Control", component: GitPanel });
+  ctx.registerSidebarPanel({
+    id: "git",
+    title: "Source Control",
+    icon: "source-control",
+    component: GitPanel,
+  });
   // extensions: [] — never auto-matched to a file; reached only via
   // ctx.app.openViewerTab from GitPanel's row clicks (see openDiff above).
   ctx.registerFileViewer({ id: "diff", extensions: [], mode: "default", component: DiffView });

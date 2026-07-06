@@ -169,6 +169,64 @@ body.resizing {
   border-bottom: 1px solid var(--border);
 }
 
+.sidebar-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.sidebar-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: none;
+  border-left: 2px solid transparent;
+  border-right: 2px solid transparent;
+  background: none;
+  color: var(--fg-inactive);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.sidebar-tab:hover {
+  background: var(--list-hover-bg);
+  color: var(--fg);
+}
+
+.sidebar-tab.active {
+  color: var(--fg-bright);
+  background: var(--list-active-bg);
+}
+
+.sidebar-tab.dragging {
+  opacity: 0.4;
+}
+
+.sidebar-tab.drop-indicator-left {
+  border-left-color: var(--accent);
+}
+
+.sidebar-tab.drop-indicator-right {
+  border-right-color: var(--accent);
+}
+
+.sidebar-tab:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
 .sidebar-panels {
   flex: 1;
   min-height: 0;
@@ -253,6 +311,26 @@ body.resizing-row {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sidebar-ext-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ext-tab-header {
+  cursor: default;
+}
+
+.ext-tab-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .branch-pill {

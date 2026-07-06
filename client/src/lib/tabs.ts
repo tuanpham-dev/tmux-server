@@ -96,6 +96,19 @@ export function moveGroup(tabs: Tab[], groupKey: string, toIndex: number): Tab[]
   return changed ? next : tabs;
 }
 
+// Moves an id to a new position within a flat string-id array — the sidebar
+// tab strip's drag-a-tab reorder. Same remove-then-splice shape as moveGroup,
+// but at plain-array granularity (no grouping concept). Returns the same
+// array reference when the id is unknown or the move is a no-op.
+export function moveId(order: string[], id: string, toIndex: number): string[] {
+  if (!order.includes(id)) return order;
+  const without = order.filter((x) => x !== id);
+  const clamped = Math.max(0, Math.min(toIndex, without.length));
+  const next = [...without];
+  next.splice(clamped, 0, id);
+  return next.some((x, i) => x !== order[i]) ? next : order;
+}
+
 // Keeps tabs pointed at the right session/window across an out-of-band
 // rename or renumber (another terminal, not this app). Matches by stable
 // tmux id first — falls back to name/index only for a tab whose ids haven't

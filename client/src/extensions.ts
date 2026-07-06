@@ -81,6 +81,9 @@ export interface RegisteredSidebarPanel {
   // Namespaced ext.<extensionId>.<id> — used as the sidebar's PanelId.
   id: string;
   title: string;
+  // Codicon name for the sidebar tab strip. Falls back to "extensions" when
+  // omitted (see Sidebar.tsx's tab icon resolution).
+  icon?: string;
   component: ReactNS.ComponentType<SidebarPanelHostProps>;
 }
 
@@ -100,6 +103,9 @@ export interface ExtensionContext {
   registerSidebarPanel(panel: {
     id: string;
     title: string;
+    // Codicon name shown on this panel's sidebar tab. Defaults to
+    // "extensions" when omitted.
+    icon?: string;
     component: ReactNS.ComponentType<SidebarPanelHostProps>;
   }): void;
   app: {
@@ -308,6 +314,7 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       extensionSidebarPanels.push({
         id: `ext.${ext.id}.${panel.id}`,
         title: panel.title,
+        icon: panel.icon,
         component: panel.component,
       });
       notify();
