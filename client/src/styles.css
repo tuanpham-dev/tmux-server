@@ -1362,6 +1362,23 @@ body.scrollbar-dragging {
   font-size: 14px;
 }
 
+/* Fixed box (mirrors .file-tree-file-icon) so an SVG icon theme's <img> can't
+   blow up the tab height; sized down slightly from the tree's 17px to match
+   the tab bar's 13px title. */
+.tab-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  min-width: 15px;
+  font-size: 15px;
+  line-height: 1;
+  text-align: center;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
 .settings-row {
   display: flex;
   flex-direction: column;

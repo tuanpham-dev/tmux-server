@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { MenuItem, Tab, TabGroupState } from "../types";
 import { adjustForContrast, GROUP_COLORS, groupColorHex } from "../utils/groupColor";
+import { getFileIconResult, useIconThemeVersion } from "../utils/iconThemes";
+import FileIcon from "./FileIcon";
 import Icon from "./Icon";
 
 interface Props {
@@ -80,6 +82,11 @@ export default function TabBar({
   onToggleGroupCollapsed,
   groupMenuItems,
 }: Props) {
+  // Re-renders the strip when the active icon theme changes — getFileIconResult
+  // reads module-level state directly, same subscribe-to-force-render shape
+  // FileTree uses (see utils/iconThemes.ts's useIconThemeVersion).
+  useIconThemeVersion();
+
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -334,6 +341,12 @@ export default function TabBar({
       >
         {activity(tab) && <span className="activity-dot" />}
         {tab.settingsView && <Icon name="settings-gear" className="tab-type-icon" />}
+        {tab.extViewerPath && (
+          <FileIcon
+            className="tab-file-icon"
+            result={getFileIconResult(tab.extViewerPath.split("/").pop() ?? tab.extViewerPath)}
+          />
+        )}
         <span className="tab-title">{label(tab)}</span>
         <button
           className="tab-close"
