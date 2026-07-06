@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "./api";
-import { copyText } from "./clipboard";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
 import QuickSwitcher from "./components/QuickSwitcher";
@@ -8,18 +7,19 @@ import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
-import { findFileViewerFor, useExtensionRegistry } from "./extensions";
+import { useExtensionRegistry } from "./extensions";
 import { useDialogs } from "./hooks/useDialogs";
+import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
+import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useThemeAssets } from "./hooks/useThemeAssets";
 import { recorderState, serializeEvent } from "./keybindings";
-import type { MenuItem, MenuState, Tab, TmuxWindow } from "./types";
-import { collectDropped, uploadAll, type DroppedItems } from "./upload";
-import { groupKeyForTab, isRealTab } from "./lib/tabs";
+import type { MenuItem, MenuState } from "./types";
+import { groupKeyForTab } from "./lib/tabs";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
@@ -186,16 +186,6 @@ export default function App() {
     };
   }, []);
 
-  const [uploadProgress, setUploadProgress] = useState<{
-    currentName: string;
-    loadedBytes: number;
-    totalBytes: number;
-  } | null>(null);
-  // Set whenever a delete/rename lands, so FileTree can drop the now-stale
-  // path (and its descendants) from its expanded/dirCache state instead of
-  // waiting for a refetch to notice it's gone.
-  const [prunePath, setPrunePath] = useState<{ path: string } | null>(null);
-
   const startSidebarResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const onMove = (ev: MouseEvent) => {
@@ -211,10 +201,6 @@ export default function App() {
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  // Inserts a newly opened tab per the newTabPlacement setting. `anchorId`
-  // overrides the active-tab-ref anchor for callers that need to snapshot
-  // it before an await (see openWindowTab) rather than reading it fresh at
-  // insertion time; omit it to use activeTabIdRef.current.
   // Every global shortcut in one capture-phase dispatcher, driven by the
   // rebindable keybindings map (keybindings.ts). A matched combo gets
   // preventDefault + stopPropagation so it wins over both browser defaults
@@ -265,278 +251,33 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
-  const createSession = useCallback(
-    async (name?: string) => {
-      try {
-        const created = await api.createSession(name, settingsRef.current.newSessionCwd);
-        await refresh();
-        openSession(created.name);
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [refresh, openSession, showError],
-  );
-
-  const killSession = useCallback(
-    async (name: string) => {
-      if (
-        settingsRef.current.confirmBeforeKill &&
-        !(await confirmDialog(`Kill tmux session "${name}"?`, "Kill Session"))
-      )
-        return;
-      try {
-        await api.killSession(name);
-        for (const t of tabs) {
-          if (t.sessionName === name && t.windowIndex !== undefined) {
-            api.closeWindowTab(t.attachName).catch(() => {});
-          }
-        }
-        setTabs((prev) => prev.filter((t) => t.sessionName !== name));
-        await refresh();
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [refresh, showError, confirmDialog, tabs],
-  );
-
-  const renameSession = useCallback(
-    async (name: string) => {
-      const newName = (await promptDialog("New session name", name))?.trim();
-      if (!newName || newName === name) return;
-      try {
-        await api.renameSession(name, newName);
-        setTabs((prev) =>
-          prev.map((t) => (t.sessionName === name ? { ...t, sessionName: newName } : t)),
-        );
-        renameGroup(name, newName);
-        await refresh();
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [refresh, showError, promptDialog, setTabs, renameGroup],
-  );
-
-  const createWindow = useCallback(
-    async (session: string, cwd?: string) => {
-      try {
-        await api.createWindow(session, cwd);
-        await refresh();
-      } catch (err) {
-        showError(err);
-        return;
-      }
-      // tmux makes a freshly created window the active one, so opening the
-      // session's tab is enough to land on it.
-      openSession(session);
-    },
-    [refresh, openSession, showError],
-  );
-
-  // Switches which window the *shared* session tab follows (distinct from
-  // openWindowTab, which pins a dedicated tab to one specific window).
-  const selectWindowInSession = useCallback(
-    async (session: string, index: number) => {
-      try {
-        await api.selectWindow(session, index);
-      } catch (err) {
-        showError(err);
-        return;
-      }
-      openSession(session);
-    },
-    [openSession, showError],
-  );
-
-  const renameWindow = useCallback(
-    async (session: string, win: TmuxWindow) => {
-      const newName = (await promptDialog("New window name", win.name))?.trim();
-      if (!newName || newName === win.name) return;
-      try {
-        await api.renameWindow(session, win.index, newName);
-        await refresh();
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [refresh, showError, promptDialog],
-  );
-
-  const killWindow = useCallback(
-    async (session: string, index: number) => {
-      if (
-        settingsRef.current.confirmBeforeKill &&
-        !(await confirmDialog(
-          `Kill window ${index} of session "${session}"?`,
-          "Kill Window",
-        ))
-      )
-        return;
-      try {
-        await api.killWindow(session, index);
-        // The tab pinned to this exact window would otherwise silently
-        // start showing whatever adjacent window tmux falls back to.
-        // closeTab handles the window-tab cascade + neighbor-aware
-        // activeTabId update in one place.
-        const pinned = tabs.find(
-          (t) => t.sessionName === session && t.windowIndex === index,
-        );
-        if (pinned) closeTab(pinned.id);
-        await refresh();
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [refresh, showError, confirmDialog, tabs, closeTab],
-  );
-
   const showMenu = useCallback((x: number, y: number, items: MenuItem[]) => {
     setMenu({ x, y, items });
   }, []);
 
-  const sessionMenuItems = useCallback(
-    (name: string): MenuItem[] => [
-      { label: "Open", onClick: () => openSession(name) },
-      { label: "New Window", onClick: () => createWindow(name) },
-      { label: "Rename Session…", onClick: () => renameSession(name) },
-      { label: "Kill Session", danger: true, onClick: () => killSession(name) },
-    ],
-    [openSession, createWindow, renameSession, killSession],
-  );
-
-  const windowMenuItems = useCallback(
-    (session: string, win: TmuxWindow): MenuItem[] => [
-      { label: "Select Window", onClick: () => selectWindowInSession(session, win.index) },
-      { label: "New Window", onClick: () => createWindow(session) },
-      { label: "Rename Window…", onClick: () => renameWindow(session, win) },
-      {
-        label: "Kill Window",
-        danger: true,
-        onClick: () => killWindow(session, win.index),
-      },
-    ],
-    [selectWindowInSession, createWindow, renameWindow, killWindow],
-  );
-
-  const tabMenuItems = useCallback(
-    (tab: Tab): MenuItem[] => {
-      const closeItems: MenuItem[] = [
-        { label: "Close Tab", onClick: () => closeTab(tab.id) },
-        { label: "Close Other Tabs", onClick: () => closeOtherTabs(tab.id) },
-      ];
-      // Virtual tabs (image/markdown preview) have no tmux session — New
-      // Window/Rename/Kill Session don't apply.
-      if (!isRealTab(tab)) return closeItems;
-      return [
-        ...closeItems,
-        { label: "New Window", onClick: () => createWindow(tab.sessionName) },
-        { label: "Rename Session…", onClick: () => renameSession(tab.sessionName) },
-        {
-          label: "Kill Session",
-          danger: true,
-          onClick: () => killSession(tab.sessionName),
-        },
-      ];
-    },
-    [closeTab, closeOtherTabs, createWindow, renameSession, killSession],
-  );
-
-  const renameFileEntry = useCallback(
-    async (entryPath: string) => {
-      const base = entryPath.slice(entryPath.lastIndexOf("/") + 1);
-      const newName = (await promptDialog("New name", base))?.trim();
-      if (!newName || newName === base) return;
-      try {
-        await api.renameEntry(entryPath, newName);
-        setPrunePath({ path: entryPath });
-        setFilesRefreshKey((k) => k + 1);
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [promptDialog, showError],
-  );
-
-  const deleteFileEntry = useCallback(
-    async (entryPath: string, isDir: boolean) => {
-      const base = entryPath.slice(entryPath.lastIndexOf("/") + 1);
-      if (!(await confirmDialog(`Delete ${isDir ? "folder" : "file"} "${base}"?`, "Delete")))
-        return;
-      try {
-        await api.deleteEntry(entryPath);
-        setPrunePath({ path: entryPath });
-        setFilesRefreshKey((k) => k + 1);
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [confirmDialog, showError],
-  );
-
-  const createFileInDir = useCallback(
-    async (dirPath: string) => {
-      const name = (await promptDialog("New file name"))?.trim();
-      if (!name) return;
-      try {
-        await api.createFile(dirPath, name);
-        setFilesRefreshKey((k) => k + 1);
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [promptDialog, showError],
-  );
-
-  const createFolderInDir = useCallback(
-    async (dirPath: string) => {
-      const name = (await promptDialog("New folder name"))?.trim();
-      if (!name) return;
-      try {
-        await api.makeDir(dirPath, name);
-        setFilesRefreshKey((k) => k + 1);
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [promptDialog, showError],
-  );
-
-  const copyFilePath = useCallback(
-    (entryPath: string) => {
-      copyText(entryPath).catch(showError);
-    },
-    [showError],
-  );
-
-  const copyFileRelativePath = useCallback(
-    (entryPath: string, rootDir: string) => {
-      const rel = entryPath.startsWith(rootDir + "/")
-        ? entryPath.slice(rootDir.length + 1)
-        : entryPath === rootDir
-          ? "."
-          : entryPath;
-      copyText(rel).catch(showError);
-    },
-    [showError],
-  );
-
-  const downloadFileEntry = useCallback((entryPath: string) => {
-    const a = document.createElement("a");
-    a.href = api.downloadUrl(entryPath);
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }, []);
-
-  const fileTreeRootMenuItems = useCallback(
-    (rootDir: string): MenuItem[] => [
-      { label: "New File…", onClick: () => createFileInDir(rootDir) },
-      { label: "New Folder…", onClick: () => createFolderInDir(rootDir) },
-    ],
-    [createFileInDir, createFolderInDir],
+  const {
+    createSession,
+    killSession,
+    renameSession,
+    createWindow,
+    selectWindowInSession,
+    renameWindow,
+    killWindow,
+    sessionMenuItems,
+    windowMenuItems,
+    tabMenuItems,
+  } = useSessionActions(
+    refresh,
+    showError,
+    confirmDialog,
+    promptDialog,
+    settingsRef,
+    tabs,
+    setTabs,
+    openSession,
+    closeTab,
+    closeOtherTabs,
+    renameGroup,
   );
 
   const newWindowInDir = (cwd: string) => {
@@ -561,92 +302,23 @@ export default function App() {
     }
   };
 
-  const handleUpload = useCallback(
-    async (items: DroppedItems, destDir: string) => {
-      if (items.files.length === 0 && items.dirs.length === 0) return;
-      setUploadProgress({
-        currentName: "",
-        loadedBytes: 0,
-        totalBytes: items.files.reduce((sum, f) => sum + f.file.size, 0),
-      });
-      const result = await uploadAll(items, destDir, settingsRef.current.uploadConflict, {
-        onProgress: (loadedBytes, totalBytes, currentName) => {
-          setUploadProgress({ currentName, loadedBytes, totalBytes });
-        },
-        onConflict: (relativePath) =>
-          confirmDialog(`"${relativePath}" already exists. Overwrite?`, "Overwrite"),
-      });
-      setUploadProgress(null);
-      setFilesRefreshKey((k) => k + 1);
-      if (result.errors.length === 1) {
-        showError(`Upload failed: ${result.errors[0].relativePath} — ${result.errors[0].message}`);
-      } else if (result.errors.length > 1) {
-        showError(`${result.errors.length} files failed to upload`);
-      }
-    },
-    [confirmDialog, showError],
-  );
-
-  // Folder drops target a specific FILES-panel folder; the drop's DataTransfer
-  // is read synchronously (before any await) since browsers invalidate it once
-  // the event handler yields.
-  const handleFileTreeDrop = useCallback(
-    (destDir: string, dataTransfer: DataTransfer) => {
-      collectDropped(dataTransfer)
-        .then((items) => handleUpload(items, destDir))
-        .catch(showError);
-    },
-    [handleUpload, showError],
-  );
-
-  const handleFilesRefresh = useCallback(() => {
-    setFilesRefreshKey((k) => k + 1);
-  }, []);
-
-  const fileMenuItems = useCallback(
-    (entryPath: string, isDir: boolean, rootDir: string): MenuItem[] => {
-      const items: MenuItem[] = [];
-      if (isDir) {
-        items.push(
-          { label: "New File…", onClick: () => createFileInDir(entryPath) },
-          { label: "New Folder…", onClick: () => createFolderInDir(entryPath) },
-        );
-      }
-      items.push(
-        { label: "Rename…", onClick: () => renameFileEntry(entryPath) },
-        { label: "Copy Path", onClick: () => copyFilePath(entryPath) },
-        { label: "Copy Relative Path", onClick: () => copyFileRelativePath(entryPath, rootDir) },
-        { label: "Download", onClick: () => downloadFileEntry(entryPath) },
-      );
-      // Images/media/PDFs open in their viewer by default (see
-      // openFileOrViewer) — editorFallback is the escape hatch to edit e.g.
-      // an SVG's source in nvim; media/PDF opt out of it (nvim on binary
-      // content isn't useful) via their own registration.
-      const defaultViewer = !isDir ? findFileViewerFor(entryPath, extFileViewers, "default") : null;
-      if (defaultViewer?.editorFallback) {
-        items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
-      }
-      // Markdown/JSON/YAML/CSV open in nvim by default (unchanged) — Preview
-      // is the opt-in path to the rendered view, mirroring the hover icon in
-      // FileTree.
-      if (!isDir && findFileViewerFor(entryPath, extFileViewers, "preview")) {
-        items.push({ label: "Preview", onClick: () => openPreviewViewerTab(entryPath) });
-      }
-      items.push({ label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) });
-      return items;
-    },
-    [
-      createFileInDir,
-      createFolderInDir,
-      renameFileEntry,
-      copyFilePath,
-      copyFileRelativePath,
-      downloadFileEntry,
-      openFileInSession,
-      openPreviewViewerTab,
-      deleteFileEntry,
-      extFileViewers,
-    ],
+  const {
+    uploadProgress,
+    prunePath,
+    handleUpload,
+    handleFileTreeDrop,
+    handleFilesRefresh,
+    fileTreeRootMenuItems,
+    fileMenuItems,
+  } = useFileActions(
+    showError,
+    confirmDialog,
+    promptDialog,
+    settingsRef,
+    setFilesRefreshKey,
+    extFileViewers,
+    openFileInSession,
+    openPreviewViewerTab,
   );
 
   // A tmux-native cross-session pick (choose-tree, Ctrl+B s) — the server
