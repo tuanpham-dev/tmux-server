@@ -321,6 +321,13 @@ export default function Sidebar({
                   <span className="session-name">{row.name}</span>
                   <span className="item-cwd">{row.cwd}</span>
                 </button>
+                <button
+                  className="row-add-button"
+                  title="New window"
+                  onClick={() => onRestorePinned(row.name, row.cwd)}
+                >
+                  <Icon name="add" />
+                </button>
               </div>
             </li>
           );
