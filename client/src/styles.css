@@ -184,6 +184,7 @@ body.resizing {
 }
 
 .sidebar-tab {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -198,6 +199,23 @@ body.resizing {
   color: var(--fg-inactive);
   font-size: 16px;
   cursor: pointer;
+}
+
+.sidebar-tab-badge {
+  position: absolute;
+  bottom: 1px;
+  right: -1px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--button-bg);
+  color: var(--button-fg);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  box-sizing: border-box;
 }
 
 .sidebar-tab:hover {

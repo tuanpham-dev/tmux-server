@@ -84,6 +84,11 @@ export interface RegisteredSidebarPanel {
   // Codicon name for the sidebar tab strip. Falls back to "extensions" when
   // omitted (see Sidebar.tsx's tab icon resolution).
   icon?: string;
+  // Small count shown on this panel's sidebar tab (e.g. changed-file count
+  // for Source Control) — null/0/undefined shows no badge. Set via
+  // ctx.app.setSidebarBadge, not at registration time, since it typically
+  // depends on data fetched after activate() runs.
+  badge?: number | null;
   component: ReactNS.ComponentType<SidebarPanelHostProps>;
 }
 
@@ -129,6 +134,11 @@ export interface ExtensionContext {
     // change this extension just made (stage/commit/discard/pull) without
     // waiting for the tree's own poll.
     refreshFiles(): void;
+    // Sets (or clears, via null/0) the count badge on one of this
+    // extension's own registered sidebar panels (panelId is the same
+    // unnamespaced id passed to registerSidebarPanel). No-ops if that
+    // panel was never registered.
+    setSidebarBadge(panelId: string, badge: number | null): void;
   };
   // fetch() scoped to this extension's own server hook, mounted at
   // /api/ext/<extensionId> — 404s if the extension has no server entry or
@@ -343,6 +353,13 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       },
       refreshFiles() {
         refreshFilesHandler?.();
+      },
+      setSidebarBadge(panelId, badge) {
+        const namespaced = `ext.${ext.id}.${panelId}`;
+        const panel = extensionSidebarPanels.find((p) => p.id === namespaced);
+        if (!panel) return;
+        panel.badge = badge;
+        notify();
       },
     },
     serverFetch(path, init) {

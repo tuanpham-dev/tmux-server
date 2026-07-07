@@ -30,6 +30,7 @@ let onDidChangeContext: ((cb: (ctx: ActiveContext) => void) => () => void) | nul
 let openViewerTab: ((viewerId: string, path: string, opts?: { title?: string }) => void) | null = null;
 let openFileTab: ((path: string) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
+let setSidebarBadge: ((panelId: string, badge: number | null) => void) | null = null;
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
 
@@ -85,9 +86,14 @@ const STATUS_LABEL: Record<FileStatus, string> = {
 function basenameOf(p: string): string {
   return p.slice(p.lastIndexOf("/") + 1);
 }
+// Immediate parent directory name only (e.g. "components" for
+// "client/src/components/Foo.tsx"), not the full relative path.
 function dirOf(p: string): string {
   const slash = p.lastIndexOf("/");
-  return slash === -1 ? "" : p.slice(0, slash);
+  if (slash === -1) return "";
+  const dir = p.slice(0, slash);
+  const parentSlash = dir.lastIndexOf("/");
+  return parentSlash === -1 ? dir : dir.slice(parentSlash + 1);
 }
 
 // ---- Diff tab composite key ----
@@ -252,6 +258,22 @@ function GitPanel({ actionsTarget }: PanelProps) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
+
+  // Sidebar tab badge: distinct changed-file count. A path can appear in
+  // both staged and unstaged (e.g. "MM") — dedupe by path so it isn't
+  // double-counted. Persists on the (module-level) panel entry while this
+  // component is unmounted, so the badge still shows whatever it was as of
+  // the last time Source Control was open.
+  useEffect(() => {
+    if (!status?.root) {
+      setSidebarBadge?.("git", null);
+      return;
+    }
+    const distinct = new Set(
+      [...(status.staged ?? []), ...(status.unstaged ?? []), ...(status.conflicted ?? [])].map((e) => e.path),
+    );
+    setSidebarBadge?.("git", distinct.size > 0 ? distinct.size : null);
+  }, [status]);
 
   useEffect(() => {
     if (!activeCwd) {
@@ -695,6 +717,7 @@ export function activate(ctx: {
     openFileTab: (path: string) => void;
     openViewerTab: (viewerId: string, path: string, opts?: { title?: string }) => void;
     refreshFiles: () => void;
+    setSidebarBadge: (panelId: string, badge: number | null) => void;
   };
   serverFetch: (path: string, init?: RequestInit) => Promise<Response>;
   assetUrl: (relPath: string) => string;
@@ -706,6 +729,7 @@ export function activate(ctx: {
   openViewerTab = ctx.app.openViewerTab;
   openFileTab = ctx.app.openFileTab;
   refreshFiles = ctx.app.refreshFiles;
+  setSidebarBadge = ctx.app.setSidebarBadge;
   extSettings = ctx.settings;
 
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
@@ -721,6 +745,7 @@ export function activate(ctx: {
 }
 
 export function deactivate() {
+  setSidebarBadge?.("git", null);
   removeStylesheet?.();
   removeStylesheet = null;
 }

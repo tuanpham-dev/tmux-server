@@ -5,6 +5,7 @@ export interface SidebarTabInfo {
   id: string;
   title: string;
   icon: string;
+  badge?: number | null;
 }
 
 interface Props {
@@ -201,6 +202,7 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
             onClick={() => handleClick(tab.id)}
           >
             <Icon name={tab.icon} />
+            {!!tab.badge && <span className="sidebar-tab-badge">{tab.badge}</span>}
           </button>
         );
       })}

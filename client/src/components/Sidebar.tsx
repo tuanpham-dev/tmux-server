@@ -270,7 +270,7 @@ export default function Sidebar({
   const tabInfos: SidebarTabInfo[] = visibleTabOrder.map((id) => {
     if (id === EXPLORER_TAB_ID) return { id, title: "Explorer", icon: "files" };
     const panel = extensionPanels.find((p) => p.id === id);
-    return { id, title: panel?.title ?? id, icon: panel?.icon ?? "extensions" };
+    return { id, title: panel?.title ?? id, icon: panel?.icon ?? "extensions", badge: panel?.badge };
   });
 
   const toggleWindowCollapsed = (key: string) => {
