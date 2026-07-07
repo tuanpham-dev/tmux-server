@@ -33,6 +33,8 @@ let refreshFiles: (() => void) | null = null;
 let setSidebarBadge: ((panelId: string, badge: number | null) => void) | null = null;
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
+let removeContextListener: (() => void) | null = null;
+let removeSettingsListener: (() => void) | null = null;
 
 // Credentials from a successful push/pull/sync retry, kept in memory only
 // (never localStorage, never the remote URL) so repeated syncs in the same
@@ -215,6 +217,77 @@ function GroupHeader({
   );
 }
 
+// ---- Background status polling ----
+// Drives the Source Control sidebar badge independent of GitPanel's mount
+// state. Sidebar.tsx only mounts GitPanel once the git tab is selected, so
+// without this the badge stayed empty until the user opened the tab at
+// least once. Started/stopped from activate()/deactivate(); GitPanel
+// subscribes to the same status stream instead of fetching its own copy.
+let currentStatus: StatusResponse | null = null;
+const statusListeners = new Set<(status: StatusResponse | null) => void>();
+const fetchErrorListeners = new Set<(message: string) => void>();
+let pollCwd: string | null = null;
+let pollTimer: number | null = null;
+let lastPollMs = 0;
+
+function updateBadge(status: StatusResponse | null) {
+  if (!status?.root) {
+    setSidebarBadge?.("git", null);
+    return;
+  }
+  const distinct = new Set(
+    [...(status.staged ?? []), ...(status.unstaged ?? []), ...(status.conflicted ?? [])].map((e) => e.path),
+  );
+  setSidebarBadge?.("git", distinct.size > 0 ? distinct.size : null);
+}
+
+function setSharedStatus(next: StatusResponse | null) {
+  currentStatus = next;
+  updateBadge(next);
+  statusListeners.forEach((cb) => cb(next));
+}
+
+async function fetchStatus(cwd: string) {
+  try {
+    const data = await apiGetJson<StatusResponse>(`/status?cwd=${encodeURIComponent(cwd)}`);
+    setSharedStatus(data);
+  } catch (err) {
+    setSharedStatus(null);
+    const message = err instanceof Error ? err.message : String(err);
+    fetchErrorListeners.forEach((cb) => cb(message));
+  }
+}
+
+function refreshStatus() {
+  if (pollCwd) fetchStatus(pollCwd);
+}
+
+function restartPolling() {
+  if (pollTimer != null) {
+    window.clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  lastPollMs = readPollInterval();
+  if (!pollCwd) {
+    setSharedStatus(null);
+    return;
+  }
+  fetchStatus(pollCwd);
+  if (lastPollMs > 0) {
+    pollTimer = window.setInterval(() => fetchStatus(pollCwd!), lastPollMs);
+  }
+}
+
+function setPollCwd(cwd: string | null) {
+  if (cwd === pollCwd) return;
+  pollCwd = cwd;
+  restartPolling();
+}
+
+function onSettingsChanged() {
+  if (readPollInterval() !== lastPollMs) restartPolling();
+}
+
 // ---- GitPanel (registerSidebarPanel component — no props) ----
 
 type NetworkKind = "push" | "pull" | "sync";
@@ -228,7 +301,7 @@ interface PanelProps {
 
 function GitPanel({ actionsTarget }: PanelProps) {
   const [activeCwd, setActiveCwd] = useState<string | null>(() => getActiveContext?.().cwd ?? null);
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(() => currentStatus);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -236,64 +309,36 @@ function GitPanel({ actionsTarget }: PanelProps) {
   const [credUsername, setCredUsername] = useState("");
   const [credPassword, setCredPassword] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState<{ paths: string[]; untracked: string[] } | null>(null);
-  const [pollMs, setPollMs] = useState(readPollInterval);
   const [clickAction, setClickAction] = useState(readClickAction);
 
   useEffect(() => onDidChangeContext?.((ctx) => setActiveCwd(ctx.cwd)), []);
-  useEffect(
-    () =>
-      extSettings?.onDidChange(() => {
-        setPollMs(readPollInterval());
-        setClickAction(readClickAction());
-      }),
-    [],
-  );
+  useEffect(() => extSettings?.onDidChange(() => setClickAction(readClickAction())), []);
 
-  const fetchStatus = useCallback(async (cwd: string) => {
-    try {
-      const data = await apiGetJson<StatusResponse>(`/status?cwd=${encodeURIComponent(cwd)}`);
-      setStatus(data);
-    } catch (err) {
-      setStatus(null);
-      setError(err instanceof Error ? err.message : String(err));
-    }
+  // Status comes from the module-level poller (started in activate(), kept
+  // alive regardless of whether this panel is mounted) rather than a fetch
+  // owned by this component — see the "Background status polling" section.
+  useEffect(() => {
+    setStatus(currentStatus);
+    statusListeners.add(setStatus);
+    return () => {
+      statusListeners.delete(setStatus);
+    };
+  }, []);
+  useEffect(() => {
+    fetchErrorListeners.add(setError);
+    return () => {
+      fetchErrorListeners.delete(setError);
+    };
   }, []);
 
-  // Sidebar tab badge: distinct changed-file count. A path can appear in
-  // both staged and unstaged (e.g. "MM") — dedupe by path so it isn't
-  // double-counted. Persists on the (module-level) panel entry while this
-  // component is unmounted, so the badge still shows whatever it was as of
-  // the last time Source Control was open.
-  useEffect(() => {
-    if (!status?.root) {
-      setSidebarBadge?.("git", null);
-      return;
-    }
-    const distinct = new Set(
-      [...(status.staged ?? []), ...(status.unstaged ?? []), ...(status.conflicted ?? [])].map((e) => e.path),
-    );
-    setSidebarBadge?.("git", distinct.size > 0 ? distinct.size : null);
-  }, [status]);
-
-  useEffect(() => {
-    if (!activeCwd) {
-      setStatus(null);
-      return;
-    }
-    fetchStatus(activeCwd);
-    if (pollMs <= 0) return;
-    const timer = window.setInterval(() => fetchStatus(activeCwd), pollMs);
-    return () => window.clearInterval(timer);
-  }, [activeCwd, pollMs, fetchStatus]);
-
   const refresh = useCallback(() => {
-    if (activeCwd) fetchStatus(activeCwd);
-  }, [activeCwd, fetchStatus]);
+    refreshStatus();
+  }, []);
 
   const afterMutate = useCallback(async () => {
-    if (activeCwd) await fetchStatus(activeCwd);
+    refreshStatus();
     refreshFiles?.();
-  }, [activeCwd, fetchStatus]);
+  }, []);
 
   const runOp = useCallback(
     async (fn: () => Promise<void>) => {
@@ -742,9 +787,25 @@ export function activate(ctx: {
   // extensions: [] — never auto-matched to a file; reached only via
   // ctx.app.openViewerTab from GitPanel's row clicks (see openDiff above).
   ctx.registerFileViewer({ id: "diff", extensions: [], mode: "default", component: DiffView });
+
+  // Start the badge poller immediately so it's correct on app startup,
+  // rather than only after the user opens the Source Control tab.
+  setPollCwd(ctx.app.getActiveContext().cwd);
+  removeContextListener = ctx.app.onDidChangeContext((c) => setPollCwd(c.cwd));
+  removeSettingsListener = ctx.settings.onDidChange(onSettingsChanged);
 }
 
 export function deactivate() {
+  removeContextListener?.();
+  removeContextListener = null;
+  removeSettingsListener?.();
+  removeSettingsListener = null;
+  if (pollTimer != null) {
+    window.clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  pollCwd = null;
+  currentStatus = null;
   setSidebarBadge?.("git", null);
   removeStylesheet?.();
   removeStylesheet = null;
