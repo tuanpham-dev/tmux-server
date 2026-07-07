@@ -28,6 +28,7 @@ let getActiveContext: (() => ActiveContext) | null = null;
 let onDidChangeContext: ((cb: (ctx: ActiveContext) => void) => () => void) | null = null;
 let openFileTab: ((path: string, line?: number) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
+let consumeFindInFolderGlob: (() => string | null) | null = null;
 let extSettings: SettingsApi | null = null;
 let removeStylesheet: (() => void) | null = null;
 
@@ -219,6 +220,7 @@ function SearchPanel({ actionsTarget }: PanelProps) {
   const [limitHit, setLimitHit] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const queryInputRef = useRef<HTMLInputElement | null>(null);
   // Session-switch restoration sets query/toggles via the load effect below,
   // which would otherwise also satisfy the as-you-type effect's dependency
   // list and fire a redundant re-search over the state we just restored.
@@ -394,6 +396,22 @@ function SearchPanel({ actionsTarget }: PanelProps) {
     setError(restored.error);
     setLimitHit(restored.limitHit);
     setConfirmReplaceAll(false);
+
+    // "Find in Folder…" (FILES-tree folder context menu) — overrides the
+    // just-restored include scope with the requested folder and clears the
+    // query so the user types fresh into it, mirroring VS Code. Consumed
+    // (not just read) so it only ever applies to the mount it was intended
+    // for, never to a later unrelated session switch.
+    const pendingGlob = consumeFindInFolderGlob?.();
+    if (pendingGlob !== null && pendingGlob !== undefined) {
+      setIncludeGlob(pendingGlob);
+      setGlobsOpen(true);
+      setQuery("");
+      setResults(null);
+      setError(null);
+      setLimitHit(false);
+      queryInputRef.current?.focus();
+    }
   }, [sessionKey]);
 
   // A same-session cwd change (e.g. `cd`ing within the same window, rather
@@ -539,6 +557,7 @@ function SearchPanel({ actionsTarget }: PanelProps) {
         </button>
         <div className="search-input-wrap">
           <input
+            ref={queryInputRef}
             className="search-text-input"
             placeholder="Search"
             value={query}
@@ -773,6 +792,7 @@ export function activate(ctx: {
     onDidChangeContext: (cb: (ctx: ActiveContext) => void) => () => void;
     openFileTab: (path: string, line?: number) => void;
     refreshFiles: () => void;
+    consumeFindInFolderGlob: () => string | null;
   };
   serverFetch: (path: string, init?: RequestInit) => Promise<Response>;
   assetUrl: (relPath: string) => string;
@@ -783,6 +803,7 @@ export function activate(ctx: {
   onDidChangeContext = ctx.app.onDidChangeContext;
   openFileTab = ctx.app.openFileTab;
   refreshFiles = ctx.app.refreshFiles;
+  consumeFindInFolderGlob = ctx.app.consumeFindInFolderGlob;
   extSettings = ctx.settings;
 
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");

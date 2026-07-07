@@ -139,6 +139,11 @@ export interface ExtensionContext {
     // unnamespaced id passed to registerSidebarPanel). No-ops if that
     // panel was never registered.
     setSidebarBadge(panelId: string, badge: number | null): void;
+    // One-shot: returns (and clears) a pending "files to include" glob
+    // pushed by the FILES-tree "Find in Folder…" menu item, or null if
+    // none is pending. Only the search extension's activate() is expected
+    // to call this — see requestFindInFolder/consumePendingFindInFolderGlob.
+    consumeFindInFolderGlob(): string | null;
   };
   // fetch() scoped to this extension's own server hook, mounted at
   // /api/ext/<extensionId> — 404s if the extension has no server entry or
@@ -255,6 +260,63 @@ export function setRefreshFilesHandler(handler: () => void): void {
   refreshFilesHandler = handler;
 }
 
+let selectSidebarTabHandler: ((id: string) => void) | null = null;
+
+// Wired once from Sidebar.tsx to its own selectTab — lets core code (e.g.
+// the FILES-tree "Find in Folder…" menu item) force-activate a sidebar tab
+// by its (possibly extension-namespaced) id.
+export function setSelectSidebarTabHandler(handler: (id: string) => void): void {
+  selectSidebarTabHandler = handler;
+}
+
+export function selectSidebarTab(id: string): void {
+  selectSidebarTabHandler?.(id);
+}
+
+// "Find in Folder…" (FILES-tree folder context menu, useFileActions.ts) —
+// switches to the bundled search extension's tab and hands it a glob scope.
+// Hardcodes the search extension's namespaced panel id rather than adding a
+// generic extension-contribution API, since this wires one specific
+// built-in menu item to one specific built-in extension (same category of
+// coupling as core already knowing about git-scm's diff viewer). The
+// extension id itself is `${publisher}.${name}` from its manifest (see
+// server/src/extensions.ts's resolveId), not just the bare folder name —
+// extensions/search/package.json is publisher "tmux-server", name "search".
+const SEARCH_PANEL_ID = "ext.tmux-server.search.search";
+
+// The search panel isn't mounted yet at the moment this fires (activating
+// its tab and mounting SearchPanel both happen on the next render) — the
+// pending glob is consumed once by the panel's own mount/session-load
+// effect rather than pushed through a live-subscriber callback.
+let pendingFindInFolderGlob: string | null = null;
+
+export function requestFindInFolder(glob: string): void {
+  if (extensionSidebarPanels.some((p) => p.id === SEARCH_PANEL_ID)) {
+    pendingFindInFolderGlob = glob;
+    selectSidebarTab(SEARCH_PANEL_ID);
+  }
+}
+
+// Reads without immediately clearing: React's development-mode double-
+// invoke runs the search panel's mount effect twice, synchronously, for
+// the same logical mount — the second pass's own "restore last session's
+// cached state" step would otherwise run with nothing left to override it
+// with, since an eager clear on the first read already nulled it out,
+// stomping the correctly-applied result with stale cached values. The
+// setTimeout defers the actual clear past both synchronous passes (which
+// always complete within the same tick) while still clearing it before any
+// later, unrelated mount (which requires an intervening user action, so it
+// always takes far longer than one tick).
+export function consumePendingFindInFolderGlob(): string | null {
+  const glob = pendingFindInFolderGlob;
+  if (glob !== null) {
+    setTimeout(() => {
+      pendingFindInFolderGlob = null;
+    }, 0);
+  }
+  return glob;
+}
+
 let installedExtensions: ExtensionInfo[] = [];
 
 export function getInstalledExtensions(): ExtensionInfo[] {
@@ -361,6 +423,7 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         panel.badge = badge;
         notify();
       },
+      consumeFindInFolderGlob: () => consumePendingFindInFolderGlob(),
     },
     serverFetch(path, init) {
       return fetch(`${extensionApiBase(ext.id)}${path}`, init);

@@ -1,7 +1,7 @@
 import { useCallback, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
-import { findFileViewerFor, type RegisteredFileViewer } from "../extensions";
+import { findFileViewerFor, requestFindInFolder, type RegisteredFileViewer } from "../extensions";
 import type { AppSettings } from "../settings";
 import type { MenuItem } from "../types";
 import { collectDropped, uploadAll, type DroppedItems } from "../upload";
@@ -171,6 +171,17 @@ export function useFileActions(
     setFilesRefreshKey((k) => k + 1);
   }, [setFilesRefreshKey]);
 
+  const findInFolder = useCallback((entryPath: string, rootDir: string) => {
+    const rel = entryPath.startsWith(rootDir + "/")
+      ? entryPath.slice(rootDir.length + 1)
+      : entryPath === rootDir
+        ? "."
+        : entryPath;
+    // rel === "." (the root folder itself) needs no include-glob restriction
+    // — that's already the search panel's unscoped default.
+    requestFindInFolder(rel === "." ? "" : `${rel}/**`);
+  }, []);
+
   const fileMenuItems = useCallback(
     (entryPath: string, isDir: boolean, rootDir: string): MenuItem[] => {
       const items: MenuItem[] = [];
@@ -178,6 +189,7 @@ export function useFileActions(
         items.push(
           { label: "New File…", onClick: () => createFileInDir(entryPath) },
           { label: "New Folder…", onClick: () => createFolderInDir(entryPath) },
+          { label: "Find in Folder…", onClick: () => findInFolder(entryPath, rootDir) },
         );
       }
       items.push(
@@ -206,6 +218,7 @@ export function useFileActions(
     [
       createFileInDir,
       createFolderInDir,
+      findInFolder,
       renameFileEntry,
       copyFilePath,
       copyFileRelativePath,

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import type { RegisteredSidebarPanel } from "../extensions";
+import { setSelectSidebarTabHandler, type RegisteredSidebarPanel } from "../extensions";
 import { moveId } from "../lib/tabs";
 import { sessionRowsWithPins } from "../lib/sessions";
 import type { MenuItem, PinnedSession, SidebarMode, TmuxSession, TmuxWindow } from "../types";
@@ -256,6 +256,11 @@ export default function Sidebar({
   const selectTab = (id: string) => {
     setTabsState((prev) => ({ ...prev, active: id }));
   };
+
+  // Lets core code outside Sidebar (currently: the FILES-tree "Find in
+  // Folder…" menu item) force-activate a sidebar tab — see
+  // extensions.ts's selectSidebarTab/setSelectSidebarTabHandler.
+  useEffect(() => setSelectSidebarTabHandler(selectTab), [selectTab]);
 
   const reorderTabs = (draggedId: string, toIndex: number) => {
     setTabsState((prev) => {
