@@ -111,7 +111,10 @@ export interface ExtensionContext {
   app: {
     getActiveContext(): ActiveContext;
     onDidChangeContext(cb: (ctx: ActiveContext) => void): () => void;
-    openFileTab(path: string): void;
+    // line jumps to that line when the path opens in nvim (ignored by a
+    // "default"-mode viewer like image/media/pdf — same as a FILES-tree
+    // ctrl+click "file:line" link, see openFileOrViewer).
+    openFileTab(path: string, line?: number): void;
     // Opens (or activates, if already open) a tab for one of this
     // extension's own registered file viewers, bypassing the normal
     // extension-matching a FILES-tree click goes through — for a viewer
@@ -216,11 +219,11 @@ export function setActiveContext(ctx: ActiveContext): void {
   for (const l of contextListeners) l(ctx);
 }
 
-let openFileTabHandler: ((path: string) => void) | null = null;
+let openFileTabHandler: ((path: string, line?: number) => void) | null = null;
 
 // Wired once from App.tsx to whatever dispatch logic decides which viewer
 // (nvim, an extension viewer, a built-in preview) opens a given path.
-export function setOpenFileTabHandler(handler: (path: string) => void): void {
+export function setOpenFileTabHandler(handler: (path: string, line?: number) => void): void {
   openFileTabHandler = handler;
 }
 
@@ -332,8 +335,8 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
           runtime.contextListeners.delete(cb);
         };
       },
-      openFileTab(path) {
-        openFileTabHandler?.(path);
+      openFileTab(path, line) {
+        openFileTabHandler?.(path, line);
       },
       openViewerTab(viewerId, path, opts) {
         openViewerTabHandler?.(`ext.${ext.id}.${viewerId}`, path, opts?.title);
