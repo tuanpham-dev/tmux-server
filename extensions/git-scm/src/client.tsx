@@ -6,7 +6,7 @@
 // (serverFetch, active context, settings, openViewerTab/openFileTab/
 // refreshFiles) from module-level bridge variables set once in activate(),
 // the same pattern live-preview's client.tsx uses for ctx.settings.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./style.css";
 import { injectStylesheet } from "../../_shared/injectStylesheet";
@@ -65,6 +65,15 @@ interface FileEntry {
   status: FileStatus;
 }
 
+type OperationKind = "merge" | "rebase" | "cherry-pick" | "revert";
+
+const OPERATION_LABEL: Record<OperationKind, string> = {
+  merge: "Merge",
+  rebase: "Rebase",
+  "cherry-pick": "Cherry-pick",
+  revert: "Revert",
+};
+
 interface StatusResponse {
   root: string | null;
   branch?: string | null;
@@ -74,6 +83,11 @@ interface StatusResponse {
   staged?: FileEntry[];
   unstaged?: FileEntry[];
   conflicted?: FileEntry[];
+  operation?: OperationKind | null;
+  // .git/MERGE_MSG content while operation is truthy — also written for a
+  // conflicted cherry-pick/revert, not just a merge. Used to prefill the
+  // commit box once per operation (see GitPanel's prefill effect).
+  mergeMsg?: string | null;
 }
 
 const STATUS_LABEL: Record<FileStatus, string> = {
@@ -121,6 +135,19 @@ function decodeDiffKey(key: string): {
 } {
   const [cwd, path, stagedFlag, untrackedFlag, origPath] = key.split(KEY_SEP);
   return { cwd, path, staged: stagedFlag === "1", untracked: untrackedFlag === "1", origPath: origPath || undefined };
+}
+
+// A conflict tab's key only ever needs cwd + path (there's no staged/
+// working-tree distinction for an unmerged path — see openEntry) — reusing
+// KEY_SEP keeps decode symmetric with encodeDiffKey even though there's
+// nothing else to encode.
+function encodeConflictKey(cwd: string, path: string): string {
+  return [cwd, path].join(KEY_SEP);
+}
+
+function decodeConflictKey(key: string): { cwd: string; path: string } {
+  const [cwd, path] = key.split(KEY_SEP);
+  return { cwd, path };
 }
 
 // ---- Shared fetch helpers ----
@@ -309,10 +336,48 @@ function GitPanel({ actionsTarget }: PanelProps) {
   const [credUsername, setCredUsername] = useState("");
   const [credPassword, setCredPassword] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState<{ paths: string[]; untracked: string[] } | null>(null);
+  const commitMessageRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-grows the commit box with its content up to 300px (VS Code's own
+  // commit box behavior) — same measure/clamp-to-scrollHeight approach as
+  // csv-preview's formula bar. Runs on every keystroke since a plain CSS
+  // height can't track content; resize is disabled below so the two don't
+  // fight each other.
+  useLayoutEffect(() => {
+    const el = commitMessageRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const h = Math.min(el.scrollHeight, 300);
+    el.style.height = `${h}px`;
+    el.style.overflowY = el.scrollHeight > 300 ? "auto" : "hidden";
+  }, [message]);
+  const [confirmAbort, setConfirmAbort] = useState(false);
   const [clickAction, setClickAction] = useState(readClickAction);
 
   useEffect(() => onDidChangeContext?.((ctx) => setActiveCwd(ctx.cwd)), []);
   useEffect(() => extSettings?.onDidChange(() => setClickAction(readClickAction())), []);
+
+  // Prefills the commit box from .git/MERGE_MSG once per operation "start"
+  // (tracked via the ref, which resets when the operation clears) rather
+  // than on every status poll — otherwise it would stomp on whatever the
+  // user is typing every few seconds. Only fires into an empty box, so a
+  // message the user already started stays untouched. `message` is
+  // deliberately left out of the dependency array: this effect should react
+  // to the operation changing, not to the user's own typing.
+  const prefilledOpRef = useRef<OperationKind | null>(null);
+  useEffect(() => {
+    const op = status?.operation ?? null;
+    if (!op) {
+      prefilledOpRef.current = null;
+      return;
+    }
+    if (prefilledOpRef.current === op) return;
+    prefilledOpRef.current = op;
+    if (!message.trim() && status?.mergeMsg) {
+      setMessage(status.mergeMsg.replace(/\n+$/, ""));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.operation, status?.mergeMsg]);
 
   // Status comes from the module-level poller (started in activate(), kept
   // alive regardless of whether this panel is mounted) rather than a fetch
@@ -365,6 +430,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
       await apiPost("/commit", { cwd: activeCwd, message });
       setMessage("");
     });
+  const abortOperation = () => runOp(() => apiPost("/abort", { cwd: activeCwd }));
 
   const runNetwork = useCallback(
     (kind: NetworkKind, creds?: { username: string; password: string }) => {
@@ -395,14 +461,20 @@ function GitPanel({ actionsTarget }: PanelProps) {
   // Shift+click always opens the OTHER action from gitScm.clickAction's
   // configured default — same escape-hatch convention the host uses for
   // preview vs. edit (QuickSwitcher's Shift+Enter, FileTree's hover icon).
-  // Conflicted entries are the one exception: there's no meaningful diff
-  // for an unmerged path (nothing to compare — both sides are still live
-  // conflict markers in the working tree), so they always open in nvim to
-  // resolve, regardless of the setting or the click.
+  // Conflicted entries are the one exception: there's no diff to show (both
+  // sides are live conflict markers in the working tree, not two commits to
+  // compare), so a click opens the ConflictView resolver instead, ignoring
+  // gitScm.clickAction — Shift+click is still the escape hatch straight to
+  // nvim, same as every other row.
   const openEntry = (entry: FileEntry, staged: boolean, shiftKey: boolean) => {
     if (!activeCwd) return;
     if (entry.status === "conflicted") {
-      openFileTab?.(`${activeCwd}/${entry.path}`);
+      if (shiftKey) {
+        openFileTab?.(`${activeCwd}/${entry.path}`);
+        return;
+      }
+      const key = encodeConflictKey(activeCwd, entry.path);
+      openViewerTab?.("conflict", key, { title: `${basenameOf(entry.path)} (Merge)` });
       return;
     }
     const wantsEdit = shiftKey ? clickAction !== "edit" : clickAction === "edit";
@@ -429,11 +501,12 @@ function GitPanel({ actionsTarget }: PanelProps) {
   const staged = status.staged ?? [];
   const unstaged = status.unstaged ?? [];
   const conflicted = status.conflicted ?? [];
-  const changes = [...conflicted, ...unstaged];
   const untrackedPaths = unstaged.filter((e) => e.status === "untracked").map((e) => e.path);
   const ahead = status.ahead ?? 0;
   const behind = status.behind ?? 0;
   const clickHint = `Shift+Click: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"}`;
+  const conflictClickHint = "Shift+Click: Open in Editor";
+  const operation = status.operation ?? null;
 
   const headerActions = (
     <>
@@ -476,13 +549,25 @@ function GitPanel({ actionsTarget }: PanelProps) {
         </div>
       )}
 
+      {operation && (
+        <div className="git-merge-banner">
+          <Icon name="git-merge" />
+          <span className="git-merge-banner-text">{OPERATION_LABEL[operation]} in progress</span>
+          <button className="git-merge-abort-button" disabled={busy} onClick={() => setConfirmAbort(true)}>
+            Abort
+          </button>
+        </div>
+      )}
+
       <div className="git-commit-box">
         <textarea
+          ref={commitMessageRef}
           className="git-commit-message"
           placeholder={`Message (${status.branch ?? "detached HEAD"})`}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           disabled={busy}
+          rows={1}
         />
         <button
           className="git-commit-button"
@@ -551,7 +636,54 @@ function GitPanel({ actionsTarget }: PanelProps) {
         </div>
       )}
 
+      {confirmAbort && operation && (
+        <div className="git-confirm">
+          <div className="git-confirm-text">
+            Abort the {OPERATION_LABEL[operation].toLowerCase()}? This discards any conflict resolutions made so far.
+          </div>
+          <div className="git-confirm-buttons">
+            <button className="git-credential-cancel" onClick={() => setConfirmAbort(false)}>
+              Cancel
+            </button>
+            <button
+              className="git-confirm-discard"
+              onClick={() => {
+                abortOperation();
+                setConfirmAbort(false);
+              }}
+            >
+              Abort
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="git-groups">
+        {conflicted.length > 0 && (
+          <div className="git-group">
+            <GroupHeader
+              title="Merge Changes"
+              count={conflicted.length}
+              actions={[
+                {
+                  icon: "add",
+                  title: "Stage All Changes",
+                  onClick: () => stage(conflicted.map((e) => e.path)),
+                },
+              ]}
+            />
+            {conflicted.map((entry) => (
+              <FileRow
+                key={entry.path}
+                entry={entry}
+                onOpen={(e) => openEntry(entry, false, e.shiftKey)}
+                clickHint={conflictClickHint}
+                actions={[{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }]}
+              />
+            ))}
+          </div>
+        )}
+
         {staged.length > 0 && (
           <div className="git-group">
             <GroupHeader
@@ -579,59 +711,48 @@ function GitPanel({ actionsTarget }: PanelProps) {
           </div>
         )}
 
-        {changes.length > 0 && (
+        {unstaged.length > 0 && (
           <div className="git-group">
             <GroupHeader
               title="Changes"
-              count={changes.length}
+              count={unstaged.length}
               actions={[
                 {
                   icon: "add",
                   title: "Stage All Changes",
-                  onClick: () => stage(changes.map((e) => e.path)),
+                  onClick: () => stage(unstaged.map((e) => e.path)),
                 },
-                ...(unstaged.length > 0
-                  ? [
-                      {
-                        icon: "discard",
-                        title: "Discard All Changes",
-                        onClick: () =>
-                          setConfirmDiscard({ paths: unstaged.map((e) => e.path), untracked: untrackedPaths }),
-                      },
-                    ]
-                  : []),
+                {
+                  icon: "discard",
+                  title: "Discard All Changes",
+                  onClick: () => setConfirmDiscard({ paths: unstaged.map((e) => e.path), untracked: untrackedPaths }),
+                },
               ]}
             />
-            {changes.map((entry) => {
-              const isConflicted = entry.status === "conflicted";
-              const actions: RowAction[] = isConflicted
-                ? [{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }]
-                : [
-                    {
-                      icon: "discard",
-                      title: "Discard Changes",
-                      onClick: () =>
-                        setConfirmDiscard({
-                          paths: [entry.path],
-                          untracked: entry.status === "untracked" ? [entry.path] : [],
-                        }),
-                    },
-                    { icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) },
-                  ];
-              return (
-                <FileRow
-                  key={entry.path}
-                  entry={entry}
-                  onOpen={(e) => openEntry(entry, false, e.shiftKey)}
-                  clickHint={isConflicted ? undefined : clickHint}
-                  actions={actions}
-                />
-              );
-            })}
+            {unstaged.map((entry) => (
+              <FileRow
+                key={entry.path}
+                entry={entry}
+                onOpen={(e) => openEntry(entry, false, e.shiftKey)}
+                clickHint={clickHint}
+                actions={[
+                  {
+                    icon: "discard",
+                    title: "Discard Changes",
+                    onClick: () =>
+                      setConfirmDiscard({
+                        paths: [entry.path],
+                        untracked: entry.status === "untracked" ? [entry.path] : [],
+                      }),
+                  },
+                  { icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) },
+                ]}
+              />
+            ))}
           </div>
         )}
 
-        {staged.length === 0 && changes.length === 0 && (
+        {staged.length === 0 && unstaged.length === 0 && conflicted.length === 0 && (
           <div className="git-empty">No changes.</div>
         )}
       </div>
@@ -741,6 +862,364 @@ function DiffView({ filePath, active, toolbarTarget, openInEditor }: DiffProps) 
   );
 }
 
+// ---- Conflict marker parsing ----
+// Splits a working-tree file's lines into alternating plain-text runs and
+// conflict blocks, keyed by line range in `lines` so a resolution can splice
+// the original array rather than reconstructing untouched text byte-for-
+// byte. Handles both the default 2-way marker set and the diff3/zdiff3
+// 3-way set (an extra "||||||| <base label>" section) — see git's
+// merge.conflictStyle setting.
+
+interface ConflictBlock {
+  kind: "conflict";
+  start: number; // index of the "<<<<<<<" line
+  end: number; // index of the ">>>>>>>" line (inclusive)
+  oursLabel: string;
+  theirsLabel: string;
+  ours: string[];
+  base?: string[];
+  baseLabel?: string;
+  theirs: string[];
+}
+
+interface TextRun {
+  kind: "text";
+  start: number;
+  end: number; // inclusive
+}
+
+type ConflictSegment = ConflictBlock | TextRun;
+
+function parseConflictSegments(lines: string[]): ConflictSegment[] {
+  const segments: ConflictSegment[] = [];
+  let i = 0;
+  let textStart = 0;
+
+  const flushText = (end: number) => {
+    if (end >= textStart) segments.push({ kind: "text", start: textStart, end });
+  };
+
+  while (i < lines.length) {
+    if (!lines[i].startsWith("<<<<<<< ")) {
+      i++;
+      continue;
+    }
+    const start = i;
+    const oursLabel = lines[i].slice("<<<<<<< ".length);
+    i++;
+    const oursStart = i;
+    while (i < lines.length && !lines[i].startsWith("|||||||") && lines[i] !== "=======") i++;
+    const ours = lines.slice(oursStart, i);
+
+    let base: string[] | undefined;
+    let baseLabel: string | undefined;
+    if (i < lines.length && lines[i].startsWith("|||||||")) {
+      baseLabel = lines[i].slice("||||||| ".length);
+      i++;
+      const baseStart = i;
+      while (i < lines.length && lines[i] !== "=======") i++;
+      base = lines.slice(baseStart, i);
+    }
+
+    if (i >= lines.length) {
+      // No "=======" found — malformed/unterminated marker. Bail out and
+      // let the trailing flushText below cover the rest as plain text
+      // rather than guessing at a boundary.
+      break;
+    }
+    i++; // skip "======="
+
+    const theirsStart = i;
+    while (i < lines.length && !lines[i].startsWith(">>>>>>> ")) i++;
+    if (i >= lines.length) {
+      // No closing ">>>>>>>" — same malformed-file bailout as above.
+      break;
+    }
+    const theirs = lines.slice(theirsStart, i);
+    const theirsLabel = lines[i].slice(">>>>>>> ".length);
+    const end = i;
+
+    flushText(start - 1);
+    segments.push({ kind: "conflict", start, end, oursLabel, theirsLabel, ours, base, baseLabel, theirs });
+    i = end + 1;
+    textStart = i;
+  }
+
+  flushText(lines.length - 1);
+  return segments;
+}
+
+type ResolutionChoice = "ours" | "theirs" | "both";
+
+// ---- ConflictView (registerFileViewer component, extensions: []) ----
+// Reached the same way DiffView is — only via ctx.app.openViewerTab, from a
+// conflicted row's click (see GitPanel's openEntry). Accept/Undo only touch
+// in-memory `resolutions` state — nothing reaches disk until Save is
+// clicked, same "buffer, then explicit persist" model CsvView's editable
+// grid uses (down to reporting dirty state via setDirty so closing the tab
+// mid-edit gets the host's confirm-before-discard prompt). Save writes
+// whatever's currently decided (a partial save can still leave some blocks
+// unresolved, keeping their markers) via the hash-guarded /resolve endpoint,
+// then reloads — any block that got saved is simply gone from the fresh
+// parse, since its markers no longer exist on disk. "Mark as Resolved"
+// stages the file (git add) and is only enabled once nothing is left
+// unresolved AND nothing is pending an unsaved decision.
+
+interface ConflictProps {
+  filePath: string;
+  active: boolean;
+  toolbarTarget?: HTMLDivElement | null;
+  openInEditor?: (path: string) => void;
+  setDirty?: (dirty: boolean) => void;
+}
+
+interface ConflictFileResponse {
+  content: string | null;
+  binary: boolean;
+  tooLarge: boolean;
+  hash: string | null;
+}
+
+// Keyed by ConflictBlock.start (unique within one load's line numbering,
+// and stable across re-renders since `lines`/`segments` don't change until
+// a Save triggers a fresh load).
+type ResolutionMap = Record<number, ResolutionChoice>;
+
+function buildResolvedContent(lines: string[], segments: ConflictSegment[], resolutions: ResolutionMap): string {
+  const out: string[] = [];
+  for (const seg of segments) {
+    if (seg.kind === "text") {
+      out.push(...lines.slice(seg.start, seg.end + 1));
+      continue;
+    }
+    const choice = resolutions[seg.start];
+    if (!choice) {
+      // Still undecided — keep the raw marker block as-is.
+      out.push(...lines.slice(seg.start, seg.end + 1));
+      continue;
+    }
+    out.push(...(choice === "ours" ? seg.ours : choice === "theirs" ? seg.theirs : [...seg.ours, ...seg.theirs]));
+  }
+  return out.join("\n");
+}
+
+const CHOICE_LABEL: Record<ResolutionChoice, string> = { ours: "Current", theirs: "Incoming", both: "Both" };
+
+function ConflictView({ filePath, active, toolbarTarget, openInEditor, setDirty }: ConflictProps) {
+  const parsed = useMemo(() => decodeConflictKey(filePath), [filePath]);
+  const [data, setData] = useState<ConflictFileResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [resolutions, setResolutions] = useState<ResolutionMap>({});
+
+  const load = useCallback(() => {
+    setError(null);
+    setResolutions({});
+    const params = new URLSearchParams({ cwd: parsed.cwd, path: parsed.path });
+    apiGetJson<ConflictFileResponse>(`/conflict?${params}`)
+      .then(setData)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, [parsed.cwd, parsed.path]);
+
+  useEffect(() => {
+    setData(null);
+    load();
+  }, [load]);
+
+  const lines = useMemo(() => (data?.content != null ? data.content.split("\n") : null), [data]);
+  const segments = useMemo(() => (lines ? parseConflictSegments(lines) : null), [lines]);
+  const blocks = useMemo(
+    () => segments?.filter((s): s is ConflictBlock => s.kind === "conflict") ?? [],
+    [segments],
+  );
+  const remaining = useMemo(() => blocks.filter((b) => !resolutions[b.start]).length, [blocks, resolutions]);
+  const dirty = Object.keys(resolutions).length > 0;
+
+  useEffect(() => setDirty?.(dirty), [dirty, setDirty]);
+
+  const acceptBlock = (block: ConflictBlock, choice: ResolutionChoice) => {
+    setResolutions((prev) => ({ ...prev, [block.start]: choice }));
+  };
+
+  const undoBlock = (block: ConflictBlock) => {
+    setResolutions((prev) => {
+      const next = { ...prev };
+      delete next[block.start];
+      return next;
+    });
+  };
+
+  // Bulk override for every block in the file, including ones already given
+  // a different per-block choice — same in-memory-only, Undo-able, Save-to-
+  // persist semantics as a single Accept click.
+  const acceptAll = (choice: ResolutionChoice) => {
+    setResolutions(Object.fromEntries(blocks.map((b) => [b.start, choice])));
+  };
+
+  const save = () => {
+    if (!lines || !segments || !data?.hash) return;
+    const content = buildResolvedContent(lines, segments, resolutions);
+    setBusy(true);
+    setError(null);
+    apiPost("/resolve", { cwd: parsed.cwd, path: parsed.path, content, expectedHash: data.hash })
+      .then(load)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
+
+  const markResolved = () => {
+    setBusy(true);
+    setError(null);
+    apiPost("/stage", { cwd: parsed.cwd, paths: [parsed.path] })
+      .then(() => {
+        refreshStatus();
+        refreshFiles?.();
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false));
+  };
+
+  const controls = (
+    <button
+      className="icon-button"
+      title="Open in Editor"
+      onClick={() => openInEditor?.(`${parsed.cwd}/${parsed.path}`)}
+    >
+      <Icon name="go-to-file" />
+    </button>
+  );
+
+  const statusText =
+    remaining > 0
+      ? `${remaining} conflict${remaining === 1 ? "" : "s"} remaining`
+      : dirty
+        ? "All conflicts resolved — Save to apply"
+        : "All conflicts resolved";
+
+  return (
+    <div className={`git-conflict-host${active ? "" : " hidden"}`}>
+      {error && <div className="git-diff-status git-diff-error">{error}</div>}
+      {!error && data === null && <div className="git-diff-status">Loading…</div>}
+      {!error && data?.tooLarge && (
+        <div className="git-diff-status">File is too large to resolve here — open in Editor instead.</div>
+      )}
+      {!error && data?.binary && (
+        <div className="git-diff-status">Binary file conflict — resolve in Editor, then Mark as Resolved.</div>
+      )}
+      {!error && data && !data.binary && !data.tooLarge && segments && (
+        <>
+          <div className="git-conflict-toolbar">
+            <span className="git-conflict-count">{statusText}</span>
+            <button
+              className="git-conflict-save-button"
+              disabled={busy || !dirty}
+              title={dirty ? "Save resolved conflicts to disk" : "No unsaved changes"}
+              onClick={save}
+            >
+              <Icon name="save" /> Save
+            </button>
+            <button
+              className="git-conflict-resolve-button"
+              disabled={busy || remaining > 0 || dirty}
+              title={
+                remaining > 0 ? "Resolve all conflicts first" : dirty ? "Save your changes first" : "Stage this file"
+              }
+              onClick={markResolved}
+            >
+              <Icon name="check" /> Mark as Resolved
+            </button>
+          </div>
+          {blocks.length > 1 && (
+            <div className="git-conflict-toolbar-secondary">
+              <span className="git-conflict-accept-all-label">Accept All:</span>
+              <button className="git-conflict-accept-all" disabled={busy} onClick={() => acceptAll("ours")}>
+                Current
+              </button>
+              <button className="git-conflict-accept-all" disabled={busy} onClick={() => acceptAll("theirs")}>
+                Incoming
+              </button>
+              <button className="git-conflict-accept-all" disabled={busy} onClick={() => acceptAll("both")}>
+                Both
+              </button>
+            </div>
+          )}
+          <div className="git-conflict-body">
+            {segments.map((seg, i) => {
+              if (seg.kind === "text") {
+                return (
+                  <pre key={i} className="git-conflict-text">
+                    {lines!.slice(seg.start, seg.end + 1).join("\n")}
+                  </pre>
+                );
+              }
+              const choice = resolutions[seg.start];
+              if (choice) {
+                const replacement =
+                  choice === "ours" ? seg.ours : choice === "theirs" ? seg.theirs : [...seg.ours, ...seg.theirs];
+                return (
+                  <div key={i} className="git-conflict-block git-conflict-block-resolved">
+                    <div className="git-conflict-side-header">
+                      <span>Resolved: {CHOICE_LABEL[choice]}</span>
+                      <button className="git-conflict-accept" disabled={busy} onClick={() => undoBlock(seg)}>
+                        Undo
+                      </button>
+                    </div>
+                    <pre className="git-conflict-side-body">{replacement.join("\n")}</pre>
+                  </div>
+                );
+              }
+              return (
+                <div key={i} className="git-conflict-block">
+                  <div className="git-conflict-side git-conflict-ours">
+                    <div className="git-conflict-side-header">
+                      <span>Current: {seg.oursLabel}</span>
+                      <button className="git-conflict-accept" disabled={busy} onClick={() => acceptBlock(seg, "ours")}>
+                        Accept Current
+                      </button>
+                    </div>
+                    <pre className="git-conflict-side-body">{seg.ours.join("\n")}</pre>
+                  </div>
+                  {seg.base && (
+                    <div className="git-conflict-side git-conflict-base">
+                      <div className="git-conflict-side-header">
+                        <span>Base{seg.baseLabel ? `: ${seg.baseLabel}` : ""}</span>
+                      </div>
+                      <pre className="git-conflict-side-body">{seg.base.join("\n")}</pre>
+                    </div>
+                  )}
+                  <div className="git-conflict-side git-conflict-theirs">
+                    <div className="git-conflict-side-header">
+                      <span>Incoming: {seg.theirsLabel}</span>
+                      <button
+                        className="git-conflict-accept"
+                        disabled={busy}
+                        onClick={() => acceptBlock(seg, "theirs")}
+                      >
+                        Accept Incoming
+                      </button>
+                    </div>
+                    <pre className="git-conflict-side-body">{seg.theirs.join("\n")}</pre>
+                  </div>
+                  <div className="git-conflict-block-footer">
+                    <button
+                      className="git-conflict-accept-both"
+                      disabled={busy}
+                      onClick={() => acceptBlock(seg, "both")}
+                    >
+                      Accept Both
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {active && toolbarTarget && createPortal(controls, toolbarTarget)}
+    </div>
+  );
+}
+
 // ---- activate() ----
 
 export function activate(ctx: {
@@ -754,7 +1233,7 @@ export function activate(ctx: {
     id: string;
     extensions: string[];
     mode?: "default" | "preview";
-    component: typeof DiffView;
+    component: typeof DiffView | typeof ConflictView;
   }) => void;
   app: {
     getActiveContext: () => ActiveContext;
@@ -785,8 +1264,9 @@ export function activate(ctx: {
     component: GitPanel,
   });
   // extensions: [] — never auto-matched to a file; reached only via
-  // ctx.app.openViewerTab from GitPanel's row clicks (see openDiff above).
+  // ctx.app.openViewerTab from GitPanel's row clicks (see openEntry above).
   ctx.registerFileViewer({ id: "diff", extensions: [], mode: "default", component: DiffView });
+  ctx.registerFileViewer({ id: "conflict", extensions: [], mode: "default", component: ConflictView });
 
   // Start the badge poller immediately so it's correct on app startup,
   // rather than only after the user opens the Source Control tab.

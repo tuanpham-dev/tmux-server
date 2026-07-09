@@ -9,6 +9,8 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import fs from "node:fs";
+import { createHash } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASKPASS_PATH = path.join(__dirname, "askpass.cjs");
@@ -188,6 +190,71 @@ function requirePaths(req, res) {
   return paths;
 }
 
+// Resolves a repo-relative path against root, rejecting anything that
+// escapes it (a leading "..", a symlink hop, etc.) — the client only ever
+// supplies paths it read back from /status, but /conflict and /resolve
+// write/read raw file bytes, so this boundary is enforced server-side too.
+function resolveSafePath(root, relPath) {
+  const resolved = path.resolve(root, relPath);
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (resolved !== root && !resolved.startsWith(rootWithSep)) return null;
+  return resolved;
+}
+
+// Detects an in-progress merge/rebase/cherry-pick/revert by checking the
+// well-known marker files/dirs under .git (or the submodule/worktree
+// equivalent via --git-dir, which may be relative to root or absolute).
+// Mirrors what `git status` itself reports in its "You have unmerged
+// paths"/"interrupted" banners, but as a stable machine-readable value.
+async function detectOperation(root) {
+  let gitDir;
+  try {
+    gitDir = (await git(["rev-parse", "--git-dir"], root)).trim();
+  } catch {
+    return { operation: null, mergeMsg: null };
+  }
+  const gd = path.isAbsolute(gitDir) ? gitDir : path.join(root, gitDir);
+  const exists = (p) => fs.existsSync(path.join(gd, p));
+  let operation = null;
+  if (exists("MERGE_HEAD")) operation = "merge";
+  else if (exists("CHERRY_PICK_HEAD")) operation = "cherry-pick";
+  else if (exists("REVERT_HEAD")) operation = "revert";
+  else if (exists("rebase-merge") || exists("rebase-apply")) operation = "rebase";
+
+  let mergeMsg = null;
+  if (operation) {
+    try {
+      mergeMsg = fs.readFileSync(path.join(gd, "MERGE_MSG"), "utf8");
+    } catch {
+      mergeMsg = null;
+    }
+  }
+  return { operation, mergeMsg };
+}
+
+const ABORT_COMMAND = {
+  merge: ["merge", "--abort"],
+  rebase: ["rebase", "--abort"],
+  "cherry-pick": ["cherry-pick", "--abort"],
+  revert: ["revert", "--abort"],
+};
+
+// 5MB is comfortably above any real conflicted source file while still
+// ruling out accidentally opening a huge generated/binary blob in the
+// conflict-block parser, which builds the whole file into a JS string.
+const MAX_CONFLICT_FILE_SIZE = 5 * 1024 * 1024;
+
+function looksBinary(buf) {
+  // A NUL byte anywhere in the first chunk is git's own heuristic for
+  // "binary" (core.bigFileThreshold aside) — cheap and matches what
+  // `git diff` would otherwise report as "Binary files differ".
+  const scanLen = Math.min(buf.length, 8000);
+  for (let i = 0; i < scanLen; i++) {
+    if (buf[i] === 0) return true;
+  }
+  return false;
+}
+
 export function activate({ router, log }) {
   router.get("/status", async (req, res) => {
     const cwd = requireCwd(req, res);
@@ -199,7 +266,8 @@ export function activate({ router, log }) {
       // new directory into one "? dir/" entry instead, same trap the core
       // FILES tree's status call (server/src/git.ts) already works around.
       const raw = await git(["status", "--porcelain=v2", "--branch", "-uall", "-z"], root);
-      res.json({ root, ...parseStatus(raw) });
+      const { operation, mergeMsg } = await detectOperation(root);
+      res.json({ root, operation, mergeMsg, ...parseStatus(raw) });
     } catch {
       // Not a git repository — a plain empty-state response, not an error
       // (confirmed: no "Initialize Repository" affordance for v1).
@@ -256,6 +324,99 @@ export function activate({ router, log }) {
       const tracked = paths.filter((p) => !untracked.includes(p));
       if (tracked.length > 0) await git(["restore", "--worktree", "--", ...tracked], cwd);
       if (untracked.length > 0) await git(["clean", "-f", "--", ...untracked], cwd);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Returns the working-tree file's raw content (plus a hash for /resolve's
+  // optimistic-concurrency check) so ConflictView can parse conflict markers
+  // client-side. Not a diff — there's no meaningful "before" side to diff
+  // against for a path with live conflict markers in it.
+  router.get("/conflict", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const relPath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relPath) {
+      res.status(400).json({ error: "path is required" });
+      return;
+    }
+    try {
+      const root = (await git(["rev-parse", "--show-toplevel"], cwd)).trim();
+      const abs = resolveSafePath(root, relPath);
+      if (!abs) {
+        res.status(400).json({ error: "path escapes the repository root" });
+        return;
+      }
+      const stat = fs.statSync(abs);
+      if (stat.size > MAX_CONFLICT_FILE_SIZE) {
+        res.json({ content: null, binary: false, tooLarge: true, hash: null });
+        return;
+      }
+      const buf = fs.readFileSync(abs);
+      if (looksBinary(buf)) {
+        res.json({ content: null, binary: true, tooLarge: false, hash: null });
+        return;
+      }
+      const content = buf.toString("utf8");
+      const hash = createHash("sha256").update(buf).digest("hex");
+      res.json({ content, binary: false, tooLarge: false, hash });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Overwrites a conflicted file's working-tree content with the resolved
+  // text. expectedHash must match /conflict's hash of the content this
+  // resolution was computed from — guards against clobbering a change made
+  // (in nvim, say) since the ConflictView tab last fetched, same rationale
+  // as an HTTP If-Match precondition.
+  router.post("/resolve", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const relPath = typeof req.body?.path === "string" ? req.body.path : "";
+    const content = typeof req.body?.content === "string" ? req.body.content : null;
+    const expectedHash = typeof req.body?.expectedHash === "string" ? req.body.expectedHash : "";
+    if (!relPath || content === null || !expectedHash) {
+      res.status(400).json({ error: "path, content, and expectedHash are required" });
+      return;
+    }
+    try {
+      const root = (await git(["rev-parse", "--show-toplevel"], cwd)).trim();
+      const abs = resolveSafePath(root, relPath);
+      if (!abs) {
+        res.status(400).json({ error: "path escapes the repository root" });
+        return;
+      }
+      const current = fs.readFileSync(abs);
+      const currentHash = createHash("sha256").update(current).digest("hex");
+      if (currentHash !== expectedHash) {
+        res.status(409).json({ error: "File changed on disk since it was loaded — reopen to see the latest version." });
+        return;
+      }
+      fs.writeFileSync(abs, content, "utf8");
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post("/abort", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    try {
+      const root = (await git(["rev-parse", "--show-toplevel"], cwd)).trim();
+      // Re-detect server-side rather than trusting a client-supplied
+      // operation — the client's view can be a poll interval stale (e.g.
+      // the merge already concluded in another terminal).
+      const { operation } = await detectOperation(root);
+      const command = operation && ABORT_COMMAND[operation];
+      if (!command) {
+        res.status(400).json({ error: "No merge, rebase, cherry-pick, or revert is in progress." });
+        return;
+      }
+      await git(command, root);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
