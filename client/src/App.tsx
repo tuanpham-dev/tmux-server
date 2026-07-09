@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
@@ -7,7 +7,8 @@ import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import TabBar from "./components/TabBar";
 import TerminalView from "./components/TerminalView";
-import { useExtensionRegistry } from "./extensions";
+import { EXPLORER_TAB_ID } from "./components/Sidebar";
+import { focusSidebarTab, setSidebarVisibleHandler, useExtensionRegistry } from "./extensions";
 import { useDialogs } from "./hooks/useDialogs";
 import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
@@ -82,6 +83,23 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("sidebarVisible", String(sidebarVisible));
   }, [sidebarVisible]);
+
+  // Lets focusSidebarTab (driven by sidebar.focusExplorer and every
+  // extension panel's own focusBinding command) reveal a hidden sidebar, or
+  // hide it again when re-pressed on the already-active tab. A ref keeps
+  // isVisible() fresh for the mount-once-registered handler, matching
+  // useGlobalKeybindings' bindingsRef freshness pattern.
+  const sidebarVisibleRef = useRef(sidebarVisible);
+  useEffect(() => {
+    sidebarVisibleRef.current = sidebarVisible;
+  }, [sidebarVisible]);
+  useEffect(() => {
+    setSidebarVisibleHandler({
+      isVisible: () => sidebarVisibleRef.current,
+      setVisible: setSidebarVisible,
+    });
+    return () => setSidebarVisibleHandler(null);
+  }, []);
 
   // Extension-registered commands/viewers/panels (extensions.ts) — commands
   // join the built-in list inside useSettingsSync (always "global" scope in
@@ -265,6 +283,7 @@ export default function App() {
   const globalHandlers = useMemo<Record<string, () => void>>(
     () => ({
       "sidebar.toggle": () => setSidebarVisible((v) => !v),
+      "sidebar.focusExplorer": () => focusSidebarTab(EXPLORER_TAB_ID),
       "quickSwitcher.toggle": () => setSwitcherQuery((q) => (q === null ? "" : null)),
       "commandPalette.toggle": () => setSwitcherQuery((q) => (q === null ? ">" : null)),
       "tab.next": () => cycleTab(1),

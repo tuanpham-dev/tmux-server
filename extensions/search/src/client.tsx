@@ -786,7 +786,13 @@ function SearchPanel({ actionsTarget }: PanelProps) {
 // ---- activate() ----
 
 export function activate(ctx: {
-  registerSidebarPanel: (p: { id: string; title: string; icon?: string; component: typeof SearchPanel }) => void;
+  registerSidebarPanel: (p: {
+    id: string;
+    title: string;
+    icon?: string;
+    focusBinding?: string;
+    component: typeof SearchPanel;
+  }) => void;
   app: {
     getActiveContext: () => ActiveContext;
     onDidChangeContext: (cb: (ctx: ActiveContext) => void) => () => void;
@@ -811,6 +817,7 @@ export function activate(ctx: {
     id: "search",
     title: "Search",
     icon: "search",
+    focusBinding: "ctrl+shift+KeyF",
     component: SearchPanel,
   });
 }

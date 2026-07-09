@@ -1227,6 +1227,7 @@ export function activate(ctx: {
     id: string;
     title: string;
     icon?: string;
+    focusBinding?: string;
     component: typeof GitPanel;
   }) => void;
   registerFileViewer: (v: {
@@ -1261,6 +1262,7 @@ export function activate(ctx: {
     id: "git",
     title: "Source Control",
     icon: "source-control",
+    focusBinding: "ctrl+shift+KeyG",
     component: GitPanel,
   });
   // extensions: [] — never auto-matched to a file; reached only via

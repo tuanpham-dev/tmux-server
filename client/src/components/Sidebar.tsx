@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { setSelectSidebarTabHandler, type RegisteredSidebarPanel } from "../extensions";
+import { setSidebarTabsBridge, type RegisteredSidebarPanel } from "../extensions";
 import { moveId } from "../lib/tabs";
 import { sessionRowsWithPins } from "../lib/sessions";
 import type { MenuItem, PinnedSession, SidebarMode, TmuxSession, TmuxWindow } from "../types";
@@ -60,7 +60,7 @@ function loadPanelState(): PanelState {
 // fixed "explorer" tab holds the accordion below (sessions/files/ports),
 // and every registered extension sidebar panel — e.g. git-scm's Source
 // Control — gets its own full-height tab instead of joining the accordion.
-const EXPLORER_TAB_ID = "explorer";
+export const EXPLORER_TAB_ID = "explorer";
 const TABS_KEY = "sidebarTabs";
 
 interface TabsState {
@@ -257,10 +257,16 @@ export default function Sidebar({
     setTabsState((prev) => ({ ...prev, active: id }));
   };
 
-  // Lets core code outside Sidebar (currently: the FILES-tree "Find in
-  // Folder…" menu item) force-activate a sidebar tab — see
-  // extensions.ts's selectSidebarTab/setSelectSidebarTabHandler.
-  useEffect(() => setSelectSidebarTabHandler(selectTab), [selectTab]);
+  // Lets core code outside Sidebar (the FILES-tree "Find in Folder…" menu
+  // item, and every "Sidebar: Focus <tab>" shortcut) force-activate a
+  // sidebar tab, or read which one is active — see extensions.ts's
+  // selectSidebarTab/focusSidebarTab/setSidebarTabsBridge. Re-registered
+  // whenever activeTabId changes (selectTab is a fresh closure each render
+  // regardless) so getActive always reflects the current tab.
+  useEffect(() => {
+    setSidebarTabsBridge({ select: selectTab, getActive: () => activeTabId });
+    return () => setSidebarTabsBridge(null);
+  }, [selectTab, activeTabId]);
 
   const reorderTabs = (draggedId: string, toIndex: number) => {
     setTabsState((prev) => {

@@ -17,6 +17,7 @@ export interface Command {
 
 export const COMMANDS: Command[] = [
   { id: "sidebar.toggle", label: "Toggle Sidebar", defaultBinding: "ctrl+shift+KeyB", scope: "global" },
+  { id: "sidebar.focusExplorer", label: "Sidebar: Focus Explorer", defaultBinding: "ctrl+shift+KeyE", scope: "global" },
   { id: "quickSwitcher.toggle", label: "Toggle Quick Switcher", defaultBinding: "ctrl+KeyP", scope: "global" },
   { id: "commandPalette.toggle", label: "Show Command Palette", defaultBinding: "ctrl+shift+KeyP", scope: "global" },
   { id: "quickSwitcher.selectNext", label: "Quick Switcher: Select Next Item", defaultBinding: "alt+KeyJ", scope: "global" },

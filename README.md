@@ -16,7 +16,7 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 
 ## Features
 
-- **Sidebar** — VS Code-style icon tabs across the top switch between views: **Explorer** (sessions and windows as a tree, or grouped by working directory, plus FILES and PORTS — panels reorderable by drag and independently resizable) and one tab per extension-contributed panel, like SOURCE CONTROL. Drag a tab to reorder it. Resizable, collapsible (`Ctrl+Shift+B`), shows attached/activity status.
+- **Sidebar** — VS Code-style icon tabs across the top switch between views: **Explorer** (sessions and windows as a tree, or grouped by working directory, plus FILES and PORTS — panels reorderable by drag and independently resizable) and one tab per extension-contributed panel, like SOURCE CONTROL. Drag a tab to reorder it. Resizable, collapsible (`Ctrl+Shift+B`), shows attached/activity status. Jump straight to a tab with its shortcut — `Ctrl+Shift+E` for Explorer, `Ctrl+Shift+G` for Source Control, `Ctrl+Shift+F` for Search (which yields to the terminal's own find when a terminal is focused) — revealing the sidebar first if it's hidden, and re-pressing the active tab's shortcut hides it again.
 - **Quick switcher (`Ctrl+P`)** — fuzzy-search and jump to any open tab, window, or session, or search files by name. `Enter` opens a file in the editor; `Shift+Enter` opens it in its preview viewer instead; `Alt+J`/`Alt+K` move the selection (in addition to the arrow keys). Type `>` as the first character (or press `Ctrl+Shift+P`) to switch it into a **command palette** — every keyboard-bindable command, including extension-contributed ones, searchable by name and runnable without a bound key. The command you last ran from the palette always appears first; enable "Sort command palette by most-used" in Settings → Behavior to order the rest by usage instead of their default order.
 - **Tabbed terminals** — open a whole session or a single window as its own tab, switch between them, close individually or all-but-one. Drag to reorder (long-press then drag on touch), middle-click to close, double-click a tab to toggle the sidebar. Background tabs with new output get an activity dot; closing the active tab reactivates the most-recently-used one. In the installed PWA: `Ctrl+Tab`/`Ctrl+Shift+Tab` to cycle tabs, `Ctrl+W` to close the active one. Optional Chrome-style **tab groups** (Settings → Behavior) collect each session's tabs — plus any preview tab opened from it — behind a colored, collapsible chip; pick the chip's color, collapse/expand, or reorder groups from its context menu, or drag a chip to reorder it directly.
 - **Session & window management** — click a session to open every one of its windows as its own tab; create, rename, kill sessions and windows via context menu or hover buttons. **Pin a session** (context menu) to keep it in the sidebar after it's killed — a dimmed row with a pin icon that restores the session (and its saved working directory) with one click or "New Window".
@@ -137,6 +137,25 @@ location / {
     proxy_send_timeout 1d;
 }
 ```
+
+If you add `auth_basic` (nginx-level HTTP Basic Auth) in front of this, exempt the manifest and service worker from it — Chrome's internal PWA-installability check fetches them without your browser's cached Basic Auth credentials, so they'll get a 401 and the "Install app" option won't appear even though the site itself loads fine:
+
+```nginx
+location = /manifest.webmanifest {
+    auth_basic off;
+    proxy_pass http://127.0.0.1:3001;
+}
+location = /sw.js {
+    auth_basic off;
+    proxy_pass http://127.0.0.1:3001;
+}
+location ~ ^/workbox-.*\.js$ {
+    auth_basic off;
+    proxy_pass http://127.0.0.1:3001;
+}
+```
+
+`AUTH_TOKEN` (see [Authentication](#authentication) below) doesn't have this problem, since it's cookie-based and cookies ride along on every request automatically — it's the simpler option if you don't need Basic Auth for another reason.
 
 The server only accepts requests whose `Host` (and, for browser requests, `Origin`) resolve to `localhost`, `127.0.0.1`, or `::1` by default — this blocks other websites' pages from reaching it via your browser (WebSockets ignore same-origin policy). Set `ALLOWED_HOSTS` to a comma-separated list of the hostname(s) you expose it as, e.g.:
 
@@ -323,7 +342,7 @@ Extensions with at least one enabled, valid property get their own entry in the 
   - `editorFallback` (default `true`, `"default"`-mode only): whether the context menu offers an "Open in Editor" item to fall back to nvim — the bundled image-preview leaves this on (for editing e.g. an SVG's source), media-preview/pdf-preview turn it off (nvim on binary content isn't useful)
   - among same-path matches, a third-party (user-installed) viewer takes precedence over a bundled one, so you can override a built-in preview by registering for the same extension
   - the component receives `{ filePath, active }` plus optional host props: `toolbarTarget` (a `HTMLDivElement | null` to portal tab-bar controls into), `openInEditor(path)`, `showMenu(x, y, items)`, `setDirty(dirty)` (report unsaved edits so closing the tab confirms first), `fontSize` (px)
-- `ctx.registerSidebarPanel({ id, title, icon?, component })` — adds its own tab to the sidebar's tab strip, alongside the built-in Explorer tab (SESSIONS/FILES/PORTS); `icon` is a codicon name (default `"extensions"`); the component receives one optional host prop, `actionsTarget` (a `HTMLDivElement | null` to portal header-row buttons into, e.g. a refresh/sync icon next to the panel's title — same portal mechanism `registerFileViewer`'s `toolbarTarget` uses)
+- `ctx.registerSidebarPanel({ id, title, icon?, focusBinding?, component })` — adds its own tab to the sidebar's tab strip, alongside the built-in Explorer tab (SESSIONS/FILES/PORTS); `icon` is a codicon name (default `"extensions"`); `focusBinding` (a keybindings.ts-style combo, e.g. `"ctrl+shift+KeyG"`) auto-registers a rebindable "Sidebar: Focus `<title>`" command that reveals the sidebar (if hidden) and switches to this tab, or hides the sidebar if it's already the active tab — omit it for no dedicated shortcut/palette entry; the component receives one optional host prop, `actionsTarget` (a `HTMLDivElement | null` to portal header-row buttons into, e.g. a refresh/sync icon next to the panel's title — same portal mechanism `registerFileViewer`'s `toolbarTarget` uses)
 - `ctx.app.getActiveContext()` / `ctx.app.onDidChangeContext(cb)` — the active tab's session name / window index / cwd
 - `ctx.app.openFileTab(path)` — opens a path through the same dispatch a FILES-tree click uses
 - `ctx.app.openViewerTab(viewerId, path, opts?: { title? })` — opens (or activates) a tab for one of this extension's own `registerFileViewer` components directly, bypassing extension-based matching — for a viewer registered with `extensions: []` that's only ever reached this way (e.g. a diff view opened from a source-control panel). `opts.title` overrides the tab-bar label (default: the path's basename); calling it again for an already-open `(viewerId, path)` tab updates its title in place

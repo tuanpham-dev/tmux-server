@@ -111,6 +111,13 @@ export interface ExtensionContext {
     // Codicon name shown on this panel's sidebar tab. Defaults to
     // "extensions" when omitted.
     icon?: string;
+    // Default keybinding (keybindings.ts combo syntax, e.g. "ctrl+shift+KeyG")
+    // for an auto-registered "Sidebar: Focus <title>" command that reveals
+    // the sidebar (if hidden) and switches to this tab — see
+    // focusSidebarTab. Omit for no command at all; there's no unbound
+    // default the way built-in commands get one, since most panels don't
+    // need a dedicated shortcut cluttering the palette/keybinding list.
+    focusBinding?: string;
     component: ReactNS.ComponentType<SidebarPanelHostProps>;
   }): void;
   app: {
@@ -260,17 +267,68 @@ export function setRefreshFilesHandler(handler: () => void): void {
   refreshFilesHandler = handler;
 }
 
-let selectSidebarTabHandler: ((id: string) => void) | null = null;
+interface SidebarTabsBridge {
+  select(id: string): void;
+  getActive(): string;
+}
 
-// Wired once from Sidebar.tsx to its own selectTab — lets core code (e.g.
-// the FILES-tree "Find in Folder…" menu item) force-activate a sidebar tab
-// by its (possibly extension-namespaced) id.
-export function setSelectSidebarTabHandler(handler: (id: string) => void): void {
-  selectSidebarTabHandler = handler;
+let sidebarTabsBridge: SidebarTabsBridge | null = null;
+// Buffers a tab id requested while the Sidebar hasn't (re)mounted yet —
+// notably focusSidebarTab's "reveal a hidden sidebar, then select" path:
+// the visibility setState is queued but the Sidebar (and its bridge) isn't
+// back until its own next render/effect pass.
+let pendingTabId: string | null = null;
+
+// Wired once from Sidebar.tsx (re-registered whenever its selectTab/
+// activeTabId identity changes) — lets core code (the FILES-tree "Find in
+// Folder…" menu item, and focusSidebarTab below) force-activate a sidebar
+// tab by its (possibly extension-namespaced) id, or read which one is
+// currently active.
+export function setSidebarTabsBridge(bridge: SidebarTabsBridge | null): void {
+  sidebarTabsBridge = bridge;
+  if (bridge && pendingTabId !== null) {
+    const id = pendingTabId;
+    pendingTabId = null;
+    bridge.select(id);
+  }
 }
 
 export function selectSidebarTab(id: string): void {
-  selectSidebarTabHandler?.(id);
+  if (sidebarTabsBridge) sidebarTabsBridge.select(id);
+  else pendingTabId = id;
+}
+
+interface SidebarVisibility {
+  isVisible(): boolean;
+  setVisible(visible: boolean): void;
+}
+
+let sidebarVisibility: SidebarVisibility | null = null;
+
+// Wired once from App.tsx — lets focusSidebarTab below reveal a hidden
+// sidebar (and hide it again for the VS Code "re-press the active tab's
+// shortcut" toggle).
+export function setSidebarVisibleHandler(handler: SidebarVisibility | null): void {
+  sidebarVisibility = handler;
+}
+
+// Drives every "Sidebar: Focus <tab>" command (sidebar.focusExplorer and
+// any extension panel's focusBinding command, see registerSidebarPanel
+// below): hidden → reveal and switch to it; visible on a different tab →
+// switch to it; visible and already the active tab → hide the sidebar
+// (VS Code's toggle behavior).
+export function focusSidebarTab(id: string): void {
+  if (!sidebarVisibility) return;
+  if (!sidebarVisibility.isVisible()) {
+    sidebarVisibility.setVisible(true);
+    selectSidebarTab(id);
+    return;
+  }
+  if (sidebarTabsBridge?.getActive() === id) {
+    sidebarVisibility.setVisible(false);
+    return;
+  }
+  selectSidebarTab(id);
 }
 
 // "Find in Folder…" (FILES-tree folder context menu, useFileActions.ts) —
@@ -386,12 +444,24 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       notify();
     },
     registerSidebarPanel(panel) {
+      const namespacedId = `ext.${ext.id}.${panel.id}`;
       extensionSidebarPanels.push({
-        id: `ext.${ext.id}.${panel.id}`,
+        id: namespacedId,
         title: panel.title,
         icon: panel.icon,
         component: panel.component,
       });
+      // Opt-in only — most panels don't warrant their own dedicated
+      // shortcut cluttering the palette/keybinding list (see the
+      // focusBinding doc comment above).
+      if (panel.focusBinding) {
+        extensionCommands.push({
+          id: `${namespacedId}.focus`,
+          label: `Sidebar: Focus ${panel.title}`,
+          defaultBinding: panel.focusBinding,
+          run: () => focusSidebarTab(namespacedId),
+        });
+      }
       notify();
     },
     app: {

@@ -29,13 +29,19 @@ export default function KeyboardSection({ active }: { active: boolean }) {
   const allCommands: Command[] = [...COMMANDS, ...extCommandDefs];
 
   const resolved = resolveBindings(keybindingOverrides, extCommandDefs);
-  // combo → command ids sharing it, for the conflict warning. An empty
-  // binding (an extension command with no defaultBinding, never assigned
-  // one) is intentionally excluded — several of those otherwise look like
-  // mutual conflicts under the shared "" key.
+  // scope+combo → command ids sharing it, for the conflict warning. Keyed by
+  // scope as well as combo: a global command sharing a chord with a
+  // terminal-scoped one (e.g. Search's focus shortcut and Terminal: Find
+  // both default to Ctrl+Shift+F) is by design, not a conflict — the global
+  // dispatcher yields to the terminal command whenever a terminal is
+  // focused (see useGlobalKeybindings), so only same-scope collisions are
+  // real. An empty binding (an extension command with no defaultBinding,
+  // never assigned one) is intentionally excluded — several of those
+  // otherwise look like mutual conflicts under the shared "" key.
   const byBinding: Record<string, string[]> = {};
+  const conflictKey = (cmd: Command) => `${cmd.scope}:${resolved[cmd.id]}`;
   for (const cmd of allCommands) {
-    if (resolved[cmd.id]) (byBinding[resolved[cmd.id]] ??= []).push(cmd.id);
+    if (resolved[cmd.id]) (byBinding[conflictKey(cmd)] ??= []).push(cmd.id);
   }
 
   // Chord recorder. The window-level capture listener plus the module-level
@@ -107,7 +113,7 @@ export default function KeyboardSection({ active }: { active: boolean }) {
           const binding = resolved[cmd.id];
           const overridden = keybindingOverrides[cmd.id] !== undefined;
           const isRecording = recordingId === cmd.id;
-          const conflicts = (byBinding[binding] ?? []).filter((id) => id !== cmd.id);
+          const conflicts = (byBinding[conflictKey(cmd)] ?? []).filter((id) => id !== cmd.id);
           const conflictLabels = conflicts
             .map((id) => allCommands.find((c) => c.id === id)?.label ?? id)
             .join(", ");

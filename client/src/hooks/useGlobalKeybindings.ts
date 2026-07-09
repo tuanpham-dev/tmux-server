@@ -1,6 +1,11 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 import type { RegisteredCommand } from "../extensions";
-import { recorderState, serializeEvent } from "../keybindings";
+import { COMMANDS, recorderState, serializeEvent } from "../keybindings";
+
+// Extension commands are always scope "global" (see KeyboardSection.tsx's
+// extCommandDefs), so terminal-scoped ids only ever come from the static
+// built-in list — safe to compute once at module scope.
+const TERMINAL_COMMAND_IDS = COMMANDS.filter((c) => c.scope === "terminal").map((c) => c.id);
 
 // Every global shortcut in one capture-phase dispatcher, driven by the
 // rebindable keybindings map (keybindings.ts). A matched combo gets
@@ -41,6 +46,17 @@ export function useGlobalKeybindings(
       const bindings = bindingsRef.current;
       if (combo === bindings["terminal.copy"]) {
         e.preventDefault();
+        return;
+      }
+      // A global command (e.g. a sidebar-focus shortcut) can legitimately
+      // share a chord with a terminal-scoped one (e.g. Ctrl+Shift+F is both
+      // Search-focus and terminal.find) — when the keystroke originates
+      // inside a focused terminal, the terminal command wins: bail here
+      // (no preventDefault/stopPropagation) so the event reaches xterm's own
+      // attachCustomKeyEventHandler (TerminalView.tsx) exactly as if this
+      // dispatcher didn't exist.
+      const target = e.target as HTMLElement | null;
+      if (target?.closest(".terminal-host") && TERMINAL_COMMAND_IDS.some((id) => bindings[id] === combo)) {
         return;
       }
       for (const [id, run] of Object.entries(globalCommandsRef.current)) {
