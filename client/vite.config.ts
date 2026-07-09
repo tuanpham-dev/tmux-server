@@ -2,9 +2,25 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
+// Only matters for `npm run dev`: the built index.html's <title> is instead
+// templated per-request by the server (see APP_NAME handling in
+// server/src/index.ts) so a rebuild isn't needed in production.
+function appNameTitlePlugin() {
+  return {
+    name: "app-name-title",
+    transformIndexHtml(html: string) {
+      const appName = process.env.APP_NAME;
+      if (!appName) return html;
+      const escaped = appName.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]!);
+      return html.replace(/<title>.*?<\/title>/, `<title>${escaped}</title>`);
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     react(),
+    appNameTitlePlugin(),
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["favicon.ico", "icon.svg", "apple-touch-icon-180x180.png"],

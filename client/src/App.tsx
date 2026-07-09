@@ -25,6 +25,11 @@ import { groupKeyForTab } from "./lib/tabs";
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
 
+// The server templates the real app name (see APP_NAME in server/.env) into
+// index.html's <title> before this module ever loads, so capturing it here
+// — before the effect below overwrites it — picks up any custom name.
+const APP_NAME = document.title;
+
 // Commands that exist for Settings → Keyboard (rebindable) and their own
 // component's direct dispatch, but make no sense as a palette entry to
 // "run" — see paletteCommands' comment below.
@@ -451,7 +456,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    document.title = activeTab ? `${tabLabel(activeTab)} — tmux` : "tmux";
+    document.title = activeTab ? `${tabLabel(activeTab)} — ${APP_NAME}` : APP_NAME;
   }, [activeTab, tabLabel]);
 
   return (

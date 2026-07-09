@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import express from "express";
@@ -31,6 +31,11 @@ try {
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT ?? 3001);
+
+const HTML_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>]/g, (c) => HTML_ESCAPES[c]);
+}
 
 const app = express();
 // Host guards against DNS rebinding; Origin guards against a browser tab on
@@ -102,9 +107,39 @@ app.get("/tunnel.mjs", (_req, res) => {
 
 const clientDist = path.resolve(import.meta.dirname, "../../client/dist");
 if (existsSync(clientDist)) {
-  app.use(express.static(clientDist));
+  const manifestPath = path.join(clientDist, "manifest.webmanifest");
+  const indexHtmlPath = path.join(clientDist, "index.html");
+
+  // Registered ahead of express.static below so a custom APP_NAME (see
+  // server/.env) can override the name baked into these two files at build
+  // time — read fresh each request since both files are tiny and this is a
+  // low-traffic personal tool, not worth caching.
+  app.get("/manifest.webmanifest", (_req, res, next) => {
+    const appName = process.env.APP_NAME;
+    if (!appName || !existsSync(manifestPath)) {
+      next();
+      return;
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.name = appName;
+    manifest.short_name = appName;
+    res.type("application/manifest+json").send(JSON.stringify(manifest));
+  });
+
+  // index: false — otherwise express.static serves index.html for "/"
+  // itself (its default behavior), bypassing the templated catch-all below.
+  app.use(express.static(clientDist, { index: false }));
   app.get(/^\/(?!api|ws).*/, (_req, res) => {
-    res.sendFile(path.join(clientDist, "index.html"));
+    const appName = process.env.APP_NAME;
+    if (!appName) {
+      res.sendFile(indexHtmlPath);
+      return;
+    }
+    const html = readFileSync(indexHtmlPath, "utf8").replace(
+      /<title>.*?<\/title>/,
+      `<title>${escapeHtml(appName)}</title>`,
+    );
+    res.type("html").send(html);
   });
 }
 
