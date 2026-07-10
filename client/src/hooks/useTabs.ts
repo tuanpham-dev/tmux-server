@@ -305,6 +305,17 @@ export function useTabs(
   // their own, only the confirm check below reads it.
   const dirtyTabsRef = useRef<Set<string>>(new Set());
 
+  // Reopen-closed-tab history (Alt+Shift+T), most-recently-closed last —
+  // only user-initiated closes push here (closeTab, closeOtherTabs), never
+  // the vanished-window sweep below: that tab's tmux window is already
+  // gone, so "reopening" it would just error. Capped so a burst of
+  // closeOtherTabs can't grow this unbounded.
+  const closedTabsRef = useRef<Tab[]>([]);
+  const CLOSED_TABS_LIMIT = 10;
+  const pushClosedTab = (tab: Tab) => {
+    closedTabsRef.current = [...closedTabsRef.current, tab].slice(-CLOSED_TABS_LIMIT);
+  };
+
   const closeTab = useCallback(
     async (id: string) => {
       if (dirtyTabsRef.current.has(id)) {
@@ -316,6 +327,7 @@ export function useTabs(
       if (tab?.windowIndex !== undefined) {
         api.closeWindowTab(tab.attachName).catch(() => {});
       }
+      if (tab) pushClosedTab(tab);
       mruTabIdsRef.current = mruTabIdsRef.current.filter((tid) => tid !== id);
       setTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === id);
@@ -369,6 +381,7 @@ export function useTabs(
       for (const t of toClose) {
         dirtyTabsRef.current.delete(t.id);
         if (t.windowIndex !== undefined) api.closeWindowTab(t.attachName).catch(() => {});
+        pushClosedTab(t);
       }
       mruTabIdsRef.current = mruTabIdsRef.current.filter((tid) => !closedIds.has(tid));
       setTabs((prev) => prev.filter((t) => t.id === id));
@@ -376,6 +389,28 @@ export function useTabs(
     },
     [tabs, confirmDialog],
   );
+
+  // Pops the most-recently-closed tab and replays it through the same
+  // opener its kind normally uses — reuses each opener's own dedupe/fold
+  // logic and (for window/session tabs) self-heals a dead session exactly
+  // like a restored-from-localStorage tab does. Original position/group is
+  // not restored; the reopened tab lands per newTabPlacement like any
+  // newly-opened tab.
+  const reopenClosedTab = useCallback(() => {
+    const stack = closedTabsRef.current;
+    if (!stack.length) return;
+    const tab = stack[stack.length - 1];
+    closedTabsRef.current = stack.slice(0, -1);
+    if (tab.settingsView) {
+      openSettingsTab();
+    } else if (tab.extViewerId !== undefined && tab.extViewerPath !== undefined) {
+      openExtViewerTab(tab.extViewerId, tab.extViewerPath, tab.extViewerTitle);
+    } else if (tab.windowIndex !== undefined) {
+      openWindowTab(tab.sessionName, tab.windowIndex);
+    } else if (tab.sessionName) {
+      openSession(tab.sessionName);
+    }
+  }, [openSettingsTab, openExtViewerTab, openWindowTab, openSession]);
 
   // Runs every poll: rewrites any tab whose session/window drifted from an
   // out-of-band rename or renumber (see reconcileTabs), and follows the same
@@ -555,6 +590,7 @@ export function useTabs(
     cycleTab,
     moveTab,
     closeOtherTabs,
+    reopenClosedTab,
     activeTab,
     activeRealTab,
     activeSession,

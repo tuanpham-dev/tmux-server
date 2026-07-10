@@ -596,6 +596,21 @@ export default function TerminalView({
           }
           return false;
         }
+        if (combo === b["terminal.clear"]) {
+          e.preventDefault();
+          term.clear();
+          return false;
+        }
+        if (combo === b["terminal.scrollToBottom"]) {
+          e.preventDefault();
+          // tmux owns scrollback here (see the mount effect's comment above
+          // requestScrollState), not xterm's own buffer — term.scrollToBottom()
+          // would be a no-op. Exiting copy-mode via the same "cancel" the
+          // search overlay already uses on close is what actually returns
+          // the pane to its live tail.
+          sendSearchRef.current("cancel");
+          return false;
+        }
         return true;
       });
 

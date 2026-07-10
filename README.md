@@ -46,12 +46,19 @@ A VSCode-style web UI for tmux. Browse all tmux sessions in a sidebar, open them
 | `Ctrl+Shift+C` | Copy terminal selection |
 | `Ctrl+Shift+F` | Scrollback search |
 | `Shift+Enter` | Insert a literal newline in the terminal |
+| `Alt+1`…`Alt+9` ‡ | Jump straight to the 1st…9th tab |
+| `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move the active tab left / right |
+| `Shift+Alt+T` | Reopen the last closed tab |
+| `Ctrl+=` / `Ctrl+-` | Increase / decrease terminal font size |
+| `Ctrl+0` | Reset terminal font size |
 
 \* Browser-reserved outside the installed PWA — bind a different combo in Settings → Keyboard if you're using tmux-server as a regular browser tab.
 
 † Firefox reserves `Ctrl+Shift+P` for opening a private window and won't let pages intercept it — rebind it in Settings → Keyboard, or just type `>` into the `Ctrl+P` quick switcher instead.
 
-The command palette also lists eight session/window actions — **New Session**, **Kill Current Session**, **Rename Current Session…**, **Pin/Unpin Current Session**, **New Window**, **Kill Current Window**, **Rename Current Window…**, and **Close Other Tabs** — that ship with no default key so they don't collide with anything; bind any of them from Settings → Keyboard if you use them often. They stay accessible from the sidebar's context menus and hover buttons either way.
+‡ Firefox on Linux also binds `Alt+1`…`Alt+9` to its own tab switching and may not let pages intercept them — rebind in Settings → Keyboard if that's in the way.
+
+The command palette also lists eight session/window actions — **New Session**, **Kill Current Session**, **Rename Current Session…**, **Pin/Unpin Current Session**, **New Window**, **Kill Current Window**, **Rename Current Window…**, and **Close Other Tabs** — that ship with no default key so they don't collide with anything; bind any of them from Settings → Keyboard if you use them often. They stay accessible from the sidebar's context menus and hover buttons either way. **Terminal: Clear Scrollback** and **Terminal: Scroll to Bottom** likewise ship unbound — assign a chord in Settings → Keyboard if you want one.
 
 - **`Ctrl`+click** (`Cmd`+click on Mac) a URL, local file path, or hyperlink in the terminal to open it; add `Shift` to open a file in its preview viewer instead of the editor.
 - **Drag** in the terminal makes a tmux copy-mode selection; **Shift+drag** makes a normal browser text selection.

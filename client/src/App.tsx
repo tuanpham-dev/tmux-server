@@ -14,6 +14,7 @@ import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
 import { COMMANDS, formatBinding } from "./keybindings";
+import { DEFAULT_SETTINGS } from "./settings";
 import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
 import { useSettingsSync } from "./hooks/useSettingsSync";
@@ -34,7 +35,11 @@ const APP_NAME = document.title;
 // Commands that exist for Settings → Keyboard (rebindable) and their own
 // component's direct dispatch, but make no sense as a palette entry to
 // "run" — see paletteCommands' comment below.
-const NON_PALETTE_IDS = new Set(["quickSwitcher.selectNext", "quickSwitcher.selectPrevious"]);
+const NON_PALETTE_IDS = new Set([
+  "quickSwitcher.selectNext",
+  "quickSwitcher.selectPrevious",
+  ...Array.from({ length: 9 }, (_, i) => `tab.focus${i + 1}`),
+]);
 
 export default function App() {
   // Declared first so useSessions (which needs showError) and the files
@@ -147,6 +152,7 @@ export default function App() {
     cycleTab,
     moveTab,
     closeOtherTabs,
+    reopenClosedTab,
     activeTab,
     activeRealTab,
     activeSession,
@@ -314,11 +320,45 @@ export default function App() {
       "window.rename": () => {
         if (activeRealTab && activeWindow) renameWindow(activeRealTab.sessionName, activeWindow);
       },
+      ...Object.fromEntries(
+        Array.from({ length: 9 }, (_, i) => [
+          `tab.focus${i + 1}`,
+          () => {
+            const t = tabs[i];
+            if (t) setActiveTabId(t.id);
+          },
+        ]),
+      ),
+      "tab.moveLeft": () => {
+        if (!activeTabId) return;
+        const idx = tabs.findIndex((t) => t.id === activeTabId);
+        if (idx > 0) moveTab(activeTabId, idx - 1);
+      },
+      "tab.moveRight": () => {
+        if (!activeTabId) return;
+        const idx = tabs.findIndex((t) => t.id === activeTabId);
+        if (idx !== -1 && idx < tabs.length - 1) moveTab(activeTabId, idx + 1);
+      },
+      "tab.reopenClosed": reopenClosedTab,
+      "terminal.fontSizeIncrease": () => {
+        setSettings((prev) => ({ ...prev, fontSize: Math.min(32, prev.fontSize + 1) }));
+      },
+      "terminal.fontSizeDecrease": () => {
+        setSettings((prev) => ({ ...prev, fontSize: Math.max(8, prev.fontSize - 1) }));
+      },
+      "terminal.fontSizeReset": () => {
+        setSettings((prev) => ({ ...prev, fontSize: DEFAULT_SETTINGS.fontSize }));
+      },
     }),
     [
       activeRealTab,
       activeWindow,
       activeTabId,
+      tabs,
+      setActiveTabId,
+      moveTab,
+      reopenClosedTab,
+      setSettings,
       closeTab,
       closeOtherTabs,
       cycleTab,
