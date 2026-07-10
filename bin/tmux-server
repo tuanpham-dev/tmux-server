@@ -59,6 +59,119 @@ read_port() {
 
 app_url() { echo "http://127.0.0.1:$(read_port)"; }
 
+# --- start/restart config flags -------------------------------------------
+# Maps 1:1 to the env config documented in the README (PORT, APP_NAME,
+# ALLOWED_HOSTS, AUTH_TOKEN, NEW_SESSION_CWD). Both `--flag value` and
+# `--flag=value` are accepted.
+FLAG_PORT=""; FLAG_PORT_SET=0
+FLAG_APP_NAME=""; FLAG_APP_NAME_SET=0
+FLAG_ALLOWED_HOSTS=""; FLAG_ALLOWED_HOSTS_SET=0
+FLAG_AUTH_TOKEN=""; FLAG_AUTH_TOKEN_SET=0
+FLAG_NEW_SESSION_CWD=""; FLAG_NEW_SESSION_CWD_SET=0
+FLAG_HELP=0
+
+reset_instance_flags() {
+  FLAG_PORT=""; FLAG_PORT_SET=0
+  FLAG_APP_NAME=""; FLAG_APP_NAME_SET=0
+  FLAG_ALLOWED_HOSTS=""; FLAG_ALLOWED_HOSTS_SET=0
+  FLAG_AUTH_TOKEN=""; FLAG_AUTH_TOKEN_SET=0
+  FLAG_NEW_SESSION_CWD=""; FLAG_NEW_SESSION_CWD_SET=0
+  FLAG_HELP=0
+}
+
+assign_instance_flag() {
+  local key="$1" val="$2"
+  case "$key" in
+    --port) FLAG_PORT="$val"; FLAG_PORT_SET=1 ;;
+    --app-name) FLAG_APP_NAME="$val"; FLAG_APP_NAME_SET=1 ;;
+    --allowed-hosts) FLAG_ALLOWED_HOSTS="$val"; FLAG_ALLOWED_HOSTS_SET=1 ;;
+    --auth-token) FLAG_AUTH_TOKEN="$val"; FLAG_AUTH_TOKEN_SET=1 ;;
+    --new-session-cwd) FLAG_NEW_SESSION_CWD="$val"; FLAG_NEW_SESSION_CWD_SET=1 ;;
+  esac
+}
+
+parse_instance_flags() {
+  reset_instance_flags
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --help|-h)
+        FLAG_HELP=1
+        shift
+        ;;
+      --port=*|--app-name=*|--allowed-hosts=*|--auth-token=*|--new-session-cwd=*)
+        assign_instance_flag "${1%%=*}" "${1#*=}"
+        shift
+        ;;
+      --port|--app-name|--allowed-hosts|--auth-token|--new-session-cwd)
+        if [ $# -lt 2 ]; then
+          fail "$1 requires a value"
+          exit 1
+        fi
+        assign_instance_flag "$1" "$2"
+        shift 2
+        ;;
+      *)
+        fail "unknown flag: $1"
+        exit 1
+        ;;
+    esac
+  done
+}
+
+any_instance_flag_set() {
+  [ "$FLAG_PORT_SET" -eq 1 ] || [ "$FLAG_APP_NAME_SET" -eq 1 ] || [ "$FLAG_ALLOWED_HOSTS_SET" -eq 1 ] ||
+    [ "$FLAG_AUTH_TOKEN_SET" -eq 1 ] || [ "$FLAG_NEW_SESSION_CWD_SET" -eq 1 ]
+}
+
+# Builds the NAME=VALUE argv this invocation's flags translate to, for
+# handing to `env` when launching an ad-hoc fallback instance.
+instance_flag_env_args() {
+  local args=()
+  [ "$FLAG_PORT_SET" -eq 1 ] && args+=("PORT=$FLAG_PORT")
+  [ "$FLAG_APP_NAME_SET" -eq 1 ] && args+=("APP_NAME=$FLAG_APP_NAME")
+  [ "$FLAG_ALLOWED_HOSTS_SET" -eq 1 ] && args+=("ALLOWED_HOSTS=$FLAG_ALLOWED_HOSTS")
+  [ "$FLAG_AUTH_TOKEN_SET" -eq 1 ] && args+=("AUTH_TOKEN=$FLAG_AUTH_TOKEN")
+  [ "$FLAG_NEW_SESSION_CWD_SET" -eq 1 ] && args+=("NEW_SESSION_CWD=$FLAG_NEW_SESSION_CWD")
+  printf '%s\n' "${args[@]+"${args[@]}"}"
+}
+
+env_quote_value() {
+  local val="$1"
+  # Node's process.loadEnvFile doesn't support backslash-escaping a `"`
+  # inside a double-quoted value (confirmed empirically against v26) — swap
+  # any literal double quote for a single quote so the file stays parseable.
+  val="${val//\"/\'}"
+  printf '"%s"' "$val"
+}
+
+# Upserts a single KEY="value" line into an env file, touching only that
+# key's line (or appending one if absent) — every other line, including
+# comments, is left byte-for-byte untouched.
+env_upsert_line() {
+  local file="$1" key="$2" value="$3" quoted tmp
+  quoted="$(env_quote_value "$value")"
+  if [ -f "$file" ] && grep -qE "^${key}=" "$file"; then
+    tmp="$(mktemp)"
+    awk -v key="$key" -v line="${key}=${quoted}" '
+      $0 ~ "^" key "=" && !done { print line; done = 1; next }
+      { print }
+    ' "$file" > "$tmp"
+    mv "$tmp" "$file"
+  else
+    mkdir -p "$(dirname "$file")"
+    printf '%s=%s\n' "$key" "$quoted" >> "$file"
+  fi
+}
+
+write_env_config() {
+  local env_file="$REPO_DIR/server/.env"
+  [ "$FLAG_PORT_SET" -eq 1 ] && env_upsert_line "$env_file" PORT "$FLAG_PORT"
+  [ "$FLAG_APP_NAME_SET" -eq 1 ] && env_upsert_line "$env_file" APP_NAME "$FLAG_APP_NAME"
+  [ "$FLAG_ALLOWED_HOSTS_SET" -eq 1 ] && env_upsert_line "$env_file" ALLOWED_HOSTS "$FLAG_ALLOWED_HOSTS"
+  [ "$FLAG_AUTH_TOKEN_SET" -eq 1 ] && env_upsert_line "$env_file" AUTH_TOKEN "$FLAG_AUTH_TOKEN"
+  [ "$FLAG_NEW_SESSION_CWD_SET" -eq 1 ] && env_upsert_line "$env_file" NEW_SESSION_CWD "$FLAG_NEW_SESSION_CWD"
+}
+
 # --- dependency checks (shared by `doctor` and the installer) -------------
 check_required_cmd() {
   local name="$1" hint="$2"
@@ -117,10 +230,14 @@ ensure_unit_installed() {
 }
 
 # --- fallback (non-systemd) process management -----------------------------
+pid_file_for_port() { echo "$RUNTIME_DIR/tmux-server-$1.pid"; }
+log_file_for_port() { echo "$RUNTIME_DIR/tmux-server-$1.log"; }
+
 fallback_running_pid() {
-  if [ -f "$PID_FILE" ]; then
+  local pid_file="${1:-$PID_FILE}"
+  if [ -f "$pid_file" ]; then
     local pid
-    pid="$(cat "$PID_FILE")"
+    pid="$(cat "$pid_file")"
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       echo "$pid"
       return 0
@@ -129,9 +246,27 @@ fallback_running_pid() {
   return 1
 }
 
+# Every pid this CLI itself is tracking via a pid file (the legacy default
+# instance plus any per-port ad-hoc ones) — used to label instances as
+# "fallback" (tracked) vs "external" (started some other way, e.g. npm run
+# dev) in `instances`/`stop`.
+tracked_fallback_pids() {
+  local f pid
+  for f in "$PID_FILE" "$RUNTIME_DIR"/tmux-server-*.pid; do
+    [ -f "$f" ] || continue
+    pid="$(cat "$f" 2>/dev/null)" || continue
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+  done
+}
+
 fallback_start() {
-  if fallback_running_pid >/dev/null; then
-    info "already running (pid $(cat "$PID_FILE")), logs: $LOG_FILE"
+  local port="$1" pid_file="$2" log_file="$3"
+  shift 3
+  # remaining args ("$@"), if any, are NAME=VALUE env assignments for the
+  # child — used by start_adhoc_instance to pass its flags through without
+  # touching this script's own environment.
+  if fallback_running_pid "$pid_file" >/dev/null; then
+    info "already running (pid $(cat "$pid_file")), logs: $log_file"
     return 0
   fi
   # `npm start` at the repo root runs "npm run start -w server", which spawns
@@ -150,26 +285,27 @@ fallback_start() {
   # leader's pid *and* the new pgid every descendant inherits.
   if ! command -v setsid >/dev/null 2>&1; then
     warn "setsid not found — stopping may not clean up every child process"
-    nohup "$SELF" run >>"$LOG_FILE" 2>&1 < /dev/null &
+    env "$@" nohup "$SELF" run >>"$log_file" 2>&1 < /dev/null &
   else
-    setsid "$SELF" run >>"$LOG_FILE" 2>&1 < /dev/null &
+    env "$@" setsid "$SELF" run >>"$log_file" 2>&1 < /dev/null &
   fi
   local pid=$!
   disown "$pid" 2>/dev/null || true
-  echo "$pid" > "$PID_FILE"
+  echo "$pid" > "$pid_file"
   sleep 1
-  if fallback_running_pid >/dev/null; then
-    ok "started (pid $pid) — logs: $LOG_FILE"
-    info "$(app_url)"
+  if fallback_running_pid "$pid_file" >/dev/null; then
+    ok "started (pid $pid) — logs: $log_file"
+    info "http://127.0.0.1:$port"
   else
-    fail "failed to start — check $LOG_FILE"
+    fail "failed to start — check $log_file"
     return 1
   fi
 }
 
 fallback_stop() {
+  local pid_file="$1"
   local pid
-  if pid="$(fallback_running_pid)"; then
+  if pid="$(fallback_running_pid "$pid_file")"; then
     # Signal the whole process group (see fallback_start) so nested
     # npm/tsx/node children die too, not just the tracked leader pid.
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
@@ -180,11 +316,141 @@ fallback_stop() {
     if kill -0 "$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
     fi
-    rm -f "$PID_FILE"
+    rm -f "$pid_file"
     ok "stopped"
   else
     info "not running"
   fi
+}
+
+# --- multi-instance discovery ---------------------------------------------
+# read_port()/app_url() only know about *this* invocation's env or
+# server/.env — they can't see a PORT that was exported inline (or via
+# --port) for a past `start` from a shell that's since closed. tsx always
+# execs the actual server process through this loader path, so grepping for
+# it (scoped to REPO_DIR) finds every running instance regardless of how it
+# was launched — npm run dev, npm start, foreground-fallback, or the
+# systemd unit — instead of guessing one port.
+find_server_pids() {
+  local pid
+  pgrep -f "node_modules/tsx/dist/loader.mjs" 2>/dev/null | while read -r pid; do
+    # comm can be truncated/renamed by the runtime (e.g. "node-MainThread" on
+    # newer Node builds), so check the resolved binary instead of comm.
+    case "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" in
+      */node) ;;
+      *) continue ;;
+    esac
+    grep -qF "$REPO_DIR" "/proc/$pid/cmdline" 2>/dev/null && echo "$pid"
+  done
+}
+
+pid_env_var() {
+  local pid="$1" name="$2"
+  tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n "s/^${name}=//p" | tail -n1
+}
+
+# Pid of the running instance bound to a given port, if any — checked via
+# actual discovery (not just pid files), so it also catches instances
+# started outside this CLI (e.g. npm run dev).
+instance_pid_for_port() {
+  local target="$1" pid port
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    port="$(pid_env_var "$pid" PORT)"; port="${port:-3001}"
+    [ "$port" = "$target" ] && { echo "$pid"; return 0; }
+  done < <(find_server_pids)
+  return 1
+}
+
+# Emits one `pid|port|app_name|managed_by` line per running instance.
+list_instances_raw() {
+  local pids
+  pids="$(find_server_pids)"
+  [ -n "$pids" ] || return 0
+
+  local systemd_pid=""
+  if has_systemd_user && unit_installed; then
+    systemd_pid="$(systemctl --user show "$UNIT_NAME" -p MainPID --value 2>/dev/null)"
+    [ "$systemd_pid" = "0" ] && systemd_pid=""
+  fi
+  local fallback_pids
+  fallback_pids="$(tracked_fallback_pids)"
+
+  local pid
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    local port app_name managed_by pgid
+    port="$(pid_env_var "$pid" PORT)"; port="${port:-3001}"
+    app_name="$(pid_env_var "$pid" APP_NAME)"; app_name="${app_name:-"-"}"
+    # The tracked pid (systemd's MainPID, or our own setsid leader) is never
+    # the discovered pid directly — `npm start` spawns nested npm/tsx child
+    # processes rather than exec-replacing itself, so the leaf tsx worker
+    # find_server_pids sees has a different pid from the leader we recorded.
+    # They do share a process group (setsid makes the leader its own pgid
+    # leader; systemd does the same for its unit), so match on that instead.
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    if [ -n "$systemd_pid" ] && { [ "$pid" = "$systemd_pid" ] || [ "$pgid" = "$systemd_pid" ]; }; then
+      managed_by="systemd"
+    elif printf '%s\n' "$fallback_pids" | grep -qx "$pid" ||
+      { [ -n "$pgid" ] && printf '%s\n' "$fallback_pids" | grep -qx "$pgid"; }; then
+      managed_by="fallback"
+    else
+      managed_by="external"
+    fi
+    printf '%s|%s|%s|%s\n' "$pid" "$port" "$app_name" "$managed_by"
+  done <<< "$pids"
+}
+
+# --- stopping an individual discovered instance ----------------------------
+stop_instance() {
+  local pid="$1" port="$2" managed_by="$3"
+  if [ "$managed_by" = "systemd" ]; then
+    systemctl --user stop "$UNIT_NAME"
+    ok "stopped systemd-managed instance (port $port)"
+    return 0
+  fi
+  # Fallback/external: signal the whole process group, not just this pid —
+  # for a "external" instance (e.g. npm run dev) that's the entire dev
+  # stack (concurrently/vite/tsx), which is what "stop" should mean here.
+  local pgid
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+  if [ -n "$pgid" ]; then
+    kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+  local i
+  for i in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$pgid" ]; then
+      kill -KILL -- "-$pgid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    else
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  # The pid file holds the setsid leader's pid, which — like the systemd
+  # MainPID case above — isn't the same pid we were passed (the discovered
+  # leaf tsx worker); match via the recorded leader's own pgid instead,
+  # which equals its pid (setsid makes it its own group leader).
+  local f tracked_pid
+  for f in "$PID_FILE" "$RUNTIME_DIR"/tmux-server-*.pid; do
+    [ -f "$f" ] || continue
+    tracked_pid="$(cat "$f" 2>/dev/null)"
+    [ -n "$tracked_pid" ] || continue
+    if [ "$tracked_pid" = "$pid" ] || [ "$tracked_pid" = "$pgid" ]; then
+      rm -f "$f"
+    fi
+  done
+  ok "stopped instance (pid $pid, port $port)"
+}
+
+stop_instance_line() {
+  local line="$1" pid port app_name managed_by
+  IFS='|' read -r pid port app_name managed_by <<< "$line"
+  stop_instance "$pid" "$port" "$managed_by"
 }
 
 # --- subcommands -------------------------------------------------------
@@ -193,51 +459,269 @@ cmd_run() {
   exec npm start
 }
 
+start_adhoc_instance() {
+  local port="${FLAG_PORT:-$(read_port)}"
+  local existing
+  if existing="$(instance_pid_for_port "$port")"; then
+    fail "an instance is already running on port $port (pid $existing) — stop it first or choose a different --port"
+    exit 1
+  fi
+
+  local pid_file log_file
+  pid_file="$(pid_file_for_port "$port")"
+  log_file="$(log_file_for_port "$port")"
+
+  local env_args=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && env_args+=("$line")
+  done < <(instance_flag_env_args)
+
+  fallback_start "$port" "$pid_file" "$log_file" "${env_args[@]+"${env_args[@]}"}"
+}
+
+usage_start() {
+  cat <<'EOF'
+Usage: tmux-server start [flags]
+       tmux-server restart [flags]
+
+Flags (all optional; each maps to the matching server config — see README):
+  --port <n>                Port to listen on (env: PORT, default 3001)
+  --app-name <name>         Browser tab / PWA name (env: APP_NAME)
+  --allowed-hosts <list>    Comma-separated hostnames to accept (env: ALLOWED_HOSTS)
+  --auth-token <token>      Shared-secret gate (env: AUTH_TOKEN) — prefer
+                            setting this in server/.env instead; a flag is
+                            visible in `ps` output and shell history.
+  --new-session-cwd <path>  Working directory for new sessions (env: NEW_SESSION_CWD)
+
+Both `--flag value` and `--flag=value` are accepted.
+
+With no flags: unchanged — uses the systemd user service if available, else
+runs one instance in the background using server/.env or its defaults.
+
+With flags and systemd available: the flags are written into server/.env and
+the managed service is restarted, so they persist across future restarts.
+
+With flags and no systemd: starts an additional one-off background instance
+on the given port, alongside anything already running (refuses if that port
+is already taken). Use `tmux-server instances` to see everything running.
+EOF
+}
+
 cmd_start() {
+  parse_instance_flags "$@"
+  if [ "$FLAG_HELP" -eq 1 ]; then
+    usage_start
+    return 0
+  fi
+
   if has_systemd_user; then
     ensure_unit_installed
-    systemctl --user start "$UNIT_NAME"
-    ok "started via systemd — $(app_url)"
-  else
-    fallback_start
+    if any_instance_flag_set; then
+      write_env_config
+      systemctl --user restart "$UNIT_NAME"
+      ok "applied flags to server/.env and restarted via systemd — $(app_url)"
+    else
+      systemctl --user start "$UNIT_NAME"
+      ok "started via systemd — $(app_url)"
+    fi
+    return 0
   fi
+
+  if any_instance_flag_set; then
+    start_adhoc_instance
+  else
+    fallback_start "$(read_port)" "$PID_FILE" "$LOG_FILE"
+  fi
+}
+
+usage_stop() {
+  cat <<'EOF'
+Usage: tmux-server stop [--port <n>] [--all] [--help]
+
+With no flags: stops the only running instance — or, if more than one is
+running, shows a numbered list and asks which one(s) to stop.
+
+  --port <n>   Stop only the instance running on this port (no prompt).
+  --all        Stop every running instance (no prompt).
+EOF
 }
 
 cmd_stop() {
-  if is_managed; then
-    systemctl --user stop "$UNIT_NAME"
-    ok "stopped"
-  else
-    fallback_stop
+  local opt_port="" opt_all=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --help|-h) usage_stop; return 0 ;;
+      --all) opt_all=1; shift ;;
+      --port=*) opt_port="${1#*=}"; shift ;;
+      --port)
+        if [ $# -lt 2 ]; then
+          fail "--port requires a value"
+          exit 1
+        fi
+        opt_port="$2"
+        shift 2
+        ;;
+      *)
+        fail "unknown flag: $1"
+        exit 1
+        ;;
+    esac
+  done
+
+  local raw
+  raw="$(list_instances_raw)"
+  if [ -z "$raw" ]; then
+    info "not running"
+    return 0
   fi
+  local count
+  count="$(printf '%s\n' "$raw" | wc -l)"
+
+  if [ -n "$opt_port" ]; then
+    local line
+    line="$(printf '%s\n' "$raw" | awk -F'|' -v p="$opt_port" '$2 == p')"
+    if [ -z "$line" ]; then
+      fail "no instance running on port $opt_port"
+      exit 1
+    fi
+    stop_instance_line "$line"
+    return 0
+  fi
+
+  if [ "$opt_all" -eq 1 ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      stop_instance_line "$line"
+    done <<< "$raw"
+    return 0
+  fi
+
+  if [ "$count" -eq 1 ]; then
+    local pid port app_name managed_by
+    IFS='|' read -r pid port app_name managed_by <<< "$raw"
+    if [ "$managed_by" != "external" ]; then
+      stop_instance_line "$raw"
+      return 0
+    fi
+    # The sole running instance isn't one tmux-server started/manages (e.g.
+    # npm run dev) — confirm before silently killing someone else's process
+    # tree, instead of treating "only one thing is running" as consent.
+    if [ ! -t 0 ]; then
+      warn "the only running instance looks external (not started via tmux-server): pid $pid port $port $app_name — re-run with --port $port or --all to confirm"
+      exit 1
+    fi
+    printf 'The only running instance is external (pid %s, port %s, %s) — not something tmux-server started. Stop it anyway? [y/N]: ' "$pid" "$port" "$app_name"
+    local confirm
+    read -r confirm
+    case "$confirm" in
+      y|Y) stop_instance_line "$raw" ;;
+      *) info "cancelled" ;;
+    esac
+    return 0
+  fi
+
+  if [ ! -t 0 ]; then
+    warn "more than one instance is running; re-run with --port <n> or --all:"
+    printf '%s\n' "$raw" | awk -F'|' '{ printf "  pid %s  port %s  %s  (%s)\n", $1, $2, $3, $4 }'
+    exit 1
+  fi
+
+  heading "Running instances"
+  printf '%-4s %-8s %-6s %-22s %s\n' "#" "PID" "PORT" "APP_NAME" "MANAGED BY"
+  local i=0 line pid port app_name managed_by
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    i=$((i + 1))
+    IFS='|' read -r pid port app_name managed_by <<< "$line"
+    printf '%-4s %-8s %-6s %-22s %s\n' "$i" "$pid" "$port" "$app_name" "$managed_by"
+  done <<< "$raw"
+
+  local choice
+  printf 'Stop which instance? [1-%s/a=all/q=cancel]: ' "$count"
+  read -r choice
+  case "$choice" in
+    q|Q|"")
+      info "cancelled"
+      ;;
+    a|A)
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        stop_instance_line "$line"
+      done <<< "$raw"
+      ;;
+    *)
+      if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+        fail "invalid choice: $choice"
+        exit 1
+      fi
+      local selected
+      selected="$(printf '%s\n' "$raw" | sed -n "${choice}p")"
+      stop_instance_line "$selected"
+      ;;
+  esac
 }
 
 cmd_restart() {
+  parse_instance_flags "$@"
+  if [ "$FLAG_HELP" -eq 1 ]; then
+    usage_start
+    return 0
+  fi
+
   if has_systemd_user; then
     ensure_unit_installed
+    if any_instance_flag_set; then
+      write_env_config
+    fi
     systemctl --user restart "$UNIT_NAME"
     ok "restarted via systemd — $(app_url)"
+    return 0
+  fi
+
+  if any_instance_flag_set; then
+    local port="${FLAG_PORT:-$(read_port)}"
+    local existing line
+    if existing="$(instance_pid_for_port "$port")"; then
+      line="$(list_instances_raw | awk -F'|' -v p="$existing" '$1 == p')"
+      [ -n "$line" ] && stop_instance_line "$line"
+    fi
+    start_adhoc_instance
   else
-    fallback_stop
-    fallback_start
+    fallback_stop "$PID_FILE"
+    fallback_start "$(read_port)" "$PID_FILE" "$LOG_FILE"
   fi
 }
 
 cmd_status() {
   if is_managed; then
     systemctl --user status "$UNIT_NAME" --no-pager || true
-  elif fallback_running_pid >/dev/null; then
-    info "running in foreground-fallback mode (pid $(fallback_running_pid))"
+  elif fallback_running_pid "$PID_FILE" >/dev/null; then
+    info "running in foreground-fallback mode (pid $(fallback_running_pid "$PID_FILE"))"
   else
     info "not running"
   fi
-  if command -v curl >/dev/null 2>&1; then
-    if curl -fsS -o /dev/null --max-time 2 "$(app_url)"; then
-      ok "responding at $(app_url)"
-    else
-      warn "not responding at $(app_url)"
-    fi
+  heading "Instances"
+  cmd_instances
+}
+
+cmd_instances() {
+  local raw
+  raw="$(list_instances_raw)"
+  if [ -z "$raw" ]; then
+    info "no running instances found"
+    return 0
   fi
+  printf '%-8s %-6s %-22s %-10s %s\n' "PID" "PORT" "APP_NAME" "MANAGED BY" "STATUS"
+  local line pid port app_name managed_by url
+  while IFS='|' read -r pid port app_name managed_by; do
+    [ -n "$pid" ] || continue
+    url="http://127.0.0.1:$port"
+    if command -v curl >/dev/null 2>&1 && curl -fsS -o /dev/null --max-time 2 "$url"; then
+      printf '%-8s %-6s %-22s %-10s %s%s%s\n' "$pid" "$port" "$app_name" "$managed_by" "$C_GREEN" "responding" "$C_RESET"
+    else
+      printf '%-8s %-6s %-22s %-10s %s%s%s\n' "$pid" "$port" "$app_name" "$managed_by" "$C_RED" "not responding" "$C_RESET"
+    fi
+  done <<< "$raw"
 }
 
 cmd_logs() {
@@ -284,9 +768,9 @@ cmd_update() {
   if is_managed && systemctl --user is-active --quiet "$UNIT_NAME"; then
     systemctl --user restart "$UNIT_NAME"
     ok "restarted"
-  elif fallback_running_pid >/dev/null; then
-    fallback_stop
-    fallback_start
+  elif fallback_running_pid "$PID_FILE" >/dev/null; then
+    fallback_stop "$PID_FILE"
+    fallback_start "$(read_port)" "$PID_FILE" "$LOG_FILE"
   fi
 }
 
@@ -388,13 +872,16 @@ cmd_help() {
   cat <<'EOF'
 tmux-server — manage a tmux-server install
 
-Usage: tmux-server <command>
+Usage: tmux-server <command> [flags]
 
 Commands:
   start      Start the server (via systemd if available, else in the background)
-  stop       Stop the server
-  restart    Restart the server
+             Accepts config flags — see: tmux-server start --help
+  stop       Stop the server — asks which instance if more than one is running
+             (see: tmux-server stop --help)
+  restart    Restart the server (accepts the same flags as start)
   status     Show whether it's running and responding
+  instances  List every running instance (any port, any launch method)
   logs       Follow the server's logs
   enable     Install + enable the systemd service (starts on login/boot)
   disable    Disable the systemd service
@@ -408,12 +895,14 @@ EOF
 
 main() {
   local cmd="${1:-help}"
+  [ $# -gt 0 ] && shift
   case "$cmd" in
     run) cmd_run ;;
-    start) cmd_start ;;
-    stop) cmd_stop ;;
-    restart) cmd_restart ;;
+    start) cmd_start "$@" ;;
+    stop) cmd_stop "$@" ;;
+    restart) cmd_restart "$@" ;;
     status) cmd_status ;;
+    instances) cmd_instances ;;
     logs) cmd_logs ;;
     enable) cmd_enable ;;
     disable) cmd_disable ;;

@@ -81,12 +81,26 @@ The installer checks for Node 20+, `tmux`, `git`, and a C/C++ toolchain up front
 |---|---|
 | `tmux-server start` / `stop` / `restart` | Start, stop, or restart the service |
 | `tmux-server status` | Whether it's running, and whether it's actually responding |
+| `tmux-server instances` | List every running instance — any port, any launch method (`npm run dev`, `npm start`, the systemd service, or a `start --port` one-off) |
 | `tmux-server logs` | Follow the server's logs |
 | `tmux-server enable` / `disable` | Install and enable (or disable) the systemd service |
 | `tmux-server update` | Pull the latest code, reinstall, rebuild, and restart |
 | `tmux-server doctor` | Check dependencies and install health, and troubleshoot problems |
 
 Config (`PORT`, `AUTH_TOKEN`, `ALLOWED_HOSTS`, `NEW_SESSION_CWD`, `APP_NAME`) goes in `~/.local/share/tmux-server/server/.env` — see [Production](#production) below for what each does. Without systemd (e.g. on macOS), `start`/`stop`/`restart` fall back to running the server in the background directly instead of managing a service.
+
+#### Flags instead of env vars
+
+`start` and `restart` also accept the same config as flags — `tmux-server start --help` shows the full list (`--port`, `--app-name`, `--allowed-hosts`, `--auth-token`, `--new-session-cwd`; both `--flag value` and `--flag=value` work):
+
+```bash
+tmux-server start --port=8040 --app-name="Tmux Server - Work"
+```
+
+- **With systemd** (the default managed install): flags are written into `server/.env` and the service is restarted — they persist across future restarts, same as editing `server/.env` by hand.
+- **Without systemd** (foreground-fallback mode): flags start an *additional* background instance on the given port, alongside anything already running — handy for running a second, differently-configured instance (e.g. a "work" one on another port) without disturbing the main one. Starting on a port that's already in use is refused.
+
+`tmux-server stop` stops the only running instance automatically; if more than one instance is running, it lists them and asks which to stop (or pass `--port <n>` or `--all` to skip the prompt). See `tmux-server stop --help`.
 
 ## Manual setup (from source)
 
