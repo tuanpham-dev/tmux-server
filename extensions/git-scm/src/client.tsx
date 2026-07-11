@@ -7,10 +7,13 @@
 // refreshFiles) from module-level bridge variables set once in activate(),
 // the same pattern live-preview's client.tsx uses for ctx.settings.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import "./style.css";
 import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
+import FileIcon from "../../_shared/FileIcon";
+import type { IconResult } from "../../_shared/FileIcon";
 
 // ---- Module-level host bridge ----
 
@@ -32,6 +35,9 @@ let openFileTab: ((path: string) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
 let setSidebarBadge: ((panelId: string, badge: number | null) => void) | null = null;
 let extSettings: SettingsApi | null = null;
+let getFileIcon: ((fileName: string) => IconResult) | null = null;
+let getFolderIcon: ((folderName: string, expanded: boolean) => IconResult) | null = null;
+let onDidChangeIconTheme: ((cb: () => void) => () => void) | null = null;
 let removeStylesheet: (() => void) | null = null;
 let removeContextListener: (() => void) | null = null;
 let removeSettingsListener: (() => void) | null = null;
@@ -53,6 +59,41 @@ type ClickAction = "diff" | "edit";
 
 function readClickAction(): ClickAction {
   return extSettings?.get("gitScm.clickAction") === "edit" ? "edit" : "diff";
+}
+
+// ---- View mode (list vs. tree) ----
+// Panel-side toggle, not an extension setting — SettingsApi is read-only
+// (get/onDidChange), so this can't be written through ctx.settings. Mirrors
+// the host's own Sidebar.tsx sidebarMode localStorage key.
+type ViewMode = "list" | "tree";
+const VIEW_MODE_KEY = "gitScm.viewMode";
+
+function readViewMode(): ViewMode {
+  return localStorage.getItem(VIEW_MODE_KEY) === "tree" ? "tree" : "list";
+}
+
+function writeViewMode(mode: ViewMode) {
+  localStorage.setItem(VIEW_MODE_KEY, mode);
+}
+
+// ---- Collapsed directory state (tree mode) ----
+// Persisted per repo root + group + dir path so collapse state survives a
+// reload without leaking between repos or groups. Pruned lazily on write —
+// only keys for the *current* repo root are checked against live dir nodes;
+// keys for other repos can't be validated here and are left untouched.
+const COLLAPSED_DIRS_KEY = "gitScm.collapsedDirs";
+
+function readCollapsedDirs(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_DIRS_KEY) ?? "[]");
+    return Array.isArray(raw) ? new Set(raw.filter((x) => typeof x === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedDirs(keys: Set<string>) {
+  localStorage.setItem(COLLAPSED_DIRS_KEY, JSON.stringify([...keys]));
 }
 
 // ---- Status types (mirrors server.js's parseStatus output) ----
@@ -110,6 +151,100 @@ function dirOf(p: string): string {
   const dir = p.slice(0, slash);
   const parentSlash = dir.lastIndexOf("/");
   return parentSlash === -1 ? dir : dir.slice(parentSlash + 1);
+}
+
+// ---- Tree view ----
+
+interface TreeDirNode {
+  kind: "dir";
+  // Full path from the repo root, e.g. "client/src/components" — a single
+  // node here can represent several collapsed directory levels (see
+  // buildTree's chain compression), so this is NOT always one path segment.
+  path: string;
+  name: string;
+  children: TreeNode[];
+}
+interface TreeFileNode {
+  kind: "file";
+  entry: FileEntry;
+}
+type TreeNode = TreeDirNode | TreeFileNode;
+
+// Converts a group's flat file list into a nested directory tree, matching
+// VS Code's SCM tree: directories sort before files, both alphabetically;
+// files keep the order the server returned them in (server already applies
+// its own porcelain ordering, not re-sorted here). A directory chain with
+// only one child at every level (e.g. "client" -> "src" -> "components", each
+// having exactly one entry) collapses into a single row labeled
+// "client/src/components" rather than three nested rows.
+function buildTree(entries: FileEntry[]): TreeNode[] {
+  interface MutableDir {
+    path: string;
+    name: string;
+    dirs: Map<string, MutableDir>;
+    files: FileEntry[];
+  }
+  const root: MutableDir = { path: "", name: "", dirs: new Map(), files: [] };
+  for (const entry of entries) {
+    const segments = entry.path.split("/");
+    const fileName = segments.pop()!;
+    let cur = root;
+    let curPath = "";
+    for (const seg of segments) {
+      curPath = curPath ? `${curPath}/${seg}` : seg;
+      let next = cur.dirs.get(seg);
+      if (!next) {
+        next = { path: curPath, name: seg, dirs: new Map(), files: [] };
+        cur.dirs.set(seg, next);
+      }
+      cur = next;
+    }
+    cur.files.push(entry);
+  }
+
+  function toNodes(dir: MutableDir): TreeNode[] {
+    const dirNodes = [...dir.dirs.values()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((d): TreeDirNode => {
+        // Compress a single-child chain (one subdir, no files) into this
+        // node's own label, e.g. "src" swallowing "components" -> "src/components".
+        let chain = d;
+        let label = d.name;
+        while (chain.files.length === 0 && chain.dirs.size === 1) {
+          const [only] = chain.dirs.values();
+          label = `${label}/${only.name}`;
+          chain = only;
+        }
+        return { kind: "dir", path: chain.path, name: label, children: toNodes(chain) };
+      });
+    const fileNodes: TreeFileNode[] = dir.files.map((entry) => ({ kind: "file", entry }));
+    return [...dirNodes, ...fileNodes];
+  }
+
+  return toNodes(root);
+}
+
+// Every collapsed-dir key ("${keyPrefix}:${dirPath}") derivable from a
+// group's current tree — used both to render DirRow's collapse key and to
+// prune stale keys for dirs that no longer exist (see toggleDir).
+function collectDirKeys(keyPrefix: string, nodes: TreeNode[], out: Set<string>) {
+  for (const node of nodes) {
+    if (node.kind === "dir") {
+      out.add(`${keyPrefix}:${node.path}`);
+      collectDirKeys(keyPrefix, node.children, out);
+    }
+  }
+}
+
+// All FileEntry values under a tree node (recursively) — used to build the
+// path arrays for a directory row's aggregate stage/unstage/discard actions.
+function collectEntries(nodes: TreeNode[]): FileEntry[] {
+  const out: FileEntry[] = [];
+  for (const node of nodes) {
+    if (node.kind === "file") out.push(node.entry);
+    else out.push(...collectEntries(node.children));
+  }
+  return out;
 }
 
 // ---- Diff tab composite key ----
@@ -192,6 +327,8 @@ function FileRow({
   onOpen,
   actions,
   clickHint,
+  depth,
+  hideDir,
 }: {
   entry: FileEntry;
   onOpen: (e: { shiftKey: boolean }) => void;
@@ -200,21 +337,79 @@ function FileRow({
   // affordance for it otherwise, so it rides along in the row's own native
   // tooltip. Omitted for conflicted entries, which ignore the click setting.
   clickHint?: string;
+  // Tree mode: indent level (each level = one row's worth of chevron+gap)
+  // and suppress the parent-dir hint, since the tree's own DirRow ancestry
+  // already shows that information.
+  depth?: number;
+  hideDir?: boolean;
 }) {
-  const dir = dirOf(entry.path);
+  const dir = !hideDir ? dirOf(entry.path) : "";
   const label = entry.origPath ? `${basenameOf(entry.origPath)} → ${basenameOf(entry.path)}` : basenameOf(entry.path);
   const title = clickHint ? `${entry.path}\n${clickHint}` : entry.path;
+  // Icon always resolves from the *new* path's basename — same side the
+  // rename label's arrow points to.
+  const icon = getFileIcon?.(basenameOf(entry.path)) ?? { kind: "none" as const };
   return (
-    <div className="git-row" title={title} onClick={(e) => onOpen(e)}>
-      <span className={`git-row-status git-status-${entry.status}`}>{STATUS_LABEL[entry.status]}</span>
+    <div
+      className="git-row"
+      title={title}
+      onClick={(e) => onOpen(e)}
+      style={depth ? { paddingLeft: 8 + depth * 16 } : undefined}
+    >
+      <FileIcon className="git-row-icon" result={icon} />
       <span className="git-row-name">{label}</span>
       {dir && <span className="git-row-dir">{dir}</span>}
-      <span className="git-row-actions" onClick={(e) => e.stopPropagation()}>
-        {actions.map((a) => (
-          <button key={a.title} className="icon-button" title={a.title} onClick={a.onClick}>
-            <Icon name={a.icon} />
-          </button>
-        ))}
+      <span className="git-row-trailer">
+        <span className="git-row-actions" onClick={(e) => e.stopPropagation()}>
+          {actions.map((a) => (
+            <button key={a.title} className="icon-button" title={a.title} onClick={a.onClick}>
+              <Icon name={a.icon} />
+            </button>
+          ))}
+        </span>
+        <span className={`git-row-status git-status-${entry.status}`}>{STATUS_LABEL[entry.status]}</span>
+      </span>
+    </div>
+  );
+}
+
+function DirRow({
+  node,
+  depth,
+  collapsed,
+  onToggle,
+  actions,
+}: {
+  node: TreeDirNode;
+  depth: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  actions: RowAction[];
+}) {
+  // A compressed chain's name ("client/src/components") resolves its folder
+  // icon from the last segment — icon themes key folderNames on a single
+  // directory name, and (matching VS Code) a compressed node's underlying
+  // resource is that leaf directory; the joined label is display-only.
+  const lastSegment = node.name.slice(node.name.lastIndexOf("/") + 1);
+  const icon = getFolderIcon?.(lastSegment, !collapsed) ?? { kind: "none" as const };
+  return (
+    <div
+      className="git-row git-dir-row"
+      title={node.path}
+      onClick={onToggle}
+      style={{ paddingLeft: 8 + depth * 16 }}
+    >
+      <Icon name={collapsed ? "chevron-right" : "chevron-down"} className="git-dir-row-chevron" />
+      <FileIcon className="git-row-icon" result={icon} />
+      <span className="git-row-name">{node.name}</span>
+      <span className="git-row-trailer">
+        <span className="git-row-actions" onClick={(e) => e.stopPropagation()}>
+          {actions.map((a) => (
+            <button key={a.title} className="icon-button" title={a.title} onClick={a.onClick}>
+              <Icon name={a.icon} />
+            </button>
+          ))}
+        </span>
       </span>
     </div>
   );
@@ -353,9 +548,42 @@ function GitPanel({ actionsTarget }: PanelProps) {
   }, [message]);
   const [confirmAbort, setConfirmAbort] = useState(false);
   const [clickAction, setClickAction] = useState(readClickAction);
+  const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(readCollapsedDirs);
+  // Bumped by onDidChangeIconTheme so FileRow/DirRow re-resolve icons after
+  // the active icon theme finishes loading or changes in Settings — the
+  // resolved IconResult itself isn't kept in state (getFileIcon/getFolderIcon
+  // are called fresh on every render), this just forces that re-render.
+  const [, setIconVersion] = useState(0);
 
   useEffect(() => onDidChangeContext?.((ctx) => setActiveCwd(ctx.cwd)), []);
   useEffect(() => extSettings?.onDidChange(() => setClickAction(readClickAction())), []);
+  useEffect(() => onDidChangeIconTheme?.(() => setIconVersion((v) => v + 1)), []);
+
+  const changeViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    writeViewMode(mode);
+  };
+
+  // Toggles one dir's collapsed state and persists it, pruning any keys
+  // under the current repo root that no longer correspond to a currently
+  // rendered dir node (files got staged/unstaged/discarded out from under
+  // them) — `validKeysForRepo` is every "${repoRoot}:${group}:${dirPath}"
+  // key derivable from the three groups' trees as rendered right now. Keys
+  // for other repo roots are left untouched — this repo's tree can't
+  // validate them.
+  const toggleDir = (key: string, validKeysForRepo: Set<string>, repoRoot: string) => {
+    setCollapsedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      const pruned = new Set(
+        [...next].filter((k) => !k.startsWith(`${repoRoot}:`) || validKeysForRepo.has(k)),
+      );
+      writeCollapsedDirs(pruned);
+      return pruned;
+    });
+  };
 
   // Prefills the commit box from .git/MERGE_MSG once per operation "start"
   // (tracked via the ref, which resets when the operation clears) rather
@@ -508,8 +736,87 @@ function GitPanel({ actionsTarget }: PanelProps) {
   const conflictClickHint = "Shift+Click: Open in Editor";
   const operation = status.operation ?? null;
 
+  // ---- Tree mode ----
+  const repoRoot = status.root ?? "";
+  const conflictedTree = viewMode === "tree" ? buildTree(conflicted) : [];
+  const stagedTree = viewMode === "tree" ? buildTree(staged) : [];
+  const unstagedTree = viewMode === "tree" ? buildTree(unstaged) : [];
+
+  // Every collapse key any of the three trees could currently produce —
+  // used to prune stale keys for this repo root when any dir is toggled
+  // (see toggleDir).
+  const validKeysForRepo = new Set<string>();
+  if (viewMode === "tree") {
+    collectDirKeys(`${repoRoot}:conflicted`, conflictedTree, validKeysForRepo);
+    collectDirKeys(`${repoRoot}:staged`, stagedTree, validKeysForRepo);
+    collectDirKeys(`${repoRoot}:unstaged`, unstagedTree, validKeysForRepo);
+  }
+
+  // Renders one group's tree recursively. `makeFileProps` and `makeDirActions`
+  // capture whatever differs per group (openEntry's staged flag, which
+  // actions a row/dir gets) — everything else (indentation, collapse
+  // toggling, key derivation) is shared.
+  function renderTreeGroup(
+    groupKey: "conflicted" | "staged" | "unstaged",
+    nodes: TreeNode[],
+    makeFileProps: (entry: FileEntry) => { onOpen: (e: { shiftKey: boolean }) => void; actions: RowAction[]; clickHint?: string },
+    makeDirActions: (entries: FileEntry[]) => RowAction[],
+    depth = 0,
+  ): ReactNode[] {
+    const keyPrefix = `${repoRoot}:${groupKey}`;
+    const out: ReactNode[] = [];
+    for (const node of nodes) {
+      if (node.kind === "dir") {
+        const key = `${keyPrefix}:${node.path}`;
+        const collapsed = collapsedDirs.has(key);
+        const dirEntries = collectEntries(node.children);
+        out.push(
+          <DirRow
+            key={key}
+            node={node}
+            depth={depth}
+            collapsed={collapsed}
+            onToggle={() => toggleDir(key, validKeysForRepo, repoRoot)}
+            actions={makeDirActions(dirEntries)}
+          />,
+        );
+        if (!collapsed) {
+          out.push(...renderTreeGroup(groupKey, node.children, makeFileProps, makeDirActions, depth + 1));
+        }
+      } else {
+        const { onOpen, actions, clickHint: rowHint } = makeFileProps(node.entry);
+        out.push(
+          <FileRow
+            key={node.entry.path}
+            entry={node.entry}
+            onOpen={onOpen}
+            actions={actions}
+            clickHint={rowHint}
+            depth={depth}
+            hideDir
+          />,
+        );
+      }
+    }
+    return out;
+  }
+
   const headerActions = (
     <>
+      <button
+        className={`icon-button mode-button${viewMode === "list" ? " active" : ""}`}
+        title="View as List"
+        onClick={() => changeViewMode("list")}
+      >
+        <Icon name="list-flat" />
+      </button>
+      <button
+        className={`icon-button mode-button${viewMode === "tree" ? " active" : ""}`}
+        title="View as Tree"
+        onClick={() => changeViewMode("tree")}
+      >
+        <Icon name="list-tree" />
+      </button>
       <button
         className="git-sync-button"
         disabled={busy}
@@ -672,15 +979,28 @@ function GitPanel({ actionsTarget }: PanelProps) {
                 },
               ]}
             />
-            {conflicted.map((entry) => (
-              <FileRow
-                key={entry.path}
-                entry={entry}
-                onOpen={(e) => openEntry(entry, false, e.shiftKey)}
-                clickHint={conflictClickHint}
-                actions={[{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }]}
-              />
-            ))}
+            {viewMode === "tree"
+              ? renderTreeGroup(
+                  "conflicted",
+                  conflictedTree,
+                  (entry) => ({
+                    onOpen: (e) => openEntry(entry, false, e.shiftKey),
+                    clickHint: conflictClickHint,
+                    actions: [{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }],
+                  }),
+                  (entries) => [
+                    { icon: "add", title: "Stage Changes", onClick: () => stage(entries.map((e) => e.path)) },
+                  ],
+                )
+              : conflicted.map((entry) => (
+                  <FileRow
+                    key={entry.path}
+                    entry={entry}
+                    onOpen={(e) => openEntry(entry, false, e.shiftKey)}
+                    clickHint={conflictClickHint}
+                    actions={[{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }]}
+                  />
+                ))}
           </div>
         )}
 
@@ -697,17 +1017,30 @@ function GitPanel({ actionsTarget }: PanelProps) {
                 },
               ]}
             />
-            {staged.map((entry) => (
-              <FileRow
-                key={entry.path}
-                entry={entry}
-                onOpen={(e) => openEntry(entry, true, e.shiftKey)}
-                clickHint={clickHint}
-                actions={[
-                  { icon: "remove", title: "Unstage Changes", onClick: () => unstage([entry.path]) },
-                ]}
-              />
-            ))}
+            {viewMode === "tree"
+              ? renderTreeGroup(
+                  "staged",
+                  stagedTree,
+                  (entry) => ({
+                    onOpen: (e) => openEntry(entry, true, e.shiftKey),
+                    clickHint,
+                    actions: [{ icon: "remove", title: "Unstage Changes", onClick: () => unstage([entry.path]) }],
+                  }),
+                  (entries) => [
+                    { icon: "remove", title: "Unstage Changes", onClick: () => unstage(entries.map((e) => e.path)) },
+                  ],
+                )
+              : staged.map((entry) => (
+                  <FileRow
+                    key={entry.path}
+                    entry={entry}
+                    onOpen={(e) => openEntry(entry, true, e.shiftKey)}
+                    clickHint={clickHint}
+                    actions={[
+                      { icon: "remove", title: "Unstage Changes", onClick: () => unstage([entry.path]) },
+                    ]}
+                  />
+                ))}
           </div>
         )}
 
@@ -729,26 +1062,59 @@ function GitPanel({ actionsTarget }: PanelProps) {
                 },
               ]}
             />
-            {unstaged.map((entry) => (
-              <FileRow
-                key={entry.path}
-                entry={entry}
-                onOpen={(e) => openEntry(entry, false, e.shiftKey)}
-                clickHint={clickHint}
-                actions={[
-                  {
-                    icon: "discard",
-                    title: "Discard Changes",
-                    onClick: () =>
-                      setConfirmDiscard({
-                        paths: [entry.path],
-                        untracked: entry.status === "untracked" ? [entry.path] : [],
-                      }),
-                  },
-                  { icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) },
-                ]}
-              />
-            ))}
+            {viewMode === "tree"
+              ? renderTreeGroup(
+                  "unstaged",
+                  unstagedTree,
+                  (entry) => ({
+                    onOpen: (e) => openEntry(entry, false, e.shiftKey),
+                    clickHint,
+                    actions: [
+                      {
+                        icon: "discard",
+                        title: "Discard Changes",
+                        onClick: () =>
+                          setConfirmDiscard({
+                            paths: [entry.path],
+                            untracked: entry.status === "untracked" ? [entry.path] : [],
+                          }),
+                      },
+                      { icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) },
+                    ],
+                  }),
+                  (entries) => [
+                    {
+                      icon: "discard",
+                      title: "Discard Changes",
+                      onClick: () =>
+                        setConfirmDiscard({
+                          paths: entries.map((e) => e.path),
+                          untracked: entries.filter((e) => e.status === "untracked").map((e) => e.path),
+                        }),
+                    },
+                    { icon: "add", title: "Stage Changes", onClick: () => stage(entries.map((e) => e.path)) },
+                  ],
+                )
+              : unstaged.map((entry) => (
+                  <FileRow
+                    key={entry.path}
+                    entry={entry}
+                    onOpen={(e) => openEntry(entry, false, e.shiftKey)}
+                    clickHint={clickHint}
+                    actions={[
+                      {
+                        icon: "discard",
+                        title: "Discard Changes",
+                        onClick: () =>
+                          setConfirmDiscard({
+                            paths: [entry.path],
+                            untracked: entry.status === "untracked" ? [entry.path] : [],
+                          }),
+                      },
+                      { icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) },
+                    ]}
+                  />
+                ))}
           </div>
         )}
 
@@ -1243,6 +1609,9 @@ export function activate(ctx: {
     openViewerTab: (viewerId: string, path: string, opts?: { title?: string }) => void;
     refreshFiles: () => void;
     setSidebarBadge: (panelId: string, badge: number | null) => void;
+    getFileIcon: (fileName: string) => IconResult;
+    getFolderIcon: (folderName: string, expanded: boolean) => IconResult;
+    onDidChangeIconTheme: (cb: () => void) => () => void;
   };
   serverFetch: (path: string, init?: RequestInit) => Promise<Response>;
   assetUrl: (relPath: string) => string;
@@ -1255,6 +1624,9 @@ export function activate(ctx: {
   openFileTab = ctx.app.openFileTab;
   refreshFiles = ctx.app.refreshFiles;
   setSidebarBadge = ctx.app.setSidebarBadge;
+  getFileIcon = ctx.app.getFileIcon;
+  getFolderIcon = ctx.app.getFolderIcon;
+  onDidChangeIconTheme = ctx.app.onDidChangeIconTheme;
   extSettings = ctx.settings;
 
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
@@ -1289,6 +1661,9 @@ export function deactivate() {
   pollCwd = null;
   currentStatus = null;
   setSidebarBadge?.("git", null);
+  getFileIcon = null;
+  getFolderIcon = null;
+  onDidChangeIconTheme = null;
   removeStylesheet?.();
   removeStylesheet = null;
 }

@@ -4,12 +4,17 @@
 // context, a fetch scoped to its own server routes). Themes/icon themes are
 // NOT activated here — theme.ts and utils/iconThemes.ts read the same
 // `extensions` list directly and apply themes without running any
-// extension code, since they're just JSON.
+// extension code, since they're just JSON. ctx.app.getFileIcon/getFolderIcon
+// do let an extension *query* the already-active icon theme's resolved
+// result (see makeContext) — that's read-only exposure of iconThemes.ts's
+// own resolver, not extension involvement in loading/activating themes.
 import * as ReactNS from "react";
 import { extensionApiBase, extensionFileUrl, fetchExtensions } from "./api";
 import type { ExtensionSettingsValues } from "./settings";
 import type { ExtensionInfo, MenuItem } from "./types";
 import { getFileExtension } from "./utils/fileExtension";
+import { getFileIconResult, getFolderIconResult, subscribeIconTheme } from "./utils/iconThemes";
+import type { IconResult } from "./utils/iconThemes";
 
 export interface ActiveContext {
   sessionName: string | null;
@@ -151,6 +156,17 @@ export interface ExtensionContext {
     // none is pending. Only the search extension's activate() is expected
     // to call this — see requestFindInFolder/consumePendingFindInFolderGlob.
     consumeFindInFolderGlob(): string | null;
+    // Resolves a file/folder name against the currently active icon theme
+    // (same resolver the FILES tree and tab bar use) — read-only query, the
+    // extension never loads or activates a theme itself. `kind: "none"`
+    // means no icon theme is active, or it has no icon for that name; the
+    // extension's own FileIcon copy already renders that as nothing.
+    getFileIcon(fileName: string): IconResult;
+    getFolderIcon(folderName: string, expanded: boolean): IconResult;
+    // Fires with no arguments whenever the active icon theme finishes
+    // loading or changes in Settings — call getFileIcon/getFolderIcon again
+    // to get the fresh result, same shape as settings.onDidChange below.
+    onDidChangeIconTheme(cb: () => void): () => void;
   };
   // fetch() scoped to this extension's own server hook, mounted at
   // /api/ext/<extensionId> — 404s if the extension has no server entry or
@@ -494,6 +510,21 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         notify();
       },
       consumeFindInFolderGlob: () => consumePendingFindInFolderGlob(),
+      getFileIcon: (fileName) => getFileIconResult(fileName),
+      getFolderIcon: (folderName, expanded) => getFolderIconResult(folderName, expanded),
+      onDidChangeIconTheme(cb) {
+        // subscribeIconTheme's own listeners Set is private to iconThemes.ts
+        // (unlike contextListeners below, which this module owns directly),
+        // so runtime tracks the *unsubscribe* closure it returns rather than
+        // the raw callback — that's the only handle deactivate has to stop
+        // it from firing into a torn-down extension.
+        const unsubscribe = subscribeIconTheme(cb);
+        runtime.iconThemeListeners.add(unsubscribe);
+        return () => {
+          runtime.iconThemeListeners.delete(unsubscribe);
+          unsubscribe();
+        };
+      },
     },
     serverFetch(path, init) {
       return fetch(`${extensionApiBase(ext.id)}${path}`, init);
@@ -526,6 +557,9 @@ interface ExtensionRuntime {
   // shared contextListeners Set, tracked separately so deactivation can
   // remove exactly these without touching other extensions' callbacks.
   contextListeners: Set<(ctx: ActiveContext) => void>;
+  // Unsubscribe closures returned by subscribeIconTheme for this extension's
+  // onDidChangeIconTheme callbacks — see makeContext's app.onDidChangeIconTheme.
+  iconThemeListeners: Set<() => void>;
 }
 
 const activatedIds = new Set<string>();
@@ -534,7 +568,7 @@ const extensionRuntimes = new Map<string, ExtensionRuntime>();
 async function activateClientExtension(ext: ExtensionInfo): Promise<void> {
   if (activatedIds.has(ext.id) || !ext.clientEntry) return;
   activatedIds.add(ext.id);
-  const runtime: ExtensionRuntime = { module: null, contextListeners: new Set() };
+  const runtime: ExtensionRuntime = { module: null, contextListeners: new Set(), iconThemeListeners: new Set() };
   extensionRuntimes.set(ext.id, runtime);
   try {
     const url = extensionFileUrl(ext.id, ext.clientEntry);
@@ -556,9 +590,9 @@ async function activateClientExtension(ext: ExtensionInfo): Promise<void> {
 // Reverses activateClientExtension: calls the module's optional deactivate()
 // export (e.g. to remove an injected stylesheet), removes this extension's
 // entries from the command/file-viewer/sidebar-panel registries, unsubscribes
-// its onDidChangeContext and settings.onDidChange callbacks, and clears
-// activatedIds so a later re-enable calls activate() again instead of
-// silently no-oping against the stale guard.
+// its onDidChangeContext, onDidChangeIconTheme, and settings.onDidChange
+// callbacks, and clears activatedIds so a later re-enable calls activate()
+// again instead of silently no-oping against the stale guard.
 function deactivateClientExtension(extId: string): void {
   if (!activatedIds.has(extId)) return;
   const runtime = extensionRuntimes.get(extId);
@@ -581,6 +615,7 @@ function deactivateClientExtension(extId: string): void {
     if (extensionSidebarPanels[i].id.startsWith(prefix)) extensionSidebarPanels.splice(i, 1);
   }
   if (runtime) for (const cb of runtime.contextListeners) contextListeners.delete(cb);
+  if (runtime) for (const unsubscribe of runtime.iconThemeListeners) unsubscribe();
   extensionSettingsListeners.delete(extId);
   extensionRuntimes.delete(extId);
   activatedIds.delete(extId);

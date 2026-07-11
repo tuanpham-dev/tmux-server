@@ -222,6 +222,24 @@
   background: var(--list-hover-bg);
 }
 
+/* Fixed box (mirrors client/src's .file-tree-file-icon) so an SVG icon
+   theme's <img> can't distort, and rows stay aligned whether or not a given
+   file name resolves to an icon (kind: "none" renders nothing — the row's
+   own flex `gap` just closes up, same as FileTree). */
+.git-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  min-width: 17px;
+  font-size: 17px;
+  line-height: 1;
+  text-align: center;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
 .git-row-status {
   flex-shrink: 0;
   width: 14px;
@@ -267,6 +285,18 @@
   text-align: left;
 }
 
+/* Single flex item so it's pushed right as one unit — putting margin-left:
+   auto on both .git-row-actions and .git-row-status separately would split
+   the leftover space between them instead of pinning actions flush against
+   the status letter. Same pattern as FileTree's .file-tree-row-trailer. */
+.git-row-trailer {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .git-row-actions {
   flex-shrink: 0;
   /* No reserved space — hidden entirely (zero width) until hovered, same
@@ -277,11 +307,19 @@
   display: none;
   align-items: center;
   gap: 2px;
-  margin-left: auto;
 }
 
 .git-row:hover .git-row-actions {
   display: flex;
+}
+
+.git-dir-row {
+  font-weight: 600;
+}
+
+.git-dir-row-chevron {
+  flex-shrink: 0;
+  color: var(--fg-inactive);
 }
 
 /* --- Diff view --- */

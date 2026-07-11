@@ -118,7 +118,7 @@ const listeners = new Set<() => void>();
 function notify(): void {
   for (const l of listeners) l();
 }
-function subscribeIconTheme(cb: () => void): () => void {
+export function subscribeIconTheme(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
