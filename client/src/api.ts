@@ -75,7 +75,10 @@ export function killSession(name: string): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
-export function createWindow(name: string, cwd?: string): Promise<void> {
+// Resolves with the new window's index — the bottom terminal panel attaches
+// the window it just created (see hooks/useBottomPanel.ts); every other
+// caller ignores it and lets the session poll surface the new window.
+export function createWindow(name: string, cwd?: string): Promise<{ index: number }> {
   return request(`/api/sessions/${encodeURIComponent(name)}/windows`, {
     method: "POST",
     headers: { "content-type": "application/json" },

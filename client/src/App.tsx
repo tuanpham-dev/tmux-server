@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
+import BottomPanel from "./components/BottomPanel";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
 import QuickSwitcher, { type PaletteCommand } from "./components/QuickSwitcher";
@@ -15,6 +16,7 @@ import { useFileOpeners } from "./hooks/useFileOpeners";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
 import { COMMANDS, formatBinding } from "./keybindings";
 import { DEFAULT_SETTINGS } from "./settings";
+import { useBottomPanel } from "./hooks/useBottomPanel";
 import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
 import { useSettingsSync } from "./hooks/useSettingsSync";
@@ -192,6 +194,17 @@ export default function App() {
 
   const { dialog, confirmDialog, promptDialog } = useDialogs();
 
+  // Any editor-side activation — a tab opened from the sidebar/palette, a tab
+  // bar click, a group-focus chord — hands keyboard focus back to the editor,
+  // even when the bottom panel currently holds it. A pointer-down straight
+  // into an editor pane is already covered by the content hosts' own handler;
+  // this catches every path that activates a tab *without* clicking into it,
+  // which would otherwise open a terminal in the editor while the user's
+  // keystrokes kept going to the panel (caught live in QA, not by inspection).
+  // Nothing on the panel side touches activeTabId/activeGroupId, so a change
+  // here is always editor-driven.
+  const editorSelectionRef = useRef<string | null>(null);
+
   const {
     tabs,
     setTabs,
@@ -268,6 +281,40 @@ export default function App() {
   const { extensions, reloadExtensions, activeTerminalTheme, fontsVersion } =
     useThemeAssets(settings, extensionSettings, extensionSettingsRef);
 
+  // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
+  // model, separate from the editor's tabs/split tree, since it only ever
+  // holds terminals and only ever splits side-by-side.
+  const {
+    panel,
+    panelFocused,
+    setPanelFocused,
+    togglePanel,
+    showPanel,
+    hidePanel,
+    setHeight: setPanelHeight,
+    selectTab: selectPanelTab,
+    selectPane: selectPanelPane,
+    resizePanes: resizePanelPanes,
+    newTerminal,
+    newTerminalInFreshSession,
+    splitActivePane,
+    closeTab: closePanelTab,
+    removePane: removePanelPane,
+  } = useBottomPanel(sessions, sessionsLoadedRef, showError);
+
+  // See editorSelectionRef's comment above. Skips its own first run, so the
+  // panel keeps focus across a reload that restores it.
+  useEffect(() => {
+    const selection = `${activeGroupId}:${activeTabId ?? ""}`;
+    if (editorSelectionRef.current === null) {
+      editorSelectionRef.current = selection;
+      return;
+    }
+    if (editorSelectionRef.current === selection) return;
+    editorSelectionRef.current = selection;
+    setPanelFocused(false);
+  }, [activeGroupId, activeTabId, setPanelFocused]);
+
   // null = closed; otherwise the string to seed the switcher's input with —
   // "" for a plain tab/window/session switch, ">" for the command palette.
   const [switcherQuery, setSwitcherQuery] = useState<string | null>(null);
@@ -316,6 +363,28 @@ export default function App() {
   const showMenu = useCallback((x: number, y: number, items: MenuItem[]) => {
     setMenu({ x, y, items });
   }, []);
+
+  // Opens a panel terminal, resolving which session its new tmux window goes
+  // in: the active real tab's session when there is one, otherwise a picker at
+  // `anchor` (the + button, or the panel's own top-left for the keyboard
+  // command) — the panel never guesses a session on the user's behalf.
+  const requestPanelTerminal = useCallback(
+    (anchor: { x: number; y: number }) => {
+      if (activeRealTab) {
+        newTerminal(activeRealTab.sessionName);
+        return;
+      }
+      const items: MenuItem[] = [
+        ...sessions.map((s) => ({
+          label: s.name,
+          onClick: () => newTerminal(s.name),
+        })),
+        { label: "New Session…", onClick: () => newTerminalInFreshSession() },
+      ];
+      showMenu(anchor.x, anchor.y, items);
+    },
+    [activeRealTab, sessions, newTerminal, newTerminalInFreshSession, showMenu],
+  );
 
   const {
     createSession,
@@ -456,6 +525,15 @@ export default function App() {
         if (!activeTabId) return;
         moveTabToAdjacentGroup(activeTabId, "previous");
       },
+      "panel.toggle": togglePanel,
+      "panel.new": () => {
+        // Reveals first, so the picker (when there's no active session) has a
+        // panel to anchor against — its own top-left corner, since the +
+        // button it would otherwise anchor to may not be on screen yet.
+        showPanel();
+        requestPanelTerminal({ x: sidebarVisible ? sidebarWidth : 0, y: window.innerHeight - panel.height });
+      },
+      "panel.split": splitActivePane,
     }),
     [
       activeRealTab,
@@ -482,6 +560,13 @@ export default function App() {
       splitGroup,
       focusGroup,
       moveTabToAdjacentGroup,
+      togglePanel,
+      showPanel,
+      splitActivePane,
+      requestPanelTerminal,
+      panel.height,
+      sidebarVisible,
+      sidebarWidth,
     ],
   );
 
@@ -659,6 +744,8 @@ export default function App() {
             pinnedSessions={pinnedSessions}
             onRestorePinned={restorePinnedSession}
             onOpenSettings={openSettingsTab}
+            panelVisible={panel.visible}
+            onTogglePanel={togglePanel}
             showGitStatus={settings.fileTreeGitStatus}
             onCollapse={() => setSidebarVisible(false)}
             filesRootDir={filesRootDir}
@@ -718,7 +805,10 @@ export default function App() {
           const rect = groupContentRects[groupId];
           if (!rect) return null;
           const visible = groupActive[groupId] === tab.id;
-          const focused = visible && groupId === activeGroupId;
+          // The bottom panel's terminals compete for the same keyboard focus,
+          // so an editor terminal only claims it while the panel doesn't hold
+          // it (see useBottomPanel's panelFocused).
+          const focused = visible && groupId === activeGroupId && !panelFocused;
           let content: React.ReactNode;
           if (tab.settingsView) {
             content = (
@@ -807,7 +897,10 @@ export default function App() {
                 height: rect.height,
                 display: visible ? undefined : "none",
               }}
-              onPointerDownCapture={() => focusGroup(groupId)}
+              onPointerDownCapture={() => {
+                focusGroup(groupId);
+                setPanelFocused(false);
+              }}
             >
               {content}
             </div>
@@ -822,12 +915,45 @@ export default function App() {
                 key={`placeholder-${groupId}`}
                 className="split-content-host"
                 style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
-                onPointerDownCapture={() => focusGroup(groupId)}
+                onPointerDownCapture={() => {
+                  focusGroup(groupId);
+                  setPanelFocused(false);
+                }}
               >
                 <div className="placeholder">Select a session from the sidebar to open a terminal</div>
               </div>
             );
           })}
+        {panel.visible && (
+          <BottomPanel
+            panel={panel}
+            panelFocused={panelFocused}
+            sessions={sessions}
+            settings={settings}
+            theme={activeTerminalTheme}
+            fontsVersion={fontsVersion}
+            bindings={resolvedBindings}
+            onSelectTab={selectPanelTab}
+            onSelectPane={selectPanelPane}
+            onCloseTab={closePanelTab}
+            onResizePanes={resizePanelPanes}
+            // The attach is already gone (shell exited, or the window was
+            // killed) — drop the pane without a detach call.
+            onPaneExit={(tabId, paneId) => removePanelPane(tabId, paneId, false)}
+            onRequestTerminal={requestPanelTerminal}
+            onSplit={splitActivePane}
+            onHide={hidePanel}
+            onSetHeight={setPanelHeight}
+            onError={showError}
+            onOpenFile={openFileOrViewer}
+            onOpenFileSecondary={openFileOrViewerSecondary}
+            // A tmux-native switch inside a panel pane surfaces the picked
+            // window in the *editor* area; the pane itself snaps back to the
+            // window it's pinned to (the server already reverted it).
+            onWindowSwitch={(session, windowIndex) => openWindowTab(session, windowIndex)}
+            onSessionSwitch={openSwitchedSession}
+          />
+        )}
       </main>
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
       {dialog && <Dialog dialog={dialog} />}

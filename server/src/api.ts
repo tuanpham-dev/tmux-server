@@ -201,8 +201,8 @@ api.post("/sessions/:name/windows", async (req, res) => {
     ? req.body.cwd.trim()
     : undefined;
   try {
-    await createWindow(req.params.name, cwd);
-    res.status(204).end();
+    const index = await createWindow(req.params.name, cwd);
+    res.status(201).json({ index });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

@@ -107,6 +107,12 @@ interface Props {
   pinnedSessions: PinnedSession[];
   onRestorePinned: (name: string, cwd: string) => void;
   onOpenSettings: () => void;
+  // The bottom terminal panel's toggle lives up here with the app's other
+  // global chrome toggles (hide-sidebar below), not in a TabBar's actions —
+  // that bar is rendered per editor group, so the button would duplicate in
+  // every split pane.
+  panelVisible: boolean;
+  onTogglePanel: () => void;
   showGitStatus: boolean;
   onCollapse: () => void;
   filesRootDir: string | null;
@@ -143,6 +149,8 @@ export default function Sidebar({
   pinnedSessions,
   onRestorePinned,
   onOpenSettings,
+  panelVisible,
+  onTogglePanel,
   showGitStatus,
   onCollapse,
   filesRootDir,
@@ -779,6 +787,14 @@ export default function Sidebar({
         </button>
         <button className="icon-button" title="Hide sidebar (Ctrl+Shift+B)" onClick={onCollapse}>
           <Icon name="layout-sidebar-left-off" />
+        </button>
+        <button
+          className={`icon-button${panelVisible ? " active" : ""}`}
+          title="Toggle terminal panel (Ctrl+`)"
+          aria-pressed={panelVisible}
+          onClick={onTogglePanel}
+        >
+          <Icon name="layout-panel" />
         </button>
       </div>
       {activeTabId === EXPLORER_TAB_ID ? (

@@ -402,6 +402,13 @@ body.resizing-row {
   pointer-events: none;
 }
 
+/* A toggle-style icon button that's currently "on" — the sidebar topbar's
+   terminal-panel toggle, which reflects whether the panel is showing. */
+.icon-button.active {
+  color: var(--fg-bright);
+  background: var(--list-hover-bg);
+}
+
 .icon-flip-x {
   display: inline-block;
   transform: scaleX(-1);
@@ -2110,4 +2117,109 @@ body.scrollbar-dragging {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg);
+}
+
+/* ── Bottom terminal panel (plans/bottom-terminal-panel.md) ──────────────
+   Sits below the editor's split tree as the last child of .main (a column
+   flexbox), at a fixed, drag-resizable pixel height while SplitLayout above
+   keeps flex:1. The editor's content hosts are positioned from
+   ResizeObserver-measured rects, so they follow the panel's height on their
+   own — nothing here has to tell them to. */
+.bottom-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+/* The panel's top edge — same thin-line-in-a-generous-hitbox shape as the
+   sidebar's .resize-handle, drawn over the border above. */
+.bottom-panel-resize {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  height: 5px;
+  cursor: row-resize;
+  z-index: 1;
+}
+
+.bottom-panel-resize:hover {
+  background: var(--accent);
+}
+
+.bottom-panel-header {
+  display: flex;
+  align-items: stretch;
+  background: var(--tab-bar-bg);
+  min-height: 35px;
+}
+
+.bottom-panel-title {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.panel-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.panel-action:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.panel-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bottom-panel-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/* One per tab; only the active one is displayed (the rest keep their
+   terminals mounted behind display:none, so a tab switch is instant and
+   scrollback survives — same trade-off App.tsx makes for editor tabs). */
+.bottom-panel-panes {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.bottom-panel-pane {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Which pane keyboard input goes to — only worth showing once a tab actually
+   has more than one pane (the component gates the class on that). */
+.bottom-panel-pane.active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--accent);
+  pointer-events: none;
 }

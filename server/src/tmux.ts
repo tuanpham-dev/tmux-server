@@ -234,13 +234,26 @@ export async function paneCurrentPath(session: string): Promise<string> {
   ).trim();
 }
 
-export async function createWindow(session: string, cwd?: string): Promise<void> {
+// Returns the created window's index — the bottom terminal panel
+// (plans/bottom-terminal-panel.md) needs it to attach the window it just
+// created, via createWindowTab below.
+export async function createWindow(session: string, cwd?: string): Promise<number> {
   // Without -c, tmux defaults a new window's cwd to the cwd of the process
   // that ran this command — the server's own directory, not the session's —
   // since it's invoked here via execFile rather than from inside a tmux
   // pane. Look up the active pane's path explicitly and pass it as -c.
   const dir = cwd ?? (await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"])).trim();
-  await tmux(["new-window", "-t", `=${session}:`, "-c", dir]);
+  const created = await tmux([
+    "new-window",
+    "-t",
+    `=${session}:`,
+    "-P",
+    "-F",
+    "#{window_index}",
+    "-c",
+    dir,
+  ]);
+  return Number(created.trim());
 }
 
 // Finds the session's lazygit window — by the active pane's running command,
