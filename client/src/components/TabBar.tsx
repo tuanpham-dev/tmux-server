@@ -15,7 +15,6 @@ interface Props {
   onClose: (id: string) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   tabMenuItems: (tab: Tab) => MenuItem[];
-  onReorder: (draggedId: string, toIndex: number) => void;
   // Reports the actions container's DOM element as it mounts/unmounts, so a
   // tab (e.g. an image viewer) can portal per-tab controls into it — VS
   // Code/code-server style editor-actions on the right of the tab strip.
@@ -31,46 +30,31 @@ interface Props {
   groupMenuItems: (sessionName: string) => MenuItem[];
   // Drag-a-chip (or "Move Group Left/Right") reordering — see
   // plans/reorder-tab-groups.md. toIndex is a position among group keys
-  // only (lib/tabs.ts's moveGroup), never a tab-array index.
+  // only (lib/tabs.ts's moveGroup), never a tab-array index. Kept entirely
+  // local to this bar, unlike tab drag below.
   onReorderGroup: (groupKey: string, toIndex: number) => void;
+  // A tab drag can land in a different split pane, so its gesture (start,
+  // move, drop) is owned by SplitLayout's coordinator, not this bar — see
+  // plans/vscode-editor-group-splits.md. This bar only reports pointer-down
+  // on one of its own tabs and renders whatever drag/drop-indicator state
+  // the coordinator computes for it.
+  dragTabId: string | null;
+  dropIndicator: { id: string; edge: "left" | "right" } | null;
+  onTabPointerDown: (e: React.PointerEvent, tabId: string) => void;
+  // Shared with the coordinator so a real drag's trailing native `click`
+  // doesn't also activate the tab — same justDraggedRef pattern this file
+  // already uses for its own (still-local) chip drag below.
+  tabJustDraggedRef: React.MutableRefObject<boolean>;
 }
 
-// Long-press delay (touch/pen) before a hold starts a drag instead of letting
-// the gesture fall through to the tab bar's native horizontal scroll.
+// Long-press delay (touch/pen) before a hold starts a chip drag instead of
+// letting the gesture fall through to the tab bar's native horizontal
+// scroll.
 const LONG_PRESS_MS = 300;
 // Movement past this cancels a pending touch long-press (treated as a scroll)
 // or, on mouse, arms a drag once exceeded.
 const MOVE_SLOP_PX = 8;
 const MOUSE_DRAG_THRESHOLD_PX = 5;
-
-// "tab" drags reorder within the flat tabs array (moveTab); "group" drags
-// reorder a chip among the other chips only (moveGroup) — id is a tab id for
-// the former, a group key for the latter.
-type DropIndicator = { kind: "tab" | "group"; id: string; edge: "left" | "right" };
-
-// Restricts drag-drop candidates when tab groups are enabled: a grouped tab
-// may only reorder within its own group (members are always kept contiguous
-// by lib/tabs.ts's normalizeTabGroups), and an ungrouped tab may only drop at a
-// group's edge, never wedged between its members.
-function computeGroupConstrainedOrder(
-  order: Tab[],
-  draggedTab: Tab,
-  groupingEnabled: boolean,
-  groupKey: (tab: Tab) => string | null,
-): Tab[] {
-  if (!groupingEnabled) return order;
-  const draggedKey = groupKey(draggedTab);
-  if (draggedKey !== null) {
-    return order.filter((t) => groupKey(t) === draggedKey);
-  }
-  return order.filter((t, i) => {
-    const key = groupKey(t);
-    if (key === null) return true;
-    const prevKey = i > 0 ? groupKey(order[i - 1]) : undefined;
-    const nextKey = i < order.length - 1 ? groupKey(order[i + 1]) : undefined;
-    return prevKey !== key || nextKey !== key;
-  });
-}
 
 export default function TabBar({
   tabs,
@@ -81,7 +65,6 @@ export default function TabBar({
   onClose,
   onShowMenu,
   tabMenuItems,
-  onReorder,
   actionsRef,
   onToggleSidebar,
   groupingEnabled,
@@ -90,18 +73,20 @@ export default function TabBar({
   onToggleGroupCollapsed,
   groupMenuItems,
   onReorderGroup,
+  dragTabId,
+  dropIndicator,
+  onTabPointerDown,
+  tabJustDraggedRef,
 }: Props) {
   // Re-renders the strip when the active icon theme changes — getFileIconResult
   // reads module-level state directly, same subscribe-to-force-render shape
   // FileTree uses (see utils/iconThemes.ts's useIconThemeVersion).
   useIconThemeVersion();
 
-  const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dragGroupKey, setDragGroupKey] = useState<string | null>(null);
-  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
+  const [groupDropIndicator, setGroupDropIndicator] = useState<{ id: string; edge: "left" | "right" } | null>(null);
   const barRef = useRef<HTMLDivElement | null>(null);
   const tabBarRef = useRef<HTMLDivElement | null>(null);
-  const tabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const chipRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const justDraggedRef = useRef(false);
 
@@ -130,14 +115,12 @@ export default function TabBar({
     return () => observer.disconnect();
   }, []);
 
-  // Mutable drag session state — kept out of React state since it updates on
-  // every pointermove and must be readable synchronously from window
-  // listeners registered outside React's event system. `itemId` is a tab id
-  // when kind is "tab", a group key when kind is "group".
+  // Mutable chip-drag session state — kept out of React state since it
+  // updates on every pointermove and must be readable synchronously from
+  // window listeners registered outside React's event system.
   const sessionRef = useRef<{
-    kind: "tab" | "group";
     pointerId: number;
-    itemId: string;
+    sessionName: string;
     pointerType: string;
     startX: number;
     startY: number;
@@ -146,46 +129,22 @@ export default function TabBar({
     insertIndex: number;
   } | null>(null);
 
-  const computeInsertion = (clientX: number, draggedId: string): DropIndicator | null => {
-    const fullOrder = tabs.filter((t) => t.id !== draggedId);
-    const draggedTab = tabs.find((t) => t.id === draggedId);
-    const order = draggedTab
-      ? computeGroupConstrainedOrder(fullOrder, draggedTab, groupingEnabled, groupKey)
-      : fullOrder;
-    if (order.length === 0) return null;
-    for (const t of order) {
-      const el = tabRefs.current.get(t.id);
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      if (clientX < rect.left + rect.width / 2) return { kind: "tab", id: t.id, edge: "left" };
-      if (clientX < rect.right) return { kind: "tab", id: t.id, edge: "right" };
-    }
-    return { kind: "tab", id: order[order.length - 1].id, edge: "right" };
-  };
-
-  const indicatorToIndex = (indicator: DropIndicator, draggedId: string): number => {
-    const order = tabs.filter((t) => t.id !== draggedId);
-    const idx = order.findIndex((t) => t.id === indicator.id);
-    return indicator.edge === "left" ? idx : idx + 1;
-  };
-
-  // Chip-drag equivalents of computeInsertion/indicatorToIndex — hit-tests
-  // against chipRefs and groupOrder instead of tabRefs and tabs, so a group
-  // can only reorder relative to other groups.
-  const computeGroupInsertion = (clientX: number, draggedKey: string): DropIndicator | null => {
+  // Hit-tests against chipRefs and groupOrder — a chip can only reorder
+  // relative to other chips in this same bar.
+  const computeGroupInsertion = (clientX: number, draggedKey: string): { id: string; edge: "left" | "right" } | null => {
     const order = groupOrder.filter((k) => k !== draggedKey);
     if (order.length === 0) return null;
     for (const key of order) {
       const el = chipRefs.current.get(key);
       if (!el) continue;
       const rect = el.getBoundingClientRect();
-      if (clientX < rect.left + rect.width / 2) return { kind: "group", id: key, edge: "left" };
-      if (clientX < rect.right) return { kind: "group", id: key, edge: "right" };
+      if (clientX < rect.left + rect.width / 2) return { id: key, edge: "left" };
+      if (clientX < rect.right) return { id: key, edge: "right" };
     }
-    return { kind: "group", id: order[order.length - 1], edge: "right" };
+    return { id: order[order.length - 1], edge: "right" };
   };
 
-  const groupIndicatorToIndex = (indicator: DropIndicator, draggedKey: string): number => {
+  const groupIndicatorToIndex = (indicator: { id: string; edge: "left" | "right" }, draggedKey: string): number => {
     const order = groupOrder.filter((k) => k !== draggedKey);
     const idx = order.findIndex((k) => k === indicator.id);
     return indicator.edge === "left" ? idx : idx + 1;
@@ -201,9 +160,8 @@ export default function TabBar({
     const session = sessionRef.current;
     if (session?.longPressTimer) clearTimeout(session.longPressTimer);
     sessionRef.current = null;
-    setDragTabId(null);
     setDragGroupKey(null);
-    setDropIndicator(null);
+    setGroupDropIndicator(null);
   };
 
   // Safety net: if TabBar unmounts mid-drag (session still active), the
@@ -224,8 +182,7 @@ export default function TabBar({
     const session = sessionRef.current;
     if (!session || session.dragging) return;
     session.dragging = true;
-    if (session.kind === "tab") setDragTabId(session.itemId);
-    else setDragGroupKey(session.itemId);
+    setDragGroupKey(session.sessionName);
   };
 
   const onPointerMoveWindow = (e: PointerEvent) => {
@@ -249,27 +206,18 @@ export default function TabBar({
       }
     }
 
-    if (session.kind === "tab") {
-      const indicator = computeInsertion(e.clientX, session.itemId);
-      setDropIndicator(indicator);
-      if (indicator) session.insertIndex = indicatorToIndex(indicator, session.itemId);
-    } else {
-      const indicator = computeGroupInsertion(e.clientX, session.itemId);
-      setDropIndicator(indicator);
-      if (indicator) session.insertIndex = groupIndicatorToIndex(indicator, session.itemId);
-    }
+    const indicator = computeGroupInsertion(e.clientX, session.sessionName);
+    setGroupDropIndicator(indicator);
+    if (indicator) session.insertIndex = groupIndicatorToIndex(indicator, session.sessionName);
   };
 
   const onPointerUpWindow = (e: PointerEvent) => {
     const session = sessionRef.current;
     if (!session || e.pointerId !== session.pointerId) return;
-    window.removeEventListener("pointermove", onPointerMoveWindow);
-    window.removeEventListener("pointerup", onPointerUpWindow);
-    window.removeEventListener("pointercancel", onPointerCancelWindow);
+    removeWindowListeners();
     if (session.dragging) {
       justDraggedRef.current = true;
-      if (session.kind === "tab") onReorder(session.itemId, session.insertIndex);
-      else onReorderGroup(session.itemId, session.insertIndex);
+      onReorderGroup(session.sessionName, session.insertIndex);
     }
     endSession();
   };
@@ -277,46 +225,16 @@ export default function TabBar({
   const onPointerCancelWindow = (e: PointerEvent) => {
     const session = sessionRef.current;
     if (!session || e.pointerId !== session.pointerId) return;
-    window.removeEventListener("pointermove", onPointerMoveWindow);
-    window.removeEventListener("pointerup", onPointerUpWindow);
-    window.removeEventListener("pointercancel", onPointerCancelWindow);
+    removeWindowListeners();
     endSession();
-  };
-
-  const handleTabPointerDown = (e: React.PointerEvent, tabId: string) => {
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    if ((e.target as HTMLElement).closest(".tab-close")) return;
-
-    sessionRef.current = {
-      kind: "tab",
-      pointerId: e.pointerId,
-      itemId: tabId,
-      pointerType: e.pointerType,
-      startX: e.clientX,
-      startY: e.clientY,
-      dragging: false,
-      longPressTimer: null,
-      insertIndex: tabs.findIndex((t) => t.id === tabId),
-    };
-
-    if (e.pointerType !== "mouse") {
-      sessionRef.current.longPressTimer = setTimeout(() => {
-        if (sessionRef.current?.itemId === tabId) startDragging();
-      }, LONG_PRESS_MS);
-    }
-
-    window.addEventListener("pointermove", onPointerMoveWindow);
-    window.addEventListener("pointerup", onPointerUpWindow);
-    window.addEventListener("pointercancel", onPointerCancelWindow);
   };
 
   const handleChipPointerDown = (e: React.PointerEvent, sessionName: string) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
 
     sessionRef.current = {
-      kind: "group",
       pointerId: e.pointerId,
-      itemId: sessionName,
+      sessionName,
       pointerType: e.pointerType,
       startX: e.clientX,
       startY: e.clientY,
@@ -327,7 +245,7 @@ export default function TabBar({
 
     if (e.pointerType !== "mouse") {
       sessionRef.current.longPressTimer = setTimeout(() => {
-        if (sessionRef.current?.itemId === sessionName) startDragging();
+        if (sessionRef.current?.sessionName === sessionName) startDragging();
       }, LONG_PRESS_MS);
     }
 
@@ -337,10 +255,11 @@ export default function TabBar({
   };
 
   // Suppresses native touch scrolling only while a drag is actually in
-  // progress — must be a non-passive listener since React's onTouchMove
-  // can't preventDefault a scroll that's already begun.
+  // progress (this bar's own chip drag, or a cross-bar-aware tab drag owned
+  // by the coordinator) — must be a non-passive listener since React's
+  // onTouchMove can't preventDefault a scroll that's already begun.
   const handleBarTouchMove = (e: React.TouchEvent) => {
-    if (sessionRef.current?.dragging) e.preventDefault();
+    if (sessionRef.current?.dragging || dragTabId !== null) e.preventDefault();
   };
 
   // Plain (unshifted) mouse wheel scrolls the strip horizontally too, not
@@ -360,8 +279,8 @@ export default function TabBar({
   }, []);
 
   const handleTabClick = (id: string) => {
-    if (justDraggedRef.current) {
-      justDraggedRef.current = false;
+    if (tabJustDraggedRef.current) {
+      tabJustDraggedRef.current = false;
       return;
     }
     onActivate(id);
@@ -377,7 +296,9 @@ export default function TabBar({
 
   useEffect(() => {
     if (!activeTabId) return;
-    tabRefs.current.get(activeTabId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    barRef.current
+      ?.querySelector<HTMLElement>(`[data-tab-id="${activeTabId}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeTabId, tabs]);
 
   // Per-group contrast-adjusted line color and aggregated activity — one
@@ -397,21 +318,16 @@ export default function TabBar({
 
   const renderTab = (tab: Tab, groupLineColor?: string) => {
     const indicatorClass =
-      dropIndicator?.kind === "tab" && dropIndicator.id === tab.id
-        ? ` drop-indicator-${dropIndicator.edge}`
-        : "";
+      dropIndicator?.id === tab.id ? ` drop-indicator-${dropIndicator.edge}` : "";
     const draggingClass = dragTabId === tab.id ? " dragging" : "";
     const groupedClass = groupLineColor ? " grouped" : "";
     return (
       <div
         key={tab.id}
-        ref={(el) => {
-          if (el) tabRefs.current.set(tab.id, el);
-          else tabRefs.current.delete(tab.id);
-        }}
+        data-tab-id={tab.id}
         className={`tab${tab.id === activeTabId ? " active" : ""}${indicatorClass}${draggingClass}${groupedClass}`}
         style={groupLineColor ? ({ "--group-color": groupLineColor } as React.CSSProperties) : undefined}
-        onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+        onPointerDown={(e) => onTabPointerDown(e, tab.id)}
         onClick={() => handleTabClick(tab.id)}
         onDoubleClick={(e) => {
           if ((e.target as HTMLElement).closest(".tab-close")) return;
@@ -453,9 +369,7 @@ export default function TabBar({
     const collapsed = state?.collapsed ?? false;
     const rawColor = groupColorHex(state?.color ?? GROUP_COLORS[0].key);
     const indicatorClass =
-      dropIndicator?.kind === "group" && dropIndicator.id === sessionName
-        ? ` drop-indicator-${dropIndicator.edge}`
-        : "";
+      groupDropIndicator?.id === sessionName ? ` drop-indicator-${groupDropIndicator.edge}` : "";
     const draggingClass = dragGroupKey === sessionName ? " dragging" : "";
     return (
       <div

@@ -1,6 +1,7 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as api from "../api";
 import { isRealTab } from "../lib/tabs";
+import type { SplitDirection } from "../lib/splits";
 import type { AppSettings } from "../settings";
 import type { MenuItem, PinnedSession, Tab, TmuxSession, TmuxWindow } from "../types";
 
@@ -38,6 +39,8 @@ export function useSessionActions(
   renameGroup: (oldName: string, newName: string) => void,
   pinnedSessions: PinnedSession[],
   setPinnedSessions: Dispatch<SetStateAction<PinnedSession[]>>,
+  splitGroup: (direction: SplitDirection, tabId?: string) => Promise<void>,
+  moveTabToAdjacentGroup: (tabId: string, direction: "next" | "previous") => void,
 ) {
   // Every sidebar action that creates a session/window now ends by opening
   // that window as a window-tab (not the shared whole-session tab) — see the
@@ -249,14 +252,29 @@ export function useSessionActions(
 
   const tabMenuItems = useCallback(
     (tab: Tab): MenuItem[] => {
+      // Splits always duplicate `tab` specifically (not whatever's active),
+      // matching VS Code's own tab-context-menu split items — see
+      // useTabs.ts's duplicateTabToGroup for what each tab kind duplicates
+      // into the new group.
+      const splitItems: MenuItem[] = [
+        { label: "Split Up", onClick: () => splitGroup("up", tab.id) },
+        { label: "Split Down", onClick: () => splitGroup("down", tab.id) },
+        { label: "Split Left", onClick: () => splitGroup("left", tab.id) },
+        { label: "Split Right", onClick: () => splitGroup("right", tab.id) },
+        {
+          label: "Move into Next Group",
+          onClick: () => moveTabToAdjacentGroup(tab.id, "next"),
+        },
+      ];
       const closeItems: MenuItem[] = [
         { label: "Close Tab", onClick: () => closeTab(tab.id) },
         { label: "Close Other Tabs", onClick: () => closeOtherTabs(tab.id) },
       ];
       // Virtual tabs (image/markdown preview) have no tmux session — New
       // Window/Rename/Kill Session don't apply.
-      if (!isRealTab(tab)) return closeItems;
+      if (!isRealTab(tab)) return [...splitItems, ...closeItems];
       return [
+        ...splitItems,
         ...closeItems,
         { label: "New Window", onClick: () => createWindow(tab.sessionName) },
         { label: "Rename Session…", onClick: () => renameSession(tab.sessionName) },
@@ -267,7 +285,15 @@ export function useSessionActions(
         },
       ];
     },
-    [closeTab, closeOtherTabs, createWindow, renameSession, killSession],
+    [
+      closeTab,
+      closeOtherTabs,
+      createWindow,
+      renameSession,
+      killSession,
+      splitGroup,
+      moveTabToAdjacentGroup,
+    ],
   );
 
   return {

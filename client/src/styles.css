@@ -1028,14 +1028,122 @@ body.resizing-row {
     inset 0 1px 0 var(--tab-active-border);
 }
 
-/* ---- Terminals ---- */
+/* ---- Split layout (editor groups) ---- */
+/* See plans/vscode-editor-group-splits.md. .split-branch mirrors a SplitNode
+   branch 1:1 as a nested flex container (row = side-by-side, column =
+   stacked); .split-leaf is one editor group — its own tab bar plus a content
+   slot .terminals-equivalent (.split-leaf-content) that App.tsx's per-tab
+   render switch fills exactly like the old singular .terminals did. */
 
-.terminals {
+.split-branch {
+  background: var(--bg);
+}
+
+.split-leaf {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.split-leaf-inactive .tab-bar {
+  opacity: 0.6;
+}
+
+.split-leaf-content {
   flex: 1;
   position: relative;
   min-height: 0;
   background: var(--bg);
 }
+
+/* A tab's actual content (terminal/viewer/settings) — App.tsx renders these
+   in a flat list, positioned to exactly cover their own group's
+   .split-leaf-content rect (measured via ResizeObserver), rather than
+   nesting them inside .split-leaf-content itself. See App.tsx's
+   groupContentRects comment for why: nesting there would remount content
+   on every split-tree reshape. z-index:0 keeps these below chrome drawn on
+   top during a drag (.split-drop-overlay, z-index:50) regardless of DOM
+   order. */
+.split-content-host {
+  z-index: 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* These hosts sit on top of the split tree as DOM siblings, not descendants
+   — during a tab drag, SplitLayout's hitTest walks up from
+   document.elementFromPoint() looking for .split-leaf/.tab-strip ancestors,
+   which a content host's own descendants don't have. Disabling pointer
+   events on the hosts while dragging lets elementFromPoint see through to
+   the split-leaf tree underneath, so drop zones work over a pane's actual
+   rendered content, not just its tab bar. */
+body.tab-dragging .split-content-host {
+  pointer-events: none;
+}
+
+/* A visible 1px line inset in a slightly wider flex-basis hit target — same
+   thin-line-plus-generous-hitbox shape as the sidebar's own .resize-handle,
+   just needing a distinct pseudo-element since a sash can be either
+   orientation (row split = drag width, column split = drag height) where
+   the sidebar handle is always horizontal. */
+.split-sash {
+  position: relative;
+  flex: 0 0 4px;
+  background: transparent;
+}
+
+.split-sash-row {
+  cursor: col-resize;
+}
+
+.split-sash-column {
+  cursor: row-resize;
+}
+
+.split-sash::after {
+  content: "";
+  position: absolute;
+  background: var(--border);
+}
+
+.split-sash-row::after {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.split-sash-column::after {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.split-sash:hover::after,
+.split-sash.dragging::after {
+  background: var(--accent);
+}
+
+/* Drag-to-split's 5-zone drop overlay (T12/T13) — a translucent accent
+   rectangle filling whichever zone (center/left/right/top/bottom) of a
+   group's content area the dragged tab is currently hovering, computed and
+   positioned by SplitLayout's coordinator from the live DOM rect. Tab-level
+   dragging/drop-indicator styling is already covered by the .tab.dragging /
+   .tab.drop-indicator-left/right rules above, now driven externally by the
+   coordinator instead of TabBar's own (removed) internal state. */
+.split-drop-overlay {
+  z-index: 50;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  border: 2px solid var(--accent);
+  box-sizing: border-box;
+}
+
+/* ---- Terminals ---- */
 
 .terminal-host {
   position: absolute;

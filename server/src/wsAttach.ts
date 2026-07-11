@@ -94,6 +94,11 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
   });
 
   ws.on("message", (raw) => {
+    // A message already in flight when the PTY exits can still arrive here
+    // before the WS finishes closing — term.resize() on an exited PTY throws
+    // ioctl EBADF synchronously, which is fatal since this runs inside a
+    // "message" event callback (uncaught there crashes the whole process).
+    if (exited) return;
     let msg: ClientMsg;
     try {
       msg = JSON.parse(raw.toString());

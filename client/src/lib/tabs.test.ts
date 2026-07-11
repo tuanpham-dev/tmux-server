@@ -3,10 +3,13 @@ import type { Tab, TmuxSession } from "../types";
 import {
   groupKeyForTab,
   moveGroup,
+  moveGroupWithin,
   moveId,
   normalizeTabGroups,
+  normalizeWithinGroups,
   orderedGroupKeys,
   reconcileTabs,
+  tabsAreDuplicates,
 } from "./tabs";
 
 function makeTab(overrides: Partial<Tab>): Tab {
@@ -175,6 +178,53 @@ describe("moveId", () => {
   });
 });
 
+describe("normalizeWithinGroups", () => {
+  it("normalizes each editor group's session contiguity independently, leaving other groups untouched", () => {
+    const tabs = [
+      makeTab({ id: "g1-a1", sessionName: "a", groupId: "g1" }),
+      makeTab({ id: "g2-b1", sessionName: "b", groupId: "g2" }),
+      makeTab({ id: "g1-c1", sessionName: "c", groupId: "g1" }),
+      makeTab({ id: "g1-a2", sessionName: "a", windowIndex: 0, groupId: "g1" }),
+      makeTab({ id: "g2-a1", sessionName: "a", groupId: "g2" }),
+    ];
+    const next = normalizeWithinGroups(tabs);
+    // g1's subsequence (a1, c1, a2) becomes contiguous by session (a1, a2, c1);
+    // g2's subsequence (b1, a1) is already contiguous and untouched — and no
+    // tab ever crosses from one groupId to another.
+    expect(next.map((t) => t.id)).toEqual(["g1-a1", "g2-b1", "g1-a2", "g1-c1", "g2-a1"]);
+    expect(next.every((t) => tabs.find((o) => o.id === t.id)!.groupId === t.groupId)).toBe(true);
+  });
+
+  it("returns the same reference when every group is already normalized", () => {
+    const tabs = [
+      makeTab({ id: "1", sessionName: "a", groupId: "g1" }),
+      makeTab({ id: "2", sessionName: "b", groupId: "g2" }),
+    ];
+    expect(normalizeWithinGroups(tabs)).toBe(tabs);
+  });
+});
+
+describe("moveGroupWithin", () => {
+  it("reorders a session chip only within its own editor group", () => {
+    const tabs = [
+      makeTab({ id: "g1-a1", sessionName: "a", groupId: "g1" }),
+      makeTab({ id: "g1-b1", sessionName: "b", groupId: "g1" }),
+      makeTab({ id: "g2-a1", sessionName: "a", groupId: "g2" }),
+      makeTab({ id: "g2-b1", sessionName: "b", groupId: "g2" }),
+    ];
+    const next = moveGroupWithin(tabs, "g1", "b", 0);
+    expect(next.map((t) => t.id)).toEqual(["g1-b1", "g1-a1", "g2-a1", "g2-b1"]);
+  });
+
+  it("returns the same reference for a no-op move", () => {
+    const tabs = [
+      makeTab({ id: "1", sessionName: "a", groupId: "g1" }),
+      makeTab({ id: "2", sessionName: "b", groupId: "g1" }),
+    ];
+    expect(moveGroupWithin(tabs, "g1", "a", 0)).toBe(tabs);
+  });
+});
+
 describe("reconcileTabs", () => {
   it("returns the same reference when nothing changed", () => {
     const tabs = [makeTab({ id: "1", sessionId: "$1", sessionName: "blog" })];
@@ -232,5 +282,63 @@ describe("reconcileTabs", () => {
     const tabs = [makeTab({ id: "1", sessionId: "$1", sessionName: "blog" })];
     const next = reconcileTabs(tabs, []);
     expect(next).toBe(tabs);
+  });
+});
+
+describe("tabsAreDuplicates", () => {
+  it("matches two whole-session tabs for the same session", () => {
+    const a = makeTab({ id: "1", sessionName: "blog" });
+    const b = makeTab({ id: "2", sessionName: "blog" });
+    expect(tabsAreDuplicates(a, b)).toBe(true);
+  });
+
+  it("does not match whole-session and window tabs for the same session", () => {
+    const whole = makeTab({ id: "1", sessionName: "blog" });
+    const windowTab = makeTab({ id: "2", sessionName: "blog", windowIndex: 0 });
+    expect(tabsAreDuplicates(whole, windowTab)).toBe(false);
+  });
+
+  it("matches two window tabs for the same session and window index", () => {
+    const a = makeTab({ id: "1", sessionName: "blog", windowIndex: 2 });
+    const b = makeTab({ id: "2", sessionName: "blog", windowIndex: 2 });
+    expect(tabsAreDuplicates(a, b)).toBe(true);
+  });
+
+  it("does not match window tabs with different indices", () => {
+    const a = makeTab({ id: "1", sessionName: "blog", windowIndex: 1 });
+    const b = makeTab({ id: "2", sessionName: "blog", windowIndex: 2 });
+    expect(tabsAreDuplicates(a, b)).toBe(false);
+  });
+
+  it("does not match real tabs for different sessions", () => {
+    const a = makeTab({ id: "1", sessionName: "blog" });
+    const b = makeTab({ id: "2", sessionName: "docs" });
+    expect(tabsAreDuplicates(a, b)).toBe(false);
+  });
+
+  it("matches two viewer tabs for the same extension and path", () => {
+    const a = makeTab({ id: "1", sessionName: "", attachName: "", extViewerId: "csv-preview", extViewerPath: "/a.csv" });
+    const b = makeTab({ id: "2", sessionName: "", attachName: "", extViewerId: "csv-preview", extViewerPath: "/a.csv" });
+    expect(tabsAreDuplicates(a, b)).toBe(true);
+  });
+
+  it("does not match viewer tabs for different paths or viewers", () => {
+    const csvA = makeTab({ id: "1", sessionName: "", attachName: "", extViewerId: "csv-preview", extViewerPath: "/a.csv" });
+    const csvB = makeTab({ id: "2", sessionName: "", attachName: "", extViewerId: "csv-preview", extViewerPath: "/b.csv" });
+    expect(tabsAreDuplicates(csvA, csvB)).toBe(false);
+    const jsonA = makeTab({ id: "3", sessionName: "", attachName: "", extViewerId: "json-viewer", extViewerPath: "/a.csv" });
+    expect(tabsAreDuplicates(csvA, jsonA)).toBe(false);
+  });
+
+  it("matches two settings tabs regardless of other fields", () => {
+    const a = makeTab({ id: "1", sessionName: "", attachName: "", settingsView: true });
+    const b = makeTab({ id: "2", sessionName: "", attachName: "", settingsView: true });
+    expect(tabsAreDuplicates(a, b)).toBe(true);
+  });
+
+  it("does not match a settings tab against a real or viewer tab", () => {
+    const settings = makeTab({ id: "1", sessionName: "", attachName: "", settingsView: true });
+    const real = makeTab({ id: "2", sessionName: "blog" });
+    expect(tabsAreDuplicates(settings, real)).toBe(false);
   });
 });

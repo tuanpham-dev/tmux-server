@@ -31,6 +31,11 @@ export interface PinnedSession {
 
 export interface Tab {
   id: string;
+  // The editor group (split pane) this tab belongs to — see lib/splits.ts's
+  // SplitNode. Every tab has exactly one; optional only because a tab
+  // restored from localStorage before splits shipped won't have one yet —
+  // loadStoredTabs stamps it with the tree's sole leaf id on migration.
+  groupId?: string;
   sessionName: string;
   // What's actually passed to tmux attach-session / the WS ?session= param.
   // Equal to sessionName for a whole-session tab; a synthetic grouped

@@ -16,7 +16,14 @@ type SearchAction = "start" | "next" | "prev" | "cancel";
 
 interface Props {
   attachName: string;
-  active: boolean;
+  // Shown at all (its editor group's own active tab) — drives the `hidden`
+  // class and refit. A tab can be visible without being focused (a visible
+  // tab in a split pane that doesn't currently have app/keyboard focus).
+  visible: boolean;
+  // Additionally its group has app focus — drives keyboard-focus grabbing
+  // and the on-screen touch key bar. Every focused tab is visible, but not
+  // every visible tab is focused (plans/vscode-editor-group-splits.md).
+  focused: boolean;
   settings: AppSettings;
   // The active extension color theme's terminal palette, or the built-in
   // Plastic Legacy theme if none is selected/loaded — see theme.ts.
@@ -45,7 +52,8 @@ interface Props {
 
 export default function TerminalView({
   attachName,
-  active,
+  visible,
+  focused,
   settings,
   theme,
   fontsVersion,
@@ -153,7 +161,7 @@ export default function TerminalView({
     return () => mq.removeEventListener("change", onChange);
   }, []);
   const keyBarVisible =
-    active &&
+    focused &&
     (settings.touchKeyBar === "always" ||
       (settings.touchKeyBar === "auto" && coarsePointer));
   const [stickyCtrl, setStickyCtrl] = useState(false);
@@ -815,7 +823,7 @@ export default function TerminalView({
       const observer = new ResizeObserver(refit);
       observer.observe(container);
 
-      if (active) term.focus();
+      if (focused) term.focus();
 
       cleanup = () => {
         clearTimeout(reconnectTimer);
@@ -887,15 +895,15 @@ export default function TerminalView({
   }, [fontsVersion]);
 
   useEffect(() => {
-    if (active) {
+    if (focused) {
       requestAnimationFrame(() => termRef.current?.focus());
     }
-  }, [active]);
+  }, [focused]);
 
   return (
     <div
       ref={containerRef}
-      className={`terminal-host${active ? "" : " hidden"}`}
+      className={`terminal-host${visible ? "" : " hidden"}`}
     >
       {searchOpen && (
         <SearchBar

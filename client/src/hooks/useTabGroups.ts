@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+
+// Mirrors useTabs.ts's own (unexported) SetActiveTabIdArg — the argument
+// shape its setActiveTabId accepts, beyond the plain Dispatch shape this
+// file used before targeted (per-editor-group) activation existed.
+type SetActiveTabIdArg = string | null | ((current: string | null) => string | null);
 import * as api from "../api";
-import { groupKeyForTab, isRealTab, loadStoredTabGroupState, moveGroup as moveGroupTabs, normalizeTabGroups, orderedGroupKeys } from "../lib/tabs";
+import { groupKeyForTab, isRealTab, loadStoredTabGroupState, moveGroupWithin, normalizeWithinGroups, orderedGroupKeys } from "../lib/tabs";
 import type { AppSettings } from "../settings";
 import type { MenuItem, Tab, TabGroupState, TmuxSession } from "../types";
 import { GROUP_COLORS, nextAutoColor } from "../utils/groupColor";
@@ -14,7 +19,11 @@ export function useTabGroups(
   tabsRef: MutableRefObject<Tab[]>,
   setTabs: Dispatch<SetStateAction<Tab[]>>,
   activeTabId: string | null,
-  setActiveTabId: Dispatch<SetStateAction<string | null>>,
+  // useTabs.ts's richer setActiveTabId — the plain Dispatch shape still
+  // works for a call with just the functional-updater argument (see
+  // toggleGroupCollapsed below), but closeGroupTabs needs the optional
+  // second (editorGroupId) argument to target one specific bar.
+  setActiveTabId: (arg: SetActiveTabIdArg, groupId?: string) => void,
   mruTabIdsRef: MutableRefObject<string[]>,
   dirtyTabsRef: MutableRefObject<Set<string>>,
   sessions: TmuxSession[],
@@ -59,12 +68,13 @@ export function useTabGroups(
   }, [tabs, groupingEnabled, settingsRef]);
 
   // Enforces group contiguity while grouping is enabled — reorders `tabs` so
-  // each session's tabs sit adjacent to each other (see normalizeTabGroups).
-  // A no-op (same array reference) once already normalized, so this can't
-  // loop: setTabs bails on an unchanged reference.
+  // each session's tabs sit adjacent to each other, independently within
+  // each editor group/split pane (see normalizeWithinGroups). A no-op (same
+  // array reference) once already normalized, so this can't loop: setTabs
+  // bails on an unchanged reference.
   useEffect(() => {
     if (!groupingEnabled) return;
-    setTabs((prev) => normalizeTabGroups(prev));
+    setTabs((prev) => normalizeWithinGroups(prev));
   }, [tabs, groupingEnabled, setTabs]);
 
   // A tab activated while its group is collapsed must not stay hidden
@@ -137,20 +147,26 @@ export function useTabGroups(
   }, [tabsRef, mruTabIdsRef, setActiveTabId]);
 
   // Moves a whole group's block to a new position relative to the other
-  // groups — the drag-a-chip / "Move Group Left/Right" operation. See
-  // plans/reorder-tab-groups.md. No new persisted state: group order rides
-  // entirely on `tabs`' own array order, already persisted like any other
-  // tab-order change.
+  // groups within one editor group's own tab bar only — the drag-a-chip /
+  // "Move Group Left/Right" operation. See plans/reorder-tab-groups.md and
+  // plans/vscode-editor-group-splits.md. No new persisted state: group order
+  // rides entirely on `tabs`' own array order, already persisted like any
+  // other tab-order change.
   const moveGroup = useCallback(
-    (sessionName: string, toIndex: number) => {
-      setTabs((prev) => moveGroupTabs(prev, sessionName, toIndex));
+    (editorGroupId: string, sessionName: string, toIndex: number) => {
+      setTabs((prev) => moveGroupWithin(prev, editorGroupId, sessionName, toIndex));
     },
     [setTabs],
   );
 
+  // Scoped to one editor group's own tabs — closing a session's chip in one
+  // split pane never touches that session's tabs in another pane (tabGroupState
+  // itself — color/collapsed — stays a global, session-keyed singleton so the
+  // same chip looks identical in every bar; only which *tabs* it acts on is
+  // per-bar).
   const closeGroupTabs = useCallback(
-    async (sessionName: string) => {
-      const toClose = tabs.filter((t) => groupKeyForTab(t) === sessionName);
+    async (editorGroupId: string, sessionName: string) => {
+      const toClose = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t) === sessionName);
       if (toClose.length === 0) return;
       const anyDirty = toClose.some((t) => dirtyTabsRef.current.has(t.id));
       if (anyDirty) {
@@ -176,28 +192,39 @@ export function useTabGroups(
           }
           const neighbor = next[Math.min(idx, next.length - 1)];
           return neighbor ? neighbor.id : null;
-        });
+        }, editorGroupId);
         return next;
       });
     },
     [tabs, confirmDialog, dirtyTabsRef, mruTabIdsRef, setTabs, setActiveTabId, settingsRef],
   );
 
+  // `editorGroupId` scopes chip order/position (Move Left/Right) and Close
+  // Group to that one split pane's own session chips — SplitLayout's Leaf
+  // binds it per-instance before handing this to TabBar (see
+  // App.tsx/SplitLayout.tsx). Collapse/color stay global (tabGroupState).
   const groupMenuItems = useCallback(
-    (sessionName: string): MenuItem[] => {
+    (editorGroupId: string, sessionName: string): MenuItem[] => {
       const state = tabGroupState[sessionName];
       const collapsed = state?.collapsed ?? false;
       // Omitted entirely at each boundary (no "Move Left" for the first
       // group, no "Move Right" for the last) rather than rendered disabled —
       // MenuItem has no disabled field, and a two-item omit is simpler.
-      const order = orderedGroupKeys(tabs);
+      const barTabs = tabs.filter((t) => t.groupId === editorGroupId);
+      const order = orderedGroupKeys(barTabs);
       const index = order.indexOf(sessionName);
       const moveItems: MenuItem[] = [];
       if (index > 0) {
-        moveItems.push({ label: "Move Group Left", onClick: () => moveGroup(sessionName, index - 1) });
+        moveItems.push({
+          label: "Move Group Left",
+          onClick: () => moveGroup(editorGroupId, sessionName, index - 1),
+        });
       }
       if (index !== -1 && index < order.length - 1) {
-        moveItems.push({ label: "Move Group Right", onClick: () => moveGroup(sessionName, index + 1) });
+        moveItems.push({
+          label: "Move Group Right",
+          onClick: () => moveGroup(editorGroupId, sessionName, index + 1),
+        });
       }
       return [
         {
@@ -219,7 +246,7 @@ export function useTabGroups(
           },
         },
         ...moveItems,
-        { label: "Close Group", danger: true, onClick: () => closeGroupTabs(sessionName) },
+        { label: "Close Group", danger: true, onClick: () => closeGroupTabs(editorGroupId, sessionName) },
       ];
     },
     [tabGroupState, tabs, toggleGroupCollapsed, moveGroup, closeGroupTabs],

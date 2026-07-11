@@ -17,6 +17,26 @@ export function tabVirtualPath(tab: Tab): string | undefined {
   return tab.imagePath ?? tab.previewPath ?? tab.extViewerPath;
 }
 
+// Same underlying content, regardless of which tab instance — the same
+// dedupe notion openSession/openWindowTab/openExtViewerTab already apply
+// when deciding whether to activate an existing tab instead of opening a
+// new one (see useTabs.ts), reused by "Move into Next/Previous Group" so it
+// never moves a tab into a group that already shows the same thing.
+export function tabsAreDuplicates(a: Tab, b: Tab): boolean {
+  if (a.settingsView || b.settingsView) return !!a.settingsView && !!b.settingsView;
+  if (isRealTab(a) && isRealTab(b)) {
+    return a.sessionName === b.sessionName && a.windowIndex === b.windowIndex;
+  }
+  if (!isRealTab(a) && !isRealTab(b)) {
+    if (a.extViewerId !== undefined || b.extViewerId !== undefined) {
+      return a.extViewerId === b.extViewerId && a.extViewerPath === b.extViewerPath;
+    }
+    const path = tabVirtualPath(a);
+    return path !== undefined && path === tabVirtualPath(b);
+  }
+  return false;
+}
+
 // Chrome-style tab groups (plans/tab-groups-by-session.md): a real tab's
 // group is simply its session. A viewer tab (image/markdown/etc.) joins the
 // group of the real session it was opened from (originSessionName, cleared
@@ -153,17 +173,71 @@ export function reconcileTabs(tabs: Tab[], sessions: TmuxSession[]): Tab[] {
   return changed ? next : tabs;
 }
 
-export function loadStoredTabs(): Tab[] {
+export function loadStoredTabs(fallbackGroupId: string): Tab[] {
   try {
     const parsed = JSON.parse(localStorage.getItem("tabs") ?? "[]");
     if (!Array.isArray(parsed)) return [];
     // Tabs stored before per-window tabs shipped won't have attachName —
     // every tab back then was a whole-session tab, where it always equals
-    // sessionName.
-    return parsed.map((t) => ({ ...t, attachName: t.attachName ?? t.sessionName }));
+    // sessionName. Tabs stored before editor-group splits shipped won't have
+    // groupId — they all land in the caller's fresh single-leaf tree.
+    return parsed.map((t) => ({
+      ...t,
+      attachName: t.attachName ?? t.sessionName,
+      groupId: typeof t.groupId === "string" ? t.groupId : fallbackGroupId,
+    }));
   } catch {
     return [];
   }
+}
+
+// Applies normalizeTabGroups's session-chip contiguity independently within
+// each editor group (Tab.groupId) — a tab's editor group is never changed
+// here, and one group's reordering never disturbs another group's tabs, even
+// though both live in the same flat array. Returns the same reference when
+// no editor group's subsequence changed.
+export function normalizeWithinGroups(tabs: Tab[]): Tab[] {
+  const editorGroupIds = Array.from(new Set(tabs.map((t) => t.groupId)));
+  let next = tabs;
+  for (const editorGroupId of editorGroupIds) {
+    const slots: number[] = [];
+    for (let i = 0; i < next.length; i++) {
+      if (next[i].groupId === editorGroupId) slots.push(i);
+    }
+    const subsequence = slots.map((i) => next[i]);
+    const normalized = normalizeTabGroups(subsequence);
+    if (normalized === subsequence) continue;
+    const replaced = [...next];
+    slots.forEach((slot, idx) => {
+      replaced[slot] = normalized[idx];
+    });
+    next = replaced;
+  }
+  return next;
+}
+
+// moveGroup (session-chip drag reorder), scoped to one editor group's own
+// subsequence — mirrors normalizeWithinGroups' slot-splice approach so a
+// chip drag in one split pane never reorders another pane's tabs. Returns
+// the same reference when the move is a no-op within that group.
+export function moveGroupWithin(
+  tabs: Tab[],
+  editorGroupId: string,
+  sessionKey: string,
+  toIndex: number,
+): Tab[] {
+  const slots: number[] = [];
+  for (let i = 0; i < tabs.length; i++) {
+    if (tabs[i].groupId === editorGroupId) slots.push(i);
+  }
+  const subsequence = slots.map((i) => tabs[i]);
+  const moved = moveGroup(subsequence, sessionKey, toIndex);
+  if (moved === subsequence) return tabs;
+  const next = [...tabs];
+  slots.forEach((slot, idx) => {
+    next[slot] = moved[idx];
+  });
+  return next;
 }
 
 // Per-device, not server-synced (like `tabs` itself) — group color/collapse

@@ -5,7 +5,7 @@ import Dialog from "./components/Dialog";
 import QuickSwitcher, { type PaletteCommand } from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
-import TabBar from "./components/TabBar";
+import SplitLayout from "./components/SplitLayout";
 import TerminalView from "./components/TerminalView";
 import { EXPLORER_TAB_ID } from "./components/Sidebar";
 import { focusSidebarTab, setSidebarVisibleHandler, useExtensionRegistry } from "./extensions";
@@ -23,6 +23,7 @@ import { useTabs } from "./hooks/useTabs";
 import { useThemeAssets } from "./hooks/useThemeAssets";
 import type { MenuItem, MenuState } from "./types";
 import { groupKeyForTab } from "./lib/tabs";
+import { leaves } from "./lib/splits";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
@@ -39,6 +40,7 @@ const NON_PALETTE_IDS = new Set([
   "quickSwitcher.selectNext",
   "quickSwitcher.selectPrevious",
   ...Array.from({ length: 9 }, (_, i) => `tab.focus${i + 1}`),
+  ...Array.from({ length: 8 }, (_, i) => `group.focus${i + 1}`),
 ]);
 
 export default function App() {
@@ -67,11 +69,69 @@ export default function App() {
   const { sessions, refresh, sessionsLoadedRef } = useSessions(showError, onSessionsRefreshed);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
-  // TabBar's right-side actions container — an image tab portals its zoom
-  // toolbar into this while active (VS Code/code-server editor-actions
-  // placement). State (not a plain ref) because the portaling viewer needs
-  // to re-render once it becomes non-null on first mount.
-  const [tabActionsEl, setTabActionsEl] = useState<HTMLDivElement | null>(null);
+  // Each editor group's own TabBar right-side actions container — an image
+  // tab portals its zoom toolbar into its own group's bar while active (VS
+  // Code/code-server editor-actions placement). State (not a plain ref)
+  // because the portaling viewer needs to re-render once its group's element
+  // becomes non-null on first mount. Keyed by groupId — mirrors Sidebar.tsx's
+  // extPanelActionsEls/getActionsRefCallback pattern for the same reason: a
+  // fresh inline ref closure per render would re-trigger the state update
+  // every render and loop forever (caught live there, not by inspection).
+  const [groupActionsEls, setGroupActionsEls] = useState<Record<string, HTMLDivElement | null>>({});
+  const groupActionsRefCallbacks = useRef<Record<string, (el: HTMLDivElement | null) => void>>({});
+  const getGroupActionsRef = useCallback((groupId: string) => {
+    let cb = groupActionsRefCallbacks.current[groupId];
+    if (!cb) {
+      cb = (el) => {
+        setGroupActionsEls((prev) => (prev[groupId] === el ? prev : { ...prev, [groupId]: el }));
+      };
+      groupActionsRefCallbacks.current[groupId] = cb;
+    }
+    return cb;
+  }, []);
+  // Each editor group's own content-area rect, in viewport pixels — every
+  // tab's actual content component (terminal/viewer/settings) renders in a
+  // flat, never-reshaping list (see the tabs.map(...) below) positioned via
+  // this rect, rather than nested inside SplitLayout's recursive tree.
+  // SplitLayout's tree reshapes (leaf <-> branch) as groups split/merge,
+  // which changes the rendered element TYPE at that tree position — React
+  // can't reconcile across a type change, so it unmounts and rebuilds the
+  // whole subtree, and even a stable DOM node "identity" (e.g. a portal
+  // target inside that subtree) doesn't survive since the node itself gets
+  // destroyed. Content therefore only ever lives in App's own flat list,
+  // and .split-leaf-content (still nested in the tree) is a pure layout
+  // spacer we measure, not a mount point — caught live via a dirty CSV
+  // tab's edit resetting on its very first split, not by inspection.
+  const [groupContentRects, setGroupContentRects] = useState<Record<string, DOMRect | null>>({});
+  const groupContentObservers = useRef<Record<string, ResizeObserver>>({});
+  // Cached per groupId, same as getGroupActionsRef above — a fresh inline
+  // ref closure every render makes React detach+reattach the ref (identity
+  // changed) on every render, which re-triggers the ResizeObserver
+  // setup/measure below every time and loops forever (caught live as a
+  // "Maximum update depth exceeded" crash, not by inspection).
+  const groupContentSlotRefCallbacks = useRef<Record<string, (el: HTMLDivElement | null) => void>>({});
+  const getGroupContentSlotRef = useCallback((groupId: string) => {
+    let cb = groupContentSlotRefCallbacks.current[groupId];
+    if (!cb) {
+      cb = (el) => {
+        groupContentObservers.current[groupId]?.disconnect();
+        delete groupContentObservers.current[groupId];
+        if (!el) {
+          setGroupContentRects((prev) => (prev[groupId] == null ? prev : { ...prev, [groupId]: null }));
+          return;
+        }
+        const measure = () => {
+          setGroupContentRects((prev) => ({ ...prev, [groupId]: el.getBoundingClientRect() }));
+        };
+        const observer = new ResizeObserver(measure);
+        observer.observe(el);
+        groupContentObservers.current[groupId] = observer;
+        measure();
+      };
+      groupContentSlotRefCallbacks.current[groupId] = cb;
+    }
+    return cb;
+  }, []);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem("sidebarWidth"));
     return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 260;
@@ -161,6 +221,16 @@ export default function App() {
     tabLabel,
     tabActivity,
     openSwitchedSession,
+    activeGroupTabs,
+    splitTree,
+    activeGroupId,
+    groupActive,
+    focusGroup,
+    resizeBranch,
+    splitGroup,
+    moveTabToGroup,
+    moveTabToAdjacentGroup,
+    splitGroupAndMoveTab,
   } = useTabs(sessions, sessionsLoadedRef, showError, confirmDialog, settingsRef, extFileViewers);
 
   const {
@@ -277,6 +347,8 @@ export default function App() {
     renameGroup,
     pinnedSessions,
     setPinnedSessions,
+    splitGroup,
+    moveTabToAdjacentGroup,
   );
 
   // Session/window commands need an active real tab (a session/window, not a
@@ -324,20 +396,22 @@ export default function App() {
         Array.from({ length: 9 }, (_, i) => [
           `tab.focus${i + 1}`,
           () => {
-            const t = tabs[i];
+            const t = activeGroupTabs[i];
             if (t) setActiveTabId(t.id);
           },
         ]),
       ),
       "tab.moveLeft": () => {
         if (!activeTabId) return;
-        const idx = tabs.findIndex((t) => t.id === activeTabId);
+        // moveTab's toIndex is relative to the dragged tab's own editor
+        // group, not the flat tabs array — see useTabs.ts's moveTab.
+        const idx = activeGroupTabs.findIndex((t) => t.id === activeTabId);
         if (idx > 0) moveTab(activeTabId, idx - 1);
       },
       "tab.moveRight": () => {
         if (!activeTabId) return;
-        const idx = tabs.findIndex((t) => t.id === activeTabId);
-        if (idx !== -1 && idx < tabs.length - 1) moveTab(activeTabId, idx + 1);
+        const idx = activeGroupTabs.findIndex((t) => t.id === activeTabId);
+        if (idx !== -1 && idx < activeGroupTabs.length - 1) moveTab(activeTabId, idx + 1);
       },
       "tab.reopenClosed": reopenClosedTab,
       "terminal.fontSizeIncrease": () => {
@@ -349,12 +423,47 @@ export default function App() {
       "terminal.fontSizeReset": () => {
         setSettings((prev) => ({ ...prev, fontSize: DEFAULT_SETTINGS.fontSize }));
       },
+      "split.right": () => splitGroup("right"),
+      "split.down": () => splitGroup("down"),
+      "split.left": () => splitGroup("left"),
+      "split.up": () => splitGroup("up"),
+      "group.focusNext": () => {
+        const order = leaves(splitTree);
+        const idx = order.indexOf(activeGroupId);
+        if (idx === -1 || order.length < 2) return;
+        focusGroup(order[(idx + 1) % order.length]);
+      },
+      "group.focusPrevious": () => {
+        const order = leaves(splitTree);
+        const idx = order.indexOf(activeGroupId);
+        if (idx === -1 || order.length < 2) return;
+        focusGroup(order[(idx - 1 + order.length) % order.length]);
+      },
+      ...Object.fromEntries(
+        Array.from({ length: 8 }, (_, i) => [
+          `group.focus${i + 1}`,
+          () => {
+            const groupId = leaves(splitTree)[i];
+            if (groupId) focusGroup(groupId);
+          },
+        ]),
+      ),
+      "tab.moveToNextGroup": () => {
+        if (!activeTabId) return;
+        moveTabToAdjacentGroup(activeTabId, "next");
+      },
+      "tab.moveToPreviousGroup": () => {
+        if (!activeTabId) return;
+        moveTabToAdjacentGroup(activeTabId, "previous");
+      },
     }),
     [
       activeRealTab,
       activeWindow,
       activeTabId,
-      tabs,
+      activeGroupTabs,
+      activeGroupId,
+      splitTree,
       setActiveTabId,
       moveTab,
       reopenClosedTab,
@@ -370,6 +479,9 @@ export default function App() {
       createWindow,
       killWindow,
       renameWindow,
+      splitGroup,
+      focusGroup,
+      moveTabToAdjacentGroup,
     ],
   );
 
@@ -574,9 +686,11 @@ export default function App() {
         />
       )}
       <main className="main">
-        <TabBar
+        <SplitLayout
+          tree={splitTree}
           tabs={tabs}
-          activeTabId={activeTabId}
+          activeGroupId={activeGroupId}
+          groupActive={groupActive}
           label={tabLabel}
           activity={tabActivity}
           onActivate={setActiveTabId}
@@ -584,7 +698,8 @@ export default function App() {
           onShowMenu={showMenu}
           tabMenuItems={tabMenuItems}
           onReorder={moveTab}
-          actionsRef={setTabActionsEl}
+          onMoveTabToGroup={moveTabToGroup}
+          onSplitAndMoveTab={splitGroupAndMoveTab}
           onToggleSidebar={() => setSidebarVisible((v) => !v)}
           groupingEnabled={settings.tabGroupsBySession}
           groupKey={groupKeyForTab}
@@ -592,47 +707,51 @@ export default function App() {
           onToggleGroupCollapsed={toggleGroupCollapsed}
           groupMenuItems={groupMenuItems}
           onReorderGroup={moveGroup}
+          onFocusGroup={focusGroup}
+          onResizeBranch={resizeBranch}
+          actionsRefFor={getGroupActionsRef}
+          contentSlotRefFor={getGroupContentSlotRef}
         />
-        <div className="terminals">
-          {tabs.map((tab) => {
-            const active = tab.id === activeTabId;
-            if (tab.settingsView) {
-              return (
-                <SettingsView
-                  key={tab.id}
-                  active={active}
-                  settings={settings}
-                  onSettingsChange={setSettings}
-                  keybindingOverrides={keybindingOverrides}
-                  onKeybindingOverridesChange={setKeybindingOverrides}
-                  extensions={extensions}
-                  onReloadExtensions={reloadExtensions}
-                  extensionSettings={extensionSettings}
-                  onExtensionSettingsChange={setExtensionSettings}
-                />
+        {tabs.map((tab) => {
+          if (tab.groupId === undefined) return null;
+          const groupId = tab.groupId;
+          const rect = groupContentRects[groupId];
+          if (!rect) return null;
+          const visible = groupActive[groupId] === tab.id;
+          const focused = visible && groupId === activeGroupId;
+          let content: React.ReactNode;
+          if (tab.settingsView) {
+            content = (
+              <SettingsView
+                active={visible}
+                settings={settings}
+                onSettingsChange={setSettings}
+                keybindingOverrides={keybindingOverrides}
+                onKeybindingOverridesChange={setKeybindingOverrides}
+                extensions={extensions}
+                onReloadExtensions={reloadExtensions}
+                extensionSettings={extensionSettings}
+                onExtensionSettingsChange={setExtensionSettings}
+              />
+            );
+          } else if (tab.extViewerPath !== undefined) {
+            // The registered viewer that opened this tab may have been
+            // unregistered since (extension disabled/uninstalled) — the tab
+            // still exists but has nothing left to render.
+            const viewer = extFileViewers.find((v) => v.id === tab.extViewerId);
+            if (!viewer) {
+              content = (
+                <div className={`settings-host${visible ? "" : " hidden"}`}>
+                  <div className="file-tree-empty">This viewer's extension is no longer active.</div>
+                </div>
               );
-            }
-            if (tab.extViewerPath !== undefined) {
-              // The registered viewer that opened this tab may have been
-              // unregistered since (extension disabled/uninstalled) — the
-              // tab still exists but has nothing left to render.
-              const viewer = extFileViewers.find((v) => v.id === tab.extViewerId);
-              if (!viewer) {
-                return (
-                  <div key={tab.id} className={`settings-host${active ? "" : " hidden"}`}>
-                    <div className="file-tree-empty">
-                      This viewer's extension is no longer active.
-                    </div>
-                  </div>
-                );
-              }
+            } else {
               const ViewerComponent = viewer.component;
-              return (
+              content = (
                 <ViewerComponent
-                  key={tab.id}
                   filePath={tab.extViewerPath}
-                  active={active}
-                  toolbarTarget={tabActionsEl}
+                  active={visible}
+                  toolbarTarget={groupActionsEls[groupId] ?? null}
                   openInEditor={openFileInSession}
                   showMenu={showMenu}
                   fontSize={settings.fontSize}
@@ -643,23 +762,23 @@ export default function App() {
                 />
               );
             }
+          } else if (tab.imagePath !== undefined || tab.previewPath !== undefined) {
             // A legacy imagePath/previewPath tab restored from localStorage
             // before this extraction shipped, not yet converted to
             // extViewerId/extViewerPath by the migration effect above —
             // resolves itself once extension activation populates the
             // registry (see the plan's "accept the flash" decision).
-            if (tab.imagePath !== undefined || tab.previewPath !== undefined) {
-              return (
-                <div key={tab.id} className={`settings-host${active ? "" : " hidden"}`}>
-                  <div className="file-tree-empty">Loading…</div>
-                </div>
-              );
-            }
-            return (
+            content = (
+              <div className={`settings-host${visible ? "" : " hidden"}`}>
+                <div className="file-tree-empty">Loading…</div>
+              </div>
+            );
+          } else {
+            content = (
               <TerminalView
-                key={tab.id}
                 attachName={tab.attachName}
-                active={active}
+                visible={visible}
+                focused={focused}
                 settings={settings}
                 theme={activeTerminalTheme}
                 fontsVersion={fontsVersion}
@@ -675,13 +794,40 @@ export default function App() {
                 onOpenFileSecondary={openFileOrViewerSecondary}
               />
             );
-          })}
-          {tabs.length === 0 && (
-            <div className="placeholder">
-              Select a session from the sidebar to open a terminal
+          }
+          return (
+            <div
+              key={tab.id}
+              className="split-content-host"
+              style={{
+                position: "fixed",
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                display: visible ? undefined : "none",
+              }}
+              onPointerDownCapture={() => focusGroup(groupId)}
+            >
+              {content}
             </div>
-          )}
-        </div>
+          );
+        })}
+        {tabs.length === 0 &&
+          leaves(splitTree).map((groupId) => {
+            const rect = groupContentRects[groupId];
+            if (!rect) return null;
+            return (
+              <div
+                key={`placeholder-${groupId}`}
+                className="split-content-host"
+                style={{ position: "fixed", left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+                onPointerDownCapture={() => focusGroup(groupId)}
+              >
+                <div className="placeholder">Select a session from the sidebar to open a terminal</div>
+              </div>
+            );
+          })}
       </main>
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
       {dialog && <Dialog dialog={dialog} />}
