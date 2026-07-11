@@ -118,7 +118,10 @@ interface Props {
   isPreviewable: (path: string) => boolean;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
   fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
-  prunePath: { path: string } | null;
+  fileMultiMenuItems: (entries: { path: string; isDir: boolean }[]) => MenuItem[];
+  deleteFileEntry: (path: string, isDir: boolean) => void;
+  deleteFileEntries: (entries: { path: string; isDir: boolean }[]) => void;
+  prunePath: { paths: string[] } | null;
   extensionPanels: RegisteredSidebarPanel[];
 }
 
@@ -151,6 +154,9 @@ export default function Sidebar({
   isPreviewable,
   fileMenuItems,
   fileTreeRootMenuItems,
+  fileMultiMenuItems,
+  deleteFileEntry,
+  deleteFileEntries,
   prunePath,
   extensionPanels,
 }: Props) {
@@ -580,6 +586,9 @@ export default function Sidebar({
           onShowMenu={onShowMenu}
           fileMenuItems={fileMenuItems}
           fileTreeRootMenuItems={fileTreeRootMenuItems}
+          fileMultiMenuItems={fileMultiMenuItems}
+          deleteFileEntry={deleteFileEntry}
+          deleteFileEntries={deleteFileEntries}
           prunePath={prunePath}
         />
       );

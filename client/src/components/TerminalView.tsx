@@ -10,6 +10,7 @@ import type { AppSettings } from "../settings";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
 import { buildLinkProvider, isOpenGesture, openUrl } from "../terminalLinks";
+import { isMac } from "../utils/platform";
 
 type SearchAction = "start" | "next" | "prev" | "cancel";
 
@@ -35,7 +36,8 @@ interface Props {
   // window tab, or a cross-session switch from any tab.
   onWindowSwitch?: (windowIndex: number) => void;
   onSessionSwitch?: (session: string, windowIndex: number) => void;
-  // Ctrl+click / Ctrl+Shift+click on a detected file-path link — same
+  // Ctrl+click / Ctrl+Alt+click or Ctrl+Shift+click (Cmd+click /
+  // Cmd+Option+click on mac) on a detected file-path link — same
   // primary/secondary pair as QuickSwitcher's Enter/Shift+Enter.
   onOpenFile?: (path: string, line?: number) => void;
   onOpenFileSecondary?: (path: string, line?: number) => void;
@@ -630,7 +632,6 @@ export default function TerminalView({
       // locally and this would only get in the way. Deliberately leaves
       // wheel events alone (Shift+wheel keeps meaning horizontal scroll,
       // below).
-      const isMacClient = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(navigator.platform);
       // Marks events this handler itself created so they pass through
       // unmodified instead of being reprocessed as a new gesture.
       const syntheticEvents = new WeakSet<MouseEvent>();
@@ -677,7 +678,7 @@ export default function TerminalView({
         endPending();
         // Drag: force local selection to start at the original press point;
         // the ongoing real moves (now unintercepted) extend it live.
-        replay("mousedown", source, true, isMacClient);
+        replay("mousedown", source, true, isMac);
       };
 
       const onPendingUp = () => {
@@ -705,13 +706,14 @@ export default function TerminalView({
         if (syntheticEvents.has(e)) return;
         if (term.modes.mouseTrackingMode === "none") return;
 
-        // Ctrl+click / Ctrl+Shift+click on a hovered link: swallow the
-        // whole press-to-release gesture so nothing reaches tmux (a
-        // replayed ctrl+click would e.g. re-trigger nvim's own
-        // <C-LeftMouse> tag-jump binding), and activate the link directly
-        // on release. Checked before the shift-swap branch below so
-        // Ctrl+Shift+click lands here rather than being shift-un-modified
-        // and falling through to a plain-tmux-click replay.
+        // Ctrl+click / Ctrl+Alt+click / Ctrl+Shift+click (Cmd equivalents on
+        // mac) on a hovered link: swallow the whole press-to-release gesture
+        // so nothing
+        // reaches tmux (a replayed ctrl+click would e.g. re-trigger nvim's
+        // own <C-LeftMouse> tag-jump binding), and activate the link
+        // directly on release. Checked before the shift-swap branch below
+        // so a plain Ctrl+click lands here rather than falling through to a
+        // plain-tmux-click replay.
         if (linkPressArmedRef.current) {
           if (e.type === "mouseup" || e.type === "mousemove") {
             e.preventDefault();

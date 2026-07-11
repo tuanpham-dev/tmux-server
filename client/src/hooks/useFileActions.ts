@@ -28,10 +28,10 @@ export function useFileActions(
     loadedBytes: number;
     totalBytes: number;
   } | null>(null);
-  // Set whenever a delete/rename lands, so FileTree can drop the now-stale
-  // path (and its descendants) from its expanded/dirCache state instead of
-  // waiting for a refetch to notice it's gone.
-  const [prunePath, setPrunePath] = useState<{ path: string } | null>(null);
+  // Set whenever a delete/rename (single or bulk) lands, so FileTree can drop
+  // the now-stale paths (and their descendants) from its expanded/dirCache/
+  // selection state instead of waiting for a refetch to notice they're gone.
+  const [prunePath, setPrunePath] = useState<{ paths: string[] } | null>(null);
 
   const renameFileEntry = useCallback(
     async (entryPath: string) => {
@@ -40,7 +40,7 @@ export function useFileActions(
       if (!newName || newName === base) return;
       try {
         await api.renameEntry(entryPath, newName);
-        setPrunePath({ path: entryPath });
+        setPrunePath({ paths: [entryPath] });
         setFilesRefreshKey((k) => k + 1);
       } catch (err) {
         showError(err);
@@ -56,10 +56,41 @@ export function useFileActions(
         return;
       try {
         await api.deleteEntry(entryPath);
-        setPrunePath({ path: entryPath });
+        setPrunePath({ paths: [entryPath] });
         setFilesRefreshKey((k) => k + 1);
       } catch (err) {
         showError(err);
+      }
+    },
+    [confirmDialog, showError, setFilesRefreshKey],
+  );
+
+  const deleteFileEntries = useCallback(
+    async (entries: { path: string; isDir: boolean }[]) => {
+      if (entries.length === 0) return;
+      const label =
+        entries.length === 1
+          ? `Delete ${entries[0].isDir ? "folder" : "file"} "${entries[0].path.slice(entries[0].path.lastIndexOf("/") + 1)}"?`
+          : `Delete ${entries.length} items?`;
+      if (!(await confirmDialog(label, "Delete"))) return;
+      const succeeded: string[] = [];
+      const errors: string[] = [];
+      for (const { path } of entries) {
+        try {
+          await api.deleteEntry(path);
+          succeeded.push(path);
+        } catch {
+          errors.push(path);
+        }
+      }
+      if (succeeded.length > 0) {
+        setPrunePath({ paths: succeeded });
+        setFilesRefreshKey((k) => k + 1);
+      }
+      if (errors.length === 1) {
+        showError(`Delete failed: ${errors[0]}`);
+      } else if (errors.length > 1) {
+        showError(`${errors.length} items failed to delete`);
       }
     },
     [confirmDialog, showError, setFilesRefreshKey],
@@ -230,6 +261,26 @@ export function useFileActions(
     ],
   );
 
+  // Bulk counterpart of fileMenuItems, shown when the FILES-tree right-click
+  // target is part of a multi-row selection — a smaller action set (no
+  // rename/preview/find-in-folder, which don't make sense across a mixed
+  // selection of files and folders).
+  const fileMultiMenuItems = useCallback(
+    (entries: { path: string; isDir: boolean }[]): MenuItem[] => [
+      {
+        label: "Copy Paths",
+        onClick: () => copyText(entries.map((e) => e.path).join("\n")).catch(showError),
+      },
+      { label: "Download", onClick: () => entries.forEach((e) => downloadFileEntry(e.path)) },
+      {
+        label: `Delete ${entries.length} items`,
+        danger: true,
+        onClick: () => deleteFileEntries(entries),
+      },
+    ],
+    [showError, downloadFileEntry, deleteFileEntries],
+  );
+
   return {
     uploadProgress,
     prunePath,
@@ -238,6 +289,7 @@ export function useFileActions(
     handleFilesRefresh,
     renameFileEntry,
     deleteFileEntry,
+    deleteFileEntries,
     createFileInDir,
     createFolderInDir,
     copyFilePath,
@@ -245,5 +297,6 @@ export function useFileActions(
     downloadFileEntry,
     fileTreeRootMenuItems,
     fileMenuItems,
+    fileMultiMenuItems,
   };
 }

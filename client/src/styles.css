@@ -676,6 +676,12 @@ body.resizing-row {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* File rows are a div, not a native <button> (see FileTree.tsx's comment
+     on why), so they're text-selectable by default — without this, a
+     Shift+click (used for range-select / the secondary-click shortcut)
+     triggers the browser's native "extend text selection to here" gesture
+     instead of just our click handler. */
+  user-select: none;
 }
 
 .file-tree-dir:hover,
@@ -694,6 +700,21 @@ body.resizing-row {
 
 .file-tree-file:hover {
   background: var(--list-hover-bg);
+}
+
+/* Shared by both row kinds — verified on dir (button) and file (div) rows,
+   not just one, since .file-tree-row is a class both share. */
+.file-tree-row.selected {
+  background: var(--list-active-bg);
+}
+
+.file-tree-row.selected:hover {
+  background: var(--list-active-bg);
+}
+
+.file-tree-row:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
 }
 
 /* Groups the preview button + git badge as one flex item, pushed right as a

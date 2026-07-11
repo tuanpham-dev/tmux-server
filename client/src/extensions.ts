@@ -61,7 +61,7 @@ export interface RegisteredFileViewer {
   // "default" (image/media/pdf): a FILES-tree click opens this viewer
   // directly. "preview" (markdown/json/yaml/csv): a click still opens nvim;
   // this viewer is reached via the hover icon / "Preview" menu item /
-  // Shift+Enter instead. See findFileViewerFor.
+  // Shift+Enter / Alt+click (Cmd+click on mac) instead. See findFileViewerFor.
   mode: FileViewerMode;
   // Whether the FILES-tree context menu offers "Open in Editor" (nvim) as an
   // escape hatch from this "default"-mode viewer — true for image (editing
@@ -206,7 +206,7 @@ export function subscribeExtensionRegistry(cb: Listener): () => void {
 }
 
 // Matches by extension + mode ("default": FILES-tree click target;
-// "preview": hover icon / "Preview" menu / Shift+Enter target — see
+// "preview": hover icon / "Preview" menu / Shift+Enter / Alt+click target — see
 // FileViewerMode). Among ties, a non-builtin (user-installed) viewer wins
 // over a bundled one, so a third-party extension can override e.g. the
 // built-in CSV preview; otherwise first-registered wins.

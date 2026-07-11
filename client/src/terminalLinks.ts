@@ -175,7 +175,11 @@ export function buildLinkProvider(term: Terminal, handlers: TerminalLinksHandler
                 if (!isOpenGesture(event)) return;
                 if (kind === "url") {
                   handlers.onOpenUrl(target);
-                } else if (event.shiftKey) {
+                } else if (event.altKey || event.shiftKey) {
+                  // Ctrl (or Cmd) is already required to reach here via
+                  // isOpenGesture above, so a bare Shift here is unambiguous
+                  // — it's the Ctrl+Shift+click fallback for window managers
+                  // that grab plain Alt+click for window dragging.
                   handlers.onOpenFileSecondary(target, line);
                 } else {
                   handlers.onOpenFile(target, line);

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
 import { serializeEvent } from "../keybindings";
 import type { Tab, TmuxSession } from "../types";
+import { isSecondaryClick } from "../utils/platform";
 
 // A palette row — built by App.tsx from keybindings.ts' COMMANDS plus
 // extension commands (see paletteCommands there). `enabled` false means the
@@ -41,9 +42,11 @@ interface Entry {
   key: string;
   label: string;
   group: "tab" | "window" | "session" | "file" | "command";
-  // secondary is true for Shift+Enter/Shift+click. Only file entries branch
-  // on it (see App.tsx's openFileOrViewerSecondary); tab/window/session/
-  // command entries ignore the argument since they have no secondary action.
+  // secondary is true for Shift+Enter, or Alt+click / Ctrl+Shift+click
+  // (Cmd+click on mac) — see utils/platform.ts's isSecondaryClick. Only
+  // file entries branch on it (see App.tsx's openFileOrViewerSecondary);
+  // tab/window/session/command entries ignore the argument since they have
+  // no secondary action.
   run: (secondary: boolean) => void;
   // Command entries only: shown as a chip on the right, and false disables
   // the row (muted, Enter/click inert) — see PaletteCommand.
@@ -262,7 +265,7 @@ export default function QuickSwitcher({
               key={entry.key}
               className={`quick-switcher-item${i === clampedSelected ? " selected" : ""}${entry.disabled ? " disabled" : ""}`}
               onMouseEnter={() => setSelected(i)}
-              onClick={(e) => runEntry(entry, e.shiftKey)}
+              onClick={(e) => runEntry(entry, isSecondaryClick(e))}
             >
               <span className={`quick-switcher-tag quick-switcher-tag-${entry.group}`}>
                 {entry.group}

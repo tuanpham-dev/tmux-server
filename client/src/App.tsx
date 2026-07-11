@@ -503,6 +503,9 @@ export default function App() {
     handleFilesRefresh,
     fileTreeRootMenuItems,
     fileMenuItems,
+    fileMultiMenuItems,
+    deleteFileEntry,
+    deleteFileEntries,
   } = useFileActions(
     showError,
     confirmDialog,
@@ -555,6 +558,9 @@ export default function App() {
             isPreviewable={isPreviewable}
             fileMenuItems={fileMenuItems}
             fileTreeRootMenuItems={fileTreeRootMenuItems}
+            fileMultiMenuItems={fileMultiMenuItems}
+            deleteFileEntry={deleteFileEntry}
+            deleteFileEntries={deleteFileEntries}
             prunePath={prunePath}
             extensionPanels={extSidebarPanels}
           />

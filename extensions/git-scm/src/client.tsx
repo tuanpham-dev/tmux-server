@@ -15,6 +15,15 @@ import Icon from "../../_shared/Icon";
 import FileIcon from "../../_shared/FileIcon";
 import type { IconResult } from "../../_shared/FileIcon";
 
+const isMac = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(navigator.platform);
+// Secondary-open modifier for a row click: Alt everywhere, Cmd on mac, or
+// Ctrl+Shift as a fallback — many Linux window managers (XFCE, GNOME, KDE)
+// grab plain Alt+click globally for window dragging, so it never reaches
+// the browser at all.
+function isSecondaryClick(e: { altKey: boolean; ctrlKey: boolean; shiftKey: boolean; metaKey: boolean }): boolean {
+  return e.altKey || (e.ctrlKey && e.shiftKey) || (isMac && e.metaKey);
+}
+
 // ---- Module-level host bridge ----
 
 interface ActiveContext {
@@ -331,9 +340,9 @@ function FileRow({
   hideDir,
 }: {
   entry: FileEntry;
-  onOpen: (e: { shiftKey: boolean }) => void;
+  onOpen: (secondary: boolean) => void;
   actions: RowAction[];
-  // Discoverability for the shift-click escape hatch — there's no visual
+  // Discoverability for the Alt/Cmd-click escape hatch — there's no visual
   // affordance for it otherwise, so it rides along in the row's own native
   // tooltip. Omitted for conflicted entries, which ignore the click setting.
   clickHint?: string;
@@ -353,7 +362,7 @@ function FileRow({
     <div
       className="git-row"
       title={title}
-      onClick={(e) => onOpen(e)}
+      onClick={(e) => onOpen(isSecondaryClick(e))}
       style={depth ? { paddingLeft: 8 + depth * 16 } : undefined}
     >
       <FileIcon className="git-row-icon" result={icon} />
@@ -686,18 +695,18 @@ function GitPanel({ actionsTarget }: PanelProps) {
     setCredPassword("");
   };
 
-  // Shift+click always opens the OTHER action from gitScm.clickAction's
-  // configured default — same escape-hatch convention the host uses for
-  // preview vs. edit (QuickSwitcher's Shift+Enter, FileTree's hover icon).
-  // Conflicted entries are the one exception: there's no diff to show (both
-  // sides are live conflict markers in the working tree, not two commits to
-  // compare), so a click opens the ConflictView resolver instead, ignoring
-  // gitScm.clickAction — Shift+click is still the escape hatch straight to
-  // nvim, same as every other row.
-  const openEntry = (entry: FileEntry, staged: boolean, shiftKey: boolean) => {
+  // Alt+click (Cmd+click on mac) always opens the OTHER action from
+  // gitScm.clickAction's configured default — same escape-hatch convention
+  // the host uses for preview vs. edit (QuickSwitcher's Alt+click, FileTree's
+  // hover icon). Conflicted entries are the one exception: there's no diff
+  // to show (both sides are live conflict markers in the working tree, not
+  // two commits to compare), so a click opens the ConflictView resolver
+  // instead, ignoring gitScm.clickAction — Alt+click is still the escape
+  // hatch straight to nvim, same as every other row.
+  const openEntry = (entry: FileEntry, staged: boolean, secondary: boolean) => {
     if (!activeCwd) return;
     if (entry.status === "conflicted") {
-      if (shiftKey) {
+      if (secondary) {
         openFileTab?.(`${activeCwd}/${entry.path}`);
         return;
       }
@@ -705,7 +714,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
       openViewerTab?.("conflict", key, { title: `${basenameOf(entry.path)} (Merge)` });
       return;
     }
-    const wantsEdit = shiftKey ? clickAction !== "edit" : clickAction === "edit";
+    const wantsEdit = secondary ? clickAction !== "edit" : clickAction === "edit";
     if (wantsEdit) {
       openFileTab?.(`${activeCwd}/${entry.path}`);
       return;
@@ -732,8 +741,9 @@ function GitPanel({ actionsTarget }: PanelProps) {
   const untrackedPaths = unstaged.filter((e) => e.status === "untracked").map((e) => e.path);
   const ahead = status.ahead ?? 0;
   const behind = status.behind ?? 0;
-  const clickHint = `Shift+Click: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"}`;
-  const conflictClickHint = "Shift+Click: Open in Editor";
+  const secondaryHintLabel = isMac ? "Cmd+Click" : "Alt/Ctrl+Shift+Click";
+  const clickHint = `${secondaryHintLabel}: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"}`;
+  const conflictClickHint = `${secondaryHintLabel}: Open in Editor`;
   const operation = status.operation ?? null;
 
   // ---- Tree mode ----
@@ -759,7 +769,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
   function renderTreeGroup(
     groupKey: "conflicted" | "staged" | "unstaged",
     nodes: TreeNode[],
-    makeFileProps: (entry: FileEntry) => { onOpen: (e: { shiftKey: boolean }) => void; actions: RowAction[]; clickHint?: string },
+    makeFileProps: (entry: FileEntry) => { onOpen: (secondary: boolean) => void; actions: RowAction[]; clickHint?: string },
     makeDirActions: (entries: FileEntry[]) => RowAction[],
     depth = 0,
   ): ReactNode[] {
@@ -984,7 +994,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
                   "conflicted",
                   conflictedTree,
                   (entry) => ({
-                    onOpen: (e) => openEntry(entry, false, e.shiftKey),
+                    onOpen: (secondary) => openEntry(entry, false, secondary),
                     clickHint: conflictClickHint,
                     actions: [{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }],
                   }),
@@ -996,7 +1006,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
                   <FileRow
                     key={entry.path}
                     entry={entry}
-                    onOpen={(e) => openEntry(entry, false, e.shiftKey)}
+                    onOpen={(secondary) => openEntry(entry, false, secondary)}
                     clickHint={conflictClickHint}
                     actions={[{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }]}
                   />
@@ -1022,7 +1032,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
                   "staged",
                   stagedTree,
                   (entry) => ({
-                    onOpen: (e) => openEntry(entry, true, e.shiftKey),
+                    onOpen: (secondary) => openEntry(entry, true, secondary),
                     clickHint,
                     actions: [{ icon: "remove", title: "Unstage Changes", onClick: () => unstage([entry.path]) }],
                   }),
@@ -1034,7 +1044,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
                   <FileRow
                     key={entry.path}
                     entry={entry}
-                    onOpen={(e) => openEntry(entry, true, e.shiftKey)}
+                    onOpen={(secondary) => openEntry(entry, true, secondary)}
                     clickHint={clickHint}
                     actions={[
                       { icon: "remove", title: "Unstage Changes", onClick: () => unstage([entry.path]) },
@@ -1067,7 +1077,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
                   "unstaged",
                   unstagedTree,
                   (entry) => ({
-                    onOpen: (e) => openEntry(entry, false, e.shiftKey),
+                    onOpen: (secondary) => openEntry(entry, false, secondary),
                     clickHint,
                     actions: [
                       {
@@ -1099,7 +1109,7 @@ function GitPanel({ actionsTarget }: PanelProps) {
                   <FileRow
                     key={entry.path}
                     entry={entry}
-                    onOpen={(e) => openEntry(entry, false, e.shiftKey)}
+                    onOpen={(secondary) => openEntry(entry, false, secondary)}
                     clickHint={clickHint}
                     actions={[
                       {
