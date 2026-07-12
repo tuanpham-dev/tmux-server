@@ -61,13 +61,14 @@ app_url() { echo "http://127.0.0.1:$(read_port)"; }
 
 # --- start/restart config flags -------------------------------------------
 # Maps 1:1 to the env config documented in the README (PORT, APP_NAME,
-# ALLOWED_HOSTS, AUTH_TOKEN, NEW_SESSION_CWD). Both `--flag value` and
-# `--flag=value` are accepted.
+# ALLOWED_HOSTS, AUTH_TOKEN, NEW_SESSION_CWD, PROXY_DOMAIN). Both
+# `--flag value` and `--flag=value` are accepted.
 FLAG_PORT=""; FLAG_PORT_SET=0
 FLAG_APP_NAME=""; FLAG_APP_NAME_SET=0
 FLAG_ALLOWED_HOSTS=""; FLAG_ALLOWED_HOSTS_SET=0
 FLAG_AUTH_TOKEN=""; FLAG_AUTH_TOKEN_SET=0
 FLAG_NEW_SESSION_CWD=""; FLAG_NEW_SESSION_CWD_SET=0
+FLAG_PROXY_DOMAIN=""; FLAG_PROXY_DOMAIN_SET=0
 FLAG_HELP=0
 
 reset_instance_flags() {
@@ -76,6 +77,7 @@ reset_instance_flags() {
   FLAG_ALLOWED_HOSTS=""; FLAG_ALLOWED_HOSTS_SET=0
   FLAG_AUTH_TOKEN=""; FLAG_AUTH_TOKEN_SET=0
   FLAG_NEW_SESSION_CWD=""; FLAG_NEW_SESSION_CWD_SET=0
+  FLAG_PROXY_DOMAIN=""; FLAG_PROXY_DOMAIN_SET=0
   FLAG_HELP=0
 }
 
@@ -87,6 +89,7 @@ assign_instance_flag() {
     --allowed-hosts) FLAG_ALLOWED_HOSTS="$val"; FLAG_ALLOWED_HOSTS_SET=1 ;;
     --auth-token) FLAG_AUTH_TOKEN="$val"; FLAG_AUTH_TOKEN_SET=1 ;;
     --new-session-cwd) FLAG_NEW_SESSION_CWD="$val"; FLAG_NEW_SESSION_CWD_SET=1 ;;
+    --proxy-domain) FLAG_PROXY_DOMAIN="$val"; FLAG_PROXY_DOMAIN_SET=1 ;;
   esac
 }
 
@@ -98,11 +101,11 @@ parse_instance_flags() {
         FLAG_HELP=1
         shift
         ;;
-      --port=*|--app-name=*|--allowed-hosts=*|--auth-token=*|--new-session-cwd=*)
+      --port=*|--app-name=*|--allowed-hosts=*|--auth-token=*|--new-session-cwd=*|--proxy-domain=*)
         assign_instance_flag "${1%%=*}" "${1#*=}"
         shift
         ;;
-      --port|--app-name|--allowed-hosts|--auth-token|--new-session-cwd)
+      --port|--app-name|--allowed-hosts|--auth-token|--new-session-cwd|--proxy-domain)
         if [ $# -lt 2 ]; then
           fail "$1 requires a value"
           exit 1
@@ -120,7 +123,7 @@ parse_instance_flags() {
 
 any_instance_flag_set() {
   [ "$FLAG_PORT_SET" -eq 1 ] || [ "$FLAG_APP_NAME_SET" -eq 1 ] || [ "$FLAG_ALLOWED_HOSTS_SET" -eq 1 ] ||
-    [ "$FLAG_AUTH_TOKEN_SET" -eq 1 ] || [ "$FLAG_NEW_SESSION_CWD_SET" -eq 1 ]
+    [ "$FLAG_AUTH_TOKEN_SET" -eq 1 ] || [ "$FLAG_NEW_SESSION_CWD_SET" -eq 1 ] || [ "$FLAG_PROXY_DOMAIN_SET" -eq 1 ]
 }
 
 # Builds the NAME=VALUE argv this invocation's flags translate to, for
@@ -132,6 +135,7 @@ instance_flag_env_args() {
   [ "$FLAG_ALLOWED_HOSTS_SET" -eq 1 ] && args+=("ALLOWED_HOSTS=$FLAG_ALLOWED_HOSTS")
   [ "$FLAG_AUTH_TOKEN_SET" -eq 1 ] && args+=("AUTH_TOKEN=$FLAG_AUTH_TOKEN")
   [ "$FLAG_NEW_SESSION_CWD_SET" -eq 1 ] && args+=("NEW_SESSION_CWD=$FLAG_NEW_SESSION_CWD")
+  [ "$FLAG_PROXY_DOMAIN_SET" -eq 1 ] && args+=("PROXY_DOMAIN=$FLAG_PROXY_DOMAIN")
   printf '%s\n' "${args[@]+"${args[@]}"}"
 }
 
@@ -170,6 +174,7 @@ write_env_config() {
   [ "$FLAG_ALLOWED_HOSTS_SET" -eq 1 ] && env_upsert_line "$env_file" ALLOWED_HOSTS "$FLAG_ALLOWED_HOSTS"
   [ "$FLAG_AUTH_TOKEN_SET" -eq 1 ] && env_upsert_line "$env_file" AUTH_TOKEN "$FLAG_AUTH_TOKEN"
   [ "$FLAG_NEW_SESSION_CWD_SET" -eq 1 ] && env_upsert_line "$env_file" NEW_SESSION_CWD "$FLAG_NEW_SESSION_CWD"
+  [ "$FLAG_PROXY_DOMAIN_SET" -eq 1 ] && env_upsert_line "$env_file" PROXY_DOMAIN "$FLAG_PROXY_DOMAIN"
 }
 
 # --- dependency checks (shared by `doctor` and the installer) -------------
@@ -492,6 +497,11 @@ Flags (all optional; each maps to the matching server config — see README):
                             setting this in server/.env instead; a flag is
                             visible in `ps` output and shell history.
   --new-session-cwd <path>  Working directory for new sessions (env: NEW_SESSION_CWD)
+  --proxy-domain <list>     Comma-separated domains for subdomain port
+                            proxying, e.g. "example.com" routes
+                            <port>.example.com to that local port
+                            (env: PROXY_DOMAIN) — requires wildcard DNS
+                            and, behind HTTPS, wildcard TLS
 
 Both `--flag value` and `--flag=value` are accepted.
 

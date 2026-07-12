@@ -907,6 +907,7 @@ export default function App() {
             onOpenExtensionPage={openExtensionPageTab}
             extensionUpdatesCount={extensionUpdatesCount}
             resolvedBindings={resolvedBindings}
+            confirmDialog={confirmDialog}
           />
           <div className="resize-handle" onMouseDown={startSidebarResize} />
         </>

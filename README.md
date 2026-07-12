@@ -100,11 +100,11 @@ The installer checks for Node 20+, `tmux`, `git`, and a C/C++ toolchain up front
 | `tmux-server update` | Pull the latest code, reinstall, rebuild, and restart |
 | `tmux-server doctor` | Check dependencies and install health, and troubleshoot problems |
 
-Config (`PORT`, `AUTH_TOKEN`, `ALLOWED_HOSTS`, `NEW_SESSION_CWD`, `APP_NAME`) goes in `~/.local/share/tmux-server/server/.env` — see [Production](#production) below for what each does. Without systemd (e.g. on macOS), `start`/`stop`/`restart` fall back to running the server in the background directly instead of managing a service.
+Config (`PORT`, `AUTH_TOKEN`, `ALLOWED_HOSTS`, `NEW_SESSION_CWD`, `APP_NAME`, `PROXY_DOMAIN`) goes in `~/.local/share/tmux-server/server/.env` — see [Production](#production) below for what each does. Without systemd (e.g. on macOS), `start`/`stop`/`restart` fall back to running the server in the background directly instead of managing a service.
 
 #### Flags instead of env vars
 
-`start` and `restart` also accept the same config as flags — `tmux-server start --help` shows the full list (`--port`, `--app-name`, `--allowed-hosts`, `--auth-token`, `--new-session-cwd`; both `--flag value` and `--flag=value` work):
+`start` and `restart` also accept the same config as flags — `tmux-server start --help` shows the full list (`--port`, `--app-name`, `--allowed-hosts`, `--auth-token`, `--new-session-cwd`, `--proxy-domain`; both `--flag value` and `--flag=value` work):
 
 ```bash
 tmux-server start --port=8040 --app-name="Tmux Server - Work"
@@ -243,6 +243,34 @@ node tunnel.mjs --url https://myhost --header 'Cookie: session=...' 3000
 ```
 
 The nginx config above needs no changes — `/ws/tunnel` is covered by the same `location /` WebSocket proxy block as terminal sessions. Note that if a proxy strips the `Cookie`/`Authorization` header before forwarding upstream (some hardening configs explicitly clear `Authorization`), the panel has no way to detect that and will silently omit the header — same as if there were no auth layer at all.
+
+### Browser-native proxy (no CLI download)
+
+Each row in the **PORTS** panel also has three one-click actions — no CLI, no download, works from a phone:
+
+- **Open in browser** — opens the port in a new tab.
+- **Copy URL** — copies the same URL to your clipboard.
+- **Kill process** — sends the owning process `SIGTERM` (after a confirmation), escalating to `SIGKILL` after 5 seconds if it's still holding the port.
+
+This works because the server itself proxies local ports — code-server's `--proxy-domain` model — with two ways to reach a port:
+
+```
+https://tmux.example.com/proxy/3000/       # always available, prefix stripped before forwarding
+https://tmux.example.com/absproxy/3000/    # prefix kept — for an app configured with a matching base path
+```
+
+`/proxy/<port>/` works with zero setup, but an app that references its own assets by absolute path (e.g. `/assets/index.js` rather than `./assets/index.js`) will 404 under a stripped prefix unless it's configured with a matching base path (Vite's `base`, Next's `basePath`, etc.) — the server also falls back to routing an absolute-path request to whichever port referred it (via the `Referer` header), which covers most dev servers without any config at all. `/absproxy/<port>/` is the escape hatch for apps you *have* configured with a base path.
+
+For the case where every app should work completely unmodified, set `PROXY_DOMAIN` to route by subdomain instead of path prefix — same idea as code-server's `--proxy-domain`:
+
+```bash
+PROXY_DOMAIN=proxy.example.com npm start
+# or: tmux-server start --proxy-domain proxy.example.com
+```
+
+A request to `3000.proxy.example.com` now reaches port 3000 directly, with no path rewriting — comma-separate multiple domains if you need more than one. This requires wildcard DNS (`*.proxy.example.com` → this server) and, if you're serving over HTTPS, a wildcard TLS certificate for that domain too — a browser only sends a `Secure` cookie back to HTTPS subdomains, so without wildcard TLS the auth cookie (see [Authentication](#authentication) above) won't reach them. If you hit that, opening `https://3000.proxy.example.com/?token=<secret>` once mints the cookie for that specific subdomain directly.
+
+All of this sits behind the same gates as everything else: `ALLOWED_HOSTS`/`PROXY_DOMAIN` decide which Host headers are accepted, and `AUTH_TOKEN` (when set) gates proxied requests exactly like `/api/*` — a proxied port is never reachable without a valid token any more than the app itself is.
 
 ## Extensions
 

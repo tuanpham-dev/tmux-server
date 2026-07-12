@@ -3,6 +3,7 @@ import type {
   FsFilesListing,
   FsListing,
   ListeningPort,
+  ProxyConfig,
   RegistrySourceResult,
   TmuxSession,
   TunnelAuth,
@@ -37,6 +38,14 @@ export function fetchPorts(): Promise<ListeningPort[]> {
 
 export function fetchTunnelAuth(): Promise<TunnelAuth> {
   return request("/api/tunnel-auth");
+}
+
+export function fetchProxyConfig(): Promise<ProxyConfig> {
+  return request("/api/proxy-config");
+}
+
+export function killPort(port: number): Promise<void> {
+  return request(`/api/ports/${port}/kill`, { method: "POST" });
 }
 
 export function createSession(name?: string, cwd?: string): Promise<TmuxSession> {

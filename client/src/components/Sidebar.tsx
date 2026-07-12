@@ -169,6 +169,8 @@ interface Props {
   // command id — used to append each tab's current shortcut to its tooltip
   // (see tabInfos below) so a rebind in Settings shows up immediately.
   resolvedBindings: Record<string, Keybinding[]>;
+  // Threaded down to PortsPanel's Kill process action.
+  confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>;
 }
 
 export default function Sidebar({
@@ -218,6 +220,7 @@ export default function Sidebar({
   onOpenExtensionPage,
   extensionUpdatesCount,
   resolvedBindings,
+  confirmDialog,
 }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -661,7 +664,7 @@ export default function Sidebar({
       );
     }
     if (id === "ports") {
-      return <PortsPanel refreshKey={portsRefreshKey} />;
+      return <PortsPanel refreshKey={portsRefreshKey} confirmDialog={confirmDialog} />;
     }
     if (id === "files") {
       return (

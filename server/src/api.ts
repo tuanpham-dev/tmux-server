@@ -29,8 +29,9 @@ import {
   uninstallExtension,
 } from "./extensions.js";
 import { getRepoBranch, getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
-import { listTmuxPorts } from "./ports.js";
+import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
+import { primaryProxyDomain } from "./security.js";
 import { readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
 import {
   createSession,
@@ -436,6 +437,47 @@ api.get("/ports", async (_req, res) => {
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
+});
+
+// What the PORTS panel needs to build a proxy URL for a port — currently
+// just the first configured PROXY_DOMAIN, if any (see security.ts). No
+// domain means the panel falls back to /proxy/<port>/ on the app's own
+// origin.
+api.get("/proxy-config", (_req, res) => {
+  res.json({ domain: primaryProxyDomain() });
+});
+
+const KILL_GRACE_MS = 5_000;
+
+api.post("/ports/:port/kill", async (req, res) => {
+  const port = Number(req.params.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    res.status(400).json({ error: "invalid port" });
+    return;
+  }
+  const entry = await findTmuxPort(port);
+  if (!entry || entry.pid === undefined) {
+    res.status(404).json({ error: "port not found in tmux sessions" });
+    return;
+  }
+  const pid = entry.pid;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+    return;
+  }
+  res.status(204).end();
+  // Grace period for a clean shutdown; escalate to SIGKILL only if the same
+  // pid is still holding the port afterward (an already-exited or since-
+  // reused pid is left alone).
+  setTimeout(() => {
+    findTmuxPort(port)
+      .then((stillThere) => {
+        if (stillThere?.pid === pid) process.kill(pid, "SIGKILL");
+      })
+      .catch(() => {});
+  }, KILL_GRACE_MS).unref();
 });
 
 // Reflects the caller's own Cookie/Authorization headers back as JSON, so the

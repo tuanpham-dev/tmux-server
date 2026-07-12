@@ -172,6 +172,13 @@ export interface TunnelAuth {
   authorization: string | null;
 }
 
+// First configured PROXY_DOMAIN (see server/src/security.ts), or null when
+// unset — the PORTS panel uses this to decide whether a port's URL is
+// "<port>.<domain>" or the app-origin "/proxy/<port>/" fallback.
+export interface ProxyConfig {
+  domain: string | null;
+}
+
 export interface ExtensionThemeContribution {
   label: string;
   path: string;

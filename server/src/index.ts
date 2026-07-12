@@ -6,13 +6,21 @@ import { WebSocketServer } from "ws";
 import { api } from "./api.js";
 import { loadEnabledServerHooks } from "./extensions.js";
 import {
+  handleProxyRequest,
+  handleProxyUpgrade,
+  parseProxyPath,
+  portFromReferer,
+} from "./proxy.js";
+import {
   AUTH_COOKIE_NAME,
+  cookieDomainFor,
   isAllowedHost,
   isAllowedOrigin,
   isAuthExemptPath,
   isAuthGateEnabled,
   isOriginExemptPath,
   isValidAuthToken,
+  portFromProxyHost,
   tokenFromRequest,
 } from "./security.js";
 import { startViewSweeper } from "./viewSweeper.js";
@@ -79,9 +87,20 @@ app.use((req, res, next) => {
       secure: proto?.split(",")[0]?.trim() === "https",
       maxAge: 30 * 24 * 60 * 60 * 1000,
       path: "/",
+      // Undefined when PROXY_DOMAIN is unset or the current host isn't one
+      // of its configured domains — leaves the cookie host-only, today's
+      // behavior. Set, this shares the cookie across every "<port>.<domain>"
+      // origin so a proxied dev server on a different subdomain is already
+      // authenticated.
+      domain: cookieDomainFor(req.headers.host),
     });
   }
-  if (!req.path.startsWith("/api/") || isAuthExemptPath(req.path)) {
+  // Gated the same as /api/*: a /proxy or /absproxy path, or a
+  // PROXY_DOMAIN subdomain request naming a port — both reach a local
+  // process, same as an API call would.
+  const isProxyRequest =
+    parseProxyPath(req.path) !== null || portFromProxyHost(req.headers.host) !== null;
+  if ((!req.path.startsWith("/api/") && !isProxyRequest) || isAuthExemptPath(req.path)) {
     next();
     return;
   }
@@ -93,6 +112,32 @@ app.use((req, res, next) => {
   );
   if (!isValidAuthToken(token)) {
     res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  next();
+});
+// Reverse proxy to a locally-listening port, code-server style — mounted
+// ahead of express.json() so proxied request bodies stream through
+// untouched rather than being buffered/parsed here.
+app.use((req, res, next) => {
+  const subdomainPort = portFromProxyHost(req.headers.host);
+  if (subdomainPort !== null) {
+    if (subdomainPort === PORT) {
+      res.status(400).json({ error: "cannot proxy the server's own port" });
+      return;
+    }
+    handleProxyRequest(req, res, subdomainPort, req.url ?? "/", null);
+    return;
+  }
+  const parsed = parseProxyPath(req.path);
+  if (parsed) {
+    if (parsed.port === PORT) {
+      res.status(400).json({ error: "cannot proxy the server's own port" });
+      return;
+    }
+    const search = req.url && req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    const prefix = parsed.absolute ? null : `/proxy/${parsed.port}`;
+    handleProxyRequest(req, res, parsed.port, parsed.rest + search, prefix);
     return;
   }
   next();
@@ -129,6 +174,28 @@ if (existsSync(clientDist)) {
   // index: false — otherwise express.static serves index.html for "/"
   // itself (its default behavior), bypassing the templated catch-all below.
   app.use(express.static(clientDist, { index: false }));
+  // Fallback for absolute-path assets (e.g. "/assets/x.js") requested by a
+  // page served through /proxy/<port>/ or /absproxy/<port>/ — express.static
+  // just missed above, so route it to the port named in the Referer instead
+  // of falling through to the SPA shell. Same-origin Referer only (see
+  // portFromReferer) and HTTP only (WebSocket upgrades rarely carry one).
+  app.use((req, res, next) => {
+    if (
+      req.path.startsWith("/api/") ||
+      req.path.startsWith("/ws/") ||
+      req.path === "/tunnel.mjs" ||
+      parseProxyPath(req.path) !== null
+    ) {
+      next();
+      return;
+    }
+    const refererPort = portFromReferer(req.headers.referer, req.headers.host);
+    if (refererPort !== null && refererPort !== PORT) {
+      handleProxyRequest(req, res, refererPort, req.url ?? "/", null);
+      return;
+    }
+    next();
+  });
   app.get(/^\/(?!api|ws).*/, (_req, res) => {
     const appName = process.env.APP_NAME;
     if (!appName) {
@@ -165,6 +232,8 @@ server.on("upgrade", (req, socket, head) => {
       return;
     }
   }
+  const subdomainPort = portFromProxyHost(req.headers.host);
+  const parsedProxy = subdomainPort === null ? parseProxyPath(pathname) : null;
   if (pathname === "/ws/attach") {
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleAttach(ws, req);
@@ -173,6 +242,18 @@ server.on("upgrade", (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) => {
       handleTunnel(ws);
     });
+  } else if (subdomainPort !== null) {
+    if (subdomainPort === PORT) {
+      socket.destroy();
+      return;
+    }
+    handleProxyUpgrade(req, socket, head, subdomainPort, req.url ?? "/");
+  } else if (parsedProxy) {
+    if (parsedProxy.port === PORT) {
+      socket.destroy();
+      return;
+    }
+    handleProxyUpgrade(req, socket, head, parsedProxy.port, parsedProxy.rest);
   } else {
     socket.destroy();
   }

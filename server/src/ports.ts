@@ -138,6 +138,14 @@ export async function listTmuxPorts(): Promise<ListeningPort[]> {
   return attributed;
 }
 
+// Looks up a single port's tmux attribution on demand (kill confirmation and
+// the 5s SIGKILL-escalation recheck both want a fresh, uncached read, unlike
+// getTunnelablePorts below).
+export async function findTmuxPort(port: number): Promise<ListeningPort | null> {
+  const ports = await listTmuxPorts();
+  return ports.find((p) => p.port === port) ?? null;
+}
+
 const TUNNEL_CACHE_TTL_MS = 3_000;
 let tunnelCache: { expiresAt: number; ports: Set<number> } | null = null;
 let tunnelCachePromise: Promise<Set<number>> | null = null;

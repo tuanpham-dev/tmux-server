@@ -60,6 +60,14 @@ export default defineConfig({
         target: "http://127.0.0.1:3001",
         ws: true,
       },
+      "/proxy": {
+        target: "http://127.0.0.1:3001",
+        ws: true,
+      },
+      "/absproxy": {
+        target: "http://127.0.0.1:3001",
+        ws: true,
+      },
     },
   },
 });

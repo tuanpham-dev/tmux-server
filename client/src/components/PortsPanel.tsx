@@ -1,15 +1,17 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
-import type { ListeningPort, TunnelAuth } from "../types";
+import type { ListeningPort, ProxyConfig, TunnelAuth } from "../types";
 import Icon from "./Icon";
 
 interface Props {
   refreshKey: number;
+  confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>;
 }
 
 const POLL_MS = 30_000;
 const NO_AUTH: TunnelAuth = { cookie: null, authorization: null };
+const NO_PROXY_CONFIG: ProxyConfig = { domain: null };
 const MASK = "••••";
 
 function isLoopback(address: string): boolean {
@@ -41,33 +43,64 @@ function buildCommand(origin: string, ports: number[], auth: TunnelAuth, mask: b
   return `${curl} && ${node}`;
 }
 
-export default function PortsPanel({ refreshKey }: Props) {
+// code-server-style: a configured PROXY_DOMAIN routes "<port>.<domain>"
+// straight to that port (every app works unmodified); otherwise fall back to
+// the app-origin path proxy "/proxy/<port>/" (absolute-path assets need the
+// Referer fallback or a domain — see server/src/proxy.ts).
+function proxyUrl(port: number, proxyConfig: ProxyConfig): string {
+  if (proxyConfig.domain) {
+    return `${window.location.protocol}//${port}.${proxyConfig.domain}/`;
+  }
+  return `${window.location.origin}/proxy/${port}/`;
+}
+
+export default function PortsPanel({ refreshKey, confirmDialog }: Props) {
   const [ports, setPorts] = useState<ListeningPort[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [copied, setCopied] = useState(false);
+  const [copiedPort, setCopiedPort] = useState<number | null>(null);
   const [auth, setAuth] = useState<TunnelAuth>(NO_AUTH);
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(NO_PROXY_CONFIG);
   const [revealed, setRevealed] = useState(false);
+  const [killing, setKilling] = useState<Set<number>>(new Set());
+  // Guards state updates from a fetch started before unmount but resolving
+  // after — mirrors the effect's own `cancelled` flag, needed here too since
+  // loadPorts is also invoked directly (not just from the effect) after kill.
+  // Reset true on every mount (not just the initial ref value) — StrictMode's
+  // dev double-invoke (mount, cleanup, mount) would otherwise leave this
+  // stuck false after the cleanup from the first mount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const loadPorts = useCallback(() => {
+    api
+      .fetchPorts()
+      .then((next) => {
+        if (!mountedRef.current) return;
+        setPorts(next);
+        setError(null);
+        const live = new Set(next.map((p) => p.port));
+        setSelected((prev) => {
+          const pruned = new Set([...prev].filter((port) => live.has(port)));
+          return pruned.size === prev.size ? prev : pruned;
+        });
+      })
+      .catch((err) => {
+        if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
+      });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     const load = () => {
-      api
-        .fetchPorts()
-        .then((next) => {
-          if (cancelled) return;
-          setPorts(next);
-          setError(null);
-          const live = new Set(next.map((p) => p.port));
-          setSelected((prev) => {
-            const pruned = new Set([...prev].filter((port) => live.has(port)));
-            return pruned.size === prev.size ? prev : pruned;
-          });
-        })
-        .catch((err) => {
-          if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-        });
+      loadPorts();
       // A failed auth fetch shouldn't break the ports list — fall back to no
       // headers, same as an unauthenticated deployment.
       api
@@ -81,6 +114,17 @@ export default function PortsPanel({ refreshKey }: Props) {
         })
         .catch(() => {
           if (!cancelled) setAuth(NO_AUTH);
+        });
+      // Likewise for proxy config — no configured domain is a valid state,
+      // not an error, so falling back is correct here too.
+      api
+        .fetchProxyConfig()
+        .then((next) => {
+          if (cancelled) return;
+          setProxyConfig((prev) => (prev.domain === next.domain ? prev : next));
+        })
+        .catch(() => {
+          if (!cancelled) setProxyConfig(NO_PROXY_CONFIG);
         });
     };
 
@@ -101,7 +145,7 @@ export default function PortsPanel({ refreshKey }: Props) {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refreshKey]);
+  }, [refreshKey, loadPorts]);
 
   // Re-mask whenever the underlying auth headers change (e.g. a rotated
   // session cookie), so a stale reveal doesn't linger on screen.
@@ -135,14 +179,50 @@ export default function PortsPanel({ refreshKey }: Props) {
       .catch(() => {});
   };
 
+  const onOpenPort = (port: number) => {
+    window.open(proxyUrl(port, proxyConfig), "_blank", "noopener");
+  };
+
+  const onCopyPortUrl = (port: number) => {
+    copyText(proxyUrl(port, proxyConfig))
+      .then(() => {
+        setCopiedPort(port);
+        window.setTimeout(() => setCopiedPort((prev) => (prev === port ? null : prev)), 1500);
+      })
+      .catch(() => {});
+  };
+
+  const onKillPort = (p: ListeningPort) => {
+    confirmDialog(
+      `Kill ${p.process ?? "process"} (pid ${p.pid}) listening on port ${p.port}?`,
+      "Kill",
+    )
+      .then((ok) => {
+        if (!ok) return;
+        setKilling((prev) => new Set(prev).add(p.port));
+        return api
+          .killPort(p.port)
+          .then(() => loadPorts())
+          .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+          .finally(() => {
+            setKilling((prev) => {
+              const next = new Set(prev);
+              next.delete(p.port);
+              return next;
+            });
+          });
+      })
+      .catch(() => {});
+  };
+
   return (
     <div className="ports-panel">
       {error && <div className="ports-error">{error}</div>}
       <ul className="port-list">
         {ports.map((p) => (
-          <li key={p.port}>
+          <li key={p.port} className={`port-row${selected.has(p.port) ? " selected" : ""}`}>
             <button
-              className={`port-item${selected.has(p.port) ? " selected" : ""}`}
+              className="port-item"
               title={p.pid ? `pid ${p.pid}` : undefined}
               onClick={() => toggle(p.port)}
             >
@@ -151,6 +231,32 @@ export default function PortsPanel({ refreshKey }: Props) {
               <span className="port-session">{p.session}</span>
               {!isLoopback(p.address) && <span className="port-address">{p.address}</span>}
             </button>
+            <div className="port-actions">
+              <button
+                className="icon-button port-action-button"
+                title="Open in browser"
+                onClick={() => onOpenPort(p.port)}
+              >
+                <Icon name="link-external" />
+              </button>
+              <button
+                className="icon-button port-action-button"
+                title={copiedPort === p.port ? "Copied" : "Copy URL"}
+                onClick={() => onCopyPortUrl(p.port)}
+              >
+                <Icon name={copiedPort === p.port ? "check" : "copy"} />
+              </button>
+              {p.pid !== undefined && (
+                <button
+                  className="icon-button port-action-button"
+                  title="Kill process"
+                  disabled={killing.has(p.port)}
+                  onClick={() => onKillPort(p)}
+                >
+                  <Icon name="trash" />
+                </button>
+              )}
+            </div>
           </li>
         ))}
         {ports.length === 0 && !error && (

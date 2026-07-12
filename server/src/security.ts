@@ -20,6 +20,20 @@ function parseAllowedHosts(): Set<string> {
 
 const allowedHosts = parseAllowedHosts();
 
+// PROXY_DOMAIN (code-server's --proxy-domain): comma-separated bare domains
+// (e.g. "example.com,work.example.org"). A request whose Host is
+// "<port>.<one of these>" is routed to that local port instead of being
+// checked against allowedHosts/allowedOrigins directly — see
+// portFromProxyHost below.
+function parseProxyDomains(): string[] {
+  return (process.env.PROXY_DOMAIN ?? "")
+    .split(",")
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+const proxyDomains = parseProxyDomains();
+
 // Strips a port suffix, respecting bracketed IPv6 literals (e.g.
 // "[::1]:3001" -> "[::1]", "example.com:443" -> "example.com").
 function hostnameOf(hostHeader: string): string {
@@ -31,9 +45,41 @@ function hostnameOf(hostHeader: string): string {
   return (colon === -1 ? hostHeader : hostHeader.slice(0, colon)).toLowerCase();
 }
 
+// Matches "<port>.<domain>" against every configured PROXY_DOMAIN, for any of
+// the app's proxy domains. Returns the port to forward to, or null if
+// hostname isn't a "<digits>.<configured-domain>" shape.
+export function portFromProxyHost(hostHeader: string | undefined): number | null {
+  if (!hostHeader || proxyDomains.length === 0) return null;
+  const hostname = hostnameOf(hostHeader);
+  for (const domain of proxyDomains) {
+    if (!hostname.endsWith(`.${domain}`)) continue;
+    const label = hostname.slice(0, hostname.length - domain.length - 1);
+    if (!/^\d{1,5}$/.test(label)) continue;
+    const port = Number(label);
+    if (port >= 1 && port <= 65535) return port;
+  }
+  return null;
+}
+
+// First configured PROXY_DOMAIN, if any — what the client builds subdomain
+// proxy URLs against.
+export function primaryProxyDomain(): string | null {
+  return proxyDomains[0] ?? null;
+}
+
+// The configured proxy domain that hostHeader equals or is a "<port>."
+// subdomain of, for scoping the auth cookie so it's shared across every
+// "<port>.<domain>" origin. Undefined leaves the cookie host-only (today's
+// behavior), which is correct when PROXY_DOMAIN is unset.
+export function cookieDomainFor(hostHeader: string | undefined): string | undefined {
+  if (!hostHeader) return undefined;
+  const hostname = hostnameOf(hostHeader);
+  return proxyDomains.find((d) => hostname === d || hostname.endsWith(`.${d}`));
+}
+
 export function isAllowedHost(hostHeader: string | undefined): boolean {
   if (!hostHeader) return false;
-  return allowedHosts.has(hostnameOf(hostHeader));
+  return allowedHosts.has(hostnameOf(hostHeader)) || portFromProxyHost(hostHeader) !== null;
 }
 
 // No Origin header means the request didn't come from a browser context that
@@ -45,7 +91,8 @@ export function isAllowedOrigin(originHeader: string | undefined): boolean {
   try {
     // URL.hostname keeps IPv6 literals bracketed (e.g. "[::1]"), matching
     // the form hostnameOf() produces from a Host header.
-    return allowedHosts.has(new URL(originHeader).hostname.toLowerCase());
+    const hostname = new URL(originHeader).hostname.toLowerCase();
+    return allowedHosts.has(hostname) || portFromProxyHost(hostname) !== null;
   } catch {
     return false;
   }

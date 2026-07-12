@@ -2536,27 +2536,60 @@ body.scrollbar-dragging {
   flex: 1;
 }
 
+.port-row {
+  display: flex;
+  align-items: center;
+  color: var(--fg-bright);
+}
+
+.port-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.port-row.selected {
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
+}
+
 .port-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   padding: 5px 12px;
   background: none;
   border: none;
-  color: var(--fg-bright);
+  color: inherit;
   font-size: 14px;
   text-align: left;
   cursor: pointer;
 }
 
-.port-item:hover {
-  background: var(--list-hover-bg);
+.port-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-right: 6px;
 }
 
-.port-item.selected {
-  background: var(--list-active-bg);
-  color: var(--list-active-fg);
+.port-action-button {
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+  visibility: hidden;
+}
+
+.port-row:hover .port-action-button {
+  visibility: visible;
+}
+
+/* No hover on touch — keep actions reachable without a hover state. */
+@media (hover: none) {
+  .port-action-button {
+    visibility: visible;
+  }
 }
 
 .port-number {
