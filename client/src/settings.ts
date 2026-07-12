@@ -1,3 +1,4 @@
+import { migrateKeybindingOverrides, type KeybindingOverrides } from "./keybindings";
 import type { PinnedSession } from "./types";
 
 export interface AppSettings {
@@ -125,19 +126,21 @@ export function saveSettings(settings: AppSettings): void {
   localStorage.setItem(KEY, JSON.stringify(settings));
 }
 
-// Keybinding overrides (command id → serialized combo), NOT the resolved
-// map — unset commands fall through to their defaults in keybindings.ts, so
-// a future default change reaches users who never customized that command.
-export function loadKeybindingOverrides(): Record<string, string> {
+// Keybinding overrides (command id → its full replacement binding set), NOT
+// the resolved map — unset commands fall through to their defaults in
+// keybindings.ts, so a future default change reaches users who never
+// customized that command. migrateKeybindingOverrides also upgrades the
+// pre-multi-binding shape (command id → single combo string) that may still
+// be sitting in an existing user's localStorage.
+export function loadKeybindingOverrides(): KeybindingOverrides {
   try {
-    const parsed = JSON.parse(localStorage.getItem(KEYBINDINGS_KEY) ?? "{}");
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+    return migrateKeybindingOverrides(JSON.parse(localStorage.getItem(KEYBINDINGS_KEY) ?? "{}"));
   } catch {
     return {};
   }
 }
 
-export function saveKeybindingOverrides(overrides: Record<string, string>): void {
+export function saveKeybindingOverrides(overrides: KeybindingOverrides): void {
   localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(overrides));
 }
 

@@ -370,6 +370,22 @@ export function useTabs(
     });
   }, [insertTab]);
 
+  // Singleton Keyboard Shortcuts editor tab — same dedupe/activate-or-create
+  // conventions as openSettingsTab above.
+  const openKeyboardShortcutsTab = useCallback(() => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.keyboardView);
+      if (existing) {
+        setActiveTabId(existing.id);
+        return prev;
+      }
+      const groupId = splitLayoutRef.current.activeGroupId;
+      const tab: Tab = { id: crypto.randomUUID(), sessionName: "", attachName: "", keyboardView: true, groupId };
+      setActiveTabId(tab.id, groupId);
+      return insertTab(prev, tab);
+    });
+  }, [insertTab]);
+
   // Extension detail-page tab — deduped globally by extensionPageId, like
   // openSettingsTab above (one page per extension, not per editor group).
   // `source` is only meaningful for a registry-only subject (not yet
@@ -650,6 +666,8 @@ export function useTabs(
     closedTabsRef.current = stack.slice(0, -1);
     if (tab.settingsView) {
       openSettingsTab();
+    } else if (tab.keyboardView) {
+      openKeyboardShortcutsTab();
     } else if (tab.extensionPageId !== undefined) {
       openExtensionPageTab(tab.extensionPageId, tab.extensionPageSource);
     } else if (tab.extViewerId !== undefined && tab.extViewerPath !== undefined) {
@@ -659,7 +677,14 @@ export function useTabs(
     } else if (tab.sessionName) {
       openSession(tab.sessionName);
     }
-  }, [openSettingsTab, openExtensionPageTab, openExtViewerTab, openWindowTab, openSession]);
+  }, [
+    openSettingsTab,
+    openKeyboardShortcutsTab,
+    openExtensionPageTab,
+    openExtViewerTab,
+    openWindowTab,
+    openSession,
+  ]);
 
   // Runs every poll: rewrites any tab whose session/window drifted from an
   // out-of-band rename or renumber (see reconcileTabs), and follows the same
@@ -772,6 +797,7 @@ export function useTabs(
   const tabLabel = useCallback(
     (tab: Tab): string => {
       if (tab.settingsView) return "Settings";
+      if (tab.keyboardView) return "Keyboard Shortcuts";
       if (tab.extensionPageId !== undefined) {
         const installed = extensions.find((e) => e.id === tab.extensionPageId);
         if (installed) return installed.displayName;
@@ -840,10 +866,12 @@ export function useTabs(
   // the window to whichever view is largest, see server/src/tmux.ts); a
   // viewer tab copies its fields into an independent instance (editable
   // viewers don't sync — last save wins, documented in the README). The
-  // Settings tab is a global singleton and isn't duplicated.
+  // Settings and Keyboard Shortcuts tabs are global singletons and aren't
+  // duplicated.
   const duplicateTabToGroup = useCallback(
     async (tab: Tab, targetGroupId: string): Promise<void> => {
       if (tab.settingsView) return;
+      if (tab.keyboardView) return;
       // Global singleton, like the settings tab — not duplicated per group.
       if (tab.extensionPageId !== undefined) return;
       if (tab.windowIndex !== undefined) {
@@ -1074,6 +1102,7 @@ export function useTabs(
     openSession,
     openExtViewerTab,
     openSettingsTab,
+    openKeyboardShortcutsTab,
     openExtensionPageTab,
     openWindowTab,
     openAllWindows,

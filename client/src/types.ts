@@ -65,6 +65,10 @@ export interface Tab {
   // windowIndex or a real session-name match, so a virtual tab passes
   // through untouched.
   settingsView?: true;
+  // Marks the (singleton) Keyboard Shortcuts editor tab — same virtual-tab
+  // conventions as settingsView above (sessionName/attachName "", deduped
+  // globally, every tmux-facing code path passes through untouched).
+  keyboardView?: true;
   // Marks an extension-registered file-viewer tab — the current virtual-tab
   // kind for every built-in and third-party preview. extViewerId identifies
   // which registered viewer (extensions.ts) renders extViewerPath; a

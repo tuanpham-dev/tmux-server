@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import type { RegisteredCommand } from "../extensions";
-import { resolveBindings, type Command, type KeybindingOverrides } from "../keybindings";
+import { migrateKeybindingOverrides, resolveBindings, type Command, type KeybindingOverrides } from "../keybindings";
 import {
   DEFAULT_SETTINGS,
   loadCommandUsage,
@@ -48,23 +48,31 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     saveSettings(settings);
   }, [settings]);
 
-  // Keybinding overrides (command id → serialized combo), resolved over the
-  // defaults in keybindings.ts. Same localStorage flow as settings above,
-  // including the skip-initial-persist rationale.
+  // Keybinding overrides (command id → its full replacement binding set),
+  // resolved over the defaults in keybindings.ts. Same localStorage flow as
+  // settings above, including the skip-initial-persist rationale.
   const [keybindingOverrides, setKeybindingOverrides] =
     useState<KeybindingOverrides>(loadKeybindingOverrides);
   // Extension-registered commands (extensions.ts) — join the built-in list
   // (always "global" scope in v1, namespaced ext.<extensionId>.<cmd> so they
-  // can't collide with a built-in id).
+  // can't collide with a built-in id). The public extension API still
+  // registers a single defaultBinding string; multi-binding is a built-in-
+  // command-only capability for now.
   const extCommandDefs: Command[] = extCommands.map((c) => ({
     id: c.id,
     label: c.label,
-    defaultBinding: c.defaultBinding ?? "",
+    defaultBindings: c.defaultBinding ? [{ key: c.defaultBinding }] : [],
     scope: "global",
   }));
   const resolvedBindings = resolveBindings(keybindingOverrides, extCommandDefs);
   const bindingsRef = useRef(resolvedBindings);
   bindingsRef.current = resolvedBindings;
+  // Raw overrides (not the merged resolvedBindings above) — the global
+  // dispatcher's pickCommand needs to know whether a match came from a
+  // user's own rebind or a still-default binding (see keybindings.ts'
+  // BindingMatch precedence).
+  const overridesRef = useRef(keybindingOverrides);
+  overridesRef.current = keybindingOverrides;
 
   const keybindingsMounted = useRef(false);
   useEffect(() => {
@@ -149,7 +157,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           setSettings(migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }));
         }
         if (doc.keybindings && typeof doc.keybindings === "object") {
-          setKeybindingOverrides(doc.keybindings);
+          setKeybindingOverrides(migrateKeybindingOverrides(doc.keybindings));
         }
         if (
           doc.extensionSettings &&
@@ -242,6 +250,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     setKeybindingOverrides,
     resolvedBindings,
     bindingsRef,
+    overridesRef,
     extensionSettings,
     setExtensionSettings,
     extensionSettingsRef,

@@ -1,5 +1,6 @@
 import type { ITheme } from "@xterm/xterm";
 import { useRef } from "react";
+import type { Keybinding } from "../keybindings";
 import type { AppSettings } from "../settings";
 import type { TmuxSession } from "../types";
 import type { PanelPane, PanelState, PanelTab } from "../hooks/useBottomPanel";
@@ -29,7 +30,7 @@ interface Props {
   settings: AppSettings;
   theme: ITheme;
   fontsVersion: number;
-  bindings: Record<string, string>;
+  bindings: Record<string, Keybinding[]>;
   onSelectTab: (tabId: string) => void;
   onSelectPane: (tabId: string, paneId: string) => void;
   onCloseTab: (tabId: string) => void;

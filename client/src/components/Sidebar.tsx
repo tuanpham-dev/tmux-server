@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { setContextKey } from "../contextKeys";
 import { setSidebarTabsBridge, type RegisteredSidebarPanel } from "../extensions";
 import { moveId } from "../lib/tabs";
 import { sessionRowsWithPins } from "../lib/sessions";
@@ -227,6 +228,14 @@ export default function Sidebar({
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     return () => panelResizeCleanupRef.current?.();
+  }, []);
+
+  // Hiding the sidebar unmounts it (App.tsx's conditional render) without
+  // firing a blur event on whatever was focused inside it — clear the
+  // sidebarFocus context key directly so a when-clause bound to it doesn't
+  // stay stuck true.
+  useEffect(() => {
+    return () => setContextKey("sidebarFocus", false);
   }, []);
 
   const panelRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
@@ -826,7 +835,19 @@ export default function Sidebar({
     CORE_TAB_IDS.includes(activeTabId) ? undefined : extensionPanels.find((p) => p.id === activeTabId);
 
   return (
-    <aside className="sidebar" style={{ width }}>
+    <aside
+      className="sidebar"
+      style={{ width }}
+      onFocusCapture={() => setContextKey("sidebarFocus", true)}
+      onBlurCapture={(e) => {
+        // relatedTarget is null when focus leaves the document entirely
+        // (e.g. to the browser chrome) — treat that as "left the sidebar"
+        // too, so the key can't get stuck true.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setContextKey("sidebarFocus", false);
+        }
+      }}
+    >
       <div className="sidebar-topbar">
         <SidebarTabStrip tabs={tabInfos} activeId={activeTabId} onSelect={selectTab} onReorder={reorderTabs} />
         <button className="icon-button" title="Settings" onClick={onOpenSettings}>

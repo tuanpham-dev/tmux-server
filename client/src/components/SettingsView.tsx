@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
-import type { KeybindingOverrides } from "../keybindings";
 import { DEFAULT_SETTINGS, type AppSettings, type ExtensionSettingsValues } from "../settings";
 import type { ExtensionInfo } from "../types";
 import BehaviorSection from "./settings/BehaviorSection";
 import { SettingsProvider } from "./settings/context";
 import ExtensionConfigSection from "./settings/ExtensionConfigSection";
-import KeyboardSection from "./settings/KeyboardSection";
 import TerminalSection from "./settings/TerminalSection";
 import UiSection from "./settings/UiSection";
 
@@ -13,8 +11,6 @@ interface Props {
   active: boolean;
   settings: AppSettings;
   onSettingsChange: (settings: AppSettings) => void;
-  keybindingOverrides: KeybindingOverrides;
-  onKeybindingOverridesChange: (overrides: KeybindingOverrides) => void;
   extensions: ExtensionInfo[];
   onReloadExtensions: () => void;
   extensionSettings: ExtensionSettingsValues;
@@ -25,6 +21,10 @@ interface Props {
   // shortcut twice in a row (with no navigation in between) still re-fires.
   pendingFocusExtensionId?: string | null;
   onFocusExtensionHandled?: () => void;
+  // Keyboard Shortcuts moved out to its own dedicated tab (App.tsx's
+  // keyboardView) to match VS Code — this nav entry hands off to it instead
+  // of switching to an in-dialog section.
+  onOpenKeyboardShortcuts: () => void;
 }
 
 // `ext:<id>` is a dynamic nav entry for one extension's declared
@@ -32,27 +32,25 @@ interface Props {
 // installing, and managing extensions themselves lives in the sidebar's
 // Extensions tab (ExtensionsPanel), not here — see
 // plans/extension-registry-and-extensions-tab.md.
-type Section = "terminal" | "behavior" | "ui" | "keyboard" | `ext:${string}`;
+type Section = "terminal" | "behavior" | "ui" | `ext:${string}`;
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
-  { id: "keyboard", label: "Keyboard" },
 ];
 
 export default function SettingsView({
   active,
   settings,
   onSettingsChange,
-  keybindingOverrides,
-  onKeybindingOverridesChange,
   extensions,
   onReloadExtensions,
   extensionSettings,
   onExtensionSettingsChange,
   pendingFocusExtensionId,
   onFocusExtensionHandled,
+  onOpenKeyboardShortcuts,
 }: Props) {
   const [section, setSection] = useState<Section>("terminal");
 
@@ -94,8 +92,6 @@ export default function SettingsView({
         settings,
         set,
         onSettingsChange,
-        keybindingOverrides,
-        onKeybindingOverridesChange,
         extensions,
         onReloadExtensions,
         extensionSettings,
@@ -113,6 +109,9 @@ export default function SettingsView({
               {s.label}
             </button>
           ))}
+          <button className="settings-nav-item" onClick={onOpenKeyboardShortcuts}>
+            Keyboard Shortcuts
+          </button>
           {configurableExtensions.length > 0 && (
             <>
               <div className="settings-nav-divider" />
@@ -133,19 +132,10 @@ export default function SettingsView({
           {section === "terminal" && <TerminalSection />}
           {section === "behavior" && <BehaviorSection />}
           {section === "ui" && <UiSection />}
-          {section === "keyboard" && <KeyboardSection active={active} />}
           {activeExtension && <ExtensionConfigSection ext={activeExtension} />}
 
           <div className="settings-footer">
-            {section === "keyboard" ? (
-              <button
-                className="dialog-button secondary"
-                disabled={Object.keys(keybindingOverrides).length === 0}
-                onClick={() => onKeybindingOverridesChange({})}
-              >
-                Reset All Keybindings
-              </button>
-            ) : activeExtension ? (
+            {activeExtension ? (
               <button
                 className="dialog-button secondary"
                 disabled={Object.keys(extensionSettings[activeExtension.id] ?? {}).length === 0}

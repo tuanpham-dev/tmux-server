@@ -5,7 +5,8 @@ import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
-import { serializeEvent } from "../keybindings";
+import { getContextGetter } from "../contextKeys";
+import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
 import type { AppSettings } from "../settings";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
@@ -33,9 +34,10 @@ interface Props {
   // arrives after settings.fontFamily was already applied needs a nudge
   // xterm wouldn't otherwise give it (see that effect's comment).
   fontsVersion: number;
-  // Resolved command-id → combo map (keybindings.ts); the terminal.* entries
-  // drive the custom key handler below, so rebinds apply live via a ref.
-  bindings: Record<string, string>;
+  // Resolved command-id → binding list map (keybindings.ts); the terminal.*
+  // entries drive the custom key handler below, so rebinds apply live via a
+  // ref.
+  bindings: Record<string, Keybinding[]>;
   onExit: () => void;
   onError: (err: unknown) => void;
   // tmux-native navigation inside this attach, reported (and already
@@ -604,13 +606,14 @@ export default function TerminalView({
         const combo = serializeEvent(e);
         if (!combo) return true;
         const b = bindingsRef.current;
-        if (combo === b["terminal.copy"]) {
+        const get = getContextGetter(e);
+        if (bindingMatches(b["terminal.copy"], combo, get)) {
           e.preventDefault();
           const selection = term.getSelection();
           if (selection) copyText(selection).catch((err) => onErrorRef.current(err));
           return false;
         }
-        if (combo === b["terminal.find"]) {
+        if (bindingMatches(b["terminal.find"], combo, get)) {
           e.preventDefault();
           // Toggle: closing here (rather than just opening) needs the
           // ref-forwarded handler since this handler is set up once and
@@ -619,19 +622,19 @@ export default function TerminalView({
           else setSearchOpen(true);
           return false;
         }
-        if (combo === b["terminal.newline"]) {
+        if (bindingMatches(b["terminal.newline"], combo, get)) {
           e.preventDefault();
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "input", data: "\n" }));
           }
           return false;
         }
-        if (combo === b["terminal.clear"]) {
+        if (bindingMatches(b["terminal.clear"], combo, get)) {
           e.preventDefault();
           term.clear();
           return false;
         }
-        if (combo === b["terminal.scrollToBottom"]) {
+        if (bindingMatches(b["terminal.scrollToBottom"], combo, get)) {
           e.preventDefault();
           // tmux owns scrollback here (see the mount effect's comment above
           // requestScrollState), not xterm's own buffer — term.scrollToBottom()

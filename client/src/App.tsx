@@ -4,12 +4,14 @@ import BottomPanel from "./components/BottomPanel";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
 import ExtensionPageView from "./components/ExtensionPageView";
+import KeyboardShortcutsView from "./components/KeyboardShortcutsView";
 import QuickSwitcher, { type PaletteCommand } from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SplitLayout from "./components/SplitLayout";
 import TerminalView from "./components/TerminalView";
 import { EXPLORER_TAB_ID, EXTENSIONS_TAB_ID } from "./components/Sidebar";
+import { getContextGetter, setContextKey } from "./contextKeys";
 import { focusSidebarTab, setSidebarVisibleHandler, useExtensionRegistry } from "./extensions";
 import { useDialogs } from "./hooks/useDialogs";
 import { useFileActions } from "./hooks/useFileActions";
@@ -17,6 +19,7 @@ import { useFileOpeners } from "./hooks/useFileOpeners";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
 import { COMMANDS, formatBinding } from "./keybindings";
 import { DEFAULT_SETTINGS } from "./settings";
+import { evaluateWhen } from "./whenClause";
 import { useBottomPanel } from "./hooks/useBottomPanel";
 import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
@@ -185,6 +188,7 @@ export default function App() {
     setKeybindingOverrides,
     resolvedBindings,
     bindingsRef,
+    overridesRef,
     extensionSettings,
     setExtensionSettings,
     extensionSettingsRef,
@@ -279,6 +283,7 @@ export default function App() {
     openSession,
     openExtViewerTab,
     openSettingsTab,
+    openKeyboardShortcutsTab,
     openExtensionPageTab,
     openWindowTab,
     openAllWindows,
@@ -538,6 +543,7 @@ export default function App() {
         if (activeTabId) closeOtherTabs(activeTabId);
       },
       "settings.open": openSettingsTab,
+      "settings.openKeyboardShortcuts": openKeyboardShortcutsTab,
       "session.new": () => createSession(),
       "session.kill": () => {
         if (activeRealTab) killSession(activeRealTab.sessionName);
@@ -646,6 +652,7 @@ export default function App() {
       closeOtherTabs,
       cycleTab,
       openSettingsTab,
+      openKeyboardShortcutsTab,
       createSession,
       killSession,
       renameSession,
@@ -666,7 +673,30 @@ export default function App() {
     ],
   );
 
-  useGlobalKeybindings(bindingsRef, globalHandlers, extCommands);
+  // Mirrors this component's own state into the module-level context-key
+  // store (contextKeys.ts) so when-clause bindings can read it from the
+  // dispatchers below, which live outside React (mount-once listeners).
+  useEffect(() => {
+    setContextKey("sidebarVisible", sidebarVisible);
+  }, [sidebarVisible]);
+  useEffect(() => {
+    setContextKey("panelFocus", panelFocused);
+  }, [panelFocused]);
+  useEffect(() => {
+    setContextKey("quickSwitcherOpen", switcherQuery !== null);
+    // Only the switcher's initial mode is tracked — typing/deleting the ">"
+    // prefix inside an already-open switcher doesn't update this, since the
+    // live query isn't lifted up to App.
+    setContextKey("commandPaletteOpen", switcherQuery?.startsWith(">") ?? false);
+  }, [switcherQuery]);
+  useEffect(() => {
+    setContextKey("activeSession", activeRealTab !== null);
+  }, [activeRealTab]);
+  useEffect(() => {
+    setContextKey("activeWindow", activeWindow !== undefined);
+  }, [activeWindow]);
+
+  useGlobalKeybindings(bindingsRef, overridesRef, globalHandlers, extCommands);
 
   // Bumps commandUsage[id] on every palette-invoked run (not chord
   // dispatches — see paletteCommands' comment on recording scope). Read by
@@ -702,19 +732,22 @@ export default function App() {
   const paletteCommands = useMemo<PaletteCommand[]>(() => {
     const hasSession = activeRealTab !== null;
     const hasWindow = activeWindow !== undefined;
-    const contextRequirement: Record<string, boolean> = {
-      "session.kill": hasSession,
-      "session.rename": hasSession,
-      "session.togglePin": hasSession,
-      "window.new": hasSession,
-      "window.kill": hasSession && hasWindow,
-      "window.rename": hasSession && hasWindow,
+    // Render-fresh for activeSession/activeWindow: the context-key store's
+    // mirroring effects run after render, so reading it for these two here
+    // would be one render stale right when it matters most (opening the
+    // palette immediately after creating/killing a session or window).
+    // Everything else falls through to the store.
+    const storeGet = getContextGetter();
+    const paletteGet = (key: string) => {
+      if (key === "activeSession") return hasSession;
+      if (key === "activeWindow") return hasWindow;
+      return storeGet(key);
     };
     const builtins = COMMANDS.filter((c) => c.scope === "global" && !NON_PALETTE_IDS.has(c.id)).map((c) => ({
       id: c.id,
       label: c.label,
-      binding: formatBinding(resolvedBindings[c.id] ?? ""),
-      enabled: contextRequirement[c.id] ?? true,
+      binding: formatBinding(resolvedBindings[c.id]?.[0]?.key ?? ""),
+      enabled: c.enablement ? evaluateWhen(c.enablement, paletteGet) : true,
       run: () => {
         recordCommandUsage(c.id);
         globalHandlers[c.id]?.();
@@ -723,7 +756,7 @@ export default function App() {
     const extEntries = extCommands.map((c) => ({
       id: c.id,
       label: c.label,
-      binding: formatBinding(resolvedBindings[c.id] ?? ""),
+      binding: formatBinding(resolvedBindings[c.id]?.[0]?.key ?? ""),
       enabled: true,
       run: () => {
         recordCommandUsage(c.id);
@@ -922,14 +955,21 @@ export default function App() {
                 active={visible}
                 settings={settings}
                 onSettingsChange={setSettings}
-                keybindingOverrides={keybindingOverrides}
-                onKeybindingOverridesChange={setKeybindingOverrides}
                 extensions={extensions}
                 onReloadExtensions={reloadExtensions}
                 extensionSettings={extensionSettings}
                 onExtensionSettingsChange={setExtensionSettings}
                 pendingFocusExtensionId={pendingFocusExtensionId}
                 onFocusExtensionHandled={() => setPendingFocusExtensionId(null)}
+                onOpenKeyboardShortcuts={openKeyboardShortcutsTab}
+              />
+            );
+          } else if (tab.keyboardView) {
+            content = (
+              <KeyboardShortcutsView
+                active={visible}
+                keybindingOverrides={keybindingOverrides}
+                onKeybindingOverridesChange={setKeybindingOverrides}
               />
             );
           } else if (tab.extensionPageId !== undefined) {

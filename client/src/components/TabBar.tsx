@@ -343,6 +343,7 @@ export default function TabBar({
       >
         {activity(tab) && <span className="activity-dot" />}
         {tab.settingsView && <Icon name="settings-gear" className="tab-type-icon" />}
+        {tab.keyboardView && <Icon name="keyboard" className="tab-type-icon" />}
         {tab.extensionPageId !== undefined && <Icon name="extensions" className="tab-type-icon" />}
         {tab.extViewerPath && (
           <FileIcon

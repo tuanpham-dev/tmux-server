@@ -1581,7 +1581,6 @@ body.scrollbar-dragging {
   min-width: 0;
   overflow-y: auto;
   padding: 20px 28px 40px;
-  max-width: 760px;
 }
 
 .settings-section-title {
@@ -1619,6 +1618,36 @@ body.scrollbar-dragging {
   flex-direction: column;
 }
 
+.keybinding-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--fg-inactive);
+}
+
+.keybinding-header-command {
+  flex: 1;
+  min-width: 0;
+}
+
+.keybinding-header-binding,
+.keybinding-header-when {
+  flex-shrink: 0;
+  width: 160px;
+}
+
+.keybinding-header-source {
+  flex-shrink: 0;
+  width: 56px;
+}
+
 .keybinding-row {
   display: flex;
   align-items: center;
@@ -1643,6 +1672,10 @@ body.scrollbar-dragging {
 
 .keybinding-chip {
   flex-shrink: 0;
+  width: 160px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: monospace;
   font-size: 12px;
   padding: 2px 8px;
@@ -1658,6 +1691,12 @@ body.scrollbar-dragging {
   font-family: inherit;
 }
 
+.keybinding-chip.empty {
+  color: var(--fg-inactive);
+  background: none;
+  border-style: dashed;
+}
+
 .keybinding-conflict {
   flex-shrink: 0;
   color: var(--warning);
@@ -1667,6 +1706,104 @@ body.scrollbar-dragging {
 
 .keybinding-conflict .codicon {
   font-size: 14px;
+}
+
+.keybinding-when-cell {
+  position: relative;
+  flex-shrink: 0;
+  width: 160px;
+  min-width: 0;
+}
+
+.keybinding-when-display {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--fg-inactive);
+  cursor: pointer;
+}
+
+.keybinding-when-display:hover {
+  color: var(--fg-bright);
+}
+
+.keybinding-when-input {
+  width: 100%;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.keybinding-when-input.invalid {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.keybinding-when-suggest {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  width: 260px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 2px;
+  padding: 4px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.keybinding-when-suggest-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.keybinding-when-suggest-item.active {
+  background: var(--list-active-bg);
+}
+
+.keybinding-when-suggest-key {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--fg-bright);
+}
+
+.keybinding-when-suggest-desc {
+  font-size: 11px;
+  color: var(--fg-inactive);
+}
+
+.keybinding-source {
+  flex-shrink: 0;
+  width: 56px;
+  font-size: 11px;
+  color: var(--fg-inactive);
+}
+
+.keybinding-row-actions {
+  flex-shrink: 0;
+  width: 94px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.keybinding-header-actions {
+  flex-shrink: 0;
+  width: 94px;
 }
 
 .keybinding-action {

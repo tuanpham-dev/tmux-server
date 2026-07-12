@@ -54,7 +54,10 @@ export function createSession(name?: string, cwd?: string): Promise<TmuxSession>
 // read-merge-write save) — the server itself stays schema-oblivious.
 export interface SettingsDoc {
   settings?: unknown;
-  keybindings?: Record<string, string>;
+  // unknown, not KeybindingOverrides: an older client may have written the
+  // pre-multi-binding shape (command id → single combo string) — the reader
+  // runs it through migrateKeybindingOverrides before trusting the shape.
+  keybindings?: unknown;
   extensionSettings?: unknown;
   pinnedSessions?: unknown;
   [key: string]: unknown;

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
-import { serializeEvent } from "../keybindings";
+import { getContextGetter } from "../contextKeys";
+import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
 import type { Tab, TmuxSession } from "../types";
 import { isSecondaryClick } from "../utils/platform";
 
@@ -29,7 +30,7 @@ interface Props {
   // compared against it directly here rather than through the window-level
   // dispatcher (useGlobalKeybindings), since they only make sense while this
   // component owns the input.
-  bindings: Record<string, string>;
+  bindings: Record<string, Keybinding[]>;
   onActivateTab: (id: string) => void;
   onOpenWindow: (session: string, index: number) => void;
   onOpenSession: (name: string) => void;
@@ -241,10 +242,17 @@ export default function QuickSwitcher({
           }}
           onKeyDown={(e) => {
             const combo = serializeEvent(e.nativeEvent);
-            if (e.key === "ArrowDown" || (combo && combo === bindings["quickSwitcher.selectNext"])) {
+            const get = getContextGetter(e.nativeEvent);
+            if (
+              e.key === "ArrowDown" ||
+              (combo && bindingMatches(bindings["quickSwitcher.selectNext"], combo, get))
+            ) {
               e.preventDefault();
               setSelected((s) => Math.min(s + 1, filtered.length - 1));
-            } else if (e.key === "ArrowUp" || (combo && combo === bindings["quickSwitcher.selectPrevious"])) {
+            } else if (
+              e.key === "ArrowUp" ||
+              (combo && bindingMatches(bindings["quickSwitcher.selectPrevious"], combo, get))
+            ) {
               e.preventDefault();
               setSelected((s) => Math.max(s - 1, 0));
             } else if (e.key === "Enter") {
