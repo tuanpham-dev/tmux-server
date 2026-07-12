@@ -116,14 +116,28 @@ body {
 }
 
 .resize-handle {
+  position: relative;
+  z-index: 1;
   flex-shrink: 0;
   width: 1px;
   cursor: col-resize;
   background: var(--border);
 }
 
-.resize-handle:hover,
-body.resizing .resize-handle {
+/* Hover/drag indicator matches .bottom-panel-resize's 5px bar: a
+   pseudo-element overhangs the 1px line on both sides so the layout
+   doesn't shift and the grab target grows with it. */
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  right: -2px;
+}
+
+.resize-handle:hover::after,
+body.resizing .resize-handle::after {
   background: var(--accent);
 }
 
@@ -302,14 +316,26 @@ body.resizing {
 }
 
 .panel-splitter {
+  position: relative;
+  z-index: 1;
   flex-shrink: 0;
   height: 1px;
   cursor: row-resize;
   background: var(--border);
 }
 
-.panel-splitter:hover,
-body.resizing-row .panel-splitter {
+/* Same 5px hover/drag bar as .resize-handle, vertical axis. */
+.panel-splitter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  bottom: -2px;
+}
+
+.panel-splitter:hover::after,
+body.resizing-row .panel-splitter::after {
   background: var(--accent);
 }
 
@@ -1096,6 +1122,7 @@ body.tab-dragging .split-content-host {
    the sidebar handle is always horizontal. */
 .split-sash {
   position: relative;
+  z-index: 1;
   flex: 0 0 4px;
   background: transparent;
 }
@@ -1133,6 +1160,18 @@ body.tab-dragging .split-content-host {
 .split-sash:hover::after,
 .split-sash.dragging::after {
   background: var(--accent);
+}
+
+/* On hover/drag the 1px line fattens to the same 5px bar as
+   .bottom-panel-resize (still centered by the translate above). */
+.split-sash-row:hover::after,
+.split-sash-row.dragging::after {
+  width: 5px;
+}
+
+.split-sash-column:hover::after,
+.split-sash-column.dragging::after {
+  height: 5px;
 }
 
 /* Drag-to-split's 5-zone drop overlay (T12/T13) — a translucent accent
@@ -2151,11 +2190,14 @@ body.scrollbar-dragging {
   background: var(--accent);
 }
 
+/* Shorter than the editor's 35px .tab-bar — the shared .tab styles have no
+   height of their own (align-items: stretch), so this alone compacts the
+   panel's tabs without touching editor tabs. */
 .bottom-panel-header {
   display: flex;
   align-items: stretch;
   background: var(--tab-bar-bg);
-  min-height: 35px;
+  min-height: 28px;
 }
 
 .bottom-panel-title {
