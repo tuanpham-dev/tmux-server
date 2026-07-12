@@ -28,6 +28,16 @@ interface ClientMsg {
 
 const SEARCH_ACTIONS = new Set<SearchAction>(["start", "next", "prev", "cancel"]);
 
+// Backpressure for a fast pane + slow/backgrounded client: without this,
+// term.onData -> ws.send piles up in ws's internal send buffer without
+// bound (ws has no drain event to await). Pausing the PTY leaves the
+// output sitting in tmux itself, same as a slow real terminal would see —
+// verified live (plans/perf-and-leak-hardening.md) that tmux just repaints
+// the final screen on resume rather than replaying the backlog.
+const HIGH_WATER = 1024 * 1024;
+const LOW_WATER = 256 * 1024;
+const RESUME_POLL_MS = 50;
+
 export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
   const url = new URL(req.url ?? "", "http://localhost");
   const session = url.searchParams.get("session");
@@ -55,7 +65,31 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
     }
   };
 
-  term.onData((data) => send({ type: "data", data }));
+  let paused = false;
+  let resumePoll: NodeJS.Timeout | null = null;
+  const stopResumePoll = () => {
+    if (resumePoll) {
+      clearInterval(resumePoll);
+      resumePoll = null;
+    }
+  };
+
+  term.onData((data) => {
+    send({ type: "data", data });
+    if (!paused && ws.bufferedAmount > HIGH_WATER) {
+      paused = true;
+      term.pause();
+      resumePoll = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount <= LOW_WATER) {
+          stopResumePoll();
+          if (paused) {
+            paused = false;
+            term.resume();
+          }
+        }
+      }, RESUME_POLL_MS);
+    }
+  });
 
   // The shared attach watcher notices tmux-native navigation this attach
   // can't report itself: the pinned window vanishing (close the tab, as the
@@ -87,6 +121,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
 
   term.onExit(() => {
     exited = true;
+    stopResumePoll();
     unregister?.();
     unregister = null;
     send({ type: "exit" });
@@ -157,6 +192,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
   });
 
   ws.on("close", () => {
+    stopResumePoll();
     term.kill();
   });
 }

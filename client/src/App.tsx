@@ -246,6 +246,34 @@ export default function App() {
     splitGroupAndMoveTab,
   } = useTabs(sessions, sessionsLoadedRef, showError, confirmDialog, settingsRef, extFileViewers);
 
+  // A merged-away editor group's DOM node unmounting already disconnects its
+  // ResizeObserver and nulls its rect (getGroupContentSlotRef's ref callback
+  // above), but the callback closure itself and the null rect entry are never
+  // removed — without this, groupContentSlotRefCallbacks/groupContentRects
+  // grow by one dead entry per group id ever created for the page's
+  // lifetime. Deletes only ids no longer in the live tree, so surviving
+  // groups' ref-callback identities stay stable (required — see
+  // getGroupContentSlotRef's comment on the re-render loop that an unstable
+  // identity would cause).
+  useEffect(() => {
+    const live = new Set(leaves(splitTree));
+    for (const groupId of Object.keys(groupContentSlotRefCallbacks.current)) {
+      if (live.has(groupId)) continue;
+      groupContentObservers.current[groupId]?.disconnect();
+      delete groupContentObservers.current[groupId];
+      delete groupContentSlotRefCallbacks.current[groupId];
+    }
+    setGroupContentRects((prev) => {
+      let changed = false;
+      const next: typeof prev = {};
+      for (const [groupId, rect] of Object.entries(prev)) {
+        if (live.has(groupId)) next[groupId] = rect;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [splitTree]);
+
   const {
     openPreviewViewerTab,
     isPreviewable,

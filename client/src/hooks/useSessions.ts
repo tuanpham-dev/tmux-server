@@ -26,8 +26,21 @@ export function useSessions(showError: (err: unknown) => void, onAfterRefresh: (
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 3000);
-    return () => clearInterval(t);
+    // Skip ticks while the tab is hidden (background tab, minimized window)
+    // — no point spawning tmux twice a second for nothing on screen; an
+    // immediate refresh on regaining visibility keeps state from going stale
+    // for the 3s until the next tick would've fired anyway.
+    const t = setInterval(() => {
+      if (!document.hidden) refresh();
+    }, 3000);
+    const onVisibility = () => {
+      if (!document.hidden) refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
 
   return { sessions, refresh, sessionsLoadedRef };

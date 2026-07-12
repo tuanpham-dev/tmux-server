@@ -339,17 +339,37 @@ export default function TerminalView({
       // for its copy-mode scroll state and drive an overlay thumb from it.
       // In-flight coalescing (not a fixed debounce) keeps this snappy: a
       // burst of "data" messages during continuous scrolling would otherwise
-      // keep resetting a timer and compound into visible lag.
+      // keep resetting a timer and compound into visible lag. A hard 80ms
+      // floor on top caps the rate during sustained heavy output (e.g. `yes`)
+      // — each query spawns a tmux subprocess server-side, so an unthrottled
+      // per-chunk query flood burns real CPU for no visible benefit; a
+      // trailing timer guarantees the final position still lands.
+      const SCROLL_QUERY_FLOOR_MS = 80;
       let queryInFlight = false;
       let queryDirty = false;
+      let lastQuerySentAt = 0;
+      let queryThrottleTimer: number | undefined;
+      const sendScrollQuery = () => {
+        queryInFlight = true;
+        lastQuerySentAt = Date.now();
+        ws.send(JSON.stringify({ type: "scrollQuery" }));
+      };
       const requestScrollState = () => {
         if (ws.readyState !== WebSocket.OPEN) return;
         if (queryInFlight) {
           queryDirty = true;
           return;
         }
-        queryInFlight = true;
-        ws.send(JSON.stringify({ type: "scrollQuery" }));
+        if (queryThrottleTimer !== undefined) return;
+        const elapsed = Date.now() - lastQuerySentAt;
+        if (elapsed >= SCROLL_QUERY_FLOOR_MS) {
+          sendScrollQuery();
+          return;
+        }
+        queryThrottleTimer = window.setTimeout(() => {
+          queryThrottleTimer = undefined;
+          if (ws.readyState === WebSocket.OPEN && !queryInFlight) sendScrollQuery();
+        }, SCROLL_QUERY_FLOOR_MS - elapsed);
       };
 
       // Last known state, kept for drag math; updated by server replies and,
@@ -827,6 +847,7 @@ export default function TerminalView({
 
       cleanup = () => {
         clearTimeout(reconnectTimer);
+        clearTimeout(queryThrottleTimer);
         onDragEnd();
         endPending();
         for (const type of capturedMouseEvents) {

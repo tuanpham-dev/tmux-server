@@ -85,10 +85,21 @@ export default function PortsPanel({ refreshKey }: Props) {
     };
 
     load();
-    const timer = window.setInterval(load, POLL_MS);
+    // The initial load above and any refreshKey-triggered reload (a user
+    // action, so the tab is visible) always run; only the background 30s
+    // ticks skip while hidden — resuming immediately on regaining
+    // visibility instead of waiting out the rest of the interval.
+    const timer = window.setInterval(() => {
+      if (!document.hidden) load();
+    }, POLL_MS);
+    const onVisibility = () => {
+      if (!document.hidden) load();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [refreshKey]);
 
