@@ -1541,7 +1541,7 @@ body.scrollbar-dragging {
 
 .settings-nav {
   flex-shrink: 0;
-  width: 150px;
+  width: 200px;
   display: flex;
   flex-direction: column;
   gap: 2px;

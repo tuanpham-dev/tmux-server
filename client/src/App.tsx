@@ -698,6 +698,11 @@ export default function App() {
 
   useGlobalKeybindings(bindingsRef, overridesRef, globalHandlers, extCommands);
 
+  // Formatted "sidebar.toggle" binding for the collapsed sidebar's reopen
+  // strip's tooltip (below) — Sidebar.tsx formats its own copy of this same
+  // binding for the button shown while expanded.
+  const sidebarToggleBinding = formatBinding(resolvedBindings["sidebar.toggle"]?.[0]?.key ?? "");
+
   // Bumps commandUsage[id] on every palette-invoked run (not chord
   // dispatches — see paletteCommands' comment on recording scope). Read by
   // the memo below for the always-on "pin last-used to row 1" behavior and
@@ -901,13 +906,14 @@ export default function App() {
             onRefreshRegistry={refreshRegistry}
             onOpenExtensionPage={openExtensionPageTab}
             extensionUpdatesCount={extensionUpdatesCount}
+            resolvedBindings={resolvedBindings}
           />
           <div className="resize-handle" onMouseDown={startSidebarResize} />
         </>
       ) : (
         <div
           className="sidebar-reopen"
-          title="Show sidebar (Ctrl+Shift+B)"
+          title={`Show sidebar${sidebarToggleBinding ? ` (${sidebarToggleBinding})` : ""}`}
           onClick={() => setSidebarVisible(true)}
         />
       )}

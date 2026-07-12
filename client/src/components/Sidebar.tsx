@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { setContextKey } from "../contextKeys";
 import { setSidebarTabsBridge, type RegisteredSidebarPanel } from "../extensions";
+import { formatBinding, type Keybinding } from "../keybindings";
 import { moveId } from "../lib/tabs";
 import { sessionRowsWithPins } from "../lib/sessions";
 import type {
@@ -164,6 +165,10 @@ interface Props {
   onRefreshRegistry: (refresh: boolean) => void;
   onOpenExtensionPage: (id: string, source?: string) => void;
   extensionUpdatesCount: number;
+  // Live-resolved (defaults + user overrides) keybindings map, keyed by
+  // command id — used to append each tab's current shortcut to its tooltip
+  // (see tabInfos below) so a rebind in Settings shows up immediately.
+  resolvedBindings: Record<string, Keybinding[]>;
 }
 
 export default function Sidebar({
@@ -212,6 +217,7 @@ export default function Sidebar({
   onRefreshRegistry,
   onOpenExtensionPage,
   extensionUpdatesCount,
+  resolvedBindings,
 }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -345,13 +351,34 @@ export default function Sidebar({
     });
   };
 
+  // Appends " (Ctrl+Shift+E)" etc. to a tab's tooltip from its "Sidebar:
+  // Focus <tab>" command's first binding — empty string (no-op) if that
+  // command has no binding, e.g. an extension panel registered without a
+  // focusBinding (see registerSidebarPanel).
+  const shortcutSuffix = (commandId: string): string => {
+    const key = resolvedBindings[commandId]?.[0]?.key;
+    return key ? ` (${formatBinding(key)})` : "";
+  };
+
   const tabInfos: SidebarTabInfo[] = visibleTabOrder.map((id) => {
-    if (id === EXPLORER_TAB_ID) return { id, title: "Explorer", icon: "files" };
+    if (id === EXPLORER_TAB_ID) {
+      return { id, title: `Explorer${shortcutSuffix("sidebar.focusExplorer")}`, icon: "files" };
+    }
     if (id === EXTENSIONS_TAB_ID) {
-      return { id, title: "Extensions", icon: "extensions", badge: extensionUpdatesCount };
+      return {
+        id,
+        title: `Extensions${shortcutSuffix("sidebar.focusExtensions")}`,
+        icon: "extensions",
+        badge: extensionUpdatesCount,
+      };
     }
     const panel = extensionPanels.find((p) => p.id === id);
-    return { id, title: panel?.title ?? id, icon: panel?.icon ?? "extensions", badge: panel?.badge };
+    return {
+      id,
+      title: `${panel?.title ?? id}${shortcutSuffix(`${id}.focus`)}`,
+      icon: panel?.icon ?? "extensions",
+      badge: panel?.badge,
+    };
   });
 
   const toggleWindowCollapsed = (key: string) => {
@@ -850,15 +877,19 @@ export default function Sidebar({
     >
       <div className="sidebar-topbar">
         <SidebarTabStrip tabs={tabInfos} activeId={activeTabId} onSelect={selectTab} onReorder={reorderTabs} />
-        <button className="icon-button" title="Settings" onClick={onOpenSettings}>
+        <button className="icon-button" title={`Settings${shortcutSuffix("settings.open")}`} onClick={onOpenSettings}>
           <Icon name="gear" />
         </button>
-        <button className="icon-button" title="Hide sidebar (Ctrl+Shift+B)" onClick={onCollapse}>
+        <button
+          className="icon-button"
+          title={`Hide sidebar${shortcutSuffix("sidebar.toggle")}`}
+          onClick={onCollapse}
+        >
           <Icon name="layout-sidebar-left-off" />
         </button>
         <button
           className={`icon-button${panelVisible ? " active" : ""}`}
-          title="Toggle terminal panel (Ctrl+`)"
+          title={`Toggle terminal panel${shortcutSuffix("panel.toggle")}`}
           aria-pressed={panelVisible}
           onClick={onTogglePanel}
         >
