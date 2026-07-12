@@ -53,7 +53,9 @@ export default function KeyboardSection({ active }: { active: boolean }) {
     const onKeyDown = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") {
+      // Only a bare Escape cancels recording — with a modifier held (e.g.
+      // Alt+Esc) it's a chord being captured like any other.
+      if (e.key === "Escape" && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
         setRecordingId(null);
         return;
       }
