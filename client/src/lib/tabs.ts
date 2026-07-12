@@ -9,7 +9,8 @@ export function isRealTab(tab: Tab): boolean {
     tab.imagePath === undefined &&
     tab.previewPath === undefined &&
     tab.settingsView === undefined &&
-    tab.extViewerPath === undefined
+    tab.extViewerPath === undefined &&
+    tab.extensionPageId === undefined
   );
 }
 
@@ -24,6 +25,9 @@ export function tabVirtualPath(tab: Tab): string | undefined {
 // never moves a tab into a group that already shows the same thing.
 export function tabsAreDuplicates(a: Tab, b: Tab): boolean {
   if (a.settingsView || b.settingsView) return !!a.settingsView && !!b.settingsView;
+  if (a.extensionPageId !== undefined || b.extensionPageId !== undefined) {
+    return a.extensionPageId !== undefined && a.extensionPageId === b.extensionPageId;
+  }
   if (isRealTab(a) && isRealTab(b)) {
     return a.sessionName === b.sessionName && a.windowIndex === b.windowIndex;
   }

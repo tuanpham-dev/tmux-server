@@ -3,6 +3,7 @@ import type {
   FsFilesListing,
   FsListing,
   ListeningPort,
+  RegistrySourceResult,
   TmuxSession,
   TunnelAuth,
 } from "./types";
@@ -306,6 +307,54 @@ export function setExtensionEnabled(id: string, enabled: boolean): Promise<Exten
 // client entry module) to a fetchable/importable URL.
 export function extensionFileUrl(id: string, relPath: string): string {
   return `/api/extensions/${encodeURIComponent(id)}/file/${relPath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+// Extension registries: user-configured sources, each serving an index.json
+// catalog — see server/src/registry.ts.
+// `sources`, when passed, bypasses the server's settings-doc read — see
+// server/src/registry.ts's getRegistryCatalog doc comment on why an
+// add/remove-then-refresh needs this instead of relying on the (debounced)
+// persisted doc.
+export function fetchRegistry(refresh?: boolean, sources?: string[]): Promise<RegistrySourceResult[]> {
+  const params = new URLSearchParams();
+  if (refresh) params.set("refresh", "1");
+  if (sources) params.set("sources", JSON.stringify(sources));
+  const qs = params.toString();
+  return request(`/api/registry${qs ? `?${qs}` : ""}`).then(
+    (body) => (body as { sources: RegistrySourceResult[] }).sources,
+  );
+}
+
+export function installFromRegistry(source: string, id: string): Promise<ExtensionInfo> {
+  return request("/api/registry/install", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source, id }),
+  });
+}
+
+// Bypasses the JSON request() helper — the response body is markdown text,
+// not JSON.
+export async function fetchRegistryReadme(source: string, id: string): Promise<string> {
+  const url = `/api/registry/readme?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.error) message = body.error;
+    } catch {
+      // non-JSON error body; keep the status message
+    }
+    throw new Error(message);
+  }
+  return res.text();
+}
+
+// Direct-use URL for an <img src> — the icon proxy streams image bytes, not
+// JSON, so this isn't routed through request().
+export function registryIconUrl(source: string, id: string): string {
+  return `/api/registry/icon?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`;
 }
 
 // The mount point for an extension's server hook, if it has one and is

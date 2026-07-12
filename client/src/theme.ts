@@ -126,6 +126,14 @@ const CSS_VAR_KEY_CHAINS: Record<string, string[]> = {
 
   "--button-bg": ["button.background"],
   "--button-fg": ["button.foreground"],
+  // extensionButton.* is VS Code's actual key for Disable/Uninstall on an
+  // extension's page — button.secondaryBackground is a different, more
+  // opaque control (dialog/prompt buttons) and only used as a fallback here
+  // for a theme that defines one family but not the other.
+  "--button-secondary-bg": ["extensionButton.background", "button.secondaryBackground"],
+  "--button-secondary-fg": ["extensionButton.foreground", "button.secondaryForeground"],
+  "--button-secondary-border": ["extensionButton.border", "button.border"],
+  "--button-secondary-hover-bg": ["extensionButton.hoverBackground"],
 
   "--badge-bg": ["badge.background"],
   "--badge-fg": ["badge.foreground"],

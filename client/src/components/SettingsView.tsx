@@ -5,7 +5,6 @@ import type { ExtensionInfo } from "../types";
 import BehaviorSection from "./settings/BehaviorSection";
 import { SettingsProvider } from "./settings/context";
 import ExtensionConfigSection from "./settings/ExtensionConfigSection";
-import ExtensionsSection from "./settings/ExtensionsSection";
 import KeyboardSection from "./settings/KeyboardSection";
 import TerminalSection from "./settings/TerminalSection";
 import UiSection from "./settings/UiSection";
@@ -20,18 +19,26 @@ interface Props {
   onReloadExtensions: () => void;
   extensionSettings: ExtensionSettingsValues;
   onExtensionSettingsChange: (values: ExtensionSettingsValues) => void;
+  // Set by the Extensions detail page's "Extension Settings" shortcut
+  // (App.tsx) to jump straight to that extension's config section — reset
+  // to null once applied (onFocusExtensionHandled) so clicking the same
+  // shortcut twice in a row (with no navigation in between) still re-fires.
+  pendingFocusExtensionId?: string | null;
+  onFocusExtensionHandled?: () => void;
 }
 
 // `ext:<id>` is a dynamic nav entry for one extension's declared
-// contributes.configuration — see configurableExtensions below.
-type Section = "terminal" | "behavior" | "ui" | "keyboard" | "extensions" | `ext:${string}`;
+// contributes.configuration — see configurableExtensions below. Browsing,
+// installing, and managing extensions themselves lives in the sidebar's
+// Extensions tab (ExtensionsPanel), not here — see
+// plans/extension-registry-and-extensions-tab.md.
+type Section = "terminal" | "behavior" | "ui" | "keyboard" | `ext:${string}`;
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
   { id: "keyboard", label: "Keyboard" },
-  { id: "extensions", label: "Extensions" },
 ];
 
 export default function SettingsView({
@@ -44,6 +51,8 @@ export default function SettingsView({
   onReloadExtensions,
   extensionSettings,
   onExtensionSettingsChange,
+  pendingFocusExtensionId,
+  onFocusExtensionHandled,
 }: Props) {
   const [section, setSection] = useState<Section>("terminal");
 
@@ -56,17 +65,24 @@ export default function SettingsView({
   const configurableExtensions = extensions.filter((ext) => ext.enabled && ext.configuration.length > 0);
 
   // If the active extension section's extension gets disabled/uninstalled
-  // out from under it (e.g. via the Extensions section, in another tab, or
-  // after a reload), fall back to the Extensions section rather than
-  // rendering an empty/stale panel.
+  // out from under it (in the Extensions tab, in another browser tab, or
+  // after a reload), fall back to Terminal rather than rendering an empty/
+  // stale panel.
   useEffect(() => {
     if (
       section.startsWith("ext:") &&
       !configurableExtensions.some((ext) => `ext:${ext.id}` === section)
     ) {
-      setSection("extensions");
+      setSection("terminal");
     }
   }, [section, configurableExtensions]);
+
+  // Extension-page "Extension Settings" shortcut — see the Props doc above.
+  useEffect(() => {
+    if (!pendingFocusExtensionId) return;
+    setSection(`ext:${pendingFocusExtensionId}`);
+    onFocusExtensionHandled?.();
+  }, [pendingFocusExtensionId, onFocusExtensionHandled]);
 
   const activeExtension = section.startsWith("ext:")
     ? configurableExtensions.find((ext) => `ext:${ext.id}` === section)
@@ -118,13 +134,9 @@ export default function SettingsView({
           {section === "behavior" && <BehaviorSection />}
           {section === "ui" && <UiSection />}
           {section === "keyboard" && <KeyboardSection active={active} />}
-          {section === "extensions" && <ExtensionsSection />}
           {activeExtension && <ExtensionConfigSection ext={activeExtension} />}
 
-          <div
-            className="settings-footer"
-            style={section === "extensions" ? { display: "none" } : undefined}
-          >
+          <div className="settings-footer">
             {section === "keyboard" ? (
               <button
                 className="dialog-button secondary"

@@ -33,7 +33,7 @@ const bundledExtensionsDir = path.resolve(import.meta.dirname, "../../extensions
 // separator or traversal segment into those routes.
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
-function isSafeId(id: string): boolean {
+export function isSafeId(id: string): boolean {
   return SAFE_ID.test(id);
 }
 
@@ -109,6 +109,9 @@ interface ExtensionManifest {
   version?: string;
   displayName?: string;
   description?: string;
+  // Extension-relative path to an icon image (VS Code manifest field) —
+  // served through the same file route as themes/fonts/client entries.
+  icon?: string;
   contributes?: {
     themes?: ThemeContribution[];
     iconThemes?: IconThemeContribution[];
@@ -184,6 +187,10 @@ export interface ExtensionInfo {
   displayName: string;
   version: string;
   description: string;
+  // Extension-relative path (see ExtensionManifest.icon), or null if the
+  // manifest declares none — resolved by the client via extensionFileUrl,
+  // same as clientEntry.
+  icon: string | null;
   enabled: boolean;
   themes: { label: string; path: string }[];
   iconThemes: { id: string; label: string; path: string }[];
@@ -287,6 +294,7 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, built
     displayName: manifest.displayName || manifest.name || id,
     version: manifest.version || "0.0.0",
     description: manifest.description || "",
+    icon: typeof manifest.icon === "string" ? manifest.icon : null,
     enabled,
     themes: (manifest.contributes?.themes ?? []).map((t) => ({ label: t.label, path: t.path })),
     iconThemes: (manifest.contributes?.iconThemes ?? []).map((t) => ({

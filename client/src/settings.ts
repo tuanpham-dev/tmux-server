@@ -111,6 +111,7 @@ const KEY = "settings";
 const KEYBINDINGS_KEY = "keybindings";
 const EXTENSION_SETTINGS_KEY = "extensionSettings";
 const PINNED_SESSIONS_KEY = "pinnedSessions";
+const EXTENSION_REGISTRIES_KEY = "extensionRegistries";
 
 export function loadSettings(): AppSettings {
   try {
@@ -185,6 +186,24 @@ export function loadPinnedSessions(): PinnedSession[] {
 
 export function savePinnedSessions(pins: PinnedSession[]): void {
   localStorage.setItem(PINNED_SESSIONS_KEY, JSON.stringify(pins));
+}
+
+// Extension registry sources (each an http(s) URL or a local directory path
+// serving an index.json catalog — see server/src/registry.ts). Lives outside
+// AppSettings, like pinnedSessions above, so "Reset Settings to Defaults"
+// can't wipe a user's configured registries.
+export function loadExtensionRegistries(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(EXTENSION_REGISTRIES_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((s): s is string => typeof s === "string" && s.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function saveExtensionRegistries(registries: string[]): void {
+  localStorage.setItem(EXTENSION_REGISTRIES_KEY, JSON.stringify(registries));
 }
 
 // Command palette usage stats, keyed by command id (same ids as

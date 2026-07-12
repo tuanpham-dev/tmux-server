@@ -30,7 +30,7 @@
   max-width: 860px;
   margin: 0 auto;
   padding: 28px 32px 60px;
-  color: var(--fg-bright);
+  color: var(--fg);
   font-size: 14px;
   line-height: 1.65;
 }
@@ -103,7 +103,7 @@
 }
 
 .markdown-body code {
-  background: var(--input-bg);
+  background: var(--button-secondary-bg);
   padding: 2px 5px;
   border-radius: 3px;
   font-family: "IBM Plex Mono", monospace;
@@ -115,7 +115,7 @@
 }
 
 .markdown-body pre {
-  background: var(--input-bg);
+  background: var(--button-secondary-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px 16px;

@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "displayName": "PDF Preview",
   "description": "Built-in PDF viewer tab (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
   "tmuxServer": {
     "client": "./dist/client.js"
   }

@@ -3,12 +3,13 @@ import * as api from "./api";
 import BottomPanel from "./components/BottomPanel";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
+import ExtensionPageView from "./components/ExtensionPageView";
 import QuickSwitcher, { type PaletteCommand } from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SplitLayout from "./components/SplitLayout";
 import TerminalView from "./components/TerminalView";
-import { EXPLORER_TAB_ID } from "./components/Sidebar";
+import { EXPLORER_TAB_ID, EXTENSIONS_TAB_ID } from "./components/Sidebar";
 import { focusSidebarTab, setSidebarVisibleHandler, useExtensionRegistry } from "./extensions";
 import { useDialogs } from "./hooks/useDialogs";
 import { useFileActions } from "./hooks/useFileActions";
@@ -23,9 +24,10 @@ import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useThemeAssets } from "./hooks/useThemeAssets";
-import type { MenuItem, MenuState } from "./types";
+import type { MenuItem, MenuState, RegistrySourceResult } from "./types";
 import { groupKeyForTab } from "./lib/tabs";
 import { leaves } from "./lib/splits";
+import { compareVersions } from "./lib/version";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
@@ -190,7 +192,65 @@ export default function App() {
     setPinnedSessions,
     commandUsage,
     setCommandUsage,
+    extensionRegistries,
+    setExtensionRegistries,
   } = useSettingsSync(extCommands);
+
+  const { extensions, reloadExtensions, activeTerminalTheme, fontsVersion } =
+    useThemeAssets(settings, extensionSettings, extensionSettingsRef);
+
+  // Extension registry catalog (server/src/registry.ts) — fetched lazily on
+  // the Extensions sidebar tab's first activation (see ensureRegistryLoaded)
+  // rather than eagerly here, so a session that never opens that tab never
+  // pays for it. Lives at this App level (not inside ExtensionsPanel) so the
+  // extension detail-page tab below can read the same fetched catalog
+  // without a second, redundant request for the same data.
+  const [registryCatalog, setRegistryCatalog] = useState<RegistrySourceResult[]>([]);
+  const [registryLoading, setRegistryLoading] = useState(false);
+  const registryFetchedRef = useRef(false);
+
+  // `sourcesOverride` lets a just-added/removed registry source refresh
+  // immediately against the list being persisted, not extensionRegistries'
+  // current (pre-edit) closure value — see ExtensionsPanel's addRegistry and
+  // api.fetchRegistry's doc comment.
+  const refreshRegistry = useCallback((refresh: boolean, sourcesOverride?: string[]) => {
+    setRegistryLoading(true);
+    api
+      .fetchRegistry(refresh, sourcesOverride ?? extensionRegistries)
+      .then((sources) => {
+        setRegistryCatalog(sources);
+        registryFetchedRef.current = true;
+      })
+      .catch(() => {})
+      .finally(() => setRegistryLoading(false));
+  }, [extensionRegistries]);
+
+  const ensureRegistryLoaded = useCallback(() => {
+    if (registryFetchedRef.current) return;
+    refreshRegistry(false);
+  }, [refreshRegistry]);
+
+  // Available-updates count (registry version > installed version) — the
+  // Extensions tab's badge, visible even before that tab is ever opened this
+  // session as long as registryCatalog has already been fetched. Scoped to
+  // extensionRegistries' current membership so a just-removed source's
+  // still-cached catalog entries (stale until the next refetch) can't keep
+  // counting toward the badge — mirrors ExtensionsPanel's liveRegistryCatalog.
+  const extensionUpdatesCount = useMemo(() => {
+    let count = 0;
+    for (const src of registryCatalog) {
+      if (!extensionRegistries.includes(src.source)) continue;
+      for (const entry of src.entries) {
+        const installed = extensions.find((e) => e.id === entry.id);
+        if (installed && compareVersions(entry.version, installed.version) > 0) count++;
+      }
+    }
+    return count;
+  }, [registryCatalog, extensions, extensionRegistries]);
+
+  // The extension detail page's "Extension Settings" shortcut — see
+  // SettingsView's pendingFocusExtensionId prop doc.
+  const [pendingFocusExtensionId, setPendingFocusExtensionId] = useState<string | null>(null);
 
   const { dialog, confirmDialog, promptDialog } = useDialogs();
 
@@ -219,6 +279,7 @@ export default function App() {
     openSession,
     openExtViewerTab,
     openSettingsTab,
+    openExtensionPageTab,
     openWindowTab,
     openAllWindows,
     closeTab,
@@ -244,7 +305,16 @@ export default function App() {
     moveTabToGroup,
     moveTabToAdjacentGroup,
     splitGroupAndMoveTab,
-  } = useTabs(sessions, sessionsLoadedRef, showError, confirmDialog, settingsRef, extFileViewers);
+  } = useTabs(
+    sessions,
+    sessionsLoadedRef,
+    showError,
+    confirmDialog,
+    settingsRef,
+    extFileViewers,
+    extensions,
+    registryCatalog,
+  );
 
   // A merged-away editor group's DOM node unmounting already disconnects its
   // ResizeObserver and nulls its rect (getGroupContentSlotRef's ref callback
@@ -305,9 +375,6 @@ export default function App() {
     settings.tabGroupsBySession,
     confirmDialog,
   );
-
-  const { extensions, reloadExtensions, activeTerminalTheme, fontsVersion } =
-    useThemeAssets(settings, extensionSettings, extensionSettingsRef);
 
   // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
   // model, separate from the editor's tabs/split tree, since it only ever
@@ -459,6 +526,7 @@ export default function App() {
     () => ({
       "sidebar.toggle": () => setSidebarVisible((v) => !v),
       "sidebar.focusExplorer": () => focusSidebarTab(EXPLORER_TAB_ID),
+      "sidebar.focusExtensions": () => focusSidebarTab(EXTENSIONS_TAB_ID),
       "quickSwitcher.toggle": () => setSwitcherQuery((q) => (q === null ? "" : null)),
       "commandPalette.toggle": () => setSwitcherQuery((q) => (q === null ? ">" : null)),
       "tab.next": () => cycleTab(1),
@@ -790,6 +858,16 @@ export default function App() {
             deleteFileEntries={deleteFileEntries}
             prunePath={prunePath}
             extensionPanels={extSidebarPanels}
+            extensions={extensions}
+            onReloadExtensions={reloadExtensions}
+            extensionRegistries={extensionRegistries}
+            onExtensionRegistriesChange={setExtensionRegistries}
+            registryCatalog={registryCatalog}
+            registryLoading={registryLoading}
+            onEnsureRegistryLoaded={ensureRegistryLoaded}
+            onRefreshRegistry={refreshRegistry}
+            onOpenExtensionPage={openExtensionPageTab}
+            extensionUpdatesCount={extensionUpdatesCount}
           />
           <div className="resize-handle" onMouseDown={startSidebarResize} />
         </>
@@ -850,6 +928,23 @@ export default function App() {
                 onReloadExtensions={reloadExtensions}
                 extensionSettings={extensionSettings}
                 onExtensionSettingsChange={setExtensionSettings}
+                pendingFocusExtensionId={pendingFocusExtensionId}
+                onFocusExtensionHandled={() => setPendingFocusExtensionId(null)}
+              />
+            );
+          } else if (tab.extensionPageId !== undefined) {
+            content = (
+              <ExtensionPageView
+                active={visible}
+                extensionId={tab.extensionPageId}
+                source={tab.extensionPageSource}
+                extensions={extensions}
+                registryCatalog={registryCatalog}
+                onReloadExtensions={reloadExtensions}
+                onOpenExtensionSettings={(id) => {
+                  setPendingFocusExtensionId(id);
+                  openSettingsTab();
+                }}
               />
             );
           } else if (tab.extViewerPath !== undefined) {

@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "displayName": "IBM Plex Mono",
   "description": "Built-in terminal font group (bundled — see fonts/LICENSE-OFL.txt): IBM Plex Mono with core latin + latin-ext coverage (English plus accented European text) across regular, italic, medium, and bold, plus Perplexed (see LICENSE-Perplexed.txt) — VS Code's own supplementary glyph fallback font — riding along as part of the same selectable group.",
+  "icon": "./icon.svg",
   "contributes": {
     "fonts": [
       {
@@ -98,21 +99,41 @@
           },
           {
             "family": "Perplexed",
-            "src": [{ "path": "./fonts/Perplexed-Normal.woff2", "format": "woff2" }]
+            "src": [
+              {
+                "path": "./fonts/Perplexed-Normal.woff2",
+                "format": "woff2"
+              }
+            ]
           },
           {
             "family": "Perplexed",
-            "src": [{ "path": "./fonts/Perplexed-Italic.woff2", "format": "woff2" }],
+            "src": [
+              {
+                "path": "./fonts/Perplexed-Italic.woff2",
+                "format": "woff2"
+              }
+            ],
             "style": "italic"
           },
           {
             "family": "Perplexed",
-            "src": [{ "path": "./fonts/Perplexed-Bold.woff2", "format": "woff2" }],
+            "src": [
+              {
+                "path": "./fonts/Perplexed-Bold.woff2",
+                "format": "woff2"
+              }
+            ],
             "weight": "bold"
           },
           {
             "family": "Perplexed",
-            "src": [{ "path": "./fonts/Perplexed-BoldItalic.woff2", "format": "woff2" }],
+            "src": [
+              {
+                "path": "./fonts/Perplexed-BoldItalic.woff2",
+                "format": "woff2"
+              }
+            ],
             "weight": "bold",
             "style": "italic"
           }

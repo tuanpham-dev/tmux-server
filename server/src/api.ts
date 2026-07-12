@@ -30,6 +30,7 @@ import {
 } from "./extensions.js";
 import { getRepoBranch, getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
 import { listTmuxPorts } from "./ports.js";
+import { getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
 import {
   createSession,
@@ -186,6 +187,73 @@ api.get("/extensions/:id/file/*", async (req, res) => {
 // Dispatches to a live extension's server hook router, or 404 if the
 // extension has none/is disabled — see extensions.ts's serverHooks map.
 api.use("/ext/:extId", extensionHookMiddleware);
+
+// Extension registries: user-configured sources (settings doc's
+// extensionRegistries) each serving an index.json catalog of installable
+// extensions — see registry.ts for the source/entry resolution and its
+// security posture (every request re-validates source against the current
+// settings doc; no client-supplied path/URL is ever read directly).
+api.get("/registry", async (req, res) => {
+  // See getRegistryCatalog's doc: an optional client-supplied source list,
+  // sidestepping the settings doc's debounced write-back.
+  let sourcesOverride: string[] | undefined;
+  if (typeof req.query.sources === "string") {
+    try {
+      const parsed: unknown = JSON.parse(req.query.sources);
+      if (Array.isArray(parsed) && parsed.every((s): s is string => typeof s === "string")) {
+        sourcesOverride = parsed;
+      }
+    } catch {
+      // Malformed sources param — fall back to the persisted settings doc.
+    }
+  }
+  try {
+    res.json({ sources: await getRegistryCatalog(req.query.refresh === "1", sourcesOverride) });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/registry/install", async (req, res) => {
+  const { source, id } = req.body ?? {};
+  if (typeof source !== "string" || typeof id !== "string") {
+    res.status(400).json({ error: "source and id must be strings" });
+    return;
+  }
+  try {
+    const tsixPath = await resolveTsixForInstall(source, id);
+    res.status(201).json(await installFromTsixFile(tsixPath));
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.get("/registry/readme", async (req, res) => {
+  const { source, id } = req.query;
+  if (typeof source !== "string" || typeof id !== "string") {
+    res.status(400).json({ error: "source and id must be strings" });
+    return;
+  }
+  try {
+    res.type("text/markdown").send(await getRegistryReadme(source, id));
+  } catch (err) {
+    res.status(404).json({ error: errMessage(err) });
+  }
+});
+
+api.get("/registry/icon", async (req, res) => {
+  const { source, id } = req.query;
+  if (typeof source !== "string" || typeof id !== "string") {
+    res.status(400).json({ error: "source and id must be strings" });
+    return;
+  }
+  try {
+    const { data, contentType } = await getRegistryIcon(source, id);
+    res.type(contentType).send(data);
+  } catch (err) {
+    res.status(404).json({ error: errMessage(err) });
+  }
+});
 
 api.delete("/sessions/:name", async (req, res) => {
   try {

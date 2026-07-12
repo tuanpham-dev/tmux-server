@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "displayName": "Git",
   "description": "Built-in VS Code-style Source Control panel: stage, commit, push/pull, and diff view (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
   "contributes": {
     "configuration": {
       "title": "Git",
@@ -19,8 +20,14 @@
         "gitScm.clickAction": {
           "type": "string",
           "default": "diff",
-          "enum": ["diff", "edit"],
-          "enumItemLabels": ["Open Diff", "Open in Editor"],
+          "enum": [
+            "diff",
+            "edit"
+          ],
+          "enumItemLabels": [
+            "Open Diff",
+            "Open in Editor"
+          ],
           "description": "What clicking a file in the SOURCE CONTROL panel opens. Shift+click always opens the other one."
         }
       }

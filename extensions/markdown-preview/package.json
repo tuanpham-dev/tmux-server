@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "displayName": "Markdown Preview",
   "description": "Built-in rendered Markdown preview (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
   "contributes": {
     "configuration": {
       "title": "Markdown Preview",

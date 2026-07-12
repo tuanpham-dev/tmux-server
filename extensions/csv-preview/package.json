@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "displayName": "CSV Preview",
   "description": "Built-in editable CSV/TSV grid preview (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
   "tmuxServer": {
     "client": "./dist/client.js"
   },

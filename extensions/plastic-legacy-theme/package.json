@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "displayName": "Plastic Legacy",
   "description": "Built-in color theme (bundled — hadialqattan.plastic-legacy, MIT, see LICENSE.txt), extracted from the app's own default palette.",
+  "icon": "./icon.svg",
   "contributes": {
     "themes": [
       {

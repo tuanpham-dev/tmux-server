@@ -88,6 +88,15 @@ export interface Tab {
   // from localStorage before this shipped.
   originSessionName?: string;
   originSessionId?: string;
+  // Marks an extension detail-page tab — sessionName/attachName are "" like
+  // every other virtual-tab kind above. Deduped globally by extensionPageId
+  // (one page per extension, like the settings tab), never grouped to a
+  // session. extensionPageSource is set only while the subject is a
+  // registry-only entry not yet installed (the {source, id} the page/API
+  // calls need); cleared once the extension becomes installed, since
+  // installed extensions are looked up by id alone.
+  extensionPageId?: string;
+  extensionPageSource?: string;
 }
 
 export interface MenuItem {
@@ -219,11 +228,33 @@ export interface ExtensionConfigurationSection {
   properties: ExtensionConfigurationProperty[];
 }
 
+// One installable entry from a registry source's index.json — see
+// server/src/registry.ts. file/readme/icon relative paths never reach the
+// client; it names entries by {source, id} and the server re-resolves them.
+export interface RegistryCatalogEntry {
+  id: string;
+  displayName: string;
+  publisher?: string;
+  version: string;
+  description: string;
+  hasReadme: boolean;
+  hasIcon: boolean;
+}
+
+export interface RegistrySourceResult {
+  source: string;
+  error?: string;
+  entries: RegistryCatalogEntry[];
+}
+
 export interface ExtensionInfo {
   id: string;
   displayName: string;
   version: string;
   description: string;
+  // Extension-relative path (VS Code manifest `icon` field), or null —
+  // resolved via extensionFileUrl(id, icon), same as clientEntry.
+  icon: string | null;
   enabled: boolean;
   themes: ExtensionThemeContribution[];
   iconThemes: ExtensionIconThemeContribution[];

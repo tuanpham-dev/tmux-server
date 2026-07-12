@@ -5,12 +5,14 @@ import { resolveBindings, type Command, type KeybindingOverrides } from "../keyb
 import {
   DEFAULT_SETTINGS,
   loadCommandUsage,
+  loadExtensionRegistries,
   loadExtensionSettings,
   loadKeybindingOverrides,
   loadPinnedSessions,
   loadSettings,
   migrateSettings,
   saveCommandUsage,
+  saveExtensionRegistries,
   saveExtensionSettings,
   saveKeybindingOverrides,
   savePinnedSessions,
@@ -103,6 +105,20 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     savePinnedSessions(pinnedSessions);
   }, [pinnedSessions]);
 
+  // Extension registry sources — same localStorage-first + skip-initial-
+  // persist + server-doc flow as pinnedSessions above, and its own top-level
+  // doc key for the same reason: a settings reset must not drop a user's
+  // configured registries.
+  const [extensionRegistries, setExtensionRegistries] = useState<string[]>(loadExtensionRegistries);
+  const extensionRegistriesMounted = useRef(false);
+  useEffect(() => {
+    if (!extensionRegistriesMounted.current) {
+      extensionRegistriesMounted.current = true;
+      return;
+    }
+    saveExtensionRegistries(extensionRegistries);
+  }, [extensionRegistries]);
+
   // Command palette usage stats (count/last per command id) — same
   // localStorage-first + skip-initial-persist + server-doc flow as
   // pinnedSessions above, and for the same reason: its own top-level doc key
@@ -153,6 +169,9 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
             ),
           );
         }
+        if (Array.isArray(doc.extensionRegistries)) {
+          setExtensionRegistries(doc.extensionRegistries.filter((s): s is string => typeof s === "string"));
+        }
         if (doc.commandUsage && typeof doc.commandUsage === "object" && !Array.isArray(doc.commandUsage)) {
           const usage: CommandUsage = {};
           for (const [id, entry] of Object.entries(doc.commandUsage as Record<string, unknown>)) {
@@ -199,6 +218,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           extensionSettings,
           pinnedSessions,
           commandUsage,
+          extensionRegistries,
         }))
         .catch(() => ({
           settings,
@@ -206,12 +226,13 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           extensionSettings,
           pinnedSessions,
           commandUsage,
+          extensionRegistries,
         }))
         .then((doc) => api.putSettingsDoc(doc))
         .catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [settings, keybindingOverrides, extensionSettings, pinnedSessions, commandUsage]);
+  }, [settings, keybindingOverrides, extensionSettings, pinnedSessions, commandUsage, extensionRegistries]);
 
   return {
     settings,
@@ -228,5 +249,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     setPinnedSessions,
     commandUsage,
     setCommandUsage,
+    extensionRegistries,
+    setExtensionRegistries,
   };
 }

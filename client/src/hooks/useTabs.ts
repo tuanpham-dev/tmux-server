@@ -19,7 +19,7 @@ import {
   type SplitNode,
 } from "../lib/splits";
 import type { AppSettings } from "../settings";
-import type { Tab, TmuxSession } from "../types";
+import type { ExtensionInfo, RegistrySourceResult, Tab, TmuxSession } from "../types";
 
 const SPLIT_LAYOUT_KEY = "splitLayout";
 // The id of the app's very first editor group — before any split has ever
@@ -96,6 +96,8 @@ export function useTabs(
   confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>,
   settingsRef: MutableRefObject<AppSettings>,
   extFileViewers: RegisteredFileViewer[],
+  extensions: ExtensionInfo[],
+  registryCatalog: RegistrySourceResult[],
 ) {
   const [splitLayout, setSplitLayout] = useState<SplitLayout>(loadSplitLayout);
   // Snapshot for closures/effects that must read the current tree/groupActive
@@ -368,6 +370,36 @@ export function useTabs(
     });
   }, [insertTab]);
 
+  // Extension detail-page tab — deduped globally by extensionPageId, like
+  // openSettingsTab above (one page per extension, not per editor group).
+  // `source` is only meaningful for a registry-only subject (not yet
+  // installed); reopening an already-open page with a different source
+  // (e.g. the registry catalog resolved after the tab was first opened from
+  // a stale id) updates it in place rather than creating a second tab.
+  const openExtensionPageTab = useCallback((id: string, source?: string) => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.extensionPageId === id);
+      if (existing) {
+        setActiveTabId(existing.id);
+        if (source !== existing.extensionPageSource) {
+          return prev.map((t) => (t.id === existing.id ? { ...t, extensionPageSource: source } : t));
+        }
+        return prev;
+      }
+      const groupId = splitLayoutRef.current.activeGroupId;
+      const tab: Tab = {
+        id: crypto.randomUUID(),
+        sessionName: "",
+        attachName: "",
+        groupId,
+        extensionPageId: id,
+        extensionPageSource: source,
+      };
+      setActiveTabId(tab.id, groupId);
+      return insertTab(prev, tab);
+    });
+  }, [insertTab]);
+
   // `anchorOverride` lets a caller that opens several window-tabs in one go
   // (openAllWindows below) chain its own locally-tracked anchor instead of
   // relying on activeTabIdRef — across a tight sequence of awaited calls,
@@ -618,6 +650,8 @@ export function useTabs(
     closedTabsRef.current = stack.slice(0, -1);
     if (tab.settingsView) {
       openSettingsTab();
+    } else if (tab.extensionPageId !== undefined) {
+      openExtensionPageTab(tab.extensionPageId, tab.extensionPageSource);
     } else if (tab.extViewerId !== undefined && tab.extViewerPath !== undefined) {
       openExtViewerTab(tab.extViewerId, tab.extViewerPath, tab.extViewerTitle);
     } else if (tab.windowIndex !== undefined) {
@@ -625,7 +659,7 @@ export function useTabs(
     } else if (tab.sessionName) {
       openSession(tab.sessionName);
     }
-  }, [openSettingsTab, openExtViewerTab, openWindowTab, openSession]);
+  }, [openSettingsTab, openExtensionPageTab, openExtViewerTab, openWindowTab, openSession]);
 
   // Runs every poll: rewrites any tab whose session/window drifted from an
   // out-of-band rename or renumber (see reconcileTabs), and follows the same
@@ -738,6 +772,15 @@ export function useTabs(
   const tabLabel = useCallback(
     (tab: Tab): string => {
       if (tab.settingsView) return "Settings";
+      if (tab.extensionPageId !== undefined) {
+        const installed = extensions.find((e) => e.id === tab.extensionPageId);
+        if (installed) return installed.displayName;
+        for (const src of registryCatalog) {
+          const entry = src.entries.find((e) => e.id === tab.extensionPageId);
+          if (entry) return entry.displayName;
+        }
+        return tab.extensionPageId;
+      }
       if (tab.extViewerTitle !== undefined) return tab.extViewerTitle;
       const virtualPath = tabVirtualPath(tab);
       if (virtualPath !== undefined) {
@@ -748,7 +791,7 @@ export function useTabs(
       const win = session?.windows.find((w) => w.index === tab.windowIndex);
       return `${tab.sessionName}:${win?.name ?? `window ${tab.windowIndex}`}`;
     },
-    [sessions],
+    [sessions, extensions, registryCatalog],
   );
 
   // Suppressed on the active tab — you're already looking at it, a dot
@@ -801,6 +844,8 @@ export function useTabs(
   const duplicateTabToGroup = useCallback(
     async (tab: Tab, targetGroupId: string): Promise<void> => {
       if (tab.settingsView) return;
+      // Global singleton, like the settings tab — not duplicated per group.
+      if (tab.extensionPageId !== undefined) return;
       if (tab.windowIndex !== undefined) {
         try {
           const { attachName } = await api.openWindowTab(tab.sessionName, tab.windowIndex);
@@ -1029,6 +1074,7 @@ export function useTabs(
     openSession,
     openExtViewerTab,
     openSettingsTab,
+    openExtensionPageTab,
     openWindowTab,
     openAllWindows,
     closeTab,

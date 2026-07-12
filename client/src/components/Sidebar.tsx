@@ -2,7 +2,16 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { setSidebarTabsBridge, type RegisteredSidebarPanel } from "../extensions";
 import { moveId } from "../lib/tabs";
 import { sessionRowsWithPins } from "../lib/sessions";
-import type { MenuItem, PinnedSession, SidebarMode, TmuxSession, TmuxWindow } from "../types";
+import type {
+  ExtensionInfo,
+  MenuItem,
+  PinnedSession,
+  RegistrySourceResult,
+  SidebarMode,
+  TmuxSession,
+  TmuxWindow,
+} from "../types";
+import ExtensionsPanel from "./ExtensionsPanel";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
 import PortsPanel from "./PortsPanel";
@@ -58,9 +67,18 @@ function loadPanelState(): PanelState {
 
 // The sidebar's activity-bar-style tab strip (plans/sidebar-tabs.md): a
 // fixed "explorer" tab holds the accordion below (sessions/files/ports),
-// and every registered extension sidebar panel — e.g. git-scm's Source
-// Control — gets its own full-height tab instead of joining the accordion.
+// a fixed "extensions-view" tab holds the Extensions browser/manager, and
+// every registered extension sidebar panel — e.g. git-scm's Source Control —
+// gets its own full-height tab instead of joining the accordion.
 export const EXPLORER_TAB_ID = "explorer";
+// Deliberately not "extensions" — that could collide with a future
+// extension-registered panel id (which are namespaced ext.<id>.<panelId>,
+// but a bare "extensions" is still worth avoiding for clarity).
+export const EXTENSIONS_TAB_ID = "extensions-view";
+// Both fixed tabs share every special-case below with EXPLORER_TAB_ID, which
+// stays exported/used directly at each site since it's also the fallback
+// "always exists" tab.
+const CORE_TAB_IDS: readonly string[] = [EXPLORER_TAB_ID, EXTENSIONS_TAB_ID];
 const TABS_KEY = "sidebarTabs";
 
 interface TabsState {
@@ -68,7 +86,10 @@ interface TabsState {
   active: string;
 }
 
-const DEFAULT_TABS_STATE: TabsState = { order: [EXPLORER_TAB_ID], active: EXPLORER_TAB_ID };
+const DEFAULT_TABS_STATE: TabsState = {
+  order: [EXPLORER_TAB_ID, EXTENSIONS_TAB_ID],
+  active: EXPLORER_TAB_ID,
+};
 
 function loadTabsState(): TabsState {
   try {
@@ -79,6 +100,9 @@ function loadTabsState(): TabsState {
         ? [...(parsed.order as string[])]
         : [...DEFAULT_TABS_STATE.order];
     if (!order.includes(EXPLORER_TAB_ID)) order.unshift(EXPLORER_TAB_ID);
+    if (!order.includes(EXTENSIONS_TAB_ID)) {
+      order.splice(order.indexOf(EXPLORER_TAB_ID) + 1, 0, EXTENSIONS_TAB_ID);
+    }
     const active = typeof parsed.active === "string" ? parsed.active : EXPLORER_TAB_ID;
     return { order, active };
   } catch {
@@ -129,6 +153,16 @@ interface Props {
   deleteFileEntries: (entries: { path: string; isDir: boolean }[]) => void;
   prunePath: { paths: string[] } | null;
   extensionPanels: RegisteredSidebarPanel[];
+  extensions: ExtensionInfo[];
+  onReloadExtensions: () => void;
+  extensionRegistries: string[];
+  onExtensionRegistriesChange: (registries: string[]) => void;
+  registryCatalog: RegistrySourceResult[];
+  registryLoading: boolean;
+  onEnsureRegistryLoaded: () => void;
+  onRefreshRegistry: (refresh: boolean) => void;
+  onOpenExtensionPage: (id: string, source?: string) => void;
+  extensionUpdatesCount: number;
 }
 
 export default function Sidebar({
@@ -167,6 +201,16 @@ export default function Sidebar({
   deleteFileEntries,
   prunePath,
   extensionPanels,
+  extensions,
+  onReloadExtensions,
+  extensionRegistries,
+  onExtensionRegistriesChange,
+  registryCatalog,
+  registryLoading,
+  onEnsureRegistryLoaded,
+  onRefreshRegistry,
+  onOpenExtensionPage,
+  extensionUpdatesCount,
 }: Props) {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -263,7 +307,7 @@ export default function Sidebar({
   // still activating on this render) — same "don't mutate storage, just
   // don't render it" approach as the accordion's visibleOrder.
   const visibleTabOrder = tabsState.order.filter(
-    (id) => id === EXPLORER_TAB_ID || extPanelIds.has(id),
+    (id) => CORE_TAB_IDS.includes(id) || extPanelIds.has(id),
   );
   const activeTabId = visibleTabOrder.includes(tabsState.active) ? tabsState.active : EXPLORER_TAB_ID;
 
@@ -286,7 +330,7 @@ export default function Sidebar({
     setTabsState((prev) => {
       // Stale ids (currently unregistered) ride along, appended after the
       // reordered visible tabs, so a reorder can never look like a prune.
-      const stale = prev.order.filter((id) => id !== EXPLORER_TAB_ID && !extPanelIds.has(id));
+      const stale = prev.order.filter((id) => !CORE_TAB_IDS.includes(id) && !extPanelIds.has(id));
       const nextVisible = moveId(visibleTabOrder, draggedId, toIndex);
       return { ...prev, order: [...nextVisible, ...stale] };
     });
@@ -294,6 +338,9 @@ export default function Sidebar({
 
   const tabInfos: SidebarTabInfo[] = visibleTabOrder.map((id) => {
     if (id === EXPLORER_TAB_ID) return { id, title: "Explorer", icon: "files" };
+    if (id === EXTENSIONS_TAB_ID) {
+      return { id, title: "Extensions", icon: "extensions", badge: extensionUpdatesCount };
+    }
     const panel = extensionPanels.find((p) => p.id === id);
     return { id, title: panel?.title ?? id, icon: panel?.icon ?? "extensions", badge: panel?.badge };
   });
@@ -776,7 +823,7 @@ export default function Sidebar({
   };
 
   const activeExtPanel =
-    activeTabId !== EXPLORER_TAB_ID ? extensionPanels.find((p) => p.id === activeTabId) : undefined;
+    CORE_TAB_IDS.includes(activeTabId) ? undefined : extensionPanels.find((p) => p.id === activeTabId);
 
   return (
     <aside className="sidebar" style={{ width }}>
@@ -801,6 +848,18 @@ export default function Sidebar({
         <div className="sidebar-panels">
           {visibleOrder.map((id, idx) => renderPanel(id, visibleOrder[idx + 1] ?? null))}
         </div>
+      ) : activeTabId === EXTENSIONS_TAB_ID ? (
+        <ExtensionsPanel
+          extensions={extensions}
+          onReloadExtensions={onReloadExtensions}
+          registries={extensionRegistries}
+          onRegistriesChange={onExtensionRegistriesChange}
+          registryCatalog={registryCatalog}
+          registryLoading={registryLoading}
+          onEnsureRegistryLoaded={onEnsureRegistryLoaded}
+          onRefreshRegistry={onRefreshRegistry}
+          onOpenExtensionPage={onOpenExtensionPage}
+        />
       ) : (
         activeExtPanel && renderExtensionTab(activeExtPanel)
       )}

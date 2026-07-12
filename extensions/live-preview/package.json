@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "displayName": "Live Preview",
   "description": "Built-in live-reloading HTML preview (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
   "contributes": {
     "configuration": {
       "title": "Live Preview",
