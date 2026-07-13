@@ -80,6 +80,9 @@ export interface SidebarPanelHostProps {
   // title instead of inside its scrollable body. null until the header
   // has mounted.
   actionsTarget?: HTMLDivElement | null;
+  // Opens the app's shared context menu at the given screen position — same
+  // capability FileViewerHostProps.showMenu gives file viewers.
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
 }
 
 export interface RegisteredSidebarPanel {

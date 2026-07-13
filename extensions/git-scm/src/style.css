@@ -216,10 +216,25 @@
   box-sizing: border-box;
   cursor: pointer;
   font-size: 13px;
+  /* A div, not a native <button> (see FileRow's own comment on why) — a
+     Shift+click range-select gesture otherwise triggers the browser's
+     native text-selection-extend instead of just the row's click handler,
+     same fix FileTree.tsx's file rows needed. */
+  user-select: none;
 }
 
 .git-row:hover {
   background: var(--list-hover-bg);
+}
+
+/* Multi-selection highlight — same convention as client/src's
+   .file-tree-row.selected. */
+.git-row.selected {
+  background: var(--list-active-bg);
+}
+
+.git-row.selected:hover {
+  background: var(--list-active-bg);
 }
 
 /* Fixed box (mirrors client/src's .file-tree-file-icon) so an SVG icon

@@ -7,13 +7,14 @@
 // refreshFiles) from module-level bridge variables set once in activate(),
 // the same pattern live-preview's client.tsx uses for ctx.settings.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import "./style.css";
 import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
 import FileIcon from "../../_shared/FileIcon";
 import type { IconResult } from "../../_shared/FileIcon";
+import type { MenuItem } from "../../_shared/types";
 
 // ---- Module-level host bridge ----
 
@@ -170,6 +171,11 @@ interface TreeFileNode {
 }
 type TreeNode = TreeDirNode | TreeFileNode;
 
+// The three status groups a file row can belong to — shared by the tree
+// builder, the selection state (confined to one group at a time, see
+// GitPanel), and the context-menu builders.
+type GroupKey = "conflicted" | "staged" | "unstaged";
+
 // Converts a group's flat file list into a nested directory tree, matching
 // VS Code's SCM tree: directories sort before files, both alphabetically;
 // files keep the order the server returned them in (server already applies
@@ -324,14 +330,23 @@ interface RowAction {
 
 function FileRow({
   entry,
-  onOpen,
+  selected,
+  onRowClick,
+  onRowContextMenu,
   actions,
   clickHint,
   depth,
   hideDir,
 }: {
   entry: FileEntry;
-  onOpen: (secondary: boolean) => void;
+  // Whether this row is part of the panel's active multi-selection — drives
+  // the .selected highlight, same convention as FileTree.tsx's file rows.
+  selected: boolean;
+  // Raw event pass-through — GitPanel's handleRowClick owns the full click
+  // precedence (secondary-open, toggle-select, range-select, plain select),
+  // same split as FileTree.tsx's handleRowClick.
+  onRowClick: (e: ReactMouseEvent) => void;
+  onRowContextMenu: (e: ReactMouseEvent) => void;
   actions: RowAction[];
   // Discoverability for the Shift-click escape hatch — there's no visual
   // affordance for it otherwise, so it rides along in the row's own native
@@ -351,9 +366,10 @@ function FileRow({
   const icon = getFileIcon?.(basenameOf(entry.path)) ?? { kind: "none" as const };
   return (
     <div
-      className="git-row"
+      className={`git-row${selected ? " selected" : ""}`}
       title={title}
-      onClick={(e) => onOpen(e.shiftKey)}
+      onClick={onRowClick}
+      onContextMenu={onRowContextMenu}
       style={depth ? { paddingLeft: 8 + depth * 16 } : undefined}
     >
       <FileIcon className="git-row-icon" result={icon} />
@@ -519,9 +535,10 @@ type NetworkKind = "push" | "pull" | "sync";
 // module comment on why extension code never imports client/src internals.
 interface PanelProps {
   actionsTarget?: HTMLDivElement | null;
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
 }
 
-function GitPanel({ actionsTarget }: PanelProps) {
+function GitPanel({ actionsTarget, showMenu }: PanelProps) {
   const [activeCwd, setActiveCwd] = useState<string | null>(() => getActiveContext?.().cwd ?? null);
   const [status, setStatus] = useState<StatusResponse | null>(() => currentStatus);
   const [error, setError] = useState<string | null>(null);
@@ -555,10 +572,70 @@ function GitPanel({ actionsTarget }: PanelProps) {
   // resolved IconResult itself isn't kept in state (getFileIcon/getFolderIcon
   // are called fresh on every render), this just forces that re-render.
   const [, setIconVersion] = useState(0);
+  // Multi-selection is confined to one status group at a time (Merge
+  // Changes / Staged Changes / Changes) — every bulk action is group-
+  // specific, so a cross-group selection has no coherent action. A
+  // selection gesture in a different group clears and restarts there (see
+  // handleRowClick, below). anchorPath is the Shift+click range pivot,
+  // reset whenever the selection changes group or is cleared.
+  const [selectedGroup, setSelectedGroup] = useState<GroupKey | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [anchorPath, setAnchorPath] = useState<string | null>(null);
 
-  useEffect(() => onDidChangeContext?.((ctx) => setActiveCwd(ctx.cwd)), []);
+  const clearSelection = useCallback(() => {
+    setSelectedGroup(null);
+    setSelectedPaths(new Set());
+    setAnchorPath(null);
+  }, []);
+
+  // onDidChangeContext fires on every sessions poll tick, not just on an
+  // actual cwd change — the host derives ActiveContext.windowIndex from a
+  // freshly-rebuilt session list each poll, so the callback re-fires with a
+  // referentially-new (but value-identical) ctx object even when nothing
+  // moved. Tracking the last-seen cwd in a ref (rather than comparing
+  // against the `activeCwd` state, which wouldn't yet reflect this same
+  // callback's own setActiveCwd call) keeps clearSelection scoped to real
+  // directory changes instead of wiping an in-progress selection every ~3s.
+  const lastCwdRef = useRef(activeCwd);
+  useEffect(() => {
+    return onDidChangeContext?.((ctx) => {
+      setActiveCwd(ctx.cwd);
+      if (ctx.cwd !== lastCwdRef.current) {
+        lastCwdRef.current = ctx.cwd;
+        clearSelection();
+      }
+    });
+  }, [clearSelection]);
   useEffect(() => extSettings?.onDidChange(() => setClickAction(readClickAction())), []);
   useEffect(() => onDidChangeIconTheme?.(() => setIconVersion((v) => v + 1)), []);
+  // Prunes selection entries that no longer exist in their group after a
+  // status refresh (staged/committed/discarded out from under the
+  // selection elsewhere — another tab, the CLI, a background pull).
+  useEffect(() => {
+    if (!selectedGroup) return;
+    const entries =
+      selectedGroup === "conflicted" ? status?.conflicted : selectedGroup === "staged" ? status?.staged : status?.unstaged;
+    const validPaths = new Set((entries ?? []).map((e) => e.path));
+    setSelectedPaths((prev) => {
+      const pruned = new Set([...prev].filter((p) => validPaths.has(p)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }, [status, selectedGroup]);
+  // Escape clears the selection. A window-level listener rather than a
+  // focus-dependent one on the row/group elements — file rows aren't
+  // otherwise part of a keyboard-navigable tree here (unlike FileTree.tsx),
+  // so there's no reliable focus target to hang onKeyDown off of. Scoped to
+  // only attach while a selection exists, and doesn't preventDefault/
+  // stopPropagation, so it can't interfere with Escape handlers elsewhere
+  // (e.g. the credential-prompt form's own Escape-to-cancel).
+  useEffect(() => {
+    if (selectedPaths.size === 0) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") clearSelection();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedPaths.size, clearSelection]);
 
   const changeViewMode = (mode: ViewMode) => {
     setViewMode(mode);
@@ -686,6 +763,27 @@ function GitPanel({ actionsTarget }: PanelProps) {
     setCredPassword("");
   };
 
+  // Explicit, clickAction-independent opens — used directly by the context
+  // menu (whose items name the action outright) and composed by openEntry
+  // below (whose click-driven default/secondary pair is clickAction-
+  // relative). All three no-op without an active directory.
+  const openDiff = (entry: FileEntry, staged: boolean) => {
+    if (!activeCwd) return;
+    const untracked = entry.status === "untracked";
+    const key = encodeDiffKey(activeCwd, entry.path, staged, untracked, entry.origPath);
+    const title = `${basenameOf(entry.path)} (${staged ? "Staged" : "Working Tree"})`;
+    openViewerTab?.("diff", key, { title });
+  };
+  const openInEditor = (entry: FileEntry) => {
+    if (!activeCwd) return;
+    openFileTab?.(`${activeCwd}/${entry.path}`);
+  };
+  const openConflictResolver = (entry: FileEntry) => {
+    if (!activeCwd) return;
+    const key = encodeConflictKey(activeCwd, entry.path);
+    openViewerTab?.("conflict", key, { title: `${basenameOf(entry.path)} (Merge)` });
+  };
+
   // Shift+click always opens the OTHER action from gitScm.clickAction's
   // configured default — same escape-hatch convention the host uses for
   // preview vs. edit (QuickSwitcher's Shift+Enter/Shift+click, FileTree's
@@ -695,25 +793,189 @@ function GitPanel({ actionsTarget }: PanelProps) {
   // instead, ignoring gitScm.clickAction — Shift+click is still the escape
   // hatch straight to nvim, same as every other row.
   const openEntry = (entry: FileEntry, staged: boolean, secondary: boolean) => {
-    if (!activeCwd) return;
     if (entry.status === "conflicted") {
-      if (secondary) {
-        openFileTab?.(`${activeCwd}/${entry.path}`);
-        return;
-      }
-      const key = encodeConflictKey(activeCwd, entry.path);
-      openViewerTab?.("conflict", key, { title: `${basenameOf(entry.path)} (Merge)` });
+      if (secondary) openInEditor(entry);
+      else openConflictResolver(entry);
       return;
     }
     const wantsEdit = secondary ? clickAction !== "edit" : clickAction === "edit";
-    if (wantsEdit) {
-      openFileTab?.(`${activeCwd}/${entry.path}`);
+    if (wantsEdit) openInEditor(entry);
+    else openDiff(entry, staged);
+  };
+
+  // ---- Multi-selection (Ctrl/Cmd+click toggle, Shift+click range/quick-
+  // action, Ctrl+Shift+click secondary escape hatch — same precedence as
+  // FileTree.tsx's handleRowClick) ----
+
+  // Every file entry in a group, in the order it's actually rendered right
+  // now — list mode is just that group's flat array; tree mode walks the
+  // tree depth-first, skipping collapsed dirs, since a row hidden by
+  // collapse isn't a valid range-select endpoint. Used both for Shift+click
+  // range math and for resolving a bulk selection's entries.
+  const visibleFileEntries = (groupKey: GroupKey): FileEntry[] => {
+    if (viewMode === "list") {
+      return groupKey === "conflicted" ? conflicted : groupKey === "staged" ? staged : unstaged;
+    }
+    const tree = groupKey === "conflicted" ? conflictedTree : groupKey === "staged" ? stagedTree : unstagedTree;
+    const keyPrefix = `${repoRoot}:${groupKey}`;
+    const out: FileEntry[] = [];
+    const walk = (nodes: TreeNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "dir") {
+          if (!collapsedDirs.has(`${keyPrefix}:${node.path}`)) walk(node.children);
+        } else {
+          out.push(node.entry);
+        }
+      }
+    };
+    walk(tree);
+    return out;
+  };
+
+  const selectRange = (groupKey: GroupKey, fromPath: string, toPath: string) => {
+    const entries = visibleFileEntries(groupKey);
+    const lo = entries.findIndex((e) => e.path === fromPath);
+    const hi = entries.findIndex((e) => e.path === toPath);
+    setSelectedGroup(groupKey);
+    if (lo === -1 || hi === -1) {
+      // Anchor fell out of the visible set (pruned by a status change, or
+      // collapsed behind a dir) — fall back to selecting just the clicked row.
+      setSelectedPaths(new Set([toPath]));
       return;
     }
-    const untracked = entry.status === "untracked";
-    const key = encodeDiffKey(activeCwd, entry.path, staged, untracked, entry.origPath);
-    const title = `${basenameOf(entry.path)} (${staged ? "Staged" : "Working Tree"})`;
-    openViewerTab?.("diff", key, { title });
+    const [start, end] = lo <= hi ? [lo, hi] : [hi, lo];
+    setSelectedPaths(new Set(entries.slice(start, end + 1).map((e) => e.path)));
+  };
+
+  // What a row's hover action (Stage/Unstage/Discard) should apply to: the
+  // whole selection when this row is part of one (2+), otherwise just
+  // itself — VS Code SCM's "act on the row you clicked, or the selection if
+  // it's in one" convention.
+  const groupSelectedEntries = (groupKey: GroupKey, entry: FileEntry): FileEntry[] => {
+    if (selectedGroup === groupKey && selectedPaths.has(entry.path) && selectedPaths.size > 1) {
+      return visibleFileEntries(groupKey).filter((e) => selectedPaths.has(e.path));
+    }
+    return [entry];
+  };
+
+  // What a group header's "All" actions (Stage All / Unstage All / Discard
+  // All) apply to: the group's active selection if it has one (any size —
+  // even a single selected file scopes the header buttons to just that
+  // file), otherwise every entry in the group, unchanged from before multi-
+  // select existed.
+  const groupTargetEntries = (groupKey: GroupKey, allEntries: FileEntry[]): FileEntry[] =>
+    selectedGroup === groupKey && selectedPaths.size > 0
+      ? allEntries.filter((e) => selectedPaths.has(e.path))
+      : allEntries;
+
+  // Checked in this order: Ctrl/Cmd+Shift+click is the secondary-open
+  // escape hatch, collapsing selection to this row first — mirrors
+  // FileTree.tsx's handling of the same combo. Then Ctrl/Cmd+click alone
+  // toggles the row into the selection (starting fresh if the current
+  // selection lives in a different group — selection never spans groups,
+  // since every bulk action is group-specific). Then Shift+click: with no
+  // selection active in this group it's the ordinary secondary-action click
+  // (unchanged from before multi-select existed); with one active it range-
+  // selects from the anchor. Otherwise a plain click selects just this row
+  // and opens it, same as FileTree.
+  const handleRowClick = (groupKey: GroupKey, entry: FileEntry, staged: boolean, e: ReactMouseEvent) => {
+    const ctrlOrCmd = e.ctrlKey || e.metaKey;
+    const inGroup = selectedGroup === groupKey;
+    if (ctrlOrCmd && e.shiftKey) {
+      setSelectedGroup(groupKey);
+      setSelectedPaths(new Set([entry.path]));
+      setAnchorPath(entry.path);
+      openEntry(entry, staged, true);
+      return;
+    }
+    if (ctrlOrCmd) {
+      if (inGroup) {
+        setSelectedPaths((prev) => {
+          const next = new Set(prev);
+          if (next.has(entry.path)) next.delete(entry.path);
+          else next.add(entry.path);
+          return next;
+        });
+      } else {
+        setSelectedGroup(groupKey);
+        setSelectedPaths(new Set([entry.path]));
+      }
+      setAnchorPath(entry.path);
+      return;
+    }
+    if (e.shiftKey) {
+      if (!inGroup || selectedPaths.size === 0) {
+        openEntry(entry, staged, true);
+        return;
+      }
+      selectRange(groupKey, anchorPath ?? entry.path, entry.path);
+      return;
+    }
+    setSelectedGroup(groupKey);
+    setSelectedPaths(new Set([entry.path]));
+    setAnchorPath(entry.path);
+    openEntry(entry, staged, false);
+  };
+
+  const buildFileMenuItems = (groupKey: GroupKey, entry: FileEntry, staged: boolean): MenuItem[] => {
+    if (entry.status === "conflicted") {
+      return [
+        { label: "Resolve in Merge Editor", onClick: () => openConflictResolver(entry) },
+        { label: "Open in Editor", onClick: () => openInEditor(entry) },
+        { label: "Stage Changes", onClick: () => stage([entry.path]) },
+      ];
+    }
+    const items: MenuItem[] = [
+      { label: "Open Diff", onClick: () => openDiff(entry, staged) },
+      { label: "Open in Editor", onClick: () => openInEditor(entry) },
+    ];
+    if (groupKey === "staged") {
+      items.push({ label: "Unstage Changes", onClick: () => unstage([entry.path]) });
+    } else {
+      items.push({ label: "Stage Changes", onClick: () => stage([entry.path]) });
+      items.push({
+        label: "Discard Changes",
+        danger: true,
+        onClick: () =>
+          setConfirmDiscard({ paths: [entry.path], untracked: entry.status === "untracked" ? [entry.path] : [] }),
+      });
+    }
+    return items;
+  };
+
+  const buildBulkMenuItems = (groupKey: GroupKey, entries: FileEntry[]): MenuItem[] => {
+    const n = entries.length;
+    const paths = entries.map((e) => e.path);
+    if (groupKey === "conflicted") {
+      return [{ label: `Stage ${n} Changes`, onClick: () => stage(paths) }];
+    }
+    if (groupKey === "staged") {
+      return [{ label: `Unstage ${n} Changes`, onClick: () => unstage(paths) }];
+    }
+    const untracked = entries.filter((e) => e.status === "untracked").map((e) => e.path);
+    return [
+      { label: `Stage ${n} Changes`, onClick: () => stage(paths) },
+      { label: `Discard ${n} Changes`, danger: true, onClick: () => setConfirmDiscard({ paths, untracked }) },
+    ];
+  };
+
+  // Right-clicking a row that's part of a live multi-selection (2+) shows
+  // the bulk menu for the whole selection; right-clicking anything else
+  // (an unselected row, or a lone selected row) collapses selection to just
+  // that row first, matching FileTree.tsx's handleRowContextMenu.
+  const handleRowContextMenu = (groupKey: GroupKey, entry: FileEntry, staged: boolean, e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const inGroup = selectedGroup === groupKey;
+    if (inGroup && selectedPaths.has(entry.path) && selectedPaths.size > 1) {
+      const entries = visibleFileEntries(groupKey).filter((en) => selectedPaths.has(en.path));
+      showMenu?.(e.clientX, e.clientY, buildBulkMenuItems(groupKey, entries));
+      return;
+    }
+    setSelectedGroup(groupKey);
+    setSelectedPaths(new Set([entry.path]));
+    setAnchorPath(entry.path);
+    showMenu?.(e.clientX, e.clientY, buildFileMenuItems(groupKey, entry, staged));
   };
 
   if (!activeCwd) {
@@ -729,11 +991,10 @@ function GitPanel({ actionsTarget }: PanelProps) {
   const staged = status.staged ?? [];
   const unstaged = status.unstaged ?? [];
   const conflicted = status.conflicted ?? [];
-  const untrackedPaths = unstaged.filter((e) => e.status === "untracked").map((e) => e.path);
   const ahead = status.ahead ?? 0;
   const behind = status.behind ?? 0;
-  const clickHint = `Shift+Click: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"}`;
-  const conflictClickHint = "Shift+Click: Open in Editor";
+  const clickHint = `Shift+Click: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"} · Ctrl+Click: Select`;
+  const conflictClickHint = "Shift+Click: Open in Editor · Ctrl+Click: Select";
   const operation = status.operation ?? null;
 
   // ---- Tree mode ----
@@ -757,9 +1018,9 @@ function GitPanel({ actionsTarget }: PanelProps) {
   // actions a row/dir gets) — everything else (indentation, collapse
   // toggling, key derivation) is shared.
   function renderTreeGroup(
-    groupKey: "conflicted" | "staged" | "unstaged",
+    groupKey: GroupKey,
     nodes: TreeNode[],
-    makeFileProps: (entry: FileEntry) => { onOpen: (secondary: boolean) => void; actions: RowAction[]; clickHint?: string },
+    makeFileProps: (entry: FileEntry) => { staged: boolean; actions: RowAction[]; clickHint?: string },
     makeDirActions: (entries: FileEntry[]) => RowAction[],
     depth = 0,
   ): ReactNode[] {
@@ -784,12 +1045,14 @@ function GitPanel({ actionsTarget }: PanelProps) {
           out.push(...renderTreeGroup(groupKey, node.children, makeFileProps, makeDirActions, depth + 1));
         }
       } else {
-        const { onOpen, actions, clickHint: rowHint } = makeFileProps(node.entry);
+        const { staged, actions, clickHint: rowHint } = makeFileProps(node.entry);
         out.push(
           <FileRow
             key={node.entry.path}
             entry={node.entry}
-            onOpen={onOpen}
+            selected={selectedGroup === groupKey && selectedPaths.has(node.entry.path)}
+            onRowClick={(e) => handleRowClick(groupKey, node.entry, staged, e)}
+            onRowContextMenu={(e) => handleRowContextMenu(groupKey, node.entry, staged, e)}
             actions={actions}
             clickHint={rowHint}
             depth={depth}
@@ -965,42 +1228,66 @@ function GitPanel({ actionsTarget }: PanelProps) {
         </div>
       )}
 
-      <div className="git-groups">
+      <div className="git-groups" onClick={(e) => e.target === e.currentTarget && clearSelection()}>
         {conflicted.length > 0 && (
           <div className="git-group">
             <GroupHeader
               title="Merge Changes"
               count={conflicted.length}
-              actions={[
-                {
-                  icon: "add",
-                  title: "Stage All Changes",
-                  onClick: () => stage(conflicted.map((e) => e.path)),
-                },
-              ]}
+              actions={(() => {
+                const target = groupTargetEntries("conflicted", conflicted);
+                const isSelection = target.length !== conflicted.length;
+                return [
+                  {
+                    icon: "add",
+                    title: isSelection ? `Stage ${target.length} Selected` : "Stage All Changes",
+                    onClick: () => stage(target.map((e) => e.path)),
+                  },
+                ];
+              })()}
             />
             {viewMode === "tree"
               ? renderTreeGroup(
                   "conflicted",
                   conflictedTree,
-                  (entry) => ({
-                    onOpen: (secondary) => openEntry(entry, false, secondary),
-                    clickHint: conflictClickHint,
-                    actions: [{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }],
-                  }),
+                  (entry) => {
+                    const sel = groupSelectedEntries("conflicted", entry);
+                    return {
+                      staged: false,
+                      clickHint: conflictClickHint,
+                      actions: [
+                        {
+                          icon: "add",
+                          title: sel.length > 1 ? `Stage ${sel.length} Changes` : "Stage Changes",
+                          onClick: () => stage(sel.map((e) => e.path)),
+                        },
+                      ],
+                    };
+                  },
                   (entries) => [
                     { icon: "add", title: "Stage Changes", onClick: () => stage(entries.map((e) => e.path)) },
                   ],
                 )
-              : conflicted.map((entry) => (
-                  <FileRow
-                    key={entry.path}
-                    entry={entry}
-                    onOpen={(secondary) => openEntry(entry, false, secondary)}
-                    clickHint={conflictClickHint}
-                    actions={[{ icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) }]}
-                  />
-                ))}
+              : conflicted.map((entry) => {
+                  const sel = groupSelectedEntries("conflicted", entry);
+                  return (
+                    <FileRow
+                      key={entry.path}
+                      entry={entry}
+                      selected={selectedGroup === "conflicted" && selectedPaths.has(entry.path)}
+                      onRowClick={(e) => handleRowClick("conflicted", entry, false, e)}
+                      onRowContextMenu={(e) => handleRowContextMenu("conflicted", entry, false, e)}
+                      clickHint={conflictClickHint}
+                      actions={[
+                        {
+                          icon: "add",
+                          title: sel.length > 1 ? `Stage ${sel.length} Changes` : "Stage Changes",
+                          onClick: () => stage(sel.map((e) => e.path)),
+                        },
+                      ]}
+                    />
+                  );
+                })}
           </div>
         )}
 
@@ -1009,38 +1296,60 @@ function GitPanel({ actionsTarget }: PanelProps) {
             <GroupHeader
               title="Staged Changes"
               count={staged.length}
-              actions={[
-                {
-                  icon: "remove",
-                  title: "Unstage All Changes",
-                  onClick: () => unstage(staged.map((e) => e.path)),
-                },
-              ]}
+              actions={(() => {
+                const target = groupTargetEntries("staged", staged);
+                const isSelection = target.length !== staged.length;
+                return [
+                  {
+                    icon: "remove",
+                    title: isSelection ? `Unstage ${target.length} Selected` : "Unstage All Changes",
+                    onClick: () => unstage(target.map((e) => e.path)),
+                  },
+                ];
+              })()}
             />
             {viewMode === "tree"
               ? renderTreeGroup(
                   "staged",
                   stagedTree,
-                  (entry) => ({
-                    onOpen: (secondary) => openEntry(entry, true, secondary),
-                    clickHint,
-                    actions: [{ icon: "remove", title: "Unstage Changes", onClick: () => unstage([entry.path]) }],
-                  }),
+                  (entry) => {
+                    const sel = groupSelectedEntries("staged", entry);
+                    return {
+                      staged: true,
+                      clickHint,
+                      actions: [
+                        {
+                          icon: "remove",
+                          title: sel.length > 1 ? `Unstage ${sel.length} Changes` : "Unstage Changes",
+                          onClick: () => unstage(sel.map((e) => e.path)),
+                        },
+                      ],
+                    };
+                  },
                   (entries) => [
                     { icon: "remove", title: "Unstage Changes", onClick: () => unstage(entries.map((e) => e.path)) },
                   ],
                 )
-              : staged.map((entry) => (
-                  <FileRow
-                    key={entry.path}
-                    entry={entry}
-                    onOpen={(secondary) => openEntry(entry, true, secondary)}
-                    clickHint={clickHint}
-                    actions={[
-                      { icon: "remove", title: "Unstage Changes", onClick: () => unstage([entry.path]) },
-                    ]}
-                  />
-                ))}
+              : staged.map((entry) => {
+                  const sel = groupSelectedEntries("staged", entry);
+                  return (
+                    <FileRow
+                      key={entry.path}
+                      entry={entry}
+                      selected={selectedGroup === "staged" && selectedPaths.has(entry.path)}
+                      onRowClick={(e) => handleRowClick("staged", entry, true, e)}
+                      onRowContextMenu={(e) => handleRowContextMenu("staged", entry, true, e)}
+                      clickHint={clickHint}
+                      actions={[
+                        {
+                          icon: "remove",
+                          title: sel.length > 1 ? `Unstage ${sel.length} Changes` : "Unstage Changes",
+                          onClick: () => unstage(sel.map((e) => e.path)),
+                        },
+                      ]}
+                    />
+                  );
+                })}
           </div>
         )}
 
@@ -1049,39 +1358,49 @@ function GitPanel({ actionsTarget }: PanelProps) {
             <GroupHeader
               title="Changes"
               count={unstaged.length}
-              actions={[
-                {
-                  icon: "add",
-                  title: "Stage All Changes",
-                  onClick: () => stage(unstaged.map((e) => e.path)),
-                },
-                {
-                  icon: "discard",
-                  title: "Discard All Changes",
-                  onClick: () => setConfirmDiscard({ paths: unstaged.map((e) => e.path), untracked: untrackedPaths }),
-                },
-              ]}
+              actions={(() => {
+                const target = groupTargetEntries("unstaged", unstaged);
+                const isSelection = target.length !== unstaged.length;
+                const targetUntracked = target.filter((e) => e.status === "untracked").map((e) => e.path);
+                return [
+                  {
+                    icon: "add",
+                    title: isSelection ? `Stage ${target.length} Selected` : "Stage All Changes",
+                    onClick: () => stage(target.map((e) => e.path)),
+                  },
+                  {
+                    icon: "discard",
+                    title: isSelection ? `Discard ${target.length} Selected` : "Discard All Changes",
+                    onClick: () =>
+                      setConfirmDiscard({ paths: target.map((e) => e.path), untracked: targetUntracked }),
+                  },
+                ];
+              })()}
             />
             {viewMode === "tree"
               ? renderTreeGroup(
                   "unstaged",
                   unstagedTree,
-                  (entry) => ({
-                    onOpen: (secondary) => openEntry(entry, false, secondary),
-                    clickHint,
-                    actions: [
-                      {
-                        icon: "discard",
-                        title: "Discard Changes",
-                        onClick: () =>
-                          setConfirmDiscard({
-                            paths: [entry.path],
-                            untracked: entry.status === "untracked" ? [entry.path] : [],
-                          }),
-                      },
-                      { icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) },
-                    ],
-                  }),
+                  (entry) => {
+                    const sel = groupSelectedEntries("unstaged", entry);
+                    const untracked = sel.filter((e) => e.status === "untracked").map((e) => e.path);
+                    return {
+                      staged: false,
+                      clickHint,
+                      actions: [
+                        {
+                          icon: "discard",
+                          title: sel.length > 1 ? `Discard ${sel.length} Changes` : "Discard Changes",
+                          onClick: () => setConfirmDiscard({ paths: sel.map((e) => e.path), untracked }),
+                        },
+                        {
+                          icon: "add",
+                          title: sel.length > 1 ? `Stage ${sel.length} Changes` : "Stage Changes",
+                          onClick: () => stage(sel.map((e) => e.path)),
+                        },
+                      ],
+                    };
+                  },
                   (entries) => [
                     {
                       icon: "discard",
@@ -1095,26 +1414,32 @@ function GitPanel({ actionsTarget }: PanelProps) {
                     { icon: "add", title: "Stage Changes", onClick: () => stage(entries.map((e) => e.path)) },
                   ],
                 )
-              : unstaged.map((entry) => (
-                  <FileRow
-                    key={entry.path}
-                    entry={entry}
-                    onOpen={(secondary) => openEntry(entry, false, secondary)}
-                    clickHint={clickHint}
-                    actions={[
-                      {
-                        icon: "discard",
-                        title: "Discard Changes",
-                        onClick: () =>
-                          setConfirmDiscard({
-                            paths: [entry.path],
-                            untracked: entry.status === "untracked" ? [entry.path] : [],
-                          }),
-                      },
-                      { icon: "add", title: "Stage Changes", onClick: () => stage([entry.path]) },
-                    ]}
-                  />
-                ))}
+              : unstaged.map((entry) => {
+                  const sel = groupSelectedEntries("unstaged", entry);
+                  const untracked = sel.filter((e) => e.status === "untracked").map((e) => e.path);
+                  return (
+                    <FileRow
+                      key={entry.path}
+                      entry={entry}
+                      selected={selectedGroup === "unstaged" && selectedPaths.has(entry.path)}
+                      onRowClick={(e) => handleRowClick("unstaged", entry, false, e)}
+                      onRowContextMenu={(e) => handleRowContextMenu("unstaged", entry, false, e)}
+                      clickHint={clickHint}
+                      actions={[
+                        {
+                          icon: "discard",
+                          title: sel.length > 1 ? `Discard ${sel.length} Changes` : "Discard Changes",
+                          onClick: () => setConfirmDiscard({ paths: sel.map((e) => e.path), untracked }),
+                        },
+                        {
+                          icon: "add",
+                          title: sel.length > 1 ? `Stage ${sel.length} Changes` : "Stage Changes",
+                          onClick: () => stage(sel.map((e) => e.path)),
+                        },
+                      ]}
+                    />
+                  );
+                })}
           </div>
         )}
 

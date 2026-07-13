@@ -878,7 +878,7 @@ export default function Sidebar({
           />
         </div>
         <div className="panel-content ext-tab-content">
-          <PanelComponent actionsTarget={extPanelActionsEls[panel.id] ?? null} />
+          <PanelComponent actionsTarget={extPanelActionsEls[panel.id] ?? null} showMenu={onShowMenu} />
         </div>
       </div>
     );
