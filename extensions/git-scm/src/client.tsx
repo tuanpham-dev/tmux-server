@@ -15,6 +15,7 @@ import Icon from "../../_shared/Icon";
 import FileIcon from "../../_shared/FileIcon";
 import type { IconResult } from "../../_shared/FileIcon";
 import type { MenuItem } from "../../_shared/types";
+import { useMarqueeSelection } from "../../_shared/useMarqueeSelection";
 
 // ---- Module-level host bridge ----
 
@@ -330,6 +331,7 @@ interface RowAction {
 
 function FileRow({
   entry,
+  group,
   selected,
   onRowClick,
   onRowContextMenu,
@@ -339,6 +341,11 @@ function FileRow({
   hideDir,
 }: {
   entry: FileEntry;
+  // Which status group this row belongs to — rendered as a data attribute
+  // so the marquee-selection hit-test (GitPanel's getRows) can enumerate
+  // rows by querying the DOM rather than needing its own row registry (the
+  // FILES tree already has one — rowRefs — git-scm doesn't).
+  group: GroupKey;
   // Whether this row is part of the panel's active multi-selection — drives
   // the .selected highlight, same convention as FileTree.tsx's file rows.
   selected: boolean;
@@ -368,6 +375,8 @@ function FileRow({
     <div
       className={`git-row${selected ? " selected" : ""}`}
       title={title}
+      data-group={group}
+      data-path={entry.path}
       onClick={onRowClick}
       onContextMenu={onRowContextMenu}
       style={depth ? { paddingLeft: 8 + depth * 16 } : undefined}
@@ -587,6 +596,67 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     setSelectedPaths(new Set());
     setAnchorPath(null);
   }, []);
+
+  // Rubber-band drag-to-select over ".git-groups" — same gesture as
+  // FileTree.tsx, via the shared _shared/useMarqueeSelection copy. Row ids
+  // are "<group><KEY_SEP><path>" (decoded below) since selection here is
+  // per-group; the marquee constrains to whichever group the *topmost*
+  // intersected row belongs to (rows come back from getRows() in DOM
+  // order, so decoded[0] is topmost) — an additive (Ctrl/Cmd-held) drag
+  // only unions with the pre-drag selection when that selection was
+  // already in the same group, otherwise it replaces, consistent with
+  // handleRowClick's own single-group rule below.
+  const gitGroupsRef = useRef<HTMLDivElement>(null);
+  const marqueeSnapshotRef = useRef<{ group: GroupKey | null; paths: Set<string> }>({
+    group: null,
+    paths: new Set(),
+  });
+  const { marqueeRect, onMarqueeMouseDown } = useMarqueeSelection({
+    containerRef: gitGroupsRef,
+    getRows: () => {
+      const container = gitGroupsRef.current;
+      if (!container) return [];
+      return Array.from(container.querySelectorAll<HTMLElement>("[data-path]")).map((el) => ({
+        id: `${el.dataset.group}${KEY_SEP}${el.dataset.path}`,
+        el,
+      }));
+    },
+    onStart: () => {
+      marqueeSnapshotRef.current = { group: selectedGroup, paths: selectedPaths };
+    },
+    onMarquee: (ids, additive) => {
+      const decoded = ids.map((id) => {
+        const [group, path] = id.split(KEY_SEP) as [GroupKey, string];
+        return { group, path };
+      });
+      if (decoded.length === 0) {
+        if (additive) {
+          setSelectedGroup(marqueeSnapshotRef.current.group);
+          setSelectedPaths(new Set(marqueeSnapshotRef.current.paths));
+        } else {
+          setSelectedGroup(null);
+          setSelectedPaths(new Set());
+        }
+        return;
+      }
+      const topGroup = decoded[0].group;
+      const paths = decoded.filter((d) => d.group === topGroup).map((d) => d.path);
+      const unionWithSnapshot = additive && marqueeSnapshotRef.current.group === topGroup;
+      setSelectedGroup(topGroup);
+      setSelectedPaths(unionWithSnapshot ? new Set([...marqueeSnapshotRef.current.paths, ...paths]) : new Set(paths));
+    },
+    onEnd: (canceled, nearestId) => {
+      if (canceled) {
+        setSelectedGroup(marqueeSnapshotRef.current.group);
+        setSelectedPaths(new Set(marqueeSnapshotRef.current.paths));
+        return;
+      }
+      if (nearestId) {
+        const [, path] = nearestId.split(KEY_SEP);
+        setAnchorPath(path);
+      }
+    },
+  });
 
   // onDidChangeContext fires on every sessions poll tick, not just on an
   // actual cwd change — the host derives ActiveContext.windowIndex from a
@@ -1050,6 +1120,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
           <FileRow
             key={node.entry.path}
             entry={node.entry}
+            group={groupKey}
             selected={selectedGroup === groupKey && selectedPaths.has(node.entry.path)}
             onRowClick={(e) => handleRowClick(groupKey, node.entry, staged, e)}
             onRowContextMenu={(e) => handleRowContextMenu(groupKey, node.entry, staged, e)}
@@ -1228,7 +1299,21 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
         </div>
       )}
 
-      <div className="git-groups" onClick={(e) => e.target === e.currentTarget && clearSelection()}>
+      <div
+        ref={gitGroupsRef}
+        className="git-groups"
+        onClick={(e) => e.target === e.currentTarget && clearSelection()}
+        onMouseDown={(e) => {
+          if ((e.target as HTMLElement).closest(".git-row, .git-group-header, button, input, textarea")) return;
+          onMarqueeMouseDown(e);
+        }}
+      >
+        {marqueeRect && (
+          <div
+            className="marquee-rect"
+            style={{ left: marqueeRect.left, top: marqueeRect.top, width: marqueeRect.width, height: marqueeRect.height }}
+          />
+        )}
         {conflicted.length > 0 && (
           <div className="git-group">
             <GroupHeader
@@ -1274,6 +1359,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                     <FileRow
                       key={entry.path}
                       entry={entry}
+                      group="conflicted"
                       selected={selectedGroup === "conflicted" && selectedPaths.has(entry.path)}
                       onRowClick={(e) => handleRowClick("conflicted", entry, false, e)}
                       onRowContextMenu={(e) => handleRowContextMenu("conflicted", entry, false, e)}
@@ -1336,6 +1422,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                     <FileRow
                       key={entry.path}
                       entry={entry}
+                      group="staged"
                       selected={selectedGroup === "staged" && selectedPaths.has(entry.path)}
                       onRowClick={(e) => handleRowClick("staged", entry, true, e)}
                       onRowContextMenu={(e) => handleRowContextMenu("staged", entry, true, e)}
@@ -1421,6 +1508,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                     <FileRow
                       key={entry.path}
                       entry={entry}
+                      group="unstaged"
                       selected={selectedGroup === "unstaged" && selectedPaths.has(entry.path)}
                       onRowClick={(e) => handleRowClick("unstaged", entry, false, e)}
                       onRowContextMenu={(e) => handleRowContextMenu("unstaged", entry, false, e)}

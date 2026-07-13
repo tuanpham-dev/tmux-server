@@ -167,6 +167,28 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Anchors .marquee-rect, whose left/top are in this container's own
+     content space (scrollTop-relative) — see useMarqueeSelection.ts. */
+  position: relative;
+  /* Rows are edge-to-edge with no gap between them, so a changelist taller
+     than the panel otherwise leaves literally zero empty pixels to arm a
+     marquee drag from at any scroll position. This reserves a strip of
+     genuine empty space at the very bottom, reachable by scrolling to the
+     end, so a new drag can always be started even in a fully-scrolled long
+     changelist. */
+  padding-bottom: 48px;
+}
+
+/* Rubber-band drag-to-select rectangle — shared look with the FILES tree's
+   copy (client/src/styles.css). Positioned by JS in content-space, not
+   viewport-space, so it stays pinned to what it's selecting through an
+   edge-triggered autoscroll. */
+.marquee-rect {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .git-group-header {

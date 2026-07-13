@@ -4,6 +4,7 @@ import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import FileIcon from "./FileIcon";
 import Icon from "./Icon";
 import { getFileIconResult, getFolderIconResult, useIconThemeVersion } from "../utils/iconThemes";
+import { useMarqueeSelection } from "../hooks/useMarqueeSelection";
 
 
 interface Props {
@@ -117,6 +118,11 @@ export default function FileTree({
   // keyboard move without Shift), matching VS Code Explorer.
   const [anchorPath, setAnchorPath] = useState<string | null>(null);
   const rowRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const treeContainerRef = useRef<HTMLDivElement>(null);
+  // Selection snapshotted the instant a marquee drag arms, so an additive
+  // (Ctrl/Cmd-held) drag unions with it and a canceled (Escape) drag can
+  // restore it exactly — see useMarqueeSelection's onStart contract.
+  const marqueeSnapshotRef = useRef<Set<string>>(new Set());
   const dragClearTimer = useRef<number | undefined>(undefined);
   const expandTimer = useRef<{ path: string; timer: number } | null>(null);
   const onBranchChangeRef = useRef(onBranchChange);
@@ -313,6 +319,37 @@ export default function FileTree({
     setFocusedPath(path);
     rowRefs.current.get(path)?.focus();
   };
+
+  // Rubber-band drag-to-select: press in empty tree space (not on a row)
+  // and drag over rows to select them. Ctrl/Cmd held at drag start makes it
+  // additive (unions with whatever was selected when the drag armed);
+  // otherwise it replaces the selection. See useMarqueeSelection's own
+  // header comment for the shared mechanics (threshold, autoscroll,
+  // Escape-cancel, click suppression).
+  const { marqueeRect, onMarqueeMouseDown } = useMarqueeSelection({
+    containerRef: treeContainerRef,
+    getRows: () =>
+      visibleRows.flatMap((row) => {
+        const el = rowRefs.current.get(row.path);
+        return el ? [{ id: row.path, el }] : [];
+      }),
+    onStart: () => {
+      marqueeSnapshotRef.current = selectedPaths;
+    },
+    onMarquee: (ids, additive) => {
+      setSelectedPaths(additive ? new Set([...marqueeSnapshotRef.current, ...ids]) : new Set(ids));
+    },
+    onEnd: (canceled, nearestId) => {
+      if (canceled) {
+        setSelectedPaths(marqueeSnapshotRef.current);
+        return;
+      }
+      if (nearestId) {
+        setAnchorPath(nearestId);
+        focusRow(nearestId);
+      }
+    },
+  });
 
   const selectRange = (fromPath: string, toPath: string) => {
     const from = indexOf(fromPath);
@@ -668,6 +705,7 @@ export default function FileTree({
 
   return (
     <div
+      ref={treeContainerRef}
       role="tree"
       className={`file-tree${dragOverPath === rootDir ? " drag-over" : ""}`}
       onDragOver={dragHandlers(rootDir).onDragOver}
@@ -680,7 +718,23 @@ export default function FileTree({
         onShowMenu(e.clientX, e.clientY, fileTreeRootMenuItems(rootDir));
       }}
       onKeyDown={handleTreeKeyDown}
+      onMouseDown={(e) => {
+        if ((e.target as HTMLElement).closest(".file-tree-row, button, input")) return;
+        onMarqueeMouseDown(e);
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          setSelectedPaths(new Set());
+          setAnchorPath(null);
+        }
+      }}
     >
+      {marqueeRect && (
+        <div
+          className="marquee-rect"
+          style={{ left: marqueeRect.left, top: marqueeRect.top, width: marqueeRect.width, height: marqueeRect.height }}
+        />
+      )}
       {rootState?.loading && !rootState.entries.length && (
         <div className="file-tree-empty">Loading…</div>
       )}

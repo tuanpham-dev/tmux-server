@@ -697,6 +697,28 @@ body.resizing-row {
   flex: 1;
   overflow-y: auto;
   min-height: 40px;
+  /* Anchors .marquee-rect, whose left/top are in this container's own
+     content space (scrollTop-relative) — see useMarqueeSelection.ts. */
+  position: relative;
+  /* Rows are edge-to-edge with no gap between them, so a list taller than
+     the viewport otherwise leaves literally zero empty pixels to arm a
+     marquee drag from at any scroll position (the viewport is always
+     100% covered by row content). This reserves a strip of genuine empty
+     space at the very bottom, reachable by scrolling to the end, so a new
+     drag can always be started even in a fully-scrolled long list. */
+  padding-bottom: 48px;
+}
+
+/* Rubber-band drag-to-select rectangle — shared look with the git panel's
+   copy (extensions/git-scm/src/style.css). Positioned by JS in content-
+   space, not viewport-space, so it stays pinned to what it's selecting
+   through an edge-triggered autoscroll. */
+.marquee-rect {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .file-tree.drag-over {
