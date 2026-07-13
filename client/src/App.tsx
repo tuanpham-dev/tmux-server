@@ -4,6 +4,7 @@ import BottomPanel from "./components/BottomPanel";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
 import ExtensionPageView from "./components/ExtensionPageView";
+import Icon from "./components/Icon";
 import KeyboardShortcutsView from "./components/KeyboardShortcutsView";
 import QuickSwitcher, { type PaletteCommand } from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
@@ -28,7 +29,7 @@ import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useThemeAssets } from "./hooks/useThemeAssets";
 import type { MenuItem, MenuState, RegistrySourceResult } from "./types";
-import { groupKeyForTab } from "./lib/tabs";
+import { groupKeyForTab, isRealTab } from "./lib/tabs";
 import { leaves } from "./lib/splits";
 import { compareVersions } from "./lib/version";
 
@@ -323,6 +324,54 @@ export default function App() {
     extFileViewers,
     extensions,
     registryCatalog,
+  );
+
+  // Extension window-action buttons for a group's own active tab, rendered
+  // in that group's tab bar (see TabBar.tsx's extras slot) — the tab-bar
+  // counterpart to the SESSIONS-row icon (Sidebar.tsx), reusing the exact
+  // same isVisible(ctx)/onClick(ctx) registration, just gated on
+  // showInTabBar and evaluated against whichever window the group's active
+  // tab currently points at instead of a row. A whole-session tab (no
+  // windowIndex) resolves to that session's tmux-active window, mirroring
+  // useTabs' own activeWindow fallback. Plain per-render computation, not
+  // memoized against a ref — cheap (a handful of tabs/windows), and unlike
+  // getGroupActionsRef above this returns nodes, not a DOM ref callback, so
+  // there's no re-render-loop risk from a fresh closure identity.
+  const tabExtrasFor = useCallback(
+    (groupId: string): React.ReactNode => {
+      if (extWindowActions.length === 0) return null;
+      const activeId = groupActive[groupId];
+      const tab = activeId ? tabs.find((t) => t.id === activeId) : undefined;
+      if (!tab || !isRealTab(tab)) return null;
+      const session = sessions.find((s) => s.name === tab.sessionName);
+      if (!session) return null;
+      const window =
+        tab.windowIndex !== undefined
+          ? session.windows.find((w) => w.index === tab.windowIndex)
+          : session.windows.find((w) => w.active);
+      if (!window) return null;
+      const ctx = { sessionName: session.name, windowIndex: window.index, cwd: window.cwd, command: window.command };
+      const actions = extWindowActions.filter((a) => a.showInTabBar && a.isVisible(ctx));
+      if (actions.length === 0) return null;
+      return (
+        <>
+          {actions.map((action) => (
+            <button
+              key={action.id}
+              className="tab-bar-window-action"
+              title={action.title}
+              onClick={(e) => {
+                e.stopPropagation();
+                action.onClick(ctx);
+              }}
+            >
+              <Icon name={action.icon} />
+            </button>
+          ))}
+        </>
+      );
+    },
+    [extWindowActions, groupActive, tabs, sessions],
   );
 
   // A merged-away editor group's DOM node unmounting already disconnects its
@@ -948,6 +997,7 @@ export default function App() {
           onFocusGroup={focusGroup}
           onResizeBranch={resizeBranch}
           actionsRefFor={getGroupActionsRef}
+          tabExtrasFor={tabExtrasFor}
           contentSlotRefFor={getGroupContentSlotRef}
         />
         {tabs.map((tab) => {

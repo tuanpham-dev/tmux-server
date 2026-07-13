@@ -19,6 +19,11 @@ interface Props {
   // tab (e.g. an image viewer) can portal per-tab controls into it — VS
   // Code/code-server style editor-actions on the right of the tab strip.
   actionsRef: (el: HTMLDivElement | null) => void;
+  // Extension window-action buttons for this bar's own active tab (e.g. a
+  // "Preview Claude session" icon) — rendered just left of the actionsRef
+  // portal target; null/undefined renders nothing. See App.tsx's
+  // tabExtrasFor.
+  extras?: React.ReactNode;
   onToggleSidebar: () => void;
   // Chrome-style tab groups (settings.tabGroupsBySession) — see
   // plans/tab-groups-by-session.md. groupKey returns null for a tab that
@@ -66,6 +71,7 @@ export default function TabBar({
   onShowMenu,
   tabMenuItems,
   actionsRef,
+  extras,
   onToggleSidebar,
   groupingEnabled,
   groupKey,
@@ -431,6 +437,7 @@ export default function TabBar({
       >
         {nodes}
       </div>
+      {extras && <div className="tab-bar-extras">{extras}</div>}
       <div className="tab-bar-actions" ref={actionsRef} />
     </div>
   );

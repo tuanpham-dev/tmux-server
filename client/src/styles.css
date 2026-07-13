@@ -932,6 +932,43 @@ body.resizing-row {
   padding: 0 6px;
 }
 
+/* Extension window-action buttons (e.g. "Preview Claude session") for the
+   bar's own active tab — see App.tsx's tabExtrasFor. Sits left of
+   .tab-bar-actions; unlike the SESSIONS-row equivalent (.window-action-button,
+   hover-revealed) this is the tab bar's only affordance for the action, so
+   it stays visible rather than hiding until hover. */
+.tab-bar-extras {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-left: 1px solid var(--tab-border);
+}
+
+.tab-bar-window-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--fg-inactive);
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tab-bar-window-action .codicon {
+  font-size: 15px;
+}
+
+.tab-bar-window-action:hover {
+  background: var(--list-hover-bg);
+  color: var(--fg-bright);
+}
+
 .tab {
   display: flex;
   align-items: center;

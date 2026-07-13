@@ -121,6 +121,11 @@ export interface RegisteredWindowAction {
   // reactive for free, no extra plumbing needed).
   isVisible(ctx: WindowActionContext): boolean;
   onClick(ctx: WindowActionContext): void;
+  // Also render this action in the tab bar's actions area (next to the
+  // built-in per-tab controls) whenever a group's active tab is the
+  // matching terminal window — see App.tsx's tabExtrasFor. Defaults to
+  // false: most window actions are row-only.
+  showInTabBar?: boolean;
 }
 
 export interface ExtensionContext {
@@ -161,6 +166,7 @@ export interface ExtensionContext {
     title: string;
     isVisible: (ctx: WindowActionContext) => boolean;
     onClick: (ctx: WindowActionContext) => void;
+    showInTabBar?: boolean;
   }): void;
   app: {
     getActiveContext(): ActiveContext;
@@ -528,6 +534,7 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         title: action.title,
         isVisible: action.isVisible,
         onClick: action.onClick,
+        showInTabBar: action.showInTabBar ?? false,
       });
       notify();
     },

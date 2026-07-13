@@ -37,6 +37,10 @@ interface SharedProps {
   onReorderGroup: (editorGroupId: string, groupKey: string, toIndex: number) => void;
   onFocusGroup: (groupId: string) => void;
   actionsRefFor: (groupId: string) => (el: HTMLDivElement | null) => void;
+  // Extension window-action buttons for this group's own active tab (e.g. a
+  // "Preview Claude session" icon) — rendered in the bar's extras slot,
+  // ahead of actionsRefFor's portal target. See App.tsx's tabExtrasFor.
+  tabExtrasFor: (groupId: string) => ReactNode;
   // A leaf's content is NOT rendered here — App.tsx portals each tab's actual
   // content component into this slot from a flat, never-reshaping list (see
   // App.tsx's groupContentEls). Rendering content directly inside the
@@ -106,6 +110,7 @@ function Leaf({
   onReorderGroup,
   onFocusGroup,
   actionsRefFor,
+  tabExtrasFor,
   contentSlotRefFor,
   dragTabId,
   dropTarget,
@@ -135,6 +140,7 @@ function Leaf({
         onShowMenu={onShowMenu}
         tabMenuItems={tabMenuItems}
         actionsRef={actionsRefFor(groupId)}
+        extras={tabExtrasFor(groupId)}
         onToggleSidebar={onToggleSidebar}
         groupingEnabled={groupingEnabled}
         groupKey={groupKey}
