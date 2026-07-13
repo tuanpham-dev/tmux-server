@@ -15,15 +15,6 @@ import Icon from "../../_shared/Icon";
 import FileIcon from "../../_shared/FileIcon";
 import type { IconResult } from "../../_shared/FileIcon";
 
-const isMac = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(navigator.platform);
-// Secondary-open modifier for a row click: Alt everywhere, Cmd on mac, or
-// Ctrl+Shift as a fallback — many Linux window managers (XFCE, GNOME, KDE)
-// grab plain Alt+click globally for window dragging, so it never reaches
-// the browser at all.
-function isSecondaryClick(e: { altKey: boolean; ctrlKey: boolean; shiftKey: boolean; metaKey: boolean }): boolean {
-  return e.altKey || (e.ctrlKey && e.shiftKey) || (isMac && e.metaKey);
-}
-
 // ---- Module-level host bridge ----
 
 interface ActiveContext {
@@ -342,7 +333,7 @@ function FileRow({
   entry: FileEntry;
   onOpen: (secondary: boolean) => void;
   actions: RowAction[];
-  // Discoverability for the Alt/Cmd-click escape hatch — there's no visual
+  // Discoverability for the Shift-click escape hatch — there's no visual
   // affordance for it otherwise, so it rides along in the row's own native
   // tooltip. Omitted for conflicted entries, which ignore the click setting.
   clickHint?: string;
@@ -362,7 +353,7 @@ function FileRow({
     <div
       className="git-row"
       title={title}
-      onClick={(e) => onOpen(isSecondaryClick(e))}
+      onClick={(e) => onOpen(e.shiftKey)}
       style={depth ? { paddingLeft: 8 + depth * 16 } : undefined}
     >
       <FileIcon className="git-row-icon" result={icon} />
@@ -695,13 +686,13 @@ function GitPanel({ actionsTarget }: PanelProps) {
     setCredPassword("");
   };
 
-  // Alt+click (Cmd+click on mac) always opens the OTHER action from
-  // gitScm.clickAction's configured default — same escape-hatch convention
-  // the host uses for preview vs. edit (QuickSwitcher's Alt+click, FileTree's
+  // Shift+click always opens the OTHER action from gitScm.clickAction's
+  // configured default — same escape-hatch convention the host uses for
+  // preview vs. edit (QuickSwitcher's Shift+Enter/Shift+click, FileTree's
   // hover icon). Conflicted entries are the one exception: there's no diff
   // to show (both sides are live conflict markers in the working tree, not
   // two commits to compare), so a click opens the ConflictView resolver
-  // instead, ignoring gitScm.clickAction — Alt+click is still the escape
+  // instead, ignoring gitScm.clickAction — Shift+click is still the escape
   // hatch straight to nvim, same as every other row.
   const openEntry = (entry: FileEntry, staged: boolean, secondary: boolean) => {
     if (!activeCwd) return;
@@ -741,9 +732,8 @@ function GitPanel({ actionsTarget }: PanelProps) {
   const untrackedPaths = unstaged.filter((e) => e.status === "untracked").map((e) => e.path);
   const ahead = status.ahead ?? 0;
   const behind = status.behind ?? 0;
-  const secondaryHintLabel = isMac ? "Cmd+Click" : "Alt/Ctrl+Shift+Click";
-  const clickHint = `${secondaryHintLabel}: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"}`;
-  const conflictClickHint = `${secondaryHintLabel}: Open in Editor`;
+  const clickHint = `Shift+Click: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"}`;
+  const conflictClickHint = "Shift+Click: Open in Editor";
   const operation = status.operation ?? null;
 
   // ---- Tree mode ----

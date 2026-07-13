@@ -4,7 +4,6 @@ import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import FileIcon from "./FileIcon";
 import Icon from "./Icon";
 import { getFileIconResult, getFolderIconResult, useIconThemeVersion } from "../utils/iconThemes";
-import { isSecondaryClick } from "../utils/platform";
 
 
 interface Props {
@@ -329,23 +328,23 @@ export default function FileTree({
   // Shared by both row kinds (native <button> for dirs, div role="button"
   // for files). Checked in this order: Ctrl/Cmd+Shift+click on a file is the
   // secondary (preview) action — checked FIRST, ahead of the bare-Ctrl
-  // toggle-select branch below, since the two would otherwise collide (this
-  // is also the Ctrl+Shift+click fallback for window managers, e.g. XFCE/
-  // GNOME/KDE, that grab plain Alt+click globally for window dragging;
-  // directories have no secondary action so this combo behaves like a plain
-  // click for them, same as Alt+click does below). Then Ctrl/Cmd+click alone
-  // always means toggle-select (even on mac, where Cmd is also the
-  // secondary-click modifier elsewhere in the app — the tree reserves Cmd
-  // for selection, matching the platform's own multi-select convention).
-  // Then bare Shift+click: with nothing currently selected it's an even
-  // simpler secondary-action shortcut (no modifier chord at all beyond
-  // Shift) — and deliberately does NOT select the row, so selectedPaths
-  // stays empty and the very next bare Shift+click (anywhere in the tree)
-  // hits this same quick-peek path again, no Escape needed in between. Once
-  // a selection exists, Shift+click reverts to its usual range-select
-  // meaning, since at that point the user is clearly mid multi-select and a
-  // stray Shift+click shouldn't hijack it into opening a preview instead.
-  // Then Alt+click on a file row for the secondary action; otherwise the
+  // toggle-select branch below, since the two would otherwise collide. It's
+  // the escape hatch for opening the secondary action while a selection is
+  // active, since bare Shift+click means range-select at that point
+  // (directories have no secondary action so this combo behaves like a
+  // plain click for them). Then Ctrl/Cmd+click alone always means
+  // toggle-select (even on mac, where Cmd is also the secondary-click
+  // modifier elsewhere in the app — the tree reserves Cmd for selection,
+  // matching the platform's own multi-select convention). Then bare
+  // Shift+click: with nothing currently selected it's the secondary-action
+  // shortcut (same modifier as everywhere else in the app) — and
+  // deliberately does NOT select the row, so selectedPaths stays empty and
+  // the very next bare Shift+click (anywhere in the tree) hits this same
+  // quick-peek path again, no Escape needed in between. Once a selection
+  // exists, Shift+click reverts to its usual range-select meaning, since at
+  // that point the user is clearly mid multi-select and a stray Shift+click
+  // shouldn't hijack it into opening a preview instead (use Ctrl+Shift+click
+  // above to open the secondary action mid-selection). Otherwise the
   // existing plain-click behavior (open a file, expand/collapse a dir).
   const handleRowClick = (e: React.MouseEvent, path: string, isDir: boolean, name: string) => {
     const ctrlOrCmd = e.ctrlKey || e.metaKey;
@@ -397,11 +396,6 @@ export default function FileTree({
     setSelectedPaths(new Set([path]));
     setAnchorPath(path);
     focusRow(path);
-    if (!isDir && e.altKey) {
-      if (isPreviewable(name)) onPreviewFile(path);
-      else onOpenFile(path);
-      return;
-    }
     if (isDir) toggle(path);
     else onOpenFile(path);
   };

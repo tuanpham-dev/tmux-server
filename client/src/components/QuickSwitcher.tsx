@@ -43,11 +43,10 @@ interface Entry {
   key: string;
   label: string;
   group: "tab" | "window" | "session" | "file" | "command";
-  // secondary is true for Shift+Enter, or Alt+click / Ctrl+Shift+click
-  // (Cmd+click on mac) — see utils/platform.ts's isSecondaryClick. Only
-  // file entries branch on it (see App.tsx's openFileOrViewerSecondary);
-  // tab/window/session/command entries ignore the argument since they have
-  // no secondary action.
+  // secondary is true for Shift+Enter/Shift+click — see utils/platform.ts's
+  // isSecondaryClick. Only file entries branch on it (see App.tsx's
+  // openFileOrViewerSecondary); tab/window/session/command entries ignore
+  // the argument since they have no secondary action.
   run: (secondary: boolean) => void;
   // Command entries only: shown as a chip on the right, and false disables
   // the row (muted, Enter/click inert) — see PaletteCommand.

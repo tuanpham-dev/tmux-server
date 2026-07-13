@@ -45,9 +45,9 @@ interface Props {
   // window tab, or a cross-session switch from any tab.
   onWindowSwitch?: (windowIndex: number) => void;
   onSessionSwitch?: (session: string, windowIndex: number) => void;
-  // Ctrl+click / Ctrl+Alt+click or Ctrl+Shift+click (Cmd+click /
-  // Cmd+Option+click on mac) on a detected file-path link — same
-  // primary/secondary pair as QuickSwitcher's Enter/Shift+Enter.
+  // Ctrl+click / Ctrl+Shift+click (Cmd+click / Cmd+Shift+click on mac) on a
+  // detected file-path link — same primary/secondary pair as QuickSwitcher's
+  // Enter/Shift+Enter.
   onOpenFile?: (path: string, line?: number) => void;
   onOpenFileSecondary?: (path: string, line?: number) => void;
 }
@@ -737,14 +737,13 @@ export default function TerminalView({
         if (syntheticEvents.has(e)) return;
         if (term.modes.mouseTrackingMode === "none") return;
 
-        // Ctrl+click / Ctrl+Alt+click / Ctrl+Shift+click (Cmd equivalents on
-        // mac) on a hovered link: swallow the whole press-to-release gesture
-        // so nothing
-        // reaches tmux (a replayed ctrl+click would e.g. re-trigger nvim's
-        // own <C-LeftMouse> tag-jump binding), and activate the link
+        // Ctrl+click / Ctrl+Shift+click (Cmd equivalents on mac) on a
+        // hovered link: swallow the whole press-to-release gesture so
+        // nothing reaches tmux (a replayed ctrl+click would e.g. re-trigger
+        // nvim's own <C-LeftMouse> tag-jump binding), and activate the link
         // directly on release. Checked before the shift-swap branch below
-        // so a plain Ctrl+click lands here rather than falling through to a
-        // plain-tmux-click replay.
+        // so Ctrl+Shift+click lands here rather than being shift-un-modified
+        // and falling through to a plain-tmux-click replay.
         if (linkPressArmedRef.current) {
           if (e.type === "mouseup" || e.type === "mousemove") {
             e.preventDefault();

@@ -25,8 +25,8 @@ export function useFileOpeners(
   openExtViewerTab: (viewerId: string, filePath: string, title?: string) => void,
   setFilesRefreshKey: (updater: (k: number) => number) => void,
 ) {
-  // The "Preview" escape hatch (hover icon / context-menu item / Shift+Enter /
-  // Alt+click) for a path some "preview"-mode viewer claims — markdown/json/yaml/csv
+  // The "Preview" escape hatch (hover icon / context-menu item / Shift+Enter)
+  // for a path some "preview"-mode viewer claims — markdown/json/yaml/csv
   // today. A no-op if no such viewer is registered (extension disabled, or
   // called before activation finishes).
   const openPreviewViewerTab = useCallback(
@@ -116,9 +116,8 @@ export function useFileOpeners(
     setRefreshFilesHandler(() => setFilesRefreshKey((k) => k + 1));
   }, [openExtViewerTab, setFilesRefreshKey]);
 
-  // Quick switcher's Shift+Enter / Alt+click action (also terminal
-  // Ctrl+Alt+click, or Cmd+Option+click on mac — see TerminalView's
-  // onOpenFileSecondary). Mirrors the "Preview" escape
+  // Quick switcher's Shift+Enter action (also terminal ctrl+shift+click —
+  // see TerminalView's onOpenFileSecondary). Mirrors the "Preview" escape
   // hatch for markdown/json/yaml/csv (see fileMenuItems in useFileActions);
   // images/media/PDFs have no secondary action here — they always land on
   // their viewer regardless of the modifier, unlike the FILES-tree context
