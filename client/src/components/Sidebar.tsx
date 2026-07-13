@@ -1,6 +1,10 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { setContextKey } from "../contextKeys";
-import { setSidebarTabsBridge, type RegisteredSidebarPanel } from "../extensions";
+import {
+  setSidebarTabsBridge,
+  type RegisteredSidebarPanel,
+  type RegisteredWindowAction,
+} from "../extensions";
 import { formatBinding, type Keybinding } from "../keybindings";
 import { moveId } from "../lib/tabs";
 import { sessionRowsWithPins } from "../lib/sessions";
@@ -155,6 +159,7 @@ interface Props {
   deleteFileEntries: (entries: { path: string; isDir: boolean }[]) => void;
   prunePath: { paths: string[] } | null;
   extensionPanels: RegisteredSidebarPanel[];
+  extensionWindowActions: RegisteredWindowAction[];
   extensions: ExtensionInfo[];
   onReloadExtensions: () => void;
   extensionRegistries: string[];
@@ -209,6 +214,7 @@ export default function Sidebar({
   deleteFileEntries,
   prunePath,
   extensionPanels,
+  extensionWindowActions,
   extensions,
   onReloadExtensions,
   extensionRegistries,
@@ -456,6 +462,23 @@ export default function Sidebar({
         {w.activity && <span className="activity-dot" />}
         <span className="window-label">{label}</span>
         {showCwd && <span className="item-cwd">{w.cwd}</span>}
+        {extensionWindowActions
+          .filter((action) =>
+            action.isVisible({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command }),
+          )
+          .map((action) => (
+            <button
+              key={action.id}
+              className="window-action-button"
+              title={action.title}
+              onClick={(e) => {
+                e.stopPropagation();
+                action.onClick({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command });
+              }}
+            >
+              <Icon name={action.icon} />
+            </button>
+          ))}
         <button
           className="window-kill-button"
           title="Kill window"

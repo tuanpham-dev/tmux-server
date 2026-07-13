@@ -6,6 +6,9 @@ export interface TmuxWindow {
   active: boolean;
   cwd: string;
   activity: boolean;
+  // The active pane's current foreground command (e.g. "bash", "claude") —
+  // see the server-side TmuxWindow's matching field for why this exists.
+  command: string;
 }
 
 export interface TmuxSession {

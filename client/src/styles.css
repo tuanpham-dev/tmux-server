@@ -588,7 +588,8 @@ body.resizing-row {
   color: var(--fg-inactive);
 }
 
-.window-kill-button {
+.window-kill-button,
+.window-action-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -605,15 +606,18 @@ body.resizing-row {
   visibility: hidden;
 }
 
-.window-kill-button .codicon {
+.window-kill-button .codicon,
+.window-action-button .codicon {
   font-size: 15px;
 }
 
-.window-item:hover .window-kill-button {
+.window-item:hover .window-kill-button,
+.window-item:hover .window-action-button {
   visibility: visible;
 }
 
-.window-kill-button:hover {
+.window-kill-button:hover,
+.window-action-button:hover {
   background: var(--list-hover-bg);
   color: var(--fg-bright);
 }

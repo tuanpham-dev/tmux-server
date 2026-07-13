@@ -97,6 +97,32 @@ export interface RegisteredSidebarPanel {
   component: ReactNS.ComponentType<SidebarPanelHostProps>;
 }
 
+// What a window action's isVisible/onClick are evaluated against — a plain
+// snapshot of one SESSIONS-tree window row, not a live handle.
+export interface WindowActionContext {
+  sessionName: string;
+  windowIndex: number;
+  cwd: string;
+  // The window's active pane's current foreground command (see TmuxWindow.command)
+  // — e.g. isVisible: (w) => w.command === "claude".
+  command: string;
+}
+
+export interface RegisteredWindowAction {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  // Codicon name for the row button (same Icon component the built-in
+  // window-kill-button uses).
+  icon: string;
+  title: string;
+  // Re-evaluated by Sidebar.tsx on every window row render (the session
+  // list already polls every ~3s — see useSessions.ts — so this is
+  // reactive for free, no extra plumbing needed).
+  isVisible(ctx: WindowActionContext): boolean;
+  onClick(ctx: WindowActionContext): void;
+}
+
 export interface ExtensionContext {
   React: typeof ReactNS;
   registerCommand(cmd: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
@@ -124,6 +150,17 @@ export interface ExtensionContext {
     // need a dedicated shortcut cluttering the palette/keybinding list.
     focusBinding?: string;
     component: ReactNS.ComponentType<SidebarPanelHostProps>;
+  }): void;
+  // Contributes a button to the SESSIONS tree's window rows (next to the
+  // built-in kill-window button), shown only on rows where isVisible
+  // returns true — e.g. a preview action for windows running a specific
+  // command. Generic: not tied to any particular command or extension.
+  registerWindowAction(action: {
+    id: string;
+    icon: string;
+    title: string;
+    isVisible: (ctx: WindowActionContext) => boolean;
+    onClick: (ctx: WindowActionContext) => void;
   }): void;
   app: {
     getActiveContext(): ActiveContext;
@@ -190,6 +227,7 @@ export interface ExtensionContext {
 export const extensionCommands: RegisteredCommand[] = [];
 export const extensionFileViewers: RegisteredFileViewer[] = [];
 export const extensionSidebarPanels: RegisteredSidebarPanel[] = [];
+export const extensionWindowActions: RegisteredWindowAction[] = [];
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -228,6 +266,7 @@ export function useExtensionRegistry(): {
   commands: RegisteredCommand[];
   fileViewers: RegisteredFileViewer[];
   sidebarPanels: RegisteredSidebarPanel[];
+  windowActions: RegisteredWindowAction[];
 } {
   const [tick, setTick] = ReactNS.useState(0);
   ReactNS.useEffect(() => subscribeExtensionRegistry(() => setTick((t) => t + 1)), []);
@@ -241,6 +280,7 @@ export function useExtensionRegistry(): {
       commands: [...extensionCommands],
       fileViewers: [...extensionFileViewers],
       sidebarPanels: [...extensionSidebarPanels],
+      windowActions: [...extensionWindowActions],
     }),
     [tick],
   );
@@ -480,6 +520,17 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       }
       notify();
     },
+    registerWindowAction(action) {
+      extensionWindowActions.push({
+        id: `ext.${ext.id}.${action.id}`,
+        extensionId: ext.id,
+        icon: action.icon,
+        title: action.title,
+        isVisible: action.isVisible,
+        onClick: action.onClick,
+      });
+      notify();
+    },
     app: {
       getActiveContext: () => activeContextValue,
       onDidChangeContext(cb) {
@@ -613,6 +664,9 @@ function deactivateClientExtension(extId: string): void {
   }
   for (let i = extensionSidebarPanels.length - 1; i >= 0; i--) {
     if (extensionSidebarPanels[i].id.startsWith(prefix)) extensionSidebarPanels.splice(i, 1);
+  }
+  for (let i = extensionWindowActions.length - 1; i >= 0; i--) {
+    if (extensionWindowActions[i].extensionId === extId) extensionWindowActions.splice(i, 1);
   }
   if (runtime) for (const cb of runtime.contextListeners) contextListeners.delete(cb);
   if (runtime) for (const unsubscribe of runtime.iconThemeListeners) unsubscribe();

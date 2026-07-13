@@ -177,8 +177,12 @@ export default function App() {
   // join the built-in list inside useSettingsSync (always "global" scope in
   // v1, namespaced ext.<extensionId>.<cmd> so they can't collide with a
   // built-in id); fileViewers/sidebarPanels are consumed further down.
-  const { commands: extCommands, fileViewers: extFileViewers, sidebarPanels: extSidebarPanels } =
-    useExtensionRegistry();
+  const {
+    commands: extCommands,
+    fileViewers: extFileViewers,
+    sidebarPanels: extSidebarPanels,
+    windowActions: extWindowActions,
+  } = useExtensionRegistry();
 
   const {
     settings,
@@ -896,6 +900,7 @@ export default function App() {
             deleteFileEntries={deleteFileEntries}
             prunePath={prunePath}
             extensionPanels={extSidebarPanels}
+            extensionWindowActions={extWindowActions}
             extensions={extensions}
             onReloadExtensions={reloadExtensions}
             extensionRegistries={extensionRegistries}

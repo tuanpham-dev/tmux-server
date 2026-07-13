@@ -16,6 +16,11 @@ export interface TmuxWindow {
   active: boolean;
   cwd: string;
   activity: boolean;
+  // The active pane's current foreground command (tmux's pane_current_command,
+  // e.g. "bash", "vim", "claude") — lets extensions gate a per-window action
+  // on what's actually running there (see registerWindowAction) without a
+  // second tmux query; this rides along on the same list-windows call below.
+  command: string;
 }
 
 export interface TmuxSession {
@@ -68,7 +73,7 @@ export async function listSessions(): Promise<TmuxSession[]> {
       "list-windows",
       "-a",
       "-F",
-      "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}\t#{window_activity_flag}",
+      "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}\t#{window_activity_flag}\t#{pane_current_command}",
     ]).catch(emptyIfNoServer),
   ]);
 
@@ -85,7 +90,7 @@ export async function listSessions(): Promise<TmuxSession[]> {
     });
   }
   for (const line of windowsOut.split("\n").filter(Boolean)) {
-    const [sessionName, id, index, name, active, cwd, activity] = line.split("\t");
+    const [sessionName, id, index, name, active, cwd, activity, command] = line.split("\t");
     sessions.get(sessionName)?.windows.push({
       id,
       index: Number(index),
@@ -93,6 +98,7 @@ export async function listSessions(): Promise<TmuxSession[]> {
       active: active === "1",
       cwd: shortenHome(cwd),
       activity: activity === "1",
+      command: command ?? "",
     });
   }
   return [...sessions.values()];

@@ -255,7 +255,7 @@ describe("reconcileTabs", () => {
       makeSession({
         id: "$1",
         name: "blog-renamed",
-        windows: [{ id: "@1", index: 1, name: "vim", active: true, cwd: "/tmp", activity: false }],
+        windows: [{ id: "@1", index: 1, name: "vim", active: true, cwd: "/tmp", activity: false, command: "vim" }],
       }),
     ];
     const next = reconcileTabs(tabs, sessions);
@@ -271,7 +271,7 @@ describe("reconcileTabs", () => {
       makeSession({
         id: "$1",
         name: "blog",
-        windows: [{ id: "@1", index: 3, name: "vim", active: true, cwd: "/tmp", activity: false }],
+        windows: [{ id: "@1", index: 3, name: "vim", active: true, cwd: "/tmp", activity: false, command: "vim" }],
       }),
     ];
     const next = reconcileTabs(tabs, sessions);
