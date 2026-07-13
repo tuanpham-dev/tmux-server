@@ -32,7 +32,7 @@ import { getRepoBranch, getRepoStatuses, listRepoFiles, statusForEntry } from ".
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { primaryProxyDomain } from "./security.js";
-import { readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
+import { mergeSettingsDoc, readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
 import {
   createSession,
   createWindow,
@@ -97,6 +97,13 @@ api.post("/sessions", async (req, res) => {
 
 // Settings persistence: one JSON document, client-owned schema (see
 // settingsStore.ts). Lives under /api so the host/origin guards apply.
+// PUT replaces the whole document (standard PUT semantics — the body IS
+// the new representation); PATCH deep-merges the body over the on-disk
+// document instead, so a caller sending a partial body can't silently drop
+// every sibling key it didn't mention. The client's own write-back
+// (useSettingsSync.ts) already fetch-merges client-side before calling PUT
+// with the complete doc, so it's unaffected either way — PATCH exists for
+// callers that want to send just what changed.
 api.get("/settings", async (_req, res) => {
   try {
     res.json(await readSettingsDoc());
@@ -108,6 +115,15 @@ api.get("/settings", async (_req, res) => {
 api.put("/settings", async (req, res) => {
   try {
     await writeSettingsDoc(req.body);
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+api.patch("/settings", async (req, res) => {
+  try {
+    await mergeSettingsDoc(req.body);
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });

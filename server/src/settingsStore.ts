@@ -38,3 +38,32 @@ export async function writeSettingsDoc(doc: unknown): Promise<void> {
   await writeFile(tmp, json);
   await rename(tmp, settingsPath);
 }
+
+// Recurses into plain-object values on both sides so a patch only has to
+// name the keys it's actually changing, at any depth — e.g. patching one
+// extension's settings ({ extensionSettings: { "foo.bar": {...} } })
+// doesn't drop every other extension's entry, and patching one keybinding
+// override doesn't drop the rest. Arrays and primitives are NOT merged
+// recursively (an incoming array/primitive replaces the existing value
+// wholesale) — index-merging a list like pinnedSessions would silently
+// splice unrelated entries together, which is never what a caller wants.
+function deepMerge(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    const existing = result[key];
+    result[key] = isPlainObject(existing) && isPlainObject(value) ? deepMerge(existing, value) : value;
+  }
+  return result;
+}
+
+// Merges `patch` over the on-disk document (see deepMerge) and persists the
+// result, instead of replacing the document outright — the PATCH
+// counterpart to writeSettingsDoc's PUT-style full replace. Lets a caller
+// (an extension settings panel, a future integration, or the client's own
+// write-back) send just the keys it's changing without first having to
+// fetch-merge-PUT the whole document itself.
+export async function mergeSettingsDoc(patch: unknown): Promise<void> {
+  if (!isPlainObject(patch)) throw new Error("settings must be a JSON object");
+  const current = await readSettingsDoc();
+  await writeSettingsDoc(deepMerge(current, patch));
+}

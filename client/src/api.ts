@@ -84,6 +84,18 @@ export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
   });
 }
 
+// Deep-merges `patch` over the server's on-disk document instead of
+// replacing it outright (see server/src/settingsStore.ts's mergeSettingsDoc)
+// — for a caller that wants to write just the keys it's changing without
+// first fetching and reassembling the whole document itself.
+export function patchSettingsDoc(patch: SettingsDoc): Promise<void> {
+  return request("/api/settings", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
 export function killSession(name: string): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
