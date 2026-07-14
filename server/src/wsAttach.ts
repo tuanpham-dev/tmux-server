@@ -6,6 +6,7 @@ import {
   applyTmuxOptions,
   getAttachIdentity,
   getScrollState,
+  invalidateScrollState,
   isWindowTabSession,
   scrollHorizontal,
   scrollTo,
@@ -152,6 +153,10 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
         .catch(() => {});
     } else if (msg.type === "scrollTo" && Number.isFinite(msg.line)) {
       scrollTo(session, msg.line!)
+        // This just moved the pane, so the coalescing cache in getScrollState
+        // now holds a pre-scroll answer — drop it, or the reply below reports
+        // the old position and the thumb snaps back.
+        .then(() => invalidateScrollState(session))
         .then(() => getScrollState(session))
         .then((state) => {
           if (ws.readyState === WebSocket.OPEN) {
@@ -166,6 +171,9 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
       (msg.action !== "start" || typeof msg.query === "string")
     ) {
       searchScrollback(session, msg.action, msg.query)
+        // Same as scrollTo above: a search jump moves the pane, so the cached
+        // scroll state is stale by definition.
+        .then(() => invalidateScrollState(session))
         .then(() => getScrollState(session))
         .then((state) => {
           if (ws.readyState === WebSocket.OPEN) {

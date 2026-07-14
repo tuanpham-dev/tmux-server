@@ -356,9 +356,41 @@ export interface ScrollState {
   height: number;
 }
 
+// Every scroll query costs a forked `tmux display-message` process, and each
+// attached client fires one per output burst — so a busy pane watched from N
+// browser tabs (all asking about the SAME session, all getting the same
+// answer) multiplied into N forks per burst: measured at ~170 forks/sec across
+// ~10 tabs on one streaming pane, enough kernel time and tmux-server load to
+// stall the whole machine. Collapse them: one in-flight query per session is
+// shared by every caller that arrives while it's running, and its result is
+// reused for a beat afterwards. N tabs now cost the same as one.
+const SCROLL_STATE_TTL_MS = 100;
+const scrollStateInFlight = new Map<string, Promise<ScrollState>>();
+const scrollStateCache = new Map<string, { at: number; state: ScrollState }>();
+
 // Scroll state of the session's active pane; tmux keeps scrollback
 // internally, so this is the only source of truth for a scrollbar.
-export async function getScrollState(session: string): Promise<ScrollState> {
+export function getScrollState(session: string): Promise<ScrollState> {
+  const fresh = scrollStateCache.get(session);
+  if (fresh && Date.now() - fresh.at < SCROLL_STATE_TTL_MS) {
+    return Promise.resolve(fresh.state);
+  }
+  const pending = scrollStateInFlight.get(session);
+  if (pending) return pending;
+
+  const query = queryScrollState(session)
+    .then((state) => {
+      scrollStateCache.set(session, { at: Date.now(), state });
+      return state;
+    })
+    .finally(() => {
+      scrollStateInFlight.delete(session);
+    });
+  scrollStateInFlight.set(session, query);
+  return query;
+}
+
+async function queryScrollState(session: string): Promise<ScrollState> {
   // The trailing colon matters: bare "=session" resolves to nothing for
   // display-message; "=session:" resolves to the session's active pane.
   const out = await tmux([
@@ -375,6 +407,13 @@ export async function getScrollState(session: string): Promise<ScrollState> {
     history: Number(history) || 0,
     height: Number(height) || 0,
   };
+}
+
+// A scroll-affecting command (scrollTo/copy-mode exit) just changed the pane
+// under us — drop the cached answer so the next query reflects it immediately
+// rather than serving a stale position for up to the TTL.
+export function invalidateScrollState(session: string): void {
+  scrollStateCache.delete(session);
 }
 
 // Enters copy-mode (idempotent — safe even if already active) and jumps to

@@ -86,6 +86,18 @@ export default function TerminalView({
   const termRef = useRef<Terminal | null>(null);
   const rendererShimRef = useRef<RendererShim | null>(null);
   const refitRef = useRef<(() => void) | null>(null);
+  // Read from inside the mount effect's long-lived closure (which only ever
+  // sees the `visible` value it mounted with), so the scroll-query throttle
+  // below can tell whether this terminal is actually on screen right now.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  // requestScrollState, exposed so the [visible] effect can fire the one query
+  // a revealed tab skipped while it was hidden.
+  const scrollQueryRef = useRef<(() => void) | null>(null);
+  // Force-repaints a terminal that was just revealed, catching it up on
+  // everything that arrived while its paint was suppressed (see the render
+  // shim in the mount effect).
+  const revealRef = useRef<(() => void) | null>(null);
   const bindingsRef = useRef(bindings);
   bindingsRef.current = bindings;
   const onExitRef = useRef(onExit);
@@ -279,6 +291,35 @@ export default function TerminalView({
       };
       bounceFont();
 
+      // ghostty-web drives an unconditional requestAnimationFrame loop
+      // (startRenderLoop): every terminal repaints every frame for as long as
+      // it exists, whether or not it is on screen. Browsers only THROTTLE
+      // background tabs (~20fps, measured) rather than stopping them, and a
+      // terminal on an inactive editor tab keeps painting too — so a window
+      // with several tabs open on a busy pane burned CPU on canvases nobody
+      // could see, on every one of them, forever. Skip the paint when there is
+      // nothing to look at. Output still streams into the WASM terminal and
+      // marks its rows dirty; suppressing the paint just defers the pixels,
+      // and the reveal path below force-renders so no stale frame is shown.
+      const renderer = term.renderer!;
+      const originalRender = renderer.render.bind(renderer);
+      renderer.render = ((...args: Parameters<typeof originalRender>) => {
+        if (disposed) return;
+        if (!visibleRef.current || document.hidden) return;
+        return originalRender(...args);
+      }) as typeof renderer.render;
+
+      // Repaint everything that changed while the paint was suppressed. The
+      // fontFamily bounce is the one public path that both re-sizes the canvas
+      // to the shimmed metrics AND force-renders (see bounceFont above), which
+      // is exactly what a terminal returning to screen needs.
+      revealRef.current = () => {
+        if (disposed) return;
+        bounceFont();
+        refitRef.current?.();
+        scrollQueryRef.current?.();
+      };
+
       if (import.meta.env.DEV) {
         // Debug handles for devtools poking (e.g. term.getMode(1002) while
         // QA-ing mouse forwarding, or shim overrides while QA-ing display
@@ -372,7 +413,16 @@ export default function TerminalView({
       // — each query spawns a tmux subprocess server-side, so an unthrottled
       // per-chunk query flood burns real CPU for no visible benefit; a
       // trailing timer guarantees the final position still lands.
-      const SCROLL_QUERY_FLOOR_MS = 80;
+      // 80ms here meant up to 12.5 queries/sec per attached terminal, and each
+      // one forks a `tmux display-message` server-side. Across a handful of
+      // tabs watching the same busy pane that measured ~170 forks/sec —
+      // enough kernel + tmux-server load to make the whole UI (page loads
+      // included) unresponsive. The server now shares one query across every
+      // client on a session (getScrollState's coalescing cache), and this
+      // floor drops the per-client rate on top: a scrollbar thumb doesn't need
+      // 12 updates a second, and the trailing timer still lands the final
+      // position.
+      const SCROLL_QUERY_FLOOR_MS = 250;
       let queryInFlight = false;
       let queryDirty = false;
       let lastQuerySentAt = 0;
@@ -384,6 +434,16 @@ export default function TerminalView({
       };
       const requestScrollState = () => {
         if (ws.readyState !== WebSocket.OPEN) return;
+        // Nothing can observe the answer unless this terminal is on screen:
+        // its tab must be the active one in its editor group (visibleRef) AND
+        // the browser tab itself must be in the foreground (document.hidden).
+        // Both were previously ignored — a backgrounded window with ten tabs
+        // open kept every one of them querying at full rate against a pane
+        // nobody was looking at, which is what turned a per-tab trickle into a
+        // machine-wide fork storm. Whichever condition unblocks fires one
+        // catch-up query (the [visible] effect, or the visibilitychange
+        // listener below), so the thumb is right the moment it can be seen.
+        if (!visibleRef.current || document.hidden) return;
         if (queryInFlight) {
           queryDirty = true;
           return;
@@ -399,6 +459,7 @@ export default function TerminalView({
           if (ws.readyState === WebSocket.OPEN && !queryInFlight) sendScrollQuery();
         }, SCROLL_QUERY_FLOOR_MS - elapsed);
       };
+      scrollQueryRef.current = requestScrollState;
 
       // Last known state, kept for drag math; updated by server replies and,
       // optimistically, by drag moves so the thumb never waits on a round trip.
@@ -1216,6 +1277,8 @@ export default function TerminalView({
         termRef.current = null;
         rendererShimRef.current = null;
         refitRef.current = null;
+        scrollQueryRef.current = null;
+        revealRef.current = null;
       };
     });
 
@@ -1280,6 +1343,25 @@ export default function TerminalView({
     refitRef.current?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fontsVersion]);
+
+  // A tab that was hidden skipped every scroll query while it was off screen
+  // (see requestScrollState), so its thumb reflects whatever the pane looked
+  // like when it was last visible. Catch it up once, on reveal — the one
+  // moment the answer can actually be seen.
+  useEffect(() => {
+    if (visible) revealRef.current?.();
+  }, [visible]);
+
+  // Counterpart to the document.hidden bail-outs above: a backgrounded browser
+  // tab neither paints nor queries, so catch both up the moment it returns to
+  // the foreground.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (!document.hidden && visibleRef.current) revealRef.current?.();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   // Not on touch devices: term.focus() focuses the contenteditable screen
   // div, and doing that inside a user gesture (tapping a tab, tapping out
