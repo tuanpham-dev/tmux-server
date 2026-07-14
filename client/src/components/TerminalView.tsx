@@ -620,6 +620,16 @@ export default function TerminalView({
       let lastCompositionData = "";
       let lastCompositionTime = 0;
       const onCompositionEnd = (e: CompositionEvent) => {
+        // Runs after ghostty's own compositionend handler (registered
+        // earlier on the same element), which has already read e.data and
+        // forwarded it — clearing here can't lose input. Composition text
+        // is the one insertion the blanket preventDefault can't cancel, so
+        // it accumulates in the hidden textarea; ghostty only cleans the
+        // container's text nodes, never textarea.value. Left in place, the
+        // IME treats the previous command as context and re-composes
+        // against its last word, committing data that repeats already-sent
+        // text. Same reset xterm.js does after every commit.
+        if (term.textarea) term.textarea.value = "";
         if (!e.data) return;
         lastCompositionData = e.data;
         lastCompositionTime = performance.now();

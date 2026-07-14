@@ -109,7 +109,13 @@ body {
 
 .app {
   display: flex;
+  /* dvh, not vh: on mobile, 100vh is the URL-bar-hidden height, so the
+     bottom row (prompt, touch key bar) sits off-screen while the bar shows.
+     dvh tracks the actually-visible viewport; vh stays as fallback. With
+     the viewport meta's interactive-widget=resizes-content it also shrinks
+     when the on-screen keyboard opens, keeping the prompt visible. */
   height: 100vh;
+  height: 100dvh;
 }
 
 /* ---- Sidebar ---- */
