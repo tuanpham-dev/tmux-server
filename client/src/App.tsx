@@ -181,16 +181,25 @@ export default function App() {
     const vv = window.visualViewport;
     if (!vv) return;
     const apply = () => {
-      if (vv.scale !== 1) return;
-      document.documentElement.style.setProperty("--app-height", `${Math.round(vv.height)}px`);
+      // height × scale recovers the layout-viewport height, so a
+      // pinch-zoom leaves the app alone while the keyboard/URL-bar case
+      // (scale 1) tracks the visible height exactly. No scale bail-out: a
+      // device stuck at a not-quite-1 scale would otherwise never get the
+      // variable set at all.
+      const h = Math.round(vv.height * vv.scale);
+      document.documentElement.style.setProperty("--app-height", `${h}px`);
       if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
     };
     apply();
     vv.addEventListener("resize", apply);
     vv.addEventListener("scroll", apply);
+    // Some browsers move the keyboard/orientation resize through window
+    // resize without a matching visualViewport event — listen to both.
+    window.addEventListener("resize", apply);
     return () => {
       vv.removeEventListener("resize", apply);
       vv.removeEventListener("scroll", apply);
+      window.removeEventListener("resize", apply);
       document.documentElement.style.removeProperty("--app-height");
     };
   }, []);

@@ -1084,17 +1084,20 @@ export default function TerminalView({
         );
       };
       const onTouchEnd = (e: TouchEvent) => {
-        if (touchScrolling) {
-          // stopPropagation unconditionally — a post-scroll touchend is
-          // often not cancelable, but it still must not reach ghostty's
-          // canvas listener, whose textarea.focus() would pop the
-          // on-screen keyboard at the end of every swipe. Only tap
-          // gestures may focus (and thus open the keyboard).
-          e.stopPropagation();
-          if (e.cancelable) e.preventDefault();
-        }
+        // Own every gesture ending on the terminal: swallow it before
+        // ghostty's canvas touchend (preventDefault + textarea.focus()),
+        // whose focus call pops the on-screen keyboard — real devices
+        // deliver post-scroll touchends with per-browser cancelable/compat
+        // quirks, so suppressing ghostty's handler only on scrolls proved
+        // unreliable. Focus — the thing that opens the keyboard — is
+        // granted here and only here: a completed single-finger tap.
+        // Swipes, cancelled gestures, and multi-touch never focus.
+        const wasTap = touchLast !== null && !touchScrolling;
         touchLast = null;
         touchScrolling = false;
+        e.stopPropagation();
+        if (e.cancelable) e.preventDefault();
+        if (wasTap && e.type === "touchend") term.textarea?.focus();
       };
       screen.addEventListener("touchstart", onTouchStart, { passive: true });
       screen.addEventListener("touchmove", onTouchMove, { passive: false });
@@ -1125,7 +1128,10 @@ export default function TerminalView({
       const observer = new ResizeObserver(refit);
       observer.observe(screen);
 
-      if (focused) term.focus();
+      // Same coarse-pointer gate as the [focused] effect below: a tab
+      // opened by a tap would otherwise mount straight into a focused
+      // contenteditable and pop the on-screen keyboard.
+      if (focused && !window.matchMedia("(pointer: coarse)").matches) term.focus();
 
       cleanup = () => {
         clearTimeout(reconnectTimer);
@@ -1222,10 +1228,15 @@ export default function TerminalView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fontsVersion]);
 
+  // Not on touch devices: term.focus() focuses the contenteditable screen
+  // div, and doing that inside a user gesture (tapping a tab, tapping out
+  // of the bottom panel — anything that flips `focused`) pops the
+  // on-screen keyboard. On touch, keyboard focus is granted only by a
+  // direct tap on the terminal (the touchend handler in the mount effect).
   useEffect(() => {
-    if (focused) {
-      requestAnimationFrame(() => termRef.current?.focus());
-    }
+    if (!focused) return;
+    if (window.matchMedia("(pointer: coarse)").matches) return;
+    requestAnimationFrame(() => termRef.current?.focus());
   }, [focused]);
 
   return (
