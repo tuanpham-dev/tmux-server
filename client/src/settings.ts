@@ -4,9 +4,16 @@ import type { PinnedSession } from "./types";
 export interface AppSettings {
   fontFamily: string;
   fontSize: number;
+  // Weight used for ordinary (non-bold) text: "medium" renders everything
+  // in the font's 500 face when the extension ships one (IBM Plex Mono
+  // does), falling back to regular per style otherwise. Implemented by
+  // font-face registration (utils/fonts.ts), same mechanism as
+  // fontWeightBold below — and with the same limitation: extension-loaded
+  // fonts only.
+  fontWeight: "normal" | "medium";
   // ghostty-web has no fontWeightBold option; "normal" is implemented by
-  // registering the regular font face across all weights so the renderer's
-  // "bold …" canvas font lookups resolve to regular glyphs (utils/fonts.ts).
+  // registering the text-weight font face across all weights so the
+  // renderer's "bold …" canvas font lookups resolve to it (utils/fonts.ts).
   // Only covers extension-loaded fonts — system fonts in the stack keep
   // their real bold.
   fontWeightBold: "normal" | "bold";
@@ -78,6 +85,7 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
+  fontWeight: "normal",
   fontWeightBold: "normal",
   cursorStyle: "block",
   cursorBlink: true,

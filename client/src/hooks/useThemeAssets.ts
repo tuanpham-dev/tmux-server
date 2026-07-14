@@ -103,12 +103,11 @@ export function useThemeAssets(
   // fontsVersion is handed to every TerminalView so it can force a re-
   // measure once a face it's configured to use actually finishes loading.
   useEffect(() => {
-    applyExtensionFonts(
-      extensions,
-      settings.fontFamily,
-      settings.fontWeightBold === "normal",
-    ).catch(() => {});
-  }, [settings.fontFamily, settings.fontWeightBold, extensions]);
+    applyExtensionFonts(extensions, settings.fontFamily, {
+      medium: settings.fontWeight === "medium",
+      boldIsNormal: settings.fontWeightBold === "normal",
+    }).catch(() => {});
+  }, [settings.fontFamily, settings.fontWeight, settings.fontWeightBold, extensions]);
   const fontsVersion = useExtensionFontsVersion();
 
   // Non-terminal UI elements that want "whatever monospace metrics the user

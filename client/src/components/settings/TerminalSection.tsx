@@ -52,6 +52,18 @@ export default function TerminalSection() {
       </label>
 
       <label className="settings-row">
+        <span className="settings-label">Text weight</span>
+        <select
+          className="dialog-input settings-select"
+          value={settings.fontWeight}
+          onChange={(e) => set("fontWeight", e.target.value as AppSettings["fontWeight"])}
+        >
+          <option value="normal">normal (400)</option>
+          <option value="medium">medium (500)</option>
+        </select>
+      </label>
+
+      <label className="settings-row">
         <span className="settings-label">Bold text weight</span>
         <select
           className="dialog-input settings-select"
