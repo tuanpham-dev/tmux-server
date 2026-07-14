@@ -1302,6 +1302,9 @@ body.tab-dragging .split-content-host {
   height: 100%;
   outline: none;
   caret-color: transparent;
+  /* Touch gestures are handled by TerminalView (swipe-to-scroll); without
+     this, the browser claims them for page pan / pull-to-refresh first. */
+  touch-action: none;
 }
 
 /* Link hover tooltip — shows the link's target, which can differ from the

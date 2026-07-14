@@ -907,19 +907,19 @@ export default function Sidebar({
           <Icon name="gear" />
         </button>
         <button
-          className="icon-button"
-          title={`Hide sidebar${shortcutSuffix("sidebar.toggle")}`}
-          onClick={onCollapse}
-        >
-          <Icon name="layout-sidebar-left-off" />
-        </button>
-        <button
           className={`icon-button${panelVisible ? " active" : ""}`}
           title={`Toggle terminal panel${shortcutSuffix("panel.toggle")}`}
           aria-pressed={panelVisible}
           onClick={onTogglePanel}
         >
           <Icon name="layout-panel" />
+        </button>
+        <button
+          className="icon-button"
+          title={`Hide sidebar${shortcutSuffix("sidebar.toggle")}`}
+          onClick={onCollapse}
+        >
+          <Icon name="layout-sidebar-left-off" />
         </button>
       </div>
       {activeTabId === EXPLORER_TAB_ID ? (

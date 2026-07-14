@@ -1037,6 +1037,65 @@ export default function TerminalView({
         return true;
       });
 
+      // Touch swipes: ghostty-web 0.4.0's only touch handling is a canvas
+      // touchend that focuses the IME textarea — drags scroll nothing on
+      // mobile. Convert single-finger swipes into synthetic wheel events
+      // dispatched at the canvas: they funnel through the custom wheel
+      // handler above, so every policy there (SGR reports under tracking,
+      // nvim hscroll, ghostty's own fallback) applies to touch unchanged.
+      // Once a drag crosses the threshold the whole gesture is a scroll:
+      // touchmove is preventDefault()ed to stop browser pan/pull-to-refresh
+      // (belt-and-braces with the CSS touch-action: none), and the trailing
+      // touchend is swallowed in capture phase — before ghostty's canvas
+      // listener — so a scroll doesn't focus the textarea and pop the
+      // on-screen keyboard. Taps pass through untouched.
+      const TOUCH_SCROLL_THRESHOLD_PX = 8;
+      let touchLast: { x: number; y: number } | null = null;
+      let touchScrolling = false;
+      const onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length !== 1) {
+          touchLast = null;
+          return;
+        }
+        touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        touchScrolling = false;
+      };
+      const onTouchMove = (e: TouchEvent) => {
+        if (!touchLast || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const dx = touchLast.x - t.clientX;
+        const dy = touchLast.y - t.clientY;
+        if (!touchScrolling && Math.hypot(dx, dy) < TOUCH_SCROLL_THRESHOLD_PX) return;
+        touchScrolling = true;
+        e.preventDefault();
+        touchLast = { x: t.clientX, y: t.clientY };
+        // Dominant axis only: the wheel handler treats mixed deltas as
+        // vertical, which would swallow slightly-diagonal horizontal swipes.
+        const [deltaX, deltaY] = Math.abs(dx) > Math.abs(dy) ? [dx, 0] : [0, dy];
+        term.renderer?.getCanvas().dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaX,
+            deltaY,
+            clientX: t.clientX,
+            clientY: t.clientY,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      };
+      const onTouchEnd = (e: TouchEvent) => {
+        if (touchScrolling && e.cancelable) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        touchLast = null;
+        touchScrolling = false;
+      };
+      screen.addEventListener("touchstart", onTouchStart, { passive: true });
+      screen.addEventListener("touchmove", onTouchMove, { passive: false });
+      screen.addEventListener("touchend", onTouchEnd, true);
+      screen.addEventListener("touchcancel", onTouchEnd, true);
+
       // Focus in/out reports (mode 1004) — xterm sent these itself,
       // ghostty-web doesn't. focusin/focusout bubble from both focus
       // targets (the screen div via term.focus(), the hidden textarea via
@@ -1073,6 +1132,10 @@ export default function TerminalView({
           screen.removeEventListener(type, onCapture, true);
         }
         screen.removeEventListener("click", onClickCapture, true);
+        screen.removeEventListener("touchstart", onTouchStart);
+        screen.removeEventListener("touchmove", onTouchMove);
+        screen.removeEventListener("touchend", onTouchEnd, true);
+        screen.removeEventListener("touchcancel", onTouchEnd, true);
         screen.removeEventListener("compositionend", onCompositionEnd);
         screen.removeEventListener("beforeinput", onBeforeInput);
         screen.removeEventListener("focusin", onFocusIn);
