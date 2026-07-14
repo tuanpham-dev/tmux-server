@@ -24,7 +24,7 @@ export default function SearchBar({ query, onQueryChange, onNext, onPrev, onClos
     <div
       className="terminal-search-bar"
       onKeyDown={(e) => {
-        // Stop propagation so this never reaches xterm's own key handling or
+        // Stop propagation so this never reaches the terminal's own key handling or
         // App's global shortcuts (e.g. Ctrl+W) while the search box is
         // focused.
         e.stopPropagation();

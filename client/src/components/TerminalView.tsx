@@ -1,7 +1,4 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { FitAddon, Terminal, type ITheme } from "ghostty-web";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
@@ -10,8 +7,18 @@ import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings"
 import type { AppSettings } from "../settings";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
+import {
+  applyRendererOverrides,
+  parseHexColor,
+  type RendererShim,
+} from "../ghosttyShims";
+import {
+  cellFromPoint,
+  encodeSgrMouse,
+  focusReport,
+  WheelLineAccumulator,
+} from "../mouseReports";
 import { buildLinkProvider, isOpenGesture, openUrl } from "../terminalLinks";
-import { isMac } from "../utils/platform";
 
 type SearchAction = "start" | "next" | "prev" | "cancel";
 
@@ -32,7 +39,7 @@ interface Props {
   // Bumped by utils/fonts.ts whenever an extension-contributed font finishes
   // (or stops) loading — triggers a re-measure below, since a font that
   // arrives after settings.fontFamily was already applied needs a nudge
-  // xterm wouldn't otherwise give it (see that effect's comment).
+  // the terminal wouldn't otherwise give it (see that effect's comment).
   fontsVersion: number;
   // Resolved command-id → binding list map (keybindings.ts); the terminal.*
   // entries drive the custom key handler below, so rebinds apply live via a
@@ -68,8 +75,16 @@ export default function TerminalView({
   onOpenFileSecondary,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // ghostty-web's open() takes over the element it's given: contenteditable,
+  // role=textbox, a beforeinput preventDefault, and container-level key/paste
+  // listeners. Those must never wrap the SearchBar/TouchKeyBar/scroll-track
+  // (typing in the search box would be blocked by that beforeinput handler
+  // and simultaneously leak into the PTY via the key listeners), so the
+  // terminal gets this dedicated inner div and the widgets stay siblings.
+  const screenRef = useRef<HTMLDivElement>(null);
   const scrollTrackRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const rendererShimRef = useRef<RendererShim | null>(null);
   const refitRef = useRef<(() => void) | null>(null);
   const bindingsRef = useRef(bindings);
   bindingsRef.current = bindings;
@@ -99,7 +114,6 @@ export default function TerminalView({
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
   const initialSettings = useRef(settings);
-  const initialTheme = useRef(theme);
 
   // Scrollback search overlay. sendSearchRef is set inside the mount effect
   // below (where it has closure access to the live `ws`, which is replaced
@@ -173,14 +187,15 @@ export default function TerminalView({
 
   useEffect(() => {
     const container = containerRef.current!;
+    const screen = screenRef.current!;
     let disposed = false;
     let cleanup: (() => void) | null = null;
 
     // Defer setup one frame: StrictMode's dev double-mount disposes the first
-    // instance within the same tick, and xterm's constructor schedules internal
-    // timers that throw if the terminal is disposed before they run. The rAF is
-    // cancelled by that first cleanup, so only the surviving mount ever builds
-    // a terminal (and WS connection) at all.
+    // instance within the same tick, and building a terminal (plus a WS
+    // connection) only to dispose it in the same tick is wasted work either
+    // way. The rAF is cancelled by that first cleanup, so only the surviving
+    // mount ever builds a terminal (and WS connection) at all.
     const raf = requestAnimationFrame(() => {
       // Belt-and-braces alongside the cancelAnimationFrame in the effect's
       // destructor: a tab opened and closed within the same tick (seen live
@@ -189,133 +204,123 @@ export default function TerminalView({
       // terminal (and a WS) then would throw mid-setup and leak both.
       if (disposed) return;
       const term = new Terminal({
-        // Required by @xterm/addon-unicode11's terminal.unicode API below.
-        allowProposedApi: true,
         cursorBlink: initialSettings.current.cursorBlink,
         cursorStyle: initialSettings.current.cursorStyle,
         fontSize: initialSettings.current.fontSize,
         fontFamily: initialSettings.current.fontFamily,
-        fontWeightBold: initialSettings.current.fontWeightBold,
-        lineHeight: initialSettings.current.lineHeight,
-        letterSpacing: initialSettings.current.letterSpacing,
-        // Default (4.5) mirrors VS Code/code-server
-        // (terminal.integrated.minimumContrastRatio). Without it, e.g.
-        // lazygit's selected row keeps its original foreground colors on the
-        // blue selection background and becomes unreadable.
-        minimumContrastRatio: initialSettings.current.minimumContrastRatio,
-        // On Mac, xterm's SelectionService only force-starts local selection
-        // for Option+click/drag, ignoring Shift entirely (shouldForceSelection
-        // branches on Browser.isMac). The drag/Shift+drag swap below needs
-        // Option held on the synthetic drag-start event on Mac clients for
-        // force-selection to trigger at all.
-        macOptionClickForcesSelection: true,
-        theme: initialTheme.current,
+        // Full theme application (incl. the ANSI-16 palette baked into the
+        // WASM terminal config) only happens at construction — runtime theme
+        // swaps are unsupported by ghostty-web 0.4.0, so a theme change
+        // remounts this whole effect instead (see the [theme] dep below).
+        theme,
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
-      // xterm's default (Unicode 6) width table treats some emoji used in
-      // prompts (e.g. the sailboat "⛵" in this shell's prompt) as narrow,
-      // clipping half the glyph. Unicode 11 tables classify them correctly.
-      term.loadAddon(new Unicode11Addon());
-      term.unicode.activeVersion = "11";
 
-      // xterm 5.5.0's CoreBrowserService registers a `window` "resize"
-      // listener during open() but never removes it in dispose() — every
-      // terminal ever opened leaks its whole buffer/renderer graph via that
-      // listener's closure until the page reloads. Capture it here (this
-      // intercept is strictly synchronous around open(), nothing else runs
-      // in between) and remove it ourselves in cleanup below.
-      const leakedResizeListeners: [EventListenerOrEventListenerObject, boolean | AddEventListenerOptions | undefined][] = [];
-      const realAddEventListener = window.addEventListener;
-      window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
-        if (type === "resize") leakedResizeListeners.push([listener, options]);
-        return realAddEventListener.call(window, type, listener, options);
-      }) as typeof window.addEventListener;
-      term.open(container);
-      window.addEventListener = realAddEventListener;
+      // ghostty-web 0.4.0's SelectionManager registers an anonymous document
+      // "mousedown" listener (its mouseDownTarget tracker) during open() but
+      // never removes it in dispose() — every terminal ever opened would leak
+      // its renderer/WASM graph via that listener's closure until the page
+      // reloads. Capture it here (this intercept is strictly synchronous
+      // around open(), nothing else runs in between) and remove it ourselves
+      // in cleanup below.
+      const leakedMousedownListeners: [EventListenerOrEventListenerObject, boolean | AddEventListenerOptions | undefined][] = [];
+      const realAddEventListener = document.addEventListener;
+      document.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+        if (type === "mousedown") leakedMousedownListeners.push([listener, options]);
+        return realAddEventListener.call(document, type, listener, options);
+      }) as typeof document.addEventListener;
+      term.open(screen);
+      document.addEventListener = realAddEventListener;
       termRef.current = term;
 
+      // Display settings ghostty-web has no options for — lineHeight,
+      // letterSpacing, minimumContrastRatio — applied by shimming the
+      // renderer (ghosttyShims.ts). The shim re-measures immediately;
+      // resize the canvas to the current grid so the adjusted metrics are
+      // live before the first fit.
+      rendererShimRef.current = applyRendererOverrides(
+        term.renderer!,
+        {
+          lineHeight: initialSettings.current.lineHeight,
+          letterSpacing: initialSettings.current.letterSpacing,
+          minimumContrastRatio: initialSettings.current.minimumContrastRatio,
+        },
+        parseHexColor(theme.background),
+      );
+      // Bounce fontFamily to run ghostty's handleFontChange — the only
+      // public path that both resizes the canvas to the (now shimmed)
+      // metrics AND force-renders. A bare renderer.resize() clears the
+      // canvas without repainting (the dirty tracker still says clean).
+      const bounceFont = () => {
+        const family = term.options.fontFamily;
+        term.options.fontFamily = `${family} `;
+        term.options.fontFamily = family;
+      };
+      bounceFont();
+
+      if (import.meta.env.DEV) {
+        // Debug handles for devtools poking (e.g. term.getMode(1002) while
+        // QA-ing mouse forwarding, or shim overrides while QA-ing display
+        // settings) — point at the most recently mounted terminal; never
+        // present in production builds.
+        (window as unknown as { __term?: Terminal }).__term = term;
+        (window as unknown as { __termShim?: RendererShim }).__termShim =
+          rendererShimRef.current;
+      }
+
       // Ctrl+click (Cmd+click on Mac) links: URLs and local file paths
-      // detected by our own regex provider, plus explicit OSC 8 hyperlinks
-      // (`ls --hyperlink`, gcc, etc.) via xterm's built-in linkHandler.
-      // Activation is gated on the modifier inside each activate callback
-      // (xterm's own recommendation — Linkifier itself doesn't gate on it),
-      // and onCapture below additionally intercepts ctrl+mousedown while
-      // mouse-reporting is on so a ctrl+click never reaches tmux.
+      // detected by our own regex provider. Activation is gated on the
+      // modifier inside each activate callback, and onCapture below
+      // additionally intercepts ctrl+mousedown while mouse-reporting is on
+      // so a ctrl+click never reaches tmux. (OSC 8 hyperlinks are dropped:
+      // ghostty-web 0.4.0 stubs getHyperlinkUri() to null, so their target
+      // URIs are unreadable — revisit when upstream exposes the lookup.)
+      //
+      // ghostty-web's link hover callback is hover(isHovered: boolean) with
+      // no MouseEvent, so the tooltip is positioned from the last pointer
+      // position tracked by onCapture's mousemove below.
+      const lastMouse = { x: 0, y: 0 };
       const hoverTooltip = document.createElement("div");
-      hoverTooltip.className = "xterm-hover terminal-link-tooltip";
+      hoverTooltip.className = "terminal-link-tooltip";
       term.element?.appendChild(hoverTooltip);
-      const showTooltip = (event: MouseEvent, text: string) => {
+      const showTooltip = (text: string) => {
         const hostRect = term.element?.getBoundingClientRect();
         if (!hostRect) return;
         hoverTooltip.textContent = text;
-        hoverTooltip.style.left = `${event.clientX - hostRect.left + 12}px`;
-        hoverTooltip.style.top = `${event.clientY - hostRect.top + 16}px`;
+        hoverTooltip.style.left = `${lastMouse.x - hostRect.left + 12}px`;
+        hoverTooltip.style.top = `${lastMouse.y - hostRect.top + 16}px`;
         hoverTooltip.style.display = "block";
       };
       const hideTooltip = () => {
         hoverTooltip.style.display = "none";
       };
 
-      // OSC 8's `text` is the link's real target URI, not the visible cell
-      // content (confirmed against xterm's OscLinkProvider source — it
-      // looks the URI up by the cell's urlId rather than reading the
-      // rendered characters), so a file:// target routes through
-      // onOpenFile the same as a detected file-path link, and the hover
-      // tooltip shows the true destination even when the visible text
-      // doesn't match it (the guide's own rationale for showing it).
-      const activateOsc8 = (event: MouseEvent, text: string) => {
-        if (!isOpenGesture(event)) return;
-        try {
-          const url = new URL(text);
-          if (url.protocol === "file:") {
-            onOpenFileRef.current?.(decodeURIComponent(url.pathname));
-            return;
-          }
-        } catch {
-          // Not a parseable URL — fall through and let openUrl/window.open
-          // decide (e.g. mailto:, custom schemes some tools emit).
-        }
-        openUrl(text);
-      };
-      term.options.linkHandler = {
-        activate: activateOsc8,
-        hover: (event, text) => {
-          showTooltip(event, text);
-          linkActivateRef.current = (e) => activateOsc8(e, text);
-        },
-        leave: () => {
-          hideTooltip();
-          linkActivateRef.current = null;
-        },
-      };
+      // ghostty-web auto-registers its own OSC8LinkProvider (dead in 0.4.0:
+      // getHyperlinkUri() is stubbed to null) and UrlRegexProvider (no
+      // modifier gate, wins getLinkAt over later providers, bypasses the
+      // hover tooltip). Both would starve the app's provider, so clear the
+      // detector and register ours as the only one. Reaches into a private
+      // field — ghostty-web is pinned to exactly 0.4.0 partly for this.
+      (term as unknown as { linkDetector?: { providers: unknown[] } }).linkDetector?.providers.splice(0);
 
-      const linkProviderDisposable = term.registerLinkProvider(
+      term.registerLinkProvider(
         buildLinkProvider(term, {
           resolvePaths: (paths) => api.resolvePaths(attachNameRef.current, paths).then((r) => r.results),
           onOpenUrl: openUrl,
           onOpenFile: (path, line) => onOpenFileRef.current?.(path, line),
           onOpenFileSecondary: (path, line) => onOpenFileSecondaryRef.current?.(path, line),
           onHoverChange: (link) => {
-            linkActivateRef.current = link ? (e) => link.activate(e, link.text) : null;
+            if (link) {
+              showTooltip(link.text);
+              linkActivateRef.current = (e) => link.activate(e);
+            } else {
+              hideTooltip();
+              linkActivateRef.current = null;
+            }
           },
         }),
       );
-
-      // WebGL2 rendering is noticeably smoother on panes with heavy output;
-      // falls back to xterm's default (DOM) renderer if unsupported — no
-      // separate canvas addon is installed here — (no GPU/WebGL2 in the
-      // environment, an older browser) or if the context is lost later
-      // (e.g. a mobile browser reclaiming GPU memory in the background) —
-      // dispose is safe to call again from onExit below and a fresh
-      // Terminal mount just doesn't have WebGL loaded a second time.
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch {
-        // Unsupported — term already has its default renderer.
-      }
 
       // Mutable, not const: reconnect() replaces this on every attempt, and
       // every closure below reads it live rather than capturing one socket.
@@ -336,8 +341,9 @@ export default function TerminalView({
       };
       refitRef.current = refit;
 
-      // tmux keeps scrollback internally, so xterm never scrolls and its own
-      // scrollbar can't appear. Instead, after each output burst we ask tmux
+      // tmux keeps scrollback internally, so the terminal never scrolls
+      // locally and ghostty's own scrollbar stays dormant. Instead, after
+      // each output burst we ask tmux
       // for its copy-mode scroll state and drive an overlay thumb from it.
       // In-flight coalescing (not a fixed debounce) keeps this snappy: a
       // burst of "data" messages during continuous scrolling would otherwise
@@ -592,26 +598,25 @@ export default function TerminalView({
         }
       });
 
-      // attachCustomKeyEventHandler fires for keydown/keypress/keyup alike;
-      // without the type guard each combo below would fire up to 3x.
-      // Returning false stops xterm's own handling (e.g. sending a plain CR
-      // for Shift+Enter), but xterm's underlying textarea still gets the
-      // browser's default action unless we preventDefault it ourselves — for
-      // Enter that default is inserting a literal newline into the textarea,
-      // which xterm then reads and forwards as a second, unwanted Enter.
-      // Combos come from the rebindable keybindings map (via bindingsRef so
-      // a rebind applies without re-mounting the terminal).
+      // ghostty-web's custom key handler semantics are INVERTED from
+      // xterm.js: a truthy return means "handled — preventDefault and skip
+      // the terminal's own key encoding", falsy means "process normally".
+      // Handled combos below therefore return true. ghostty only consults
+      // this handler on keydown, but the type guard stays as cheap
+      // insurance against that changing. Combos come from the rebindable
+      // keybindings map (via bindingsRef so a rebind applies without
+      // re-mounting the terminal).
       term.attachCustomKeyEventHandler((e) => {
-        if (e.type !== "keydown") return true;
+        if (e.type !== "keydown") return false;
         const combo = serializeEvent(e);
-        if (!combo) return true;
+        if (!combo) return false;
         const b = bindingsRef.current;
         const get = getContextGetter(e);
         if (bindingMatches(b["terminal.copy"], combo, get)) {
           e.preventDefault();
           const selection = term.getSelection();
           if (selection) copyText(selection).catch((err) => onErrorRef.current(err));
-          return false;
+          return true;
         }
         if (bindingMatches(b["terminal.find"], combo, get)) {
           e.preventDefault();
@@ -620,84 +625,141 @@ export default function TerminalView({
           // can't see later renders' searchOpen value directly.
           if (searchOpenRef.current) handleSearchCloseRef.current();
           else setSearchOpen(true);
-          return false;
+          return true;
         }
         if (bindingMatches(b["terminal.newline"], combo, get)) {
           e.preventDefault();
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "input", data: "\n" }));
           }
-          return false;
+          return true;
         }
         if (bindingMatches(b["terminal.clear"], combo, get)) {
           e.preventDefault();
           term.clear();
-          return false;
+          return true;
         }
         if (bindingMatches(b["terminal.scrollToBottom"], combo, get)) {
           e.preventDefault();
           // tmux owns scrollback here (see the mount effect's comment above
-          // requestScrollState), not xterm's own buffer — term.scrollToBottom()
-          // would be a no-op. Exiting copy-mode via the same "cancel" the
-          // search overlay already uses on close is what actually returns
-          // the pane to its live tail.
+          // requestScrollState), not the terminal's own buffer —
+          // term.scrollToBottom() would be a no-op. Exiting copy-mode via
+          // the same "cancel" the search overlay already uses on close is
+          // what actually returns the pane to its live tail.
           sendSearchRef.current("cancel");
-          return false;
+          return true;
         }
-        return true;
+        return false;
       });
 
-      // tmux runs with mouse support on, so xterm forwards plain drags to
-      // tmux (tmux's own copy-mode selection) and reserves Shift+drag for
-      // local browser selection — that split is hardcoded in xterm's
-      // SelectionService with no option to flip it. Swap the two: Shift-held
-      // events reach tmux unmodified by clearing the shift bit in the
-      // capture phase (still true drag or click, tmux just never sees the
-      // S- modifier). Plain gestures need more care — xterm decides
-      // click-vs-selection at mousedown time, before movement is known, so a
-      // blind shift-bit flip on mousedown would force every plain click into
-      // local selection too (the caret in nvim would never move). Instead,
-      // swallow the plain mousedown and replay it once we've learned whether
-      // it became a drag, a click, or a held press. Only while the app is
-      // actually mouse-reporting; otherwise plain gestures already select
-      // locally and this would only get in the way. Deliberately leaves
-      // wheel events alone (Shift+wheel keeps meaning horizontal scroll,
-      // below).
-      // Marks events this handler itself created so they pass through
-      // unmodified instead of being reprocessed as a new gesture.
-      const syntheticEvents = new WeakSet<MouseEvent>();
+      // tmux runs with mouse on, and ghostty-web sends no mouse reports of
+      // its own (its SelectionManager only ever selects locally), so this
+      // layer encodes SGR reports itself (mouseReports.ts) and ships them
+      // over the attach socket — the same bytes a native terminal would
+      // write to tmux's tty. The app's gesture policy, unchanged from the
+      // xterm era: plain click = tmux click; long-press = tmux press with
+      // live motion; plain drag = LOCAL browser selection; Shift+gesture =
+      // forwarded to tmux with the shift bit stripped (Shift is this app's
+      // "force forward" modifier, not one tmux should see); middle/right =
+      // tmux press/release directly. Wheel is handled separately below
+      // (Shift+wheel keeps meaning horizontal scroll).
       const DRAG_THRESHOLD_PX = 4;
       const LONG_PRESS_MS = 500;
 
+      const tracking = () => term.getMode(1002) || term.getMode(1000) || term.getMode(1003);
+      const sendReport = (data: string) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "input", data }));
+        }
+      };
+      const cellOf = (e: { clientX: number; clientY: number }) => {
+        const renderer = term.renderer!;
+        return cellFromPoint(
+          e.clientX,
+          e.clientY,
+          renderer.getCanvas().getBoundingClientRect(),
+          renderer.charWidth,
+          renderer.charHeight,
+          term.cols,
+          term.rows,
+        );
+      };
+      // Shift deliberately absent: see the gesture-policy comment above.
+      const modsOf = (e: MouseEvent) => ({ alt: e.altKey, ctrl: e.ctrlKey });
+
       let pending: { startX: number; startY: number; source: MouseEvent } | null = null;
       let longPressTimer: number | undefined;
+      // Button currently held-and-reported to tmux (long-press or
+      // shift/middle/right press). While set, the document-level listeners
+      // below stream motion reports and the terminating release — document-
+      // level so a release outside the terminal still ends the gesture.
+      let heldButton: 0 | 1 | 2 | null = null;
+      let lastMotionCell = { col: 0, row: 0 };
 
-      const replay = (
-        type: "mousedown" | "mouseup",
-        source: MouseEvent,
-        shiftKey: boolean,
-        altKey: boolean,
-      ) => {
-        const el = term.element;
-        if (!el) return;
-        const synthetic = new MouseEvent(type, {
+      const onHeldMove = (e: MouseEvent) => {
+        if (heldButton === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // Button-event tracking (1002) / any-event (1003) report motion;
+        // plain 1000 reports only press/release. Coalesce to one report per
+        // cell crossed — pixel-granular mousemove floods add nothing.
+        if (!term.getMode(1002) && !term.getMode(1003)) return;
+        const { col, row } = cellOf(e);
+        if (col === lastMotionCell.col && row === lastMotionCell.row) return;
+        lastMotionCell = { col, row };
+        sendReport(encodeSgrMouse("motion", heldButton, col, row, modsOf(e)));
+      };
+      const onHeldUp = (e: MouseEvent) => {
+        if (heldButton === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        lastMotionCell = cellOf(e);
+        endHeld();
+      };
+      const beginHeld = (button: 0 | 1 | 2, source: MouseEvent) => {
+        heldButton = button;
+        const { col, row } = cellOf(source);
+        lastMotionCell = { col, row };
+        sendReport(encodeSgrMouse("press", button, col, row, modsOf(source)));
+        document.addEventListener("mousemove", onHeldMove, true);
+        document.addEventListener("mouseup", onHeldUp, true);
+      };
+      // Always reports the release (at the last known cell) — a press must
+      // never be left dangling in tmux, even when the gesture ends
+      // abnormally (a new press superseding it, or unmount mid-drag).
+      function endHeld() {
+        if (heldButton === null) return;
+        sendReport(encodeSgrMouse("release", heldButton, lastMotionCell.col, lastMotionCell.row));
+        heldButton = null;
+        document.removeEventListener("mousemove", onHeldMove, true);
+        document.removeEventListener("mouseup", onHeldUp, true);
+      }
+
+      // The one synthetic event left (down from the xterm era's
+      // press/release replay pairs): a threshold-crossed plain drag starts
+      // ghostty's local selection by re-dispatching the swallowed mousedown
+      // on the canvas at the original press point — SelectionManager's
+      // listeners don't gate on isTrusted — after which the real mousemove
+      // stream extends the selection natively (and its mouseup handler
+      // finalizes + copies it). The WeakSet marks it so onCapture below
+      // passes it through instead of re-swallowing: dispatching on the
+      // canvas still capture-descends through the screen div.
+      const syntheticSelectStarts = new WeakSet<MouseEvent>();
+      const startLocalSelection = (source: MouseEvent) => {
+        const canvas = term.renderer?.getCanvas();
+        if (!canvas) return;
+        const synthetic = new MouseEvent("mousedown", {
           bubbles: true,
           cancelable: true,
           view: window,
           detail: source.detail,
-          screenX: source.screenX,
-          screenY: source.screenY,
           clientX: source.clientX,
           clientY: source.clientY,
-          button: source.button,
-          buttons: type === "mouseup" ? 0 : source.buttons,
-          shiftKey,
-          altKey,
-          ctrlKey: source.ctrlKey,
-          metaKey: source.metaKey,
+          button: 0,
+          buttons: 1,
         });
-        syntheticEvents.add(synthetic);
-        el.dispatchEvent(synthetic);
+        syntheticSelectStarts.add(synthetic);
+        canvas.dispatchEvent(synthetic);
       };
 
       const onPendingMove = (e: MouseEvent) => {
@@ -707,22 +769,26 @@ export default function TerminalView({
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
         const source = pending.source;
         endPending();
-        // Drag: force local selection to start at the original press point;
-        // the ongoing real moves (now unintercepted) extend it live.
-        replay("mousedown", source, true, isMac);
+        // Drag: hand the gesture to ghostty's local selection, anchored at
+        // the original press point; the ongoing real moves extend it live.
+        startLocalSelection(source);
       };
 
-      const onPendingUp = () => {
+      const onPendingUp = (e: MouseEvent) => {
         if (!pending) return;
         const source = pending.source;
         endPending();
-        // Click: clear any leftover highlight from a prior local drag (a
-        // forced-selection mousedown never runs _handleSingleClick, so a
-        // plain click wouldn't otherwise clear stale selection state), then
-        // replay press+release unshifted so tmux gets a normal click report.
+        e.preventDefault();
+        e.stopPropagation();
+        // Click: clear any leftover highlight from a prior local drag (the
+        // swallowed mousedown never reached SelectionManager, so it had no
+        // chance to clear stale selection itself), then report press+release
+        // at the press cell so tmux gets a normal click.
         term.clearSelection();
-        replay("mousedown", source, false, false);
-        replay("mouseup", source, false, false);
+        const { col, row } = cellOf(source);
+        const mods = modsOf(source);
+        sendReport(encodeSgrMouse("press", 0, col, row, mods));
+        sendReport(encodeSgrMouse("release", 0, col, row, mods));
       };
 
       function endPending() {
@@ -734,16 +800,22 @@ export default function TerminalView({
       }
 
       const onCapture = (e: MouseEvent) => {
-        if (syntheticEvents.has(e)) return;
-        if (term.modes.mouseTrackingMode === "none") return;
+        if (syntheticSelectStarts.has(e)) return;
+        if (e.type === "mousemove") {
+          // Tracked unconditionally (before any bail-out below): the link
+          // hover tooltip has no MouseEvent of its own to position from.
+          lastMouse.x = e.clientX;
+          lastMouse.y = e.clientY;
+        }
 
         // Ctrl+click / Ctrl+Shift+click (Cmd equivalents on mac) on a
         // hovered link: swallow the whole press-to-release gesture so
-        // nothing reaches tmux (a replayed ctrl+click would e.g. re-trigger
-        // nvim's own <C-LeftMouse> tag-jump binding), and activate the link
-        // directly on release. Checked before the shift-swap branch below
-        // so Ctrl+Shift+click lands here rather than being shift-un-modified
-        // and falling through to a plain-tmux-click replay.
+        // nothing reaches tmux or ghostty (a forwarded ctrl+click would
+        // e.g. re-trigger nvim's own <C-LeftMouse> tag-jump binding), and
+        // activate the link directly on release. Deliberately ahead of the
+        // tracking() check: ghostty's own unmodified-click activation is
+        // suppressed wholesale (see onClickCapture below), making this the
+        // only activation path whether or not tmux is mouse-reporting.
         if (linkPressArmedRef.current) {
           if (e.type === "mouseup" || e.type === "mousemove") {
             e.preventDefault();
@@ -766,17 +838,32 @@ export default function TerminalView({
           return;
         }
 
-        if (e.shiftKey) {
-          Object.defineProperty(e, "shiftKey", { get: () => false });
+        // Without mouse tracking, plain gestures fall through to ghostty's
+        // own local selection — nothing to forward.
+        if (!tracking()) return;
+        // Moves/releases of in-flight gestures are handled by the document-
+        // level pending/held listeners registered on press.
+        if (e.type !== "mousedown") return;
+        if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+        const button = e.button as 0 | 1 | 2;
+
+        endPending();
+        endHeld();
+        e.preventDefault();
+        e.stopPropagation();
+        // The swallowed mousedown would normally be what focuses ghostty's
+        // hidden textarea (its canvas listener) — do it ourselves.
+        term.textarea?.focus();
+
+        if (button !== 0 || e.shiftKey) {
+          // Middle/right press, or Shift-forced forward: report the press
+          // immediately; the held listeners stream motion + release.
+          beginHeld(button, e);
           return;
         }
 
-        if (e.button !== 0 || e.type !== "mousedown") return;
-
-        e.preventDefault();
-        e.stopPropagation();
-        term.focus();
-        endPending();
+        // Plain left press: click, drag, or long-press — unknown until
+        // movement (or its absence) tells. Swallow and decide.
         pending = { startX: e.clientX, startY: e.clientY, source: e };
         document.addEventListener("mousemove", onPendingMove, true);
         document.addEventListener("mouseup", onPendingUp, true);
@@ -784,23 +871,31 @@ export default function TerminalView({
           if (!pending) return;
           const source = pending.source;
           endPending();
-          // Held without moving: start a real press in tmux now; the
-          // ongoing real moves/release (now unintercepted) report live.
-          replay("mousedown", source, false, false);
+          // Held without moving: start a real tmux press now; the held
+          // listeners stream the rest live.
+          beginHeld(0, source);
         }, LONG_PRESS_MS);
       };
       const capturedMouseEvents = ["mousedown", "mousemove", "mouseup"] as const;
       for (const type of capturedMouseEvents) {
-        container.addEventListener(type, onCapture, true);
+        screen.addEventListener(type, onCapture, true);
       }
 
-      // xterm.js ignores Shift+wheel outright (and never emits horizontal
-      // mouse reports at all), and tmux has no concept of horizontal wheel
-      // either — it maps any wheel button other than "up" to WheelDown,
-      // so forwarding one through the PTY would scroll vertically instead.
-      // Bypass both: detect the gesture here and ask the server to deliver
-      // <ScrollWheelLeft>/<ScrollWheelRight> straight to nvim over RPC,
-      // which handles the actual scrolling itself.
+      // ghostty-web's own click handler activates any link under the cursor
+      // with no modifier gate (and would double-activate after our armed
+      // path already ran). All link activation goes through the armed
+      // press/release path above instead, so clicks never reach ghostty.
+      const onClickCapture = (e: MouseEvent) => {
+        e.stopPropagation();
+      };
+      screen.addEventListener("click", onClickCapture, true);
+
+      // Horizontal scroll: tmux has no concept of horizontal wheel — it
+      // maps any wheel button other than "up" to WheelDown, so forwarding
+      // one through the PTY would scroll vertically instead. Detect the
+      // gesture here and ask the server to deliver <ScrollWheelLeft>/
+      // <ScrollWheelRight> straight to nvim over RPC, which handles the
+      // actual scrolling itself.
       const HSCROLL_PX_PER_TICK = 50;
       let hScrollPx = 0;
       let hScrollCol = 0;
@@ -817,28 +912,74 @@ export default function TerminalView({
           );
         }
       };
+      // NOTE ghostty-web's custom wheel handler semantics are INVERTED from
+      // xterm.js, same as the key handler above: truthy = "handled, stop".
+      // attachCustomWheelEventHandler SETS the one handler (it doesn't
+      // stack), so horizontal and vertical handling share this callback.
+      const wheelAcc = new WheelLineAccumulator();
       term.attachCustomWheelEventHandler((e) => {
-        // Diagonal trackpad motion (both deltas nonzero, no shift) falls
-        // through unchanged so vertical scrolling keeps working normally.
+        // Diagonal trackpad motion (both deltas nonzero, no shift) counts
+        // as vertical so ordinary scrolling keeps working normally.
         const horizontal = e.shiftKey ? e.deltaY : e.deltaY === 0 ? e.deltaX : 0;
-        if (horizontal === 0) return true;
-        const rect = container.getBoundingClientRect();
-        hScrollCol = Math.min(
-          term.cols - 1,
-          Math.max(0, Math.floor(((e.clientX - rect.left) / rect.width) * term.cols)),
-        );
-        hScrollRow = Math.min(
-          term.rows - 1,
-          Math.max(0, Math.floor(((e.clientY - rect.top) / rect.height) * term.rows)),
-        );
-        hScrollPx += horizontal;
-        if (!hScrollRafPending) {
-          hScrollRafPending = true;
-          requestAnimationFrame(flushHScroll);
+        if (horizontal !== 0) {
+          const rect = container.getBoundingClientRect();
+          hScrollCol = Math.min(
+            term.cols - 1,
+            Math.max(0, Math.floor(((e.clientX - rect.left) / rect.width) * term.cols)),
+          );
+          hScrollRow = Math.min(
+            term.rows - 1,
+            Math.max(0, Math.floor(((e.clientY - rect.top) / rect.height) * term.rows)),
+          );
+          hScrollPx += horizontal;
+          if (!hScrollRafPending) {
+            hScrollRafPending = true;
+            requestAnimationFrame(flushHScroll);
+          }
+          e.preventDefault();
+          return true;
+        }
+
+        // Vertical wheel while tmux is mouse-reporting: one SGR wheel
+        // report per DOM event, gated by xterm.js's line-accumulation math
+        // (ported in WheelLineAccumulator) so sub-line trackpad deltas
+        // accumulate until a full line's worth arrived instead of each
+        // micro-event firing a report — exactly xterm 5.5's behavior in
+        // tracking mode. Without tracking, fall through (return false):
+        // ghostty's own wheel path already sends arrow keys in the
+        // alternate screen.
+        if (!tracking()) return false;
+        const renderer = term.renderer;
+        if (!renderer) return false;
+        const lines = wheelAcc.linesFor(e, renderer.charHeight, term.rows);
+        if (lines !== 0) {
+          const { col, row } = cellOf(e);
+          sendReport(
+            encodeSgrMouse(lines < 0 ? "wheelUp" : "wheelDown", 0, col, row, {
+              alt: e.altKey,
+              ctrl: e.ctrlKey,
+            }),
+          );
         }
         e.preventDefault();
-        return false;
+        return true;
       });
+
+      // Focus in/out reports (mode 1004) — xterm sent these itself,
+      // ghostty-web doesn't. focusin/focusout bubble from both focus
+      // targets (the screen div via term.focus(), the hidden textarea via
+      // presses); transitions between the two stay inside `screen` and are
+      // filtered out via relatedTarget.
+      const onFocusIn = (e: FocusEvent) => {
+        if (e.relatedTarget instanceof Node && screen.contains(e.relatedTarget)) return;
+        if (term.getMode(1004)) sendReport(focusReport(true));
+      };
+      const onFocusOut = (e: FocusEvent) => {
+        if (e.relatedTarget instanceof Node && screen.contains(e.relatedTarget)) return;
+        if (term.getMode(1004)) sendReport(focusReport(false));
+      };
+      screen.addEventListener("focusin", onFocusIn);
+      screen.addEventListener("focusout", onFocusOut);
 
       // Fires when the tab becomes visible again (display:none → block) and on
       // window resizes, so hidden terminals refit as soon as they can measure.
@@ -852,20 +993,24 @@ export default function TerminalView({
         clearTimeout(queryThrottleTimer);
         onDragEnd();
         endPending();
+        endHeld();
         for (const type of capturedMouseEvents) {
-          container.removeEventListener(type, onCapture, true);
+          screen.removeEventListener(type, onCapture, true);
         }
+        screen.removeEventListener("click", onClickCapture, true);
+        screen.removeEventListener("focusin", onFocusIn);
+        screen.removeEventListener("focusout", onFocusOut);
         observer.disconnect();
         dataSub.dispose();
-        linkProviderDisposable.dispose();
         hoverTooltip.remove();
         ws.onclose = null;
         ws.close();
         term.dispose();
-        for (const [listener, options] of leakedResizeListeners) {
-          window.removeEventListener("resize", listener, options);
+        for (const [listener, options] of leakedMousedownListeners) {
+          document.removeEventListener("mousedown", listener, options);
         }
         termRef.current = null;
+        rendererShimRef.current = null;
         refitRef.current = null;
       };
     });
@@ -875,38 +1020,52 @@ export default function TerminalView({
       cancelAnimationFrame(raf);
       cleanup?.();
     };
+    // Theme is deliberately a dependency: ghostty-web can't re-theme a live
+    // terminal (the ANSI palette is baked into its WASM config at
+    // construction), so a theme switch tears the whole terminal + WS down
+    // and rebuilds — tmux redraws the content on reattach. Theme identity is
+    // stable (useThemeAssets), so this only fires on a real theme change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [theme]);
 
-  // Apply settings changes to the live terminal without reconnecting. All of
-  // these hot-apply: xterm's RenderService subscribes to each (including
-  // lineHeight/letterSpacing/minimumContrastRatio) and does a full clear +
-  // re-measure + refresh on change.
+  // Apply settings changes to the live terminal without reconnecting.
+  // ghostty-web's options object is a Proxy whose set-trap routes these
+  // four through handleOptionChange (fontSize/fontFamily additionally
+  // re-measure + resize the canvas); the shimmed metrics/contrast settings
+  // hot-apply through the renderer shim, which re-measures — the explicit
+  // renderer.resize repaints the canvas at the new metrics even when the
+  // subsequent refit lands on unchanged cols/rows. (fontWeightBold has no
+  // terminal-side hook at all: utils/fonts.ts re-registers the font faces
+  // and the fontsVersion effect below forces the re-measure.)
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.options.fontFamily = settings.fontFamily;
     term.options.fontSize = settings.fontSize;
-    term.options.fontWeightBold = settings.fontWeightBold;
     term.options.cursorStyle = settings.cursorStyle;
     term.options.cursorBlink = settings.cursorBlink;
-    term.options.lineHeight = settings.lineHeight;
-    term.options.letterSpacing = settings.letterSpacing;
-    term.options.minimumContrastRatio = settings.minimumContrastRatio;
+    rendererShimRef.current?.setOverrides({
+      lineHeight: settings.lineHeight,
+      letterSpacing: settings.letterSpacing,
+      minimumContrastRatio: settings.minimumContrastRatio,
+    });
+    // Same rationale as the mount-time bounce: handleFontChange is the one
+    // public path that re-sizes AND force-renders with the shimmed metrics —
+    // a shim-only change (e.g. contrast ratio) must repaint even though no
+    // terminal cell went dirty and the refit below may land on unchanged
+    // cols/rows.
+    const family = term.options.fontFamily;
+    term.options.fontFamily = `${family} `;
+    term.options.fontFamily = family;
     refitRef.current?.();
   }, [settings]);
 
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term) return;
-    term.options.theme = theme;
-  }, [theme]);
-
   // A newly-loaded extension font needs a re-measure even though
   // options.fontFamily was already set to its name (while the face was still
-  // loading, so glyphs rendered in whatever fallback matched first) — xterm
-  // only re-measures on an actual option *change*, so reassigning the same
-  // string is a no-op. Bounce through a distinct value to force it.
+  // loading, so glyphs rendered in whatever fallback matched first) —
+  // ghostty's option Proxy only reacts to an actual value *change*, so
+  // reassigning the same string is a no-op. Bounce through a distinct value
+  // to force it.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -928,6 +1087,7 @@ export default function TerminalView({
       ref={containerRef}
       className={`terminal-host${visible ? "" : " hidden"}`}
     >
+      <div ref={screenRef} className="terminal-screen" />
       {searchOpen && (
         <SearchBar
           query={searchQuery}

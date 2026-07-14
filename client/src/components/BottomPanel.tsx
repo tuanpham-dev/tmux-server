@@ -1,4 +1,4 @@
-import type { ITheme } from "@xterm/xterm";
+import type { ITheme } from "ghostty-web";
 import { useRef } from "react";
 import type { Keybinding } from "../keybindings";
 import type { AppSettings } from "../settings";

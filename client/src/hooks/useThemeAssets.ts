@@ -18,7 +18,7 @@ import { resolveIconThemeValue, setActiveIconTheme } from "../utils/iconThemes";
 // Extensions list + reload, color/icon theme resolution+application, extension
 // fonts, and the terminal-metrics CSS vars — everything that resolves
 // settings + the installed-extensions list into applied visual assets on
-// <html>/xterm. Takes the live `settings` object and the extensionSettings
+// <html>/the terminal. Takes the live `settings` object and the extensionSettings
 // state (+ its ref, for reloadExtensions' pre-activation push) from
 // useSettingsSync, since asset resolution depends on both.
 export function useThemeAssets(
@@ -103,18 +103,21 @@ export function useThemeAssets(
   // fontsVersion is handed to every TerminalView so it can force a re-
   // measure once a face it's configured to use actually finishes loading.
   useEffect(() => {
-    applyExtensionFonts(extensions, settings.fontFamily).catch(() => {});
-  }, [settings.fontFamily, extensions]);
+    applyExtensionFonts(
+      extensions,
+      settings.fontFamily,
+      settings.fontWeightBold === "normal",
+    ).catch(() => {});
+  }, [settings.fontFamily, settings.fontWeightBold, extensions]);
   const fontsVersion = useExtensionFontsVersion();
 
   // Non-terminal UI elements that want "whatever monospace metrics the user
   // actually configured for the terminal" (styles.css's .terminal-link-
   // tooltip; git-scm's diff viewer) read these vars instead of hard-coding
   // their own — keeps them in sync with the Settings pickers without
-  // needing their own settings plumbing. Units are baked in here (xterm's
-  // own fontSize/letterSpacing options are plain pixel numbers, lineHeight
-  // a unitless multiplier — same as CSS's own line-height) so a consumer
-  // never has to guess.
+  // needing their own settings plumbing. Units are baked in here (fontSize/
+  // letterSpacing are plain pixel numbers, lineHeight a unitless multiplier
+  // — same as CSS's own line-height) so a consumer never has to guess.
   useEffect(() => {
     const root = document.documentElement.style;
     root.setProperty("--terminal-font", settings.fontFamily);

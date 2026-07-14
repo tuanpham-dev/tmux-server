@@ -129,7 +129,7 @@ export function useBottomPanel(
 ) {
   const [panel, setPanel] = useState<PanelState>(loadPanelState);
   // Which of the app's two terminal surfaces owns keyboard focus. The panel
-  // and the editor groups both render xterm instances that grab focus when
+  // and the editor groups both render terminal instances that grab focus when
   // `focused` is true, so exactly one side may claim it at a time — App ANDs
   // !panelFocused into every editor terminal's own focused prop.
   const [panelFocused, setPanelFocused] = useState(false);

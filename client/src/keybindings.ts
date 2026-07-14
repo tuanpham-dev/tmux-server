@@ -18,7 +18,7 @@ export interface Command {
   id: string;
   label: string;
   defaultBindings: Keybinding[];
-  // Terminal-scoped commands are dispatched from xterm's own key handler in
+  // Terminal-scoped commands are dispatched from the terminal's own key handler in
   // TerminalView, not the global window dispatcher.
   scope: "global" | "terminal";
   // When-expression gating this command's *palette row* (not its keybinding

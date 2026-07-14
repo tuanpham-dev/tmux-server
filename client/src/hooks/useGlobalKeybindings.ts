@@ -22,12 +22,12 @@ const TERMINAL_COMMAND_IDS = COMMANDS.filter((c) => c.scope === "terminal").map(
 // rebindable keybindings map (keybindings.ts). A matched combo gets
 // preventDefault + stopPropagation so it wins over both browser defaults
 // (Ctrl+P print; Ctrl+Tab/Ctrl+W are overridable only in the installed
-// PWA) and xterm's own key handling — Ctrl+Tab reaching tmux would feed it
-// a literal Tab, Ctrl+W would send ^W to the shell. The terminal.* combos
-// are dispatched inside TerminalView's xterm handler instead — the
-// terminal-yield check below bails out for them, xterm does its own
-// preventDefault + the actual copy. Whatever combo terminal.copy is bound
-// to (key only, ignoring `when`) additionally gets a window-level
+// PWA) and the terminal's own key handling — Ctrl+Tab reaching tmux would
+// feed it a literal Tab, Ctrl+W would send ^W to the shell. The terminal.*
+// combos are dispatched inside TerminalView's custom key handler instead —
+// the terminal-yield check below bails out for them, and that handler does
+// its own preventDefault + the actual copy. Whatever combo terminal.copy is
+// bound to (key only, ignoring `when`) additionally gets a window-level
 // preventDefault when no command claims it, to suppress Chrome/Firefox's
 // Ctrl+Shift+C "inspect element" default outside a terminal too — but only
 // while that combo is unclaimed; a user who rebinds it to another command
@@ -64,8 +64,8 @@ export function useGlobalKeybindings(
       // share a chord with a terminal-scoped one (e.g. Ctrl+Shift+F is both
       // Search-focus and terminal.find) — when the keystroke originates
       // inside a focused terminal, the terminal command wins: bail here
-      // (no preventDefault/stopPropagation) so the event reaches xterm's own
-      // attachCustomKeyEventHandler (TerminalView.tsx) exactly as if this
+      // (no preventDefault/stopPropagation) so the event reaches the terminal's
+      // own attachCustomKeyEventHandler (TerminalView.tsx) exactly as if this
       // dispatcher didn't exist.
       const target = e.target as HTMLElement | null;
       if (
@@ -95,7 +95,7 @@ export function useGlobalKeybindings(
       }
       // Nothing claimed this combo — if it's assigned to terminal.copy
       // (key only, ignoring `when`: we're not inside a terminal here, the
-      // yield check above already sent that case to xterm), suppress the
+      // yield check above already sent that case to the terminal), suppress the
       // browser's inspect-element default so it doesn't resurface just
       // because no terminal happens to be focused right now.
       if (bindings["terminal.copy"]?.some((b) => b.key === combo)) {

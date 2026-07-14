@@ -4,15 +4,23 @@ import type { PinnedSession } from "./types";
 export interface AppSettings {
   fontFamily: string;
   fontSize: number;
+  // ghostty-web has no fontWeightBold option; "normal" is implemented by
+  // registering the regular font face across all weights so the renderer's
+  // "bold …" canvas font lookups resolve to regular glyphs (utils/fonts.ts).
+  // Only covers extension-loaded fonts — system fonts in the stack keep
+  // their real bold.
   fontWeightBold: "normal" | "bold";
   cursorStyle: "block" | "bar" | "underline";
   cursorBlink: boolean;
-  // xterm line height multiplier / letter spacing in px.
+  // Line height multiplier / letter spacing in px. ghostty-web has no such
+  // options; both are applied by adjusting the renderer's measured cell
+  // metrics (ghosttyShims.ts).
   lineHeight: number;
   letterSpacing: number;
   // 1 disables it; 4.5 is the VS Code/code-server default (WCAG AA) —
   // without it, e.g. lazygit's selected row keeps its original foreground
   // colors on the blue selection background and becomes unreadable.
+  // Implemented in ghosttyShims.ts (ghostty-web has no equivalent).
   minimumContrastRatio: number;
   uploadConflict: "rename" | "overwrite" | "ask";
   // "auto" shows the on-screen key bar only on coarse-pointer devices
@@ -57,7 +65,7 @@ export interface AppSettings {
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
-// terminal.integrated.fontSize, terminal.integrated.fontWeightBold). IBM
+// terminal.integrated.fontSize). IBM
 // Plex Mono, Plastic Legacy, and Seti are bundled extensions (see
 // extensions/ibm-plex-mono, plastic-legacy-theme, seti-icons) rather than
 // built into the client bundle — selected-only asset loading applies to all

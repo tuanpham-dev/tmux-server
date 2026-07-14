@@ -9,7 +9,7 @@ interface Props {
 // itself (Esc, Tab, arrows, Ctrl+C) plus a sticky Ctrl that applies to the
 // next character typed, since holding Ctrl isn't possible with an on-screen
 // keyboard. onPointerDown (not onClick) + preventDefault so tapping a button
-// never steals focus from xterm's hidden textarea — losing it would dismiss
+// never steals focus from the terminal's hidden textarea — losing it would dismiss
 // the on-screen keyboard.
 export default function TouchKeyBar({ visible, stickyCtrl, onToggleStickyCtrl, onSendInput }: Props) {
   if (!visible) return null;

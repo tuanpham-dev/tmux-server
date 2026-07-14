@@ -6,7 +6,7 @@ import App from "./App";
 import AuthGate from "./components/AuthGate";
 import "@vscode/codicons/dist/codicon.css";
 import "./styles.css";
-import "@xterm/xterm/css/xterm.css";
+import { init as initGhostty } from "ghostty-web";
 import { registerSW } from "virtual:pwa-register";
 import * as ReactNS from "react";
 
@@ -34,10 +34,15 @@ window.__tmuxServerModules = {
 
 registerSW({ immediate: true });
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <AuthGate>
-      <App />
-    </AuthGate>
-  </StrictMode>,
-);
+// ghostty-web's terminal core is WASM; init() compiles/instantiates the
+// (bundle-inlined) module once, shared by every Terminal instance. Gating
+// the whole render on it keeps TerminalView free of per-mount await logic.
+initGhostty().then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <AuthGate>
+        <App />
+      </AuthGate>
+    </StrictMode>,
+  );
+});

@@ -1,4 +1,4 @@
-import type { ILink, ILinkProvider, Terminal } from "@xterm/xterm";
+import type { ILink, ILinkProvider, Terminal } from "ghostty-web";
 
 // Prefixed forms (/abs, ~/, ./, ../) are unambiguous — greedily consume
 // everything up to whitespace/quote/bracket. ":" is excluded from the class
@@ -75,9 +75,9 @@ function trimTrailing(s: string): string {
 // etc.) shouldn't make every hover walk thousands of rows.
 const MAX_STITCH_LINES = 500;
 
-// xterm calls provideLinks once per hovered *row*, but a long line can wrap
-// across several rows and a path/URL can span the wrap boundary. Walk to the
-// start of the logical line, then concatenate every wrapped row's full
+// ghostty-web calls provideLinks once per hovered *row*, but a long line can
+// wrap across several rows and a path/URL can span the wrap boundary. Walk to
+// the start of the logical line, then concatenate every wrapped row's full
 // (unwrapped-width) text so buffer-index math stays a fixed `cols`-wide
 // stride per row.
 function stitchLine(term: Terminal, y: number): { text: string; startLine: number } | null {
@@ -101,10 +101,19 @@ function stitchLine(term: Terminal, y: number): { text: string; startLine: numbe
   return { text: parts.join(""), startLine };
 }
 
-// 0-based buffer-index -> 1-based ILink buffer position, per xterm's
-// IBufferCellPosition contract.
-function indexToPosition(startLine: number, cols: number, idx: number): { x: number; y: number } {
-  return { y: startLine + Math.floor(idx / cols) + 1, x: (idx % cols) + 1 };
+// 0-based buffer-index -> 0-based ILink buffer position. Unlike xterm (whose
+// IBufferCellPosition contract is 1-based), ghostty-web's LinkDetector
+// compares range coordinates raw against the 0-based col/row it derives from
+// the pointer (isPositionInLink: start.y <= y <= end.y, start.x <= x <= end.x
+// inclusive), so no +1 conversion here. `rowOffset` shifts screen-relative
+// rows back into the caller's scrollback-offset space — see provideLinks.
+function indexToPosition(
+  startLine: number,
+  cols: number,
+  idx: number,
+  rowOffset: number,
+): { x: number; y: number } {
+  return { y: rowOffset + startLine + Math.floor(idx / cols), x: idx % cols };
 }
 
 export interface TerminalLinksHandlers {
@@ -128,8 +137,23 @@ export function openUrl(url: string): void {
 
 export function buildLinkProvider(term: Terminal, handlers: TerminalLinksHandlers): ILinkProvider {
   return {
-    provideLinks(bufferLineNumber, callback) {
-      const stitched = stitchLine(term, bufferLineNumber - 1);
+    // ghostty-web 0.4.0's hover/click paths pass `y` offset by the local
+    // scrollback length (handleClick: `w = scrollbackLen + viewportRow`),
+    // but IBuffer.getLine() indexes the visible screen from 0 — an upstream
+    // inconsistency (its own built-in providers mis-look-up the same way;
+    // verified empirically against a buffer with scrollback). Convert to a
+    // screen row here and emit ranges back in the caller's offset space so
+    // isPositionInLink's raw comparison matches. Rows inside scrollback
+    // history get no links — under tmux the local viewport never scrolls
+    // anyway (tmux owns scrollback).
+    provideLinks(y, callback) {
+      const rowOffset = term.getScrollbackLength();
+      const screenY = y - rowOffset;
+      if (screenY < 0 || screenY >= term.rows) {
+        callback(undefined);
+        return;
+      }
+      const stitched = stitchLine(term, screenY);
       if (!stitched) {
         callback(undefined);
         return;
@@ -159,18 +183,20 @@ export function buildLinkProvider(term: Terminal, handlers: TerminalLinksHandler
               if (!openTarget) continue; // not a real file — no link
             }
             const range = {
-              start: indexToPosition(startLine, term.cols, c.startIdx),
-              end: indexToPosition(startLine, term.cols, c.endIdx - 1),
+              start: indexToPosition(startLine, term.cols, c.startIdx, rowOffset),
+              end: indexToPosition(startLine, term.cols, c.endIdx - 1, rowOffset),
             };
             const kind = c.kind;
             const target = openTarget;
-            // `link` is referenced from within its own hover/leave closures
-            // below — safe because those only run later, once the object
-            // (and this const binding) is fully initialized.
+            // `link` is referenced from within its own hover closure below —
+            // safe because it only runs later, once the object (and this
+            // const binding) is fully initialized. ghostty-web has no
+            // decorations field (its renderer underlines the hovered range
+            // itself) and signals leave as hover(false) rather than a
+            // separate callback.
             const link: ILink = {
               range,
               text: c.text,
-              decorations: { underline: true, pointerCursor: true },
               activate(event) {
                 if (!isOpenGesture(event)) return;
                 if (kind === "url") {
@@ -185,8 +211,7 @@ export function buildLinkProvider(term: Terminal, handlers: TerminalLinksHandler
                   handlers.onOpenFile(target, line);
                 }
               },
-              hover: () => handlers.onHoverChange(link),
-              leave: () => handlers.onHoverChange(null),
+              hover: (isHovered) => handlers.onHoverChange(isHovered ? link : null),
             };
             links.push(link);
           }

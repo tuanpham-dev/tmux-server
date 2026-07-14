@@ -1271,16 +1271,22 @@ body.tab-dragging .split-content-host {
   display: none;
 }
 
-.terminal-host .xterm {
+/* The div handed to ghostty-web's term.open() — it appends its canvas and
+   hidden IME textarea here and makes the div itself focusable/editable-ish
+   (tabindex, contenteditable, role=textbox) for keyboard input. Kept as a
+   dedicated child of .terminal-host so the sibling widgets (search bar,
+   scrollbar, touch key bar) stay outside ghostty's key/paste listeners.
+   The focus outline and any contenteditable caret must not render over the
+   canvas. */
+.terminal-host .terminal-screen {
+  position: relative;
   height: 100%;
+  outline: none;
+  caret-color: transparent;
 }
 
-/* OSC 8 hyperlink hover tooltip — shows the real target URI, which can
-   differ from the visible cell text (e.g. `ls --hyperlink` shows just the
-   filename). The `xterm-hover` class is required, not just descriptive:
-   xterm's Linkifier explicitly skips hover-resolving links under any
-   element carrying it, so this tooltip can't fight the link detection it's
-   displaying info about. */
+/* Link hover tooltip — shows the link's target, which can differ from the
+   visible cell text (a resolved file path's :line suffix, a trimmed URL). */
 .terminal-link-tooltip {
   position: absolute;
   z-index: 30;
@@ -1300,7 +1306,7 @@ body.tab-dragging .split-content-host {
 }
 
 /* Overlay scrollbar mirroring tmux copy-mode scroll state (tmux keeps
-   scrollback internally, so xterm's own scrollbar never shows). Draggable,
+   scrollback internally, so the terminal's local scrollbar never shows). Draggable,
    like code-server's Monaco-based scrollbar. */
 .tmux-scrollbar {
   position: absolute;

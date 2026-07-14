@@ -772,7 +772,7 @@ export default function App() {
 
   // Palette entries mirror globalHandlers 1:1 for the built-in commands, plus
   // extension commands — terminal.* is excluded since those are dispatched
-  // from xterm's own key handler (see useGlobalKeybindings' module comment)
+  // from the terminal's own key handler (see useGlobalKeybindings' module comment)
   // and make no sense invoked from an overlay that has stolen focus.
   // quickSwitcher.selectNext/Previous are excluded for the same reason: they
   // only mean anything as a keypress while the switcher's own input owns
