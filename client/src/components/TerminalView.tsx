@@ -581,7 +581,7 @@ export default function TerminalView({
         else onTrackPointerDown(e);
       });
 
-      const dataSub = term.onData((data) => {
+      const forwardInput = (data: string) => {
         let toSend = data;
         // Sticky Ctrl from the touch key bar: converts the next single
         // letter typed into its control code (Ctrl+A..Z is ASCII & 0x1f for
@@ -597,7 +597,68 @@ export default function TerminalView({
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "input", data: toSend }));
         }
-      });
+      };
+      const dataSub = term.onData(forwardInput);
+
+      // Android soft-keyboard bridge. Mobile IMEs report almost every key
+      // as keydown keyCode 229 — which ghostty-web's InputHandler
+      // deliberately ignores — and deliver the actual text as a beforeinput
+      // on the focused editable (ghostty's hidden textarea, or the
+      // contenteditable screen div itself); both bubble through `screen`.
+      // 0.4.0 has no beforeinput handling at all (its only listener is the
+      // contenteditable's blanket preventDefault), so without this bridge
+      // every character typed on Android is silently dropped. Upstream
+      // added the equivalent handler after 0.4.0 (handleBeforeInput in
+      // lib/input-handler.ts on main); this mirrors its inputType mapping
+      // and its value+time de-dup of an insertText that echoes a
+      // just-committed composition (some keyboards fire both paths for the
+      // same text) — drop the bridge when a release ships it. Events during
+      // composition are skipped: ghostty already forwards the committed
+      // text on compositionend. Desktop typing can't double-send: every
+      // keydown InputHandler forwards is preventDefault()ed, so it never
+      // produces a beforeinput.
+      let lastCompositionData = "";
+      let lastCompositionTime = 0;
+      const onCompositionEnd = (e: CompositionEvent) => {
+        if (!e.data) return;
+        lastCompositionData = e.data;
+        lastCompositionTime = performance.now();
+      };
+      const onBeforeInput = (e: InputEvent) => {
+        if (e.isComposing) return;
+        let out: string | null;
+        switch (e.inputType) {
+          case "insertText":
+          case "insertReplacementText":
+            out = e.data ? e.data.replace(/\n/g, "\r") : null;
+            break;
+          case "insertLineBreak":
+          case "insertParagraph":
+            out = "\r";
+            break;
+          case "deleteContentBackward":
+            out = "\x7f";
+            break;
+          case "deleteContentForward":
+            out = "\x1b[3~";
+            break;
+          default:
+            return;
+        }
+        e.preventDefault();
+        if (out === null) return;
+        if (
+          e.data !== null &&
+          e.data === lastCompositionData &&
+          performance.now() - lastCompositionTime < 100
+        ) {
+          lastCompositionData = "";
+          return;
+        }
+        forwardInput(out);
+      };
+      screen.addEventListener("compositionend", onCompositionEnd);
+      screen.addEventListener("beforeinput", onBeforeInput);
 
       // ghostty-web's custom key handler semantics are INVERTED from
       // xterm.js: a truthy return means "handled — preventDefault and skip
@@ -999,6 +1060,8 @@ export default function TerminalView({
           screen.removeEventListener(type, onCapture, true);
         }
         screen.removeEventListener("click", onClickCapture, true);
+        screen.removeEventListener("compositionend", onCompositionEnd);
+        screen.removeEventListener("beforeinput", onBeforeInput);
         screen.removeEventListener("focusin", onFocusIn);
         screen.removeEventListener("focusout", onFocusOut);
         observer.disconnect();
