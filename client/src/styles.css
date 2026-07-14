@@ -109,13 +109,15 @@ body {
 
 .app {
   display: flex;
-  /* dvh, not vh: on mobile, 100vh is the URL-bar-hidden height, so the
-     bottom row (prompt, touch key bar) sits off-screen while the bar shows.
-     dvh tracks the actually-visible viewport; vh stays as fallback. With
-     the viewport meta's interactive-widget=resizes-content it also shrinks
-     when the on-screen keyboard opens, keeping the prompt visible. */
+  /* Sized from the actually-visible viewport, most reliable source first:
+     --app-height is set from the visualViewport API (App.tsx), which
+     tracks the on-screen keyboard and browser URL bar on every platform —
+     including installed PWAs, where the interactive-widget viewport meta
+     and dvh don't dependably shrink when the keyboard opens. dvh covers
+     the moment before the effect runs; vh is the legacy fallback. */
   height: 100vh;
   height: 100dvh;
+  height: var(--app-height, 100dvh);
 }
 
 /* ---- Sidebar ---- */

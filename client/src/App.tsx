@@ -167,6 +167,34 @@ export default function App() {
     sidebarVisibleRef.current = sidebarVisible;
   }, [sidebarVisible]);
 
+  // Keep the app exactly as tall as the visible viewport. dvh plus the
+  // interactive-widget meta should do this alone, but on Android they
+  // don't dependably shrink when the on-screen keyboard opens (notably in
+  // installed PWAs) — the app then paints taller than the screen: prompt
+  // and touch key bar behind the keyboard until something else forces a
+  // re-layout. visualViewport is authoritative everywhere, so mirror its
+  // height into --app-height (consumed by .app) and undo any pan the
+  // browser applied to reveal the focused field — this is a fixed layout
+  // that must stay pinned at 0,0. Skipped while pinch-zoomed: height
+  // changes then are the zoom, not the keyboard.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const apply = () => {
+      if (vv.scale !== 1) return;
+      document.documentElement.style.setProperty("--app-height", `${Math.round(vv.height)}px`);
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      document.documentElement.style.removeProperty("--app-height");
+    };
+  }, []);
+
   // A fast horizontal flick anywhere toggles the sidebar on touch devices
   // (where the sidebar.toggle keybinding isn't reachable): left→right
   // opens, right→left closes. Deliberately a passive observer — slower
