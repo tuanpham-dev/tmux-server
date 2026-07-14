@@ -1084,9 +1084,14 @@ export default function TerminalView({
         );
       };
       const onTouchEnd = (e: TouchEvent) => {
-        if (touchScrolling && e.cancelable) {
-          e.preventDefault();
+        if (touchScrolling) {
+          // stopPropagation unconditionally — a post-scroll touchend is
+          // often not cancelable, but it still must not reach ghostty's
+          // canvas listener, whose textarea.focus() would pop the
+          // on-screen keyboard at the end of every swipe. Only tap
+          // gestures may focus (and thus open the keyboard).
           e.stopPropagation();
+          if (e.cancelable) e.preventDefault();
         }
         touchLast = null;
         touchScrolling = false;
