@@ -157,55 +157,6 @@ export default function App() {
     localStorage.setItem("sidebarVisible", String(sidebarVisible));
   }, [sidebarVisible]);
 
-  // Swipe right from the left screen edge re-opens a hidden sidebar on
-  // touch devices, where the sidebar.toggle keybinding isn't reachable.
-  // Armed only while hidden. Captured at document level ahead of the
-  // terminal's own touch listeners: stopPropagation reserves the edge
-  // strip so the gesture can't double as a terminal scroll or tap, and
-  // preventDefault on the tracked move keeps the browser's own edge-swipe
-  // (back navigation) from claiming it first.
-  useEffect(() => {
-    if (sidebarVisible) return;
-    const EDGE_PX = 24;
-    const OPEN_DX_PX = 50;
-    let start: { x: number; y: number } | null = null;
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1 || e.touches[0].clientX > EDGE_PX) return;
-      start = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-      e.stopPropagation();
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!start || e.touches.length !== 1) return;
-      e.stopPropagation();
-      if (e.cancelable) e.preventDefault();
-      const dx = e.touches[0].clientX - start.x;
-      const dy = e.touches[0].clientY - start.y;
-      // Clearly vertical: give the gesture up rather than opening on a
-      // sloppy scroll near the edge.
-      if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 24) {
-        start = null;
-        return;
-      }
-      if (dx >= OPEN_DX_PX && dx > Math.abs(dy) * 2) {
-        start = null;
-        setSidebarVisible(true);
-      }
-    };
-    const onTouchEnd = () => {
-      start = null;
-    };
-    document.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
-    document.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
-    document.addEventListener("touchend", onTouchEnd, true);
-    document.addEventListener("touchcancel", onTouchEnd, true);
-    return () => {
-      document.removeEventListener("touchstart", onTouchStart, true);
-      document.removeEventListener("touchmove", onTouchMove, true);
-      document.removeEventListener("touchend", onTouchEnd, true);
-      document.removeEventListener("touchcancel", onTouchEnd, true);
-    };
-  }, [sidebarVisible]);
-
   // Lets focusSidebarTab (driven by sidebar.focusExplorer and every
   // extension panel's own focusBinding command) reveal a hidden sidebar, or
   // hide it again when re-pressed on the already-active tab. A ref keeps
@@ -215,6 +166,51 @@ export default function App() {
   useEffect(() => {
     sidebarVisibleRef.current = sidebarVisible;
   }, [sidebarVisible]);
+
+  // A fast horizontal flick anywhere toggles the sidebar on touch devices
+  // (where the sidebar.toggle keybinding isn't reachable): left→right
+  // opens, right→left closes. Deliberately a passive observer — slower
+  // horizontal drags keep belonging to whatever they're over (terminal
+  // hscroll, tree marquee, tab drag); the velocity gate is what separates
+  // a flick from those. Capture phase so the decision still sees the
+  // touchend the terminal swallows after one of its own scrolls.
+  useEffect(() => {
+    const MIN_DX_PX = 60;
+    const MIN_VELOCITY_PX_PER_MS = 0.6;
+    let start: { x: number; y: number; t: number } | null = null;
+    const onTouchStart = (e: TouchEvent) => {
+      start =
+        e.touches.length === 1
+          ? { x: e.touches[0].clientX, y: e.touches[0].clientY, t: performance.now() }
+          : null;
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      const g = start;
+      start = null;
+      // Only a clean single-finger gesture counts: no fingers left down,
+      // exactly one lifted.
+      if (!g || e.touches.length > 0 || e.changedTouches.length !== 1) return;
+      const dx = e.changedTouches[0].clientX - g.x;
+      const dy = e.changedTouches[0].clientY - g.y;
+      const dt = Math.max(1, performance.now() - g.t);
+      if (Math.abs(dx) < MIN_DX_PX) return;
+      if (Math.abs(dx) < Math.abs(dy) * 2) return;
+      if (Math.abs(dx) / dt < MIN_VELOCITY_PX_PER_MS) return;
+      if (dx > 0 && !sidebarVisibleRef.current) setSidebarVisible(true);
+      else if (dx < 0 && sidebarVisibleRef.current) setSidebarVisible(false);
+    };
+    const onTouchCancel = () => {
+      start = null;
+    };
+    document.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+    document.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
+    document.addEventListener("touchcancel", onTouchCancel, true);
+    return () => {
+      document.removeEventListener("touchstart", onTouchStart, true);
+      document.removeEventListener("touchend", onTouchEnd, true);
+      document.removeEventListener("touchcancel", onTouchCancel, true);
+    };
+  }, []);
   useEffect(() => {
     setSidebarVisibleHandler({
       isVisible: () => sidebarVisibleRef.current,
