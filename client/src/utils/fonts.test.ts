@@ -12,13 +12,19 @@ const italic: ExtensionFontEntry = { family: "F", src, style: "italic" };
 const boldItalic: ExtensionFontEntry = { family: "F", src, weight: "bold", style: "italic" };
 
 describe("entriesForMode", () => {
-  it("passes everything through unchanged in the default mode", () => {
+  it("default mode registers only matchable faces: text range + declared bold", () => {
     const out = entriesForMode(
       [regular, medium, bold, italic, boldItalic],
       { medium: false, boldIsNormal: false },
     );
-    expect(out).toHaveLength(5);
-    expect(out.map((o) => o.weight)).toEqual(["normal", "500", "bold", "normal", "bold"]);
+    // The 500 face can never be looked up (only normal/bold lookups exist),
+    // so it isn't registered — and its file is never fetched.
+    expect(out.find((o) => o.entry === medium)).toBeUndefined();
+    expect(out).toHaveLength(4);
+    expect(out.find((o) => o.entry === regular)?.weight).toBe("1 599");
+    expect(out.find((o) => o.entry === italic)?.weight).toBe("1 599");
+    expect(out.find((o) => o.entry === bold)?.weight).toBe("bold");
+    expect(out.find((o) => o.entry === boldItalic)?.weight).toBe("bold");
   });
 
   it("boldIsNormal: keeps only regular-weight entries per style, spanning all weights", () => {

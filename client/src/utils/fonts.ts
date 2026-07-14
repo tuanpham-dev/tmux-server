@@ -80,24 +80,25 @@ function isBoldishWeight(weight: string | undefined): boolean {
 // `<size>px <family>` canvas font (`bold <size>px <family>` for bold cells)
 // and lets the browser's font matching pick the face, so both weight
 // settings are implemented purely by choosing which declared sources get
-// registered under which weight descriptors:
+// registered under which weight descriptors. Only the faces the current
+// settings can actually match are registered — and since a skipped entry
+// never becomes a FontFace, its file is never fetched:
 //  - fontWeight "medium": each style's 500-weight sources become the text
-//    face; regular sources are skipped so they can't win the weight-400
-//    match. Styles without a 500 source fall back to their regular one.
+//    face; regular sources are skipped (they'd win the weight-400 match).
+//    Styles without a 500 source fall back to their regular one.
 //  - fontWeightBold "normal": the chosen text face spans ALL weights
-//    ("1 1000") so bold lookups resolve to it too; everything else is
-//    skipped. Otherwise the text face covers "1 599" and the declared
-//    bold sources keep their own weights.
-// A style with neither a text-face candidate keeps its declared faces
+//    ("1 1000") so bold lookups resolve to it too; bold sources are
+//    skipped and their files never download.
+//  - fontWeightBold "bold": the text face covers "1 599", declared bold
+//    (600+) sources keep their own weights, and everything in between
+//    (e.g. an unused 500 when fontWeight is "normal") is skipped.
+// A style with no text-face candidate at all keeps its declared faces
 // as-is. System fonts later in the stack aren't registered here at all, so
 // they keep their native weights — documented limitation of both settings.
 export function entriesForMode(
   entries: ExtensionFontEntry[],
   mode: WeightMode,
 ): { entry: ExtensionFontEntry; weight: string }[] {
-  if (!mode.boldIsNormal && !mode.medium) {
-    return entries.map((entry) => ({ entry, weight: entry.weight ?? "normal" }));
-  }
   const byStyle = new Map<string, ExtensionFontEntry[]>();
   for (const entry of entries) {
     const style = entry.style ?? "normal";
