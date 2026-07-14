@@ -18,6 +18,7 @@ import {
 // the static built-in list — safe to compute once at module scope.
 const TERMINAL_COMMAND_IDS = COMMANDS.filter((c) => c.scope === "terminal").map((c) => c.id);
 const FILES_COMMAND_IDS = COMMANDS.filter((c) => c.scope === "files").map((c) => c.id);
+const SESSIONS_COMMAND_IDS = COMMANDS.filter((c) => c.scope === "sessions").map((c) => c.id);
 
 // Every global shortcut in one capture-phase dispatcher, driven by the
 // rebindable keybindings map (keybindings.ts). A matched combo gets
@@ -82,6 +83,15 @@ export function useGlobalKeybindings(
       if (
         target?.closest(".file-tree") &&
         FILES_COMMAND_IDS.some((id) => bindingMatches(bindings[id], combo, get))
+      ) {
+        return;
+      }
+      // Same yield, for the SESSIONS list's own key handler (SessionList.tsx)
+      // — a global command sharing a combo with a sessions.* one must not
+      // steal the keystroke from the list while it has focus.
+      if (
+        target?.closest(".session-list") &&
+        SESSIONS_COMMAND_IDS.some((id) => bindingMatches(bindings[id], combo, get))
       ) {
         return;
       }

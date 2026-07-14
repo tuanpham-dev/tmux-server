@@ -15,6 +15,7 @@ import Icon from "../../_shared/Icon";
 import FileIcon from "../../_shared/FileIcon";
 import type { IconResult } from "../../_shared/FileIcon";
 import type { MenuItem } from "../../_shared/types";
+import { useListNavigation } from "../../_shared/useListNavigation";
 import { useMarqueeSelection } from "../../_shared/useMarqueeSelection";
 
 // ---- Module-level host bridge ----
@@ -339,6 +340,9 @@ function FileRow({
   clickHint,
   depth,
   hideDir,
+  tabIndex,
+  rowRef,
+  onRowFocus,
 }: {
   entry: FileEntry;
   // Which status group this row belongs to — rendered as a data attribute
@@ -364,6 +368,13 @@ function FileRow({
   // already shows that information.
   depth?: number;
   hideDir?: boolean;
+  // Roving-tabindex keyboard nav (GitPanel's resultNav — see
+  // useListNavigation) — a plain prop rather than a forwarded React ref
+  // since rowRef is a callback consumed directly as this root div's own
+  // `ref`, not passed further up.
+  tabIndex?: number;
+  rowRef?: (el: HTMLElement | null) => void;
+  onRowFocus?: () => void;
 }) {
   const dir = !hideDir ? dirOf(entry.path) : "";
   const label = entry.origPath ? `${basenameOf(entry.origPath)} → ${basenameOf(entry.path)}` : basenameOf(entry.path);
@@ -380,6 +391,9 @@ function FileRow({
       onClick={onRowClick}
       onContextMenu={onRowContextMenu}
       style={depth ? { paddingLeft: 8 + depth * 16 } : undefined}
+      tabIndex={tabIndex}
+      ref={rowRef}
+      onFocus={onRowFocus}
     >
       <FileIcon className="git-row-icon" result={icon} />
       <span className="git-row-name">{label}</span>
@@ -387,7 +401,7 @@ function FileRow({
       <span className="git-row-trailer">
         <span className="git-row-actions" onClick={(e) => e.stopPropagation()}>
           {actions.map((a) => (
-            <button key={a.title} className="icon-button" title={a.title} onClick={a.onClick}>
+            <button key={a.title} className="icon-button" title={a.title} tabIndex={-1} onClick={a.onClick}>
               <Icon name={a.icon} />
             </button>
           ))}
@@ -404,12 +418,18 @@ function DirRow({
   collapsed,
   onToggle,
   actions,
+  tabIndex,
+  rowRef,
+  onRowFocus,
 }: {
   node: TreeDirNode;
   depth: number;
   collapsed: boolean;
   onToggle: () => void;
   actions: RowAction[];
+  tabIndex?: number;
+  rowRef?: (el: HTMLElement | null) => void;
+  onRowFocus?: () => void;
 }) {
   // A compressed chain's name ("client/src/components") resolves its folder
   // icon from the last segment — icon themes key folderNames on a single
@@ -423,6 +443,9 @@ function DirRow({
       title={node.path}
       onClick={onToggle}
       style={{ paddingLeft: 8 + depth * 16 }}
+      tabIndex={tabIndex}
+      ref={rowRef}
+      onFocus={onRowFocus}
     >
       <Icon name={collapsed ? "chevron-right" : "chevron-down"} className="git-dir-row-chevron" />
       <FileIcon className="git-row-icon" result={icon} />
@@ -430,7 +453,7 @@ function DirRow({
       <span className="git-row-trailer">
         <span className="git-row-actions" onClick={(e) => e.stopPropagation()}>
           {actions.map((a) => (
-            <button key={a.title} className="icon-button" title={a.title} onClick={a.onClick}>
+            <button key={a.title} className="icon-button" title={a.title} tabIndex={-1} onClick={a.onClick}>
               <Icon name={a.icon} />
             </button>
           ))}
@@ -444,13 +467,23 @@ function GroupHeader({
   title,
   count,
   actions,
+  tabIndex,
+  rowRef,
+  onRowFocus,
 }: {
   title: string;
   count: number;
   actions?: RowAction[];
+  // Group headers are keyboard focus stops (unlike a plain list-widget
+  // header would default to) — see plans/keyboard-nav-context-menus-
+  // sessions-search-git.md's T10 note: this keeps the header's Stage All /
+  // Unstage All / Discard All actions Tab-reachable from a focused header.
+  tabIndex?: number;
+  rowRef?: (el: HTMLElement | null) => void;
+  onRowFocus?: () => void;
 }) {
   return (
-    <div className="git-group-header">
+    <div className="git-group-header" tabIndex={tabIndex} ref={rowRef} onFocus={onRowFocus}>
       <span className="git-group-title">{title}</span>
       <span className="git-group-count">{count}</span>
       <span className="git-group-actions">
@@ -1048,27 +1081,12 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     showMenu?.(e.clientX, e.clientY, buildFileMenuItems(groupKey, entry, staged));
   };
 
-  if (!activeCwd) {
-    return <div className="git-empty">No active directory.</div>;
-  }
-  if (!status) {
-    return <div className="git-empty">Loading…</div>;
-  }
-  if (!status.root) {
-    return <div className="git-empty">Not a git repository.</div>;
-  }
-
-  const staged = status.staged ?? [];
-  const unstaged = status.unstaged ?? [];
-  const conflicted = status.conflicted ?? [];
-  const ahead = status.ahead ?? 0;
-  const behind = status.behind ?? 0;
-  const clickHint = `Shift+Click: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"} · Ctrl+Click: Select`;
-  const conflictClickHint = "Shift+Click: Open in Editor · Ctrl+Click: Select";
-  const operation = status.operation ?? null;
-
-  // ---- Tree mode ----
-  const repoRoot = status.root ?? "";
+  // ---- Tree mode (hoisted above the early returns below — useListNavigation
+  // needs these, and hooks can't follow a conditional return) ----
+  const staged = status?.staged ?? [];
+  const unstaged = status?.unstaged ?? [];
+  const conflicted = status?.conflicted ?? [];
+  const repoRoot = status?.root ?? "";
   const conflictedTree = viewMode === "tree" ? buildTree(conflicted) : [];
   const stagedTree = viewMode === "tree" ? buildTree(staged) : [];
   const unstagedTree = viewMode === "tree" ? buildTree(unstaged) : [];
@@ -1082,6 +1100,117 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     collectDirKeys(`${repoRoot}:staged`, stagedTree, validKeysForRepo);
     collectDirKeys(`${repoRoot}:unstaged`, unstagedTree, validKeysForRepo);
   }
+
+  // ---- Keyboard navigation (roving tabindex across all three groups) ----
+  // One flattened row list per group — header, then its dir/file rows in
+  // exactly the order renderTreeGroup (tree mode) or the plain .map (list
+  // mode) below renders them, so ids assigned here line up with the
+  // getRowProps() calls threaded into the JSX further down. Group headers
+  // ARE focus stops (unlike file/dir rows' plain click, Enter/Space on a
+  // header is a no-op — see navOnActivate); dir rows aren't part of file
+  // selection (matching DirRow's mouse onClick, which only toggles).
+  type NavRow =
+    | { kind: "header"; id: string; groupKey: GroupKey }
+    | { kind: "dir"; id: string; groupKey: GroupKey; node: TreeDirNode }
+    | { kind: "file"; id: string; groupKey: GroupKey; entry: FileEntry };
+
+  const buildGroupNavRows = (groupKey: GroupKey, flatEntries: FileEntry[], tree: TreeNode[]): NavRow[] => {
+    if (flatEntries.length === 0) return [];
+    const out: NavRow[] = [{ kind: "header", id: `header:${groupKey}`, groupKey }];
+    if (viewMode === "list") {
+      for (const entry of flatEntries) out.push({ kind: "file", id: `file:${groupKey}:${entry.path}`, groupKey, entry });
+      return out;
+    }
+    const keyPrefix = `${repoRoot}:${groupKey}`;
+    const walk = (nodes: TreeNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "dir") {
+          out.push({ kind: "dir", id: `dir:${groupKey}:${node.path}`, groupKey, node });
+          if (!collapsedDirs.has(`${keyPrefix}:${node.path}`)) walk(node.children);
+        } else {
+          out.push({ kind: "file", id: `file:${groupKey}:${node.entry.path}`, groupKey, entry: node.entry });
+        }
+      }
+    };
+    walk(tree);
+    return out;
+  };
+
+  const navRows = [
+    ...buildGroupNavRows("conflicted", conflicted, conflictedTree),
+    ...buildGroupNavRows("staged", staged, stagedTree),
+    ...buildGroupNavRows("unstaged", unstaged, unstagedTree),
+  ];
+  const navRowsById = new Map(navRows.map((r) => [r.id, r]));
+  const navRowIds = navRows.map((r) => r.id);
+
+  const resultNav = useListNavigation({
+    rowIds: navRowIds,
+    onActivate: (id) => {
+      const row = navRowsById.get(id);
+      if (!row || row.kind === "header") return;
+      if (row.kind === "dir") {
+        toggleDir(`${repoRoot}:${row.groupKey}:${row.node.path}`, validKeysForRepo, repoRoot);
+        return;
+      }
+      setSelectedGroup(row.groupKey);
+      setSelectedPaths(new Set([row.entry.path]));
+      setAnchorPath(row.entry.path);
+      openEntry(row.entry, row.groupKey === "staged", false);
+    },
+    onExpand: (id) => {
+      const row = navRowsById.get(id);
+      if (row?.kind !== "dir") return;
+      const key = `${repoRoot}:${row.groupKey}:${row.node.path}`;
+      if (collapsedDirs.has(key)) toggleDir(key, validKeysForRepo, repoRoot);
+    },
+    onCollapse: (id) => {
+      const row = navRowsById.get(id);
+      if (row?.kind !== "dir") return;
+      const key = `${repoRoot}:${row.groupKey}:${row.node.path}`;
+      if (!collapsedDirs.has(key)) toggleDir(key, validKeysForRepo, repoRoot);
+    },
+    onFocusChange: (id, { shiftKey }) => {
+      const row = navRowsById.get(id);
+      if (!row || row.kind !== "file") return;
+      if (shiftKey && selectedGroup === row.groupKey && anchorPath) {
+        selectRange(row.groupKey, anchorPath, row.entry.path);
+        return;
+      }
+      setSelectedGroup(row.groupKey);
+      setSelectedPaths(new Set([row.entry.path]));
+      setAnchorPath(row.entry.path);
+    },
+    onContextMenuKey: (id, rect) => {
+      const row = navRowsById.get(id);
+      if (!row || row.kind !== "file") return;
+      if (selectedGroup === row.groupKey && selectedPaths.has(row.entry.path) && selectedPaths.size > 1) {
+        const entries = visibleFileEntries(row.groupKey).filter((en) => selectedPaths.has(en.path));
+        showMenu?.(rect.left + 8, rect.bottom, buildBulkMenuItems(row.groupKey, entries));
+        return;
+      }
+      setSelectedGroup(row.groupKey);
+      setSelectedPaths(new Set([row.entry.path]));
+      setAnchorPath(row.entry.path);
+      showMenu?.(rect.left + 8, rect.bottom, buildFileMenuItems(row.groupKey, row.entry, row.groupKey === "staged"));
+    },
+  });
+
+  if (!activeCwd) {
+    return <div className="git-empty">No active directory.</div>;
+  }
+  if (!status) {
+    return <div className="git-empty">Loading…</div>;
+  }
+  if (!status.root) {
+    return <div className="git-empty">Not a git repository.</div>;
+  }
+
+  const ahead = status.ahead ?? 0;
+  const behind = status.behind ?? 0;
+  const clickHint = `Shift+Click: ${clickAction === "edit" ? "Open Diff" : "Open in Editor"} · Ctrl+Click: Select`;
+  const conflictClickHint = "Shift+Click: Open in Editor · Ctrl+Click: Select";
+  const operation = status.operation ?? null;
 
   // Renders one group's tree recursively. `makeFileProps` and `makeDirActions`
   // capture whatever differs per group (openEntry's staged flag, which
@@ -1101,6 +1230,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
         const key = `${keyPrefix}:${node.path}`;
         const collapsed = collapsedDirs.has(key);
         const dirEntries = collectEntries(node.children);
+        const dirRowProps = resultNav.getRowProps(`dir:${groupKey}:${node.path}`);
         out.push(
           <DirRow
             key={key}
@@ -1109,6 +1239,9 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
             collapsed={collapsed}
             onToggle={() => toggleDir(key, validKeysForRepo, repoRoot)}
             actions={makeDirActions(dirEntries)}
+            tabIndex={dirRowProps.tabIndex}
+            rowRef={dirRowProps.ref}
+            onRowFocus={dirRowProps.onFocus}
           />,
         );
         if (!collapsed) {
@@ -1116,6 +1249,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
         }
       } else {
         const { staged, actions, clickHint: rowHint } = makeFileProps(node.entry);
+        const fileRowProps = resultNav.getRowProps(`file:${groupKey}:${node.entry.path}`);
         out.push(
           <FileRow
             key={node.entry.path}
@@ -1128,12 +1262,19 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
             clickHint={rowHint}
             depth={depth}
             hideDir
+            tabIndex={fileRowProps.tabIndex}
+            rowRef={fileRowProps.ref}
+            onRowFocus={fileRowProps.onFocus}
           />,
         );
       }
     }
     return out;
   }
+
+  const conflictedHeaderRowProps = resultNav.getRowProps("header:conflicted");
+  const stagedHeaderRowProps = resultNav.getRowProps("header:staged");
+  const unstagedHeaderRowProps = resultNav.getRowProps("header:unstaged");
 
   const headerActions = (
     <>
@@ -1307,6 +1448,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
           if ((e.target as HTMLElement).closest(".git-row, .git-group-header, button, input, textarea")) return;
           onMarqueeMouseDown(e);
         }}
+        onKeyDown={resultNav.onKeyDown}
       >
         {marqueeRect && (
           <div
@@ -1330,6 +1472,9 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                   },
                 ];
               })()}
+              tabIndex={conflictedHeaderRowProps.tabIndex}
+              rowRef={conflictedHeaderRowProps.ref}
+              onRowFocus={conflictedHeaderRowProps.onFocus}
             />
             {viewMode === "tree"
               ? renderTreeGroup(
@@ -1355,6 +1500,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                 )
               : conflicted.map((entry) => {
                   const sel = groupSelectedEntries("conflicted", entry);
+                  const fileRowProps = resultNav.getRowProps(`file:conflicted:${entry.path}`);
                   return (
                     <FileRow
                       key={entry.path}
@@ -1371,6 +1517,9 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                           onClick: () => stage(sel.map((e) => e.path)),
                         },
                       ]}
+                      tabIndex={fileRowProps.tabIndex}
+                      rowRef={fileRowProps.ref}
+                      onRowFocus={fileRowProps.onFocus}
                     />
                   );
                 })}
@@ -1393,6 +1542,9 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                   },
                 ];
               })()}
+              tabIndex={stagedHeaderRowProps.tabIndex}
+              rowRef={stagedHeaderRowProps.ref}
+              onRowFocus={stagedHeaderRowProps.onFocus}
             />
             {viewMode === "tree"
               ? renderTreeGroup(
@@ -1418,6 +1570,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                 )
               : staged.map((entry) => {
                   const sel = groupSelectedEntries("staged", entry);
+                  const fileRowProps = resultNav.getRowProps(`file:staged:${entry.path}`);
                   return (
                     <FileRow
                       key={entry.path}
@@ -1434,6 +1587,9 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                           onClick: () => unstage(sel.map((e) => e.path)),
                         },
                       ]}
+                      tabIndex={fileRowProps.tabIndex}
+                      rowRef={fileRowProps.ref}
+                      onRowFocus={fileRowProps.onFocus}
                     />
                   );
                 })}
@@ -1463,6 +1619,9 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                   },
                 ];
               })()}
+              tabIndex={unstagedHeaderRowProps.tabIndex}
+              rowRef={unstagedHeaderRowProps.ref}
+              onRowFocus={unstagedHeaderRowProps.onFocus}
             />
             {viewMode === "tree"
               ? renderTreeGroup(
@@ -1504,6 +1663,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
               : unstaged.map((entry) => {
                   const sel = groupSelectedEntries("unstaged", entry);
                   const untracked = sel.filter((e) => e.status === "untracked").map((e) => e.path);
+                  const fileRowProps = resultNav.getRowProps(`file:unstaged:${entry.path}`);
                   return (
                     <FileRow
                       key={entry.path}
@@ -1525,6 +1685,9 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                           onClick: () => stage(sel.map((e) => e.path)),
                         },
                       ]}
+                      tabIndex={fileRowProps.tabIndex}
+                      rowRef={fileRowProps.ref}
+                      onRowFocus={fileRowProps.onFocus}
                     />
                   );
                 })}
@@ -2015,6 +2178,7 @@ export function activate(ctx: {
     mode?: "default" | "preview";
     component: typeof DiffView | typeof ConflictView;
   }) => void;
+  registerCommand: (cmd: { id: string; label: string; defaultBinding?: string; run: () => void }) => void;
   app: {
     getActiveContext: () => ActiveContext;
     onDidChangeContext: (cb: (ctx: ActiveContext) => void) => () => void;
@@ -2060,6 +2224,61 @@ export function activate(ctx: {
   setPollCwd(ctx.app.getActiveContext().cwd);
   removeContextListener = ctx.app.onDidChangeContext((c) => setPollCwd(c.cwd));
   removeSettingsListener = ctx.settings.onDidChange(onSettingsChanged);
+
+  // Palette commands that work whether or not the Source Control tab is the
+  // active sidebar tab — resolve cwd from the active context and fetch a
+  // fresh status rather than trusting the module-level poller's cache
+  // (whose interval may not have ticked yet for a directory just switched
+  // to). No bulk stage/unstage endpoint exists (server.js has only
+  // per-path /stage and /unstage) — these compose the full path list
+  // client-side, the same way the panel's own "Stage All"/"Unstage All"
+  // header buttons do.
+  ctx.registerCommand({
+    id: "stageAll",
+    label: "Git: Stage All Changes",
+    run: async () => {
+      const cwd = ctx.app.getActiveContext().cwd;
+      if (!cwd) return;
+      try {
+        const data = await apiGetJson<StatusResponse>(`/status?cwd=${encodeURIComponent(cwd)}`);
+        const paths = (data.unstaged ?? []).map((e) => e.path);
+        if (paths.length === 0) return;
+        await apiPost("/stage", { cwd, paths });
+        refreshStatus();
+        refreshFiles?.();
+      } catch {
+        // No error UI to report to when the panel isn't mounted — a
+        // subsequent status poll (or the panel's own next refresh) surfaces
+        // any real problem instead.
+      }
+    },
+  });
+  ctx.registerCommand({
+    id: "unstageAll",
+    label: "Git: Unstage All Changes",
+    run: async () => {
+      const cwd = ctx.app.getActiveContext().cwd;
+      if (!cwd) return;
+      try {
+        const data = await apiGetJson<StatusResponse>(`/status?cwd=${encodeURIComponent(cwd)}`);
+        const paths = (data.staged ?? []).map((e) => e.path);
+        if (paths.length === 0) return;
+        await apiPost("/unstage", { cwd, paths });
+        refreshStatus();
+        refreshFiles?.();
+      } catch {
+        // See stageAll's comment above.
+      }
+    },
+  });
+  ctx.registerCommand({
+    id: "refresh",
+    label: "Git: Refresh",
+    run: () => {
+      refreshStatus();
+      refreshFiles?.();
+    },
+  });
 }
 
 export function deactivate() {

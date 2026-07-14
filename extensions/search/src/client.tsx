@@ -5,11 +5,14 @@
 // refreshFiles) from module-level bridge variables set once in activate(),
 // the same pattern git-scm's client.tsx uses.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import "./style.css";
+import { copyText } from "../../_shared/clipboard";
 import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
+import type { MenuItem } from "../../_shared/types";
+import { useListNavigation } from "../../_shared/useListNavigation";
 
 // ---- Module-level host bridge ----
 
@@ -177,13 +180,24 @@ function makeDefaultSessionState(): SessionSearchState {
 // cache. Same pattern as git-scm's module-level sessionCredentials.
 const sessionSearchCache = new Map<string, SessionSearchState>();
 
+// Set by a mounted SearchPanel instance (module-level, not a ref, for the
+// same "unmounts on tab switch" reason as sessionSearchCache) so the
+// "Search: Clear Search Results" command (activate() below) can clear live
+// React state, not just the cache entry, when its target session happens to
+// be the one currently shown in the panel. Null while unmounted or while
+// the mounted instance is showing a different session — the command then
+// falls back to clearing only the cache entry, which is picked up the next
+// time that session's tab is visited.
+let clearActiveSearchBridge: ((sessionKey: string) => void) | null = null;
+
 // ---- SearchPanel (registerSidebarPanel component — no props) ----
 
 interface PanelProps {
   actionsTarget?: HTMLDivElement | null;
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
 }
 
-function SearchPanel({ actionsTarget }: PanelProps) {
+function SearchPanel({ actionsTarget, showMenu }: PanelProps) {
   const [activeContext, setActiveContext] = useState<ActiveContext>(
     () => getActiveContext?.() ?? { sessionName: null, windowIndex: null, cwd: null },
   );
@@ -433,6 +447,10 @@ function SearchPanel({ actionsTarget }: PanelProps) {
 
   const handleQueryKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") runSearch();
+    if (e.key === "ArrowDown" && resultRowIds.length > 0) {
+      e.preventDefault();
+      resultNav.focusRow(resultRowIds[0]);
+    }
   };
 
   const clearSearch = () => {
@@ -515,6 +533,103 @@ function SearchPanel({ actionsTarget }: PanelProps) {
     if (!activeCwd) return;
     openFileTab?.(`${activeCwd}/${file}`, line);
   };
+
+  // Read by the "Search: Clear Search Results" command (activate() below)
+  // via clearActiveSearchBridge — see that variable's doc comment.
+  const sessionKeyRef = useRef(sessionKey);
+  sessionKeyRef.current = sessionKey;
+  useEffect(() => {
+    clearActiveSearchBridge = (key: string) => {
+      if (key === sessionKeyRef.current) clearSearch();
+    };
+    return () => {
+      clearActiveSearchBridge = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---- Keyboard navigation + context menus (result rows) ----
+  // Rows = one per file-group header plus its visible match rows, in
+  // render order — kept in sync by construction with the results.map JSX
+  // below, same "flattened list mirrors the render walk" approach
+  // FileTree.tsx uses for visibleRows.
+  type ResultRow =
+    | { kind: "header"; id: string; file: string }
+    | { kind: "match"; id: string; file: string; match: MatchEntry };
+
+  const resultRows = useMemo<ResultRow[]>(() => {
+    if (!results) return [];
+    const out: ResultRow[] = [];
+    for (const r of results) {
+      out.push({ kind: "header", id: `header:${r.file}`, file: r.file });
+      if (!collapsedFiles.has(r.file)) {
+        for (const m of r.matches) {
+          out.push({ kind: "match", id: `match:${r.file}:${m.line}:${m.column}`, file: r.file, match: m });
+        }
+      }
+    }
+    return out;
+  }, [results, collapsedFiles]);
+
+  const resultRowsById = useMemo(() => new Map(resultRows.map((r) => [r.id, r])), [resultRows]);
+  const resultRowIds = useMemo(() => resultRows.map((r) => r.id), [resultRows]);
+
+  const headerMenuItems = useCallback(
+    (file: string): MenuItem[] => {
+      const items: MenuItem[] = [{ label: "Open File", onClick: () => openMatch(file, 1) }];
+      if (replaceOpen) items.push({ label: "Replace All in File", onClick: () => replaceFile(file) });
+      items.push(
+        { label: "Copy Path", onClick: () => activeCwd && void copyText(`${activeCwd}/${file}`) },
+        { label: "Copy Relative Path", onClick: () => void copyText(file) },
+        { label: "Dismiss", onClick: () => dismissFile(file) },
+      );
+      return items;
+    },
+    [replaceOpen, activeCwd, openMatch, replaceFile, dismissFile],
+  );
+
+  const matchMenuItems = useCallback(
+    (file: string, match: MatchEntry): MenuItem[] => {
+      const items: MenuItem[] = [{ label: "Open", onClick: () => openMatch(file, match.line) }];
+      if (replaceOpen) items.push({ label: "Replace", onClick: () => replaceOneMatch(file, match) });
+      items.push(
+        { label: "Copy Line Text", onClick: () => void copyText(match.lineText) },
+        { label: "Dismiss", onClick: () => dismissMatch(file, match) },
+      );
+      return items;
+    },
+    [replaceOpen, openMatch, replaceOneMatch, dismissMatch],
+  );
+
+  const resultNav = useListNavigation({
+    rowIds: resultRowIds,
+    onActivate: (id) => {
+      const row = resultRowsById.get(id);
+      if (!row) return;
+      if (row.kind === "header") toggleFileCollapsed(row.file);
+      else openMatch(row.file, row.match.line);
+    },
+    onExpand: (id) => {
+      const row = resultRowsById.get(id);
+      if (row?.kind === "header" && collapsedFiles.has(row.file)) toggleFileCollapsed(row.file);
+    },
+    onCollapse: (id) => {
+      const row = resultRowsById.get(id);
+      if (row?.kind === "header" && !collapsedFiles.has(row.file)) toggleFileCollapsed(row.file);
+    },
+    onDelete: (id) => {
+      const row = resultRowsById.get(id);
+      if (!row) return;
+      if (row.kind === "header") dismissFile(row.file);
+      else dismissMatch(row.file, row.match);
+    },
+    onContextMenuKey: (id, rect) => {
+      const row = resultRowsById.get(id);
+      if (!row) return;
+      const items = row.kind === "header" ? headerMenuItems(row.file) : matchMenuItems(row.file, row.match);
+      showMenu?.(rect.left + 8, rect.bottom, items);
+    },
+  });
 
   const matchCount = useMemo(() => (results ? totalMatchCount(results) : 0), [results]);
   const globPlaceholderHint =
@@ -687,7 +802,7 @@ function SearchPanel({ actionsTarget }: PanelProps) {
         </div>
       )}
 
-      <div className="search-results">
+      <div className="search-results" onKeyDown={resultNav.onKeyDown}>
         {loading && !results && <div className="search-empty">Searching…</div>}
 
         {!loading && results && results.length === 0 && !error && (
@@ -703,9 +818,22 @@ function SearchPanel({ actionsTarget }: PanelProps) {
             </div>
             {results.map((fileResult) => {
               const collapsed = collapsedFiles.has(fileResult.file);
+              const headerId = `header:${fileResult.file}`;
+              const headerRowProps = resultNav.getRowProps(headerId);
               return (
                 <div className="search-file-group" key={fileResult.file}>
-                  <div className="search-group-header" onClick={() => toggleFileCollapsed(fileResult.file)}>
+                  <div
+                    className="search-group-header"
+                    onClick={() => toggleFileCollapsed(fileResult.file)}
+                    onContextMenu={(e: ReactMouseEvent) => {
+                      e.preventDefault();
+                      resultNav.focusRow(headerId);
+                      showMenu?.(e.clientX, e.clientY, headerMenuItems(fileResult.file));
+                    }}
+                    tabIndex={headerRowProps.tabIndex}
+                    ref={headerRowProps.ref}
+                    onFocus={headerRowProps.onFocus}
+                  >
                     <Icon name={collapsed ? "chevron-right" : "chevron-down"} />
                     <span className="search-group-name">{basenameOf(fileResult.file)}</span>
                     <span className="search-group-dir">{dirOf(fileResult.file)}</span>
@@ -716,6 +844,7 @@ function SearchPanel({ actionsTarget }: PanelProps) {
                           className="icon-button"
                           title="Replace All in File"
                           disabled={loading}
+                          tabIndex={-1}
                           onClick={() => replaceFile(fileResult.file)}
                         >
                           <Icon name="replace-all" />
@@ -724,6 +853,7 @@ function SearchPanel({ actionsTarget }: PanelProps) {
                       <button
                         className="icon-button"
                         title="Dismiss"
+                        tabIndex={-1}
                         onClick={() => dismissFile(fileResult.file)}
                       >
                         <Icon name="close" />
@@ -731,36 +861,50 @@ function SearchPanel({ actionsTarget }: PanelProps) {
                     </span>
                   </div>
                   {!collapsed &&
-                    fileResult.matches.map((match) => (
-                      <div
-                        className="search-match-row"
-                        key={`${match.line}:${match.column}`}
-                        onClick={() => openMatch(fileResult.file, match.line)}
-                      >
-                        <span className="search-match-text">
-                          {renderHighlighted(match.lineText, match.submatches)}
-                        </span>
-                        <span className="search-match-actions" onClick={(e) => e.stopPropagation()}>
-                          {replaceOpen && (
+                    fileResult.matches.map((match) => {
+                      const matchId = `match:${fileResult.file}:${match.line}:${match.column}`;
+                      const matchRowProps = resultNav.getRowProps(matchId);
+                      return (
+                        <div
+                          className="search-match-row"
+                          key={`${match.line}:${match.column}`}
+                          onClick={() => openMatch(fileResult.file, match.line)}
+                          onContextMenu={(e: ReactMouseEvent) => {
+                            e.preventDefault();
+                            resultNav.focusRow(matchId);
+                            showMenu?.(e.clientX, e.clientY, matchMenuItems(fileResult.file, match));
+                          }}
+                          tabIndex={matchRowProps.tabIndex}
+                          ref={matchRowProps.ref}
+                          onFocus={matchRowProps.onFocus}
+                        >
+                          <span className="search-match-text">
+                            {renderHighlighted(match.lineText, match.submatches)}
+                          </span>
+                          <span className="search-match-actions" onClick={(e) => e.stopPropagation()}>
+                            {replaceOpen && (
+                              <button
+                                className="icon-button"
+                                title="Replace"
+                                disabled={loading}
+                                tabIndex={-1}
+                                onClick={() => replaceOneMatch(fileResult.file, match)}
+                              >
+                                <Icon name="replace" />
+                              </button>
+                            )}
                             <button
                               className="icon-button"
-                              title="Replace"
-                              disabled={loading}
-                              onClick={() => replaceOneMatch(fileResult.file, match)}
+                              title="Dismiss"
+                              tabIndex={-1}
+                              onClick={() => dismissMatch(fileResult.file, match)}
                             >
-                              <Icon name="replace" />
+                              <Icon name="close" />
                             </button>
-                          )}
-                          <button
-                            className="icon-button"
-                            title="Dismiss"
-                            onClick={() => dismissMatch(fileResult.file, match)}
-                          >
-                            <Icon name="close" />
-                          </button>
-                        </span>
-                      </div>
-                    ))}
+                          </span>
+                        </div>
+                      );
+                    })}
                 </div>
               );
             })}
@@ -793,6 +937,7 @@ export function activate(ctx: {
     focusBinding?: string;
     component: typeof SearchPanel;
   }) => void;
+  registerCommand: (cmd: { id: string; label: string; defaultBinding?: string; run: () => void }) => void;
   app: {
     getActiveContext: () => ActiveContext;
     onDidChangeContext: (cb: (ctx: ActiveContext) => void) => () => void;
@@ -819,6 +964,20 @@ export function activate(ctx: {
     icon: "search",
     focusBinding: "ctrl+shift+KeyF",
     component: SearchPanel,
+  });
+
+  // Clears whether or not the Search tab is the active sidebar tab — see
+  // clearActiveSearchBridge's doc comment for how the mounted-panel case is
+  // handled.
+  ctx.registerCommand({
+    id: "clear",
+    label: "Search: Clear Search Results",
+    run: () => {
+      const active = getActiveContext?.();
+      const key = active?.sessionName ?? "__no-session__";
+      sessionSearchCache.delete(key);
+      clearActiveSearchBridge?.(key);
+    },
   });
 }
 

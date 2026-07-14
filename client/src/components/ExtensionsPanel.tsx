@@ -1,5 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import * as api from "../api";
+import { useListNavigation } from "../hooks/useListNavigation";
 import { parsePublisher } from "../lib/extensionId";
 import { compareVersions } from "../lib/version";
 import type { ExtensionInfo, RegistryCatalogEntry, RegistrySourceResult } from "../types";
@@ -36,6 +38,9 @@ function ExtensionRow({
   disabled,
   onOpen,
   children,
+  tabIndex,
+  rowRef,
+  onRowFocus,
 }: {
   iconSrc: string | null;
   displayName: string;
@@ -45,11 +50,20 @@ function ExtensionRow({
   disabled?: boolean;
   onOpen: () => void;
   children?: ReactNode;
+  // Roving-tabindex keyboard nav (useListNavigation) — same plain-prop
+  // convention as git-scm's FileRow/DirRow/GroupHeader (see that file's
+  // comment on why this isn't a forwarded React ref).
+  tabIndex?: number;
+  rowRef?: (el: HTMLElement | null) => void;
+  onRowFocus?: () => void;
 }) {
   return (
     <div
       className={`extension-row extension-row-clickable${disabled ? " extension-row-disabled" : ""}`}
       onClick={onOpen}
+      tabIndex={tabIndex}
+      ref={rowRef}
+      onFocus={onRowFocus}
     >
       <ExtIcon src={iconSrc} />
       <div className="extension-row-body">
@@ -88,10 +102,21 @@ export default function ExtensionsPanel({
   const [newRegistry, setNewRegistry] = useState("");
   const [installedCollapsed, setInstalledCollapsed] = useState(false);
   const [availableCollapsed, setAvailableCollapsed] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     onEnsureRegistryLoaded();
   }, [onEnsureRegistryLoaded]);
+
+  // Sidebar.tsx only renders the active sidebar tab, so this panel mounts
+  // fresh every time the user switches to it (via sidebar.focusExtensions/
+  // Ctrl+Shift+X or the tab strip) — focusing the search input here is
+  // exactly "land somewhere useful" for that shortcut, no separate bridge
+  // needed (contrast SessionList/PortsPanel, which stay mounted inside an
+  // always-present accordion and need an explicit focus bridge instead).
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
 
   const installedIds = new Set(extensions.map((e) => e.id));
   // A just-removed source's fetched entries linger in registryCatalog until
@@ -158,14 +183,75 @@ export default function ExtensionsPanel({
     onRegistriesChange(registries.filter((r) => r !== source));
   };
 
+  // ---- Keyboard navigation (roving tabindex over both sections' headers +
+  // rows) — mirrors SessionList.tsx's flattened-row approach. Row order here
+  // matches the JSX below exactly (installed header, its rows if expanded,
+  // available header, its rows if expanded).
+  type NavRow =
+    | { kind: "header"; id: string; section: "installed" | "available" }
+    | { kind: "installed"; id: string; ext: ExtensionInfo }
+    | { kind: "available"; id: string; entry: RegistryCatalogEntry & { source: string } };
+
+  const navRows = useMemo<NavRow[]>(() => {
+    const out: NavRow[] = [{ kind: "header", id: "header:installed", section: "installed" }];
+    if (!installedCollapsed) {
+      for (const ext of visibleInstalled) out.push({ kind: "installed", id: `installed:${ext.id}`, ext });
+    }
+    out.push({ kind: "header", id: "header:available", section: "available" });
+    if (!availableCollapsed) {
+      for (const entry of visibleAvailable) {
+        out.push({ kind: "available", id: `available:${entry.source}:${entry.id}`, entry });
+      }
+    }
+    return out;
+  }, [installedCollapsed, availableCollapsed, visibleInstalled, visibleAvailable]);
+  const navRowsById = useMemo(() => new Map(navRows.map((r) => [r.id, r])), [navRows]);
+  const navRowIds = useMemo(() => navRows.map((r) => r.id), [navRows]);
+
+  const nav = useListNavigation({
+    rowIds: navRowIds,
+    onActivate: (id) => {
+      const row = navRowsById.get(id);
+      if (!row) return;
+      if (row.kind === "header") {
+        if (row.section === "installed") setInstalledCollapsed((v) => !v);
+        else setAvailableCollapsed((v) => !v);
+        return;
+      }
+      if (row.kind === "installed") onOpenExtensionPage(row.ext.id);
+      else onOpenExtensionPage(row.entry.id, row.entry.source);
+    },
+    onExpand: (id) => {
+      const row = navRowsById.get(id);
+      if (row?.kind !== "header") return;
+      if (row.section === "installed" && installedCollapsed) setInstalledCollapsed(false);
+      if (row.section === "available" && availableCollapsed) setAvailableCollapsed(false);
+    },
+    onCollapse: (id) => {
+      const row = navRowsById.get(id);
+      if (row?.kind !== "header") return;
+      if (row.section === "installed" && !installedCollapsed) setInstalledCollapsed(true);
+      if (row.section === "available" && !availableCollapsed) setAvailableCollapsed(true);
+    },
+  });
+
+  const handleSearchKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown" && navRowIds.length > 0) {
+      e.preventDefault();
+      nav.focusRow(navRowIds[0]);
+    }
+  };
+
   return (
     <div className="extensions-panel">
       <div className="extensions-panel-toolbar">
         <input
+          ref={searchInputRef}
           className="dialog-input extension-filter-search"
           placeholder="Search extensions"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={handleSearchKeyDown}
         />
         <label className="dialog-button secondary extension-install-button">
           {installingTsix ? "Installing…" : "Install from .tsix"}
@@ -247,18 +333,26 @@ export default function ExtensionsPanel({
 
       {error && <div className="extension-error">{error}</div>}
 
-      <div className="extensions-panel-body">
-        <div
-          className="extensions-panel-section-header"
-          onClick={() => setInstalledCollapsed((v) => !v)}
-        >
-          <Icon
-            name={installedCollapsed ? "chevron-right" : "chevron-down"}
-            className="extensions-panel-section-chevron"
-          />
-          <span className="extensions-panel-section-title">Installed</span>
-          <span className="extensions-panel-section-badge">{extensions.length}</span>
-        </div>
+      <div className="extensions-panel-body" onKeyDown={nav.onKeyDown}>
+        {(() => {
+          const installedHeaderRowProps = nav.getRowProps("header:installed");
+          return (
+            <div
+              className="extensions-panel-section-header"
+              onClick={() => setInstalledCollapsed((v) => !v)}
+              tabIndex={installedHeaderRowProps.tabIndex}
+              ref={installedHeaderRowProps.ref}
+              onFocus={installedHeaderRowProps.onFocus}
+            >
+              <Icon
+                name={installedCollapsed ? "chevron-right" : "chevron-down"}
+                className="extensions-panel-section-chevron"
+              />
+              <span className="extensions-panel-section-title">Installed</span>
+              <span className="extensions-panel-section-badge">{extensions.length}</span>
+            </div>
+          );
+        })()}
         {!installedCollapsed && (
           <div className="extension-list">
             {extensions.length === 0 && <div className="keybinding-empty">No extensions installed</div>}
@@ -267,6 +361,7 @@ export default function ExtensionsPanel({
             )}
             {visibleInstalled.map((ext) => {
               const update = updateBySource.get(ext.id);
+              const rowProps = nav.getRowProps(`installed:${ext.id}`);
               return (
                 <ExtensionRow
                   key={ext.id}
@@ -274,6 +369,9 @@ export default function ExtensionsPanel({
                   displayName={ext.displayName}
                   description={ext.description}
                   publisher={parsePublisher(ext.id)}
+                  tabIndex={rowProps.tabIndex}
+                  rowRef={rowProps.ref}
+                  onRowFocus={rowProps.onFocus}
                   verified={ext.builtin}
                   disabled={!ext.enabled}
                   onOpen={() => onOpenExtensionPage(ext.id)}
@@ -294,21 +392,29 @@ export default function ExtensionsPanel({
           </div>
         )}
 
-        <div
-          className="extensions-panel-section-header"
-          onClick={() => setAvailableCollapsed((v) => !v)}
-        >
-          <Icon
-            name={availableCollapsed ? "chevron-right" : "chevron-down"}
-            className="extensions-panel-section-chevron"
-          />
-          <span className="extensions-panel-section-title">Available</span>
-          {registryLoading ? (
-            <span className="extensions-panel-section-loading">Loading…</span>
-          ) : (
-            <span className="extensions-panel-section-badge">{availableEntries.length}</span>
-          )}
-        </div>
+        {(() => {
+          const availableHeaderRowProps = nav.getRowProps("header:available");
+          return (
+            <div
+              className="extensions-panel-section-header"
+              onClick={() => setAvailableCollapsed((v) => !v)}
+              tabIndex={availableHeaderRowProps.tabIndex}
+              ref={availableHeaderRowProps.ref}
+              onFocus={availableHeaderRowProps.onFocus}
+            >
+              <Icon
+                name={availableCollapsed ? "chevron-right" : "chevron-down"}
+                className="extensions-panel-section-chevron"
+              />
+              <span className="extensions-panel-section-title">Available</span>
+              {registryLoading ? (
+                <span className="extensions-panel-section-loading">Loading…</span>
+              ) : (
+                <span className="extensions-panel-section-badge">{availableEntries.length}</span>
+              )}
+            </div>
+          );
+        })()}
         {!availableCollapsed && (
           <div className="extension-list">
             {registries.length === 0 && (
@@ -322,7 +428,9 @@ export default function ExtensionsPanel({
             {registries.length > 0 && availableEntries.length > 0 && visibleAvailable.length === 0 && (
               <div className="keybinding-empty">No extensions match your search</div>
             )}
-            {visibleAvailable.map((entry) => (
+            {visibleAvailable.map((entry) => {
+              const rowProps = nav.getRowProps(`available:${entry.source}:${entry.id}`);
+              return (
               <ExtensionRow
                 key={`${entry.source}:${entry.id}`}
                 iconSrc={entry.hasIcon ? api.registryIconUrl(entry.source, entry.id) : null}
@@ -330,6 +438,9 @@ export default function ExtensionsPanel({
                 description={entry.description}
                 publisher={entry.publisher ?? parsePublisher(entry.id)}
                 onOpen={() => onOpenExtensionPage(entry.id, entry.source)}
+                tabIndex={rowProps.tabIndex}
+                rowRef={rowProps.ref}
+                onRowFocus={rowProps.onFocus}
               >
                 <button
                   className="dialog-button primary"
@@ -339,7 +450,8 @@ export default function ExtensionsPanel({
                   {installingId === entry.id ? "Installing…" : "Install"}
                 </button>
               </ExtensionRow>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

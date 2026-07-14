@@ -745,6 +745,26 @@ export default function FileTree({
         setSelectedPaths(new Set());
         setAnchorPath(null);
         return;
+      case "ContextMenu":
+      case "F10": {
+        // Keyboard path to the same menus handleRowContextMenu's mouse path
+        // opens — anchored under the focused row's own rect instead of a
+        // click point, same bulk-vs-single selection rule.
+        if (!row) return;
+        if (e.key === "F10" && !e.shiftKey) return;
+        e.preventDefault();
+        const rect = rowRefs.current.get(row.path)?.getBoundingClientRect();
+        if (!rect) return;
+        if (selectedPaths.has(row.path) && selectedPaths.size > 1) {
+          const entries = visibleRows
+            .filter((r) => selectedPaths.has(r.path))
+            .map((r) => ({ path: r.path, isDir: r.isDir }));
+          onShowMenu(rect.left + 8, rect.bottom, fileMultiMenuItems(entries));
+          return;
+        }
+        onShowMenu(rect.left + 8, rect.bottom, fileMenuItems(row.path, row.isDir, rootDir!));
+        return;
+      }
       // Copy/Cut/Paste/Delete/Rename/Find in Folder/New File/New Folder/Copy
       // Path/Copy Relative Path all dispatch above, from the live
       // resolvedBindings map — not hardcoded here (see the block preceding

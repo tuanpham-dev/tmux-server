@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
-import type { ListeningPort, ProxyConfig, TunnelAuth } from "../types";
+import { useListNavigation } from "../hooks/useListNavigation";
+import type { ListeningPort, MenuItem, ProxyConfig, TunnelAuth } from "../types";
 import Icon from "./Icon";
+
+export interface PortsPanelHandle {
+  // Moves keyboard focus onto the focused-or-first row — called by
+  // sidebar.focusPorts (App.tsx), mirroring SessionListHandle.focusList.
+  focusList: () => void;
+}
 
 interface Props {
   refreshKey: number;
   confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>;
+  onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
 }
 
 const POLL_MS = 30_000;
@@ -54,7 +62,10 @@ function proxyUrl(port: number, proxyConfig: ProxyConfig): string {
   return `${window.location.origin}/proxy/${port}/`;
 }
 
-export default function PortsPanel({ refreshKey, confirmDialog }: Props) {
+const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
+  { refreshKey, confirmDialog, onShowMenu },
+  ref,
+) {
   const [ports, setPorts] = useState<ListeningPort[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -215,50 +226,115 @@ export default function PortsPanel({ refreshKey, confirmDialog }: Props) {
       .catch(() => {});
   };
 
+  const portRowId = (port: number) => `port:${port}`;
+  const portsById = useMemo(() => new Map(ports.map((p) => [portRowId(p.port), p])), [ports]);
+  const rowIds = useMemo(() => ports.map((p) => portRowId(p.port)), [ports]);
+
+  const portMenuItems = (p: ListeningPort): MenuItem[] => {
+    const items: MenuItem[] = [
+      { label: "Open in Browser", onClick: () => onOpenPort(p.port) },
+      { label: "Copy URL", onClick: () => onCopyPortUrl(p.port) },
+    ];
+    if (p.pid !== undefined) {
+      items.push({ label: "Kill Process", danger: true, onClick: () => onKillPort(p) });
+    }
+    return items;
+  };
+
+  const nav = useListNavigation({
+    rowIds,
+    onActivate: (id) => {
+      const p = portsById.get(id);
+      if (p) toggle(p.port);
+    },
+    onContextMenuKey: (id, rect) => {
+      const p = portsById.get(id);
+      if (p) onShowMenu(rect.left + 8, rect.bottom, portMenuItems(p));
+    },
+  });
+
+  // A "focus" request can arrive the instant this panel (re)mounts — the
+  // PORTS accordion section unmounts it while collapsed, so
+  // sidebar.focusPorts's expand-then-focus always mounts a fresh instance —
+  // before its own async loadPorts() has resolved, when rowIds is still
+  // empty. Deferred here to the first render where a row actually exists.
+  const pendingFocusRef = useRef(false);
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusList: () => {
+        const target = nav.focusedId ?? rowIds[0];
+        if (target) nav.focusRow(target);
+        else pendingFocusRef.current = true;
+      },
+    }),
+    [nav, rowIds],
+  );
+  useEffect(() => {
+    if (pendingFocusRef.current && rowIds.length > 0) {
+      pendingFocusRef.current = false;
+      nav.focusRow(rowIds[0]);
+    }
+  }, [rowIds, nav]);
+
   return (
     <div className="ports-panel">
       {error && <div className="ports-error">{error}</div>}
-      <ul className="port-list">
-        {ports.map((p) => (
-          <li key={p.port} className={`port-row${selected.has(p.port) ? " selected" : ""}`}>
-            <button
-              className="port-item"
-              title={p.pid ? `pid ${p.pid}` : undefined}
-              onClick={() => toggle(p.port)}
-            >
-              <span className="port-number">{p.port}</span>
-              {p.process && <span className="port-process">{p.process}</span>}
-              <span className="port-session">{p.session}</span>
-              {!isLoopback(p.address) && <span className="port-address">{p.address}</span>}
-            </button>
-            <div className="port-actions">
+      <ul className="port-list" onKeyDown={nav.onKeyDown}>
+        {ports.map((p) => {
+          const rowProps = nav.getRowProps(portRowId(p.port));
+          return (
+            <li key={p.port} className={`port-row${selected.has(p.port) ? " selected" : ""}`}>
               <button
-                className="icon-button port-action-button"
-                title="Open in browser"
-                onClick={() => onOpenPort(p.port)}
+                className="port-item"
+                title={p.pid ? `pid ${p.pid}` : undefined}
+                onClick={() => toggle(p.port)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  nav.focusRow(portRowId(p.port));
+                  onShowMenu(e.clientX, e.clientY, portMenuItems(p));
+                }}
+                tabIndex={rowProps.tabIndex}
+                ref={rowProps.ref}
+                onFocus={rowProps.onFocus}
               >
-                <Icon name="link-external" />
+                <span className="port-number">{p.port}</span>
+                {p.process && <span className="port-process">{p.process}</span>}
+                <span className="port-session">{p.session}</span>
+                {!isLoopback(p.address) && <span className="port-address">{p.address}</span>}
               </button>
-              <button
-                className="icon-button port-action-button"
-                title={copiedPort === p.port ? "Copied" : "Copy URL"}
-                onClick={() => onCopyPortUrl(p.port)}
-              >
-                <Icon name={copiedPort === p.port ? "check" : "copy"} />
-              </button>
-              {p.pid !== undefined && (
+              <div className="port-actions">
                 <button
                   className="icon-button port-action-button"
-                  title="Kill process"
-                  disabled={killing.has(p.port)}
-                  onClick={() => onKillPort(p)}
+                  title="Open in browser"
+                  tabIndex={-1}
+                  onClick={() => onOpenPort(p.port)}
                 >
-                  <Icon name="trash" />
+                  <Icon name="link-external" />
                 </button>
-              )}
-            </div>
-          </li>
-        ))}
+                <button
+                  className="icon-button port-action-button"
+                  title={copiedPort === p.port ? "Copied" : "Copy URL"}
+                  tabIndex={-1}
+                  onClick={() => onCopyPortUrl(p.port)}
+                >
+                  <Icon name={copiedPort === p.port ? "check" : "copy"} />
+                </button>
+                {p.pid !== undefined && (
+                  <button
+                    className="icon-button port-action-button"
+                    title="Kill process"
+                    disabled={killing.has(p.port)}
+                    tabIndex={-1}
+                    onClick={() => onKillPort(p)}
+                  >
+                    <Icon name="trash" />
+                  </button>
+                )}
+              </div>
+            </li>
+          );
+        })}
         {ports.length === 0 && !error && (
           <li className="session-empty">No listening ports in tmux sessions</li>
         )}
@@ -282,4 +358,6 @@ export default function PortsPanel({ refreshKey, confirmDialog }: Props) {
       )}
     </div>
   );
-}
+});
+
+export default PortsPanel;

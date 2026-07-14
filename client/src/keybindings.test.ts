@@ -150,3 +150,34 @@ describe("pickCommand", () => {
     expect(pickCommand(candidates)).toBe("b");
   });
 });
+
+describe("COMMANDS", () => {
+  it("has no duplicate ids", () => {
+    const ids = COMMANDS.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("scopes every sessions.* command to sessions and gates it on sessionsListFocus", () => {
+    const sessionsCommands = COMMANDS.filter((c) => c.id.startsWith("sessions."));
+    expect(sessionsCommands.length).toBe(4);
+    for (const cmd of sessionsCommands) {
+      expect(cmd.scope).toBe("sessions");
+      for (const binding of cmd.defaultBindings) expect(binding.when).toBe("sessionsListFocus");
+    }
+  });
+
+  it("defaults sessions.kill to Delete and sessions.rename to F2, mirroring files.*", () => {
+    expect(COMMANDS.find((c) => c.id === "sessions.kill")?.defaultBindings).toEqual([
+      { key: "Delete", when: "sessionsListFocus" },
+    ]);
+    expect(COMMANDS.find((c) => c.id === "sessions.rename")?.defaultBindings).toEqual([
+      { key: "F2", when: "sessionsListFocus" },
+    ]);
+  });
+
+  it("registers sidebar.focusSessions as an unbound global command", () => {
+    const cmd = COMMANDS.find((c) => c.id === "sidebar.focusSessions");
+    expect(cmd?.scope).toBe("global");
+    expect(cmd?.defaultBindings).toEqual([]);
+  });
+});

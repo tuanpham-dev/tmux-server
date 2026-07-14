@@ -396,6 +396,69 @@ export function focusSidebarTab(id: string): void {
   selectSidebarTab(id);
 }
 
+interface SessionsFocusBridge {
+  // Expands the SESSIONS accordion panel if collapsed, then moves keyboard
+  // focus to its focused-or-first row.
+  focus(): void;
+}
+
+let sessionsFocusBridge: SessionsFocusBridge | null = null;
+
+// Wired once from Sidebar.tsx — lets sidebar.focusSessions below (App.tsx's
+// globalHandlers) reach into the accordion panel it doesn't otherwise know
+// about, same bridge pattern as setSidebarTabsBridge above.
+export function setSessionsFocusBridge(bridge: SessionsFocusBridge | null): void {
+  sessionsFocusBridge = bridge;
+}
+
+// Same literal-id-not-import approach as SEARCH_PANEL_ID above — Sidebar.tsx
+// already imports from this module, so importing its EXPLORER_TAB_ID export
+// back would be circular.
+const EXPLORER_TAB_ID = "explorer";
+
+// Drives the "Sidebar: Focus Sessions" command: reveal the sidebar and
+// switch to the Explorer tab if needed (reusing focusSidebarTab's own
+// reveal/switch logic, but never its toggle-hide branch — this command
+// always ends by focusing a row, not hiding the sidebar), then hand off to
+// the SESSIONS panel itself.
+export function focusSessionsPanel(): void {
+  if (!sidebarVisibility) return;
+  if (!sidebarVisibility.isVisible()) {
+    sidebarVisibility.setVisible(true);
+    selectSidebarTab(EXPLORER_TAB_ID);
+  } else if (sidebarTabsBridge?.getActive() !== EXPLORER_TAB_ID) {
+    selectSidebarTab(EXPLORER_TAB_ID);
+  }
+  sessionsFocusBridge?.focus();
+}
+
+interface PortsFocusBridge {
+  // Expands the PORTS accordion panel if collapsed, then moves keyboard
+  // focus to its focused-or-first row.
+  focus(): void;
+}
+
+let portsFocusBridge: PortsFocusBridge | null = null;
+
+// Wired once from Sidebar.tsx — same bridge pattern as
+// setSessionsFocusBridge above.
+export function setPortsFocusBridge(bridge: PortsFocusBridge | null): void {
+  portsFocusBridge = bridge;
+}
+
+// Drives the "Sidebar: Focus Ports" command — see focusSessionsPanel's doc
+// comment for the reveal/switch logic this mirrors.
+export function focusPortsPanel(): void {
+  if (!sidebarVisibility) return;
+  if (!sidebarVisibility.isVisible()) {
+    sidebarVisibility.setVisible(true);
+    selectSidebarTab(EXPLORER_TAB_ID);
+  } else if (sidebarTabsBridge?.getActive() !== EXPLORER_TAB_ID) {
+    selectSidebarTab(EXPLORER_TAB_ID);
+  }
+  portsFocusBridge?.focus();
+}
+
 // "Find in Folder…" (FILES-tree folder context menu, useFileActions.ts) —
 // switches to the bundled search extension's tab and hands it a glob scope.
 // Hardcodes the search extension's namespaced panel id rather than adding a

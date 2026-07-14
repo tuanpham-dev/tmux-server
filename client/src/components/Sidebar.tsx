@@ -1,13 +1,14 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { setContextKey } from "../contextKeys";
 import {
+  setPortsFocusBridge,
+  setSessionsFocusBridge,
   setSidebarTabsBridge,
   type RegisteredSidebarPanel,
   type RegisteredWindowAction,
 } from "../extensions";
 import { formatBinding, type Keybinding } from "../keybindings";
 import { moveId } from "../lib/tabs";
-import { sessionRowsWithPins } from "../lib/sessions";
 import type {
   ExtensionInfo,
   MenuItem,
@@ -20,7 +21,8 @@ import type {
 import ExtensionsPanel from "./ExtensionsPanel";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
-import PortsPanel from "./PortsPanel";
+import PortsPanel, { type PortsPanelHandle } from "./PortsPanel";
+import SessionList, { type SessionListHandle } from "./SessionList";
 import SidebarTabStrip, { type SidebarTabInfo } from "./SidebarTabStrip";
 
 // Built-in ids are the literal union below; an extension panel's id is
@@ -128,6 +130,14 @@ interface Props {
   onOpenWindow: (session: string, index: number) => void;
   onCreate: (name?: string) => void;
   onKillWindow: (session: string, index: number) => void;
+  // Backs SessionList's sessions.kill/rename/togglePin keyboard dispatch —
+  // the same functions App.tsx already wires to the global session.*
+  // commands (which act on the active tab), here acting on whichever row
+  // has keyboard focus in the list instead.
+  onKillSession: (name: string) => void;
+  onRenameSession: (name: string) => void;
+  onRenameWindow: (session: string, win: TmuxWindow) => void;
+  onTogglePinSession: (name: string) => void;
   onNewWindowInSession: (session: string) => void;
   onNewWindowInDir: (cwd: string) => void;
   onOpenLazygit: () => void;
@@ -203,6 +213,10 @@ export default function Sidebar({
   onOpenWindow,
   onCreate,
   onKillWindow,
+  onKillSession,
+  onRenameSession,
+  onRenameWindow,
+  onTogglePinSession,
   onNewWindowInSession,
   onNewWindowInDir,
   onOpenLazygit,
@@ -256,12 +270,11 @@ export default function Sidebar({
   resolvedBindings,
   confirmDialog,
 }: Props) {
-  const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
   const [mode, setMode] = useState<SidebarMode>(
     () => (localStorage.getItem("sidebarMode") as SidebarMode) ?? "sessions",
   );
-  const [collapsedWindows, setCollapsedWindows] = useState<Set<string>>(new Set());
+  const sessionListRef = useRef<SessionListHandle>(null);
+  const portsListRef = useRef<PortsPanelHandle>(null);
   const [panelState, setPanelState] = useState<PanelState>(loadPanelState);
   const [tabsState, setTabsState] = useState<TabsState>(loadTabsState);
   // Teardown for an in-progress splitter drag's window listeners — invoked by
@@ -418,15 +431,6 @@ export default function Sidebar({
     };
   });
 
-  const toggleWindowCollapsed = (key: string) => {
-    setCollapsedWindows((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
   const togglePanelCollapsed = (id: PanelId) => {
     setPanelState((prev) => ({
       ...prev,
@@ -442,201 +446,67 @@ export default function Sidebar({
       ...prev,
       collapsed: { ...prev.collapsed, sessions: false },
     }));
-    setCreating(true);
+    sessionListRef.current?.startCreating();
   };
 
-  const submitCreate = () => {
-    setCreating(false);
-    onCreate(newName.trim() || undefined);
-    setNewName("");
-  };
-
-  const chevron = (key: string) => (
-    <span
-      className="chevron"
-      onClick={(e) => {
-        e.stopPropagation();
-        toggleWindowCollapsed(key);
-      }}
-    >
-      <Icon name={collapsedWindows.has(key) ? "chevron-right" : "chevron-down"} />
-    </span>
-  );
-
-  const windowRow = (s: TmuxSession, w: TmuxWindow, label: string, showCwd: boolean) => {
-    const isActive =
-      activeWindow !== null
-        ? activeWindow.sessionName === s.name && activeWindow.index === w.index
-        : w.active;
-    return (
-      <div
-        key={`${s.name}:${w.index}`}
-        role="button"
-        tabIndex={0}
-        className={`window-item${isActive ? " active-window" : ""}`}
-        title={`${s.name}:${w.index} ${w.name} — ${w.cwd}${w.activity ? " (new output)" : ""}`}
-        onClick={() => onOpenWindow(s.name, w.index)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onOpenWindow(s.name, w.index);
-          }
-        }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          onShowMenu(e.clientX, e.clientY, windowMenuItems(s.name, w));
-        }}
-      >
-        {w.activity && <span className="activity-dot" />}
-        <span className="window-label">{label}</span>
-        {showCwd && <span className="item-cwd">{w.cwd}</span>}
-        {extensionWindowActions
-          .filter((action) =>
-            action.isVisible({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command }),
-          )
-          .map((action) => (
-            <button
-              key={action.id}
-              className="window-action-button"
-              title={action.title}
-              onClick={(e) => {
-                e.stopPropagation();
-                action.onClick({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command });
-              }}
-            >
-              <Icon name={action.icon} />
-            </button>
-          ))}
-        <button
-          className="window-kill-button"
-          title="Kill window"
-          onClick={(e) => {
-            e.stopPropagation();
-            onKillWindow(s.name, w.index);
-          }}
-        >
-          <Icon name="trash" />
-        </button>
-      </div>
-    );
-  };
-
-  const sessionRows = sessionRowsWithPins(sessions, pinnedSessions);
-
-  const sessionsTree = (
-    <ul className="session-list">
-      {sessionRows.map((row) => {
-        if (row.dead) {
-          return (
-            <li key={`dead:${row.name}`}>
-              <div className="session-row">
-                <button
-                  className="session-item dead-session-item"
-                  title={`${row.cwd} (not running — click to restore)`}
-                  onClick={() => onRestorePinned(row.name, row.cwd)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    onShowMenu(e.clientX, e.clientY, sessionMenuItems(row.name, true));
-                  }}
-                >
-                  <Icon name="pinned" className="pin-indicator" />
-                  <span className="session-name">{row.name}</span>
-                  <span className="item-cwd">{row.cwd}</span>
-                </button>
-                <button
-                  className="row-add-button"
-                  title="New window"
-                  onClick={() => onRestorePinned(row.name, row.cwd)}
-                >
-                  <Icon name="add" />
-                </button>
-              </div>
-            </li>
-          );
-        }
-        const s = row.session;
-        const activeWin = s.windows.find((w) => w.active);
-        return (
-          <li key={s.name}>
-            <div className={`session-row${s.name === activeSessionName ? " active" : ""}`}>
-              <button
-                className={`session-item${s.name === activeSessionName ? " active" : ""}`}
-                title={activeWin ? activeWin.cwd : s.name}
-                onClick={() => onOpenAllWindows(s.name)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  onShowMenu(e.clientX, e.clientY, sessionMenuItems(s.name, false));
-                }}
-              >
-                {chevron(s.name)}
-                <span className={`session-dot${s.attached > 0 ? " attached" : ""}`} />
-                {row.pinned && <Icon name="pinned" className="pin-indicator" />}
-                <span className="session-name">{s.name}</span>
-                {activeWin && <span className="item-cwd">{activeWin.cwd}</span>}
-              </button>
-              <button
-                className="row-add-button"
-                title="New window"
-                onClick={() => onNewWindowInSession(s.name)}
-              >
-                <Icon name="add" />
-              </button>
-            </div>
-            {!collapsedWindows.has(s.name) &&
-              s.windows.map((w) => windowRow(s, w, `${w.index} ${w.name}`, true))}
-          </li>
-        );
-      })}
-      {sessionRows.length === 0 && <li className="session-empty">No tmux sessions</li>}
-    </ul>
-  );
-
-  const dirGroups = new Map<string, { session: TmuxSession; window: TmuxWindow }[]>();
-  for (const s of sessions) {
-    for (const w of s.windows) {
-      const group = dirGroups.get(w.cwd) ?? [];
-      group.push({ session: s, window: w });
-      dirGroups.set(w.cwd, group);
+  // Lets "Sidebar: Focus Sessions" (App.tsx's globalHandlers, via
+  // extensions.ts's focusSessionsPanel) expand this accordion panel and
+  // hand off to SessionList's own focusList — see setSessionsFocusBridge's
+  // doc comment for why this lives in extensions.ts rather than being
+  // called directly (App.tsx doesn't otherwise know about Sidebar's
+  // internal panelState/SessionList). Read via a ref (not the closed-over
+  // panelState) since the bridge effect below only re-registers on mount.
+  const panelStateRef = useRef(panelState);
+  panelStateRef.current = panelState;
+  // A collapsed panel unmounts SessionList (panelContent's `!isCollapsed`
+  // guard) — expanding it and calling focusList in the same tick would hit
+  // a stale/null ref, since the DOM hasn't updated yet. Deferred here to the
+  // next render where the panel is actually expanded and SessionList has
+  // (re)mounted.
+  const pendingSessionsFocusRef = useRef(false);
+  useEffect(() => {
+    if (!panelState.collapsed.sessions && pendingSessionsFocusRef.current) {
+      pendingSessionsFocusRef.current = false;
+      sessionListRef.current?.focusList();
     }
-  }
+  }, [panelState.collapsed.sessions]);
+  useEffect(() => {
+    setSessionsFocusBridge({
+      focus: () => {
+        if (panelStateRef.current.collapsed.sessions) {
+          pendingSessionsFocusRef.current = true;
+          setPanelState((prev) => ({ ...prev, collapsed: { ...prev.collapsed, sessions: false } }));
+        } else {
+          sessionListRef.current?.focusList();
+        }
+      },
+    });
+    return () => setSessionsFocusBridge(null);
+  }, []);
 
-  const dirsTree = (
-    <ul className="session-list">
-      {[...dirGroups.keys()].sort().map((dir) => (
-        <li key={dir}>
-          <div className="session-row">
-            <button
-              className="session-item dir-item"
-              title={dir}
-              onClick={() => toggleWindowCollapsed(dir)}
-            >
-              {chevron(dir)}
-              <span className="session-name">{dir}</span>
-            </button>
-            <button
-              className="row-add-button"
-              title="New window in current session"
-              onClick={() => onNewWindowInDir(dir)}
-            >
-              <Icon name="add" />
-            </button>
-          </div>
-          {!collapsedWindows.has(dir) &&
-            dirGroups
-              .get(dir)!
-              .map(({ session, window }) =>
-                windowRow(
-                  session,
-                  window,
-                  `${session.name} · ${window.index} ${window.name}`,
-                  false,
-                ),
-              )}
-        </li>
-      ))}
-      {dirGroups.size === 0 && <li className="session-empty">No tmux sessions</li>}
-    </ul>
-  );
+  // Same bridge pattern as sessions, for "Sidebar: Focus Ports" — the PORTS
+  // accordion panel starts collapsed by default (DEFAULT_PANEL_STATE), so
+  // the deferred-focus path is the common case here, not the exception.
+  const pendingPortsFocusRef = useRef(false);
+  useEffect(() => {
+    if (!panelState.collapsed.ports && pendingPortsFocusRef.current) {
+      pendingPortsFocusRef.current = false;
+      portsListRef.current?.focusList();
+    }
+  }, [panelState.collapsed.ports]);
+  useEffect(() => {
+    setPortsFocusBridge({
+      focus: () => {
+        if (panelStateRef.current.collapsed.ports) {
+          pendingPortsFocusRef.current = true;
+          setPanelState((prev) => ({ ...prev, collapsed: { ...prev.collapsed, ports: false } }));
+        } else {
+          portsListRef.current?.focusList();
+        }
+      },
+    });
+    return () => setPortsFocusBridge(null);
+  }, []);
 
   const panelTitle = (id: PanelId): string => {
     if (id === "sessions") return mode === "sessions" ? "Sessions" : "Directories";
@@ -692,30 +562,41 @@ export default function Sidebar({
   const panelContent = (id: PanelId) => {
     if (id === "sessions") {
       return (
-        <>
-          {creating && (
-            <input
-              autoFocus
-              className="new-session-input"
-              placeholder="session name (blank = auto)"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onBlur={submitCreate}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submitCreate();
-                if (e.key === "Escape") {
-                  setCreating(false);
-                  setNewName("");
-                }
-              }}
-            />
-          )}
-          {mode === "sessions" ? sessionsTree : dirsTree}
-        </>
+        <SessionList
+          ref={sessionListRef}
+          mode={mode}
+          sessions={sessions}
+          activeSessionName={activeSessionName}
+          activeWindow={activeWindow}
+          pinnedSessions={pinnedSessions}
+          onOpenAllWindows={onOpenAllWindows}
+          onOpenWindow={onOpenWindow}
+          onCreate={onCreate}
+          onKillWindow={onKillWindow}
+          onKillSession={onKillSession}
+          onRenameSession={onRenameSession}
+          onRenameWindow={onRenameWindow}
+          onTogglePinSession={onTogglePinSession}
+          onNewWindowInSession={onNewWindowInSession}
+          onNewWindowInDir={onNewWindowInDir}
+          onRestorePinned={onRestorePinned}
+          onShowMenu={onShowMenu}
+          sessionMenuItems={sessionMenuItems}
+          windowMenuItems={windowMenuItems}
+          extensionWindowActions={extensionWindowActions}
+          resolvedBindings={resolvedBindings}
+        />
       );
     }
     if (id === "ports") {
-      return <PortsPanel refreshKey={portsRefreshKey} confirmDialog={confirmDialog} />;
+      return (
+        <PortsPanel
+          ref={portsListRef}
+          refreshKey={portsRefreshKey}
+          confirmDialog={confirmDialog}
+          onShowMenu={onShowMenu}
+        />
+      );
     }
     if (id === "files") {
       return (

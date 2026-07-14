@@ -472,11 +472,18 @@ body.resizing-row {
 }
 
 .session-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  outline: none;
+}
+
+.session-list-ul {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
-  flex: 1;
 }
 
 .session-row {
@@ -567,6 +574,12 @@ body.resizing-row {
 
 .window-item:hover {
   background: var(--list-hover-bg);
+}
+
+.session-item:focus-visible,
+.window-item:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
 }
 
 .window-item.active-window .window-label {
@@ -2251,6 +2264,12 @@ body.scrollbar-dragging {
   background: var(--list-hover-bg);
 }
 
+.extension-row-clickable:focus-visible,
+.extensions-panel-section-header:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
 /* A disabled extension's row reads as dimmed/inactive at a glance, same as a
    collapsed/inactive item elsewhere in the app — the icon additionally loses
    color so a colorful icon doesn't fight the otherwise-muted row. */
@@ -2680,6 +2699,11 @@ body.scrollbar-dragging {
   background: var(--list-hover-bg);
 }
 
+.port-item:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
 .port-row.selected {
   background: var(--list-active-bg);
   color: var(--list-active-fg);
@@ -2715,7 +2739,8 @@ body.scrollbar-dragging {
   visibility: hidden;
 }
 
-.port-row:hover .port-action-button {
+.port-row:hover .port-action-button,
+.port-item:focus-visible ~ .port-actions .port-action-button {
   visibility: visible;
 }
 

@@ -20,9 +20,11 @@ export interface Command {
   defaultBindings: Keybinding[];
   // Terminal-scoped commands are dispatched from the terminal's own key handler
   // in TerminalView; files-scoped commands are dispatched from the FILES tree's
-  // own key handler in FileTree.tsx. Neither goes through the global window
-  // dispatcher (useGlobalKeybindings), which yields to both scopes instead.
-  scope: "global" | "terminal" | "files";
+  // own key handler in FileTree.tsx; sessions-scoped commands are dispatched
+  // from SessionList.tsx's own key handler. None of these go through the
+  // global window dispatcher (useGlobalKeybindings), which yields to all
+  // three scopes instead.
+  scope: "global" | "terminal" | "files" | "sessions";
   // When-expression gating this command's *palette row* (not its keybinding
   // dispatch — a binding's own `when` on Keybinding does that). Evaluated
   // against context keys the same way a binding's when is; absent means
@@ -100,6 +102,12 @@ export const COMMANDS: Command[] = [
   { id: "files.newFolder", label: "Files: New Folder…", defaultBindings: [], scope: "files" },
   { id: "files.copyPath", label: "Files: Copy Path", defaultBindings: [], scope: "files" },
   { id: "files.copyRelativePath", label: "Files: Copy Relative Path", defaultBindings: [], scope: "files" },
+  { id: "sessions.kill", label: "Sessions: Kill Focused", defaultBindings: [{ key: "Delete", when: "sessionsListFocus" }], scope: "sessions" },
+  { id: "sessions.rename", label: "Sessions: Rename Focused…", defaultBindings: [{ key: "F2", when: "sessionsListFocus" }], scope: "sessions" },
+  { id: "sessions.newWindow", label: "Sessions: New Window in Focused Session", defaultBindings: [], scope: "sessions" },
+  { id: "sessions.togglePin", label: "Sessions: Pin/Unpin Focused Session", defaultBindings: [], scope: "sessions" },
+  { id: "sidebar.focusSessions", label: "Sidebar: Focus Sessions", defaultBindings: [], scope: "global" },
+  { id: "sidebar.focusPorts", label: "Sidebar: Focus Ports", defaultBindings: [], scope: "global" },
 ];
 
 // Overrides only (command id → its full replacement binding set, [] meaning

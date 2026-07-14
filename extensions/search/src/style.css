@@ -207,6 +207,12 @@
   background: var(--list-hover-bg);
 }
 
+.search-group-header:focus-visible,
+.search-match-row:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
 .search-group-name {
   flex-shrink: 0;
   font-weight: 600;
@@ -242,7 +248,8 @@
   margin-left: 4px;
 }
 
-.search-group-header:hover .search-group-actions {
+.search-group-header:hover .search-group-actions,
+.search-group-header:focus-visible .search-group-actions {
   display: flex;
 }
 
@@ -292,7 +299,8 @@
   margin-left: auto;
 }
 
-.search-match-row:hover .search-match-actions {
+.search-match-row:hover .search-match-actions,
+.search-match-row:focus-visible .search-match-actions {
   display: flex;
 }
 

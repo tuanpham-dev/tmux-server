@@ -249,6 +249,12 @@
   background: var(--list-hover-bg);
 }
 
+.git-row:focus-visible,
+.git-group-header:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
 /* Multi-selection highlight — same convention as client/src's
    .file-tree-row.selected. */
 .git-row.selected {
@@ -346,7 +352,8 @@
   gap: 2px;
 }
 
-.git-row:hover .git-row-actions {
+.git-row:hover .git-row-actions,
+.git-row:focus-visible .git-row-actions {
   display: flex;
 }
 

@@ -13,7 +13,13 @@ import SplitLayout from "./components/SplitLayout";
 import TerminalView from "./components/TerminalView";
 import { EXPLORER_TAB_ID, EXTENSIONS_TAB_ID } from "./components/Sidebar";
 import { getContextGetter, setContextKey } from "./contextKeys";
-import { focusSidebarTab, setSidebarVisibleHandler, useExtensionRegistry } from "./extensions";
+import {
+  focusPortsPanel,
+  focusSessionsPanel,
+  focusSidebarTab,
+  setSidebarVisibleHandler,
+  useExtensionRegistry,
+} from "./extensions";
 import { useDialogs } from "./hooks/useDialogs";
 import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
@@ -676,6 +682,8 @@ export default function App() {
       "sidebar.toggle": () => setSidebarVisible((v) => !v),
       "sidebar.focusExplorer": () => focusSidebarTab(EXPLORER_TAB_ID),
       "sidebar.focusExtensions": () => focusSidebarTab(EXTENSIONS_TAB_ID),
+      "sidebar.focusSessions": () => focusSessionsPanel(),
+      "sidebar.focusPorts": () => focusPortsPanel(),
       "quickSwitcher.toggle": () => setSwitcherQuery((q) => (q === null ? "" : null)),
       "commandPalette.toggle": () => setSwitcherQuery((q) => (q === null ? ">" : null)),
       "tab.next": () => cycleTab(1),
@@ -1028,6 +1036,10 @@ export default function App() {
             onOpenWindow={openWindowTab}
             onCreate={createSession}
             onKillWindow={killWindow}
+            onKillSession={killSession}
+            onRenameSession={renameSession}
+            onRenameWindow={renameWindow}
+            onTogglePinSession={togglePinSession}
             onNewWindowInSession={createWindow}
             onNewWindowInDir={newWindowInDir}
             onOpenLazygit={openLazygit}
