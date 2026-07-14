@@ -58,6 +58,7 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+
 function sendFsError(res: Response, err: unknown): void {
   if (err instanceof ConflictError) {
     res.status(409).json({ error: err.message });
@@ -692,6 +693,44 @@ api.post("/fs/paste", async (req, res) => {
     fsClipboard = null;
   }
   res.status(200).json({ pasted, errors });
+});
+
+// Drag-and-drop move/copy within the FILES tree. Deliberately NOT routed
+// through the clipboard above: a drag must not clobber a pending cut/copy the
+// user set earlier (set-clipboard-then-paste would silently discard it). Path
+// safety (self-nesting, collisions, EXDEV) stays entirely in movePath/copyPath.
+api.post("/fs/transfer", async (req, res) => {
+  const paths = Array.isArray(req.body?.paths) ? req.body.paths : null;
+  const mode = req.body?.mode === "move" || req.body?.mode === "copy" ? req.body.mode : null;
+  const destDirRaw = typeof req.body?.destDir === "string" ? req.body.destDir : "";
+  if (!paths || paths.length === 0 || !paths.every((p: unknown) => typeof p === "string") || !mode) {
+    res.status(400).json({ error: "paths (non-empty string[]) and mode ('move'|'copy') are required" });
+    return;
+  }
+  if (!destDirRaw) {
+    res.status(400).json({ error: "destDir is required" });
+    return;
+  }
+  const destDir = expandHome(destDirRaw);
+  if (!(await isDirectory(destDir))) {
+    res.status(400).json({ error: "destDir is not a directory" });
+    return;
+  }
+
+  const done: string[] = [];
+  const errors: { path: string; message: string }[] = [];
+  for (const raw of paths as string[]) {
+    const src = expandHome(raw);
+    try {
+      const target = mode === "copy" ? await copyPath(src, destDir) : await movePath(src, destDir);
+      // movePath returns null for a no-op (destDir is already src's parent) —
+      // nothing moved, so nothing to report as done.
+      if (target) done.push(target);
+    } catch (err) {
+      errors.push({ path: src, message: errMessage(err) });
+    }
+  }
+  res.status(200).json({ done, errors });
 });
 
 api.post("/newfile", async (req, res) => {

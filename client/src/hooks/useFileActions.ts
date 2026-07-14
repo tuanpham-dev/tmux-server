@@ -180,6 +180,32 @@ export function useFileActions(
     [fsClipboard, showError, setFilesRefreshKey],
   );
 
+  // Backs FILES-tree drag-and-drop (drag = move, Ctrl+drag = copy). Separate
+  // from the clipboard actions above by design — a drag leaves whatever the
+  // user has cut/copied on the server clipboard untouched.
+  const transferEntries = useCallback(
+    async (paths: string[], destDir: string, mode: "move" | "copy") => {
+      if (paths.length === 0) return;
+      try {
+        const { done, errors } = await api.transferEntries(paths, destDir, mode);
+        // A move leaves the source paths behind as stale tree state (expanded /
+        // dirCache / selection), same as a cut-paste — prune them. A copy adds
+        // without removing, so a plain refresh is enough.
+        if (mode === "move" && done.length > 0) setPrunePath({ paths });
+        if (done.length > 0) setFilesRefreshKey((k) => k + 1);
+        const verb = mode === "move" ? "Move" : "Copy";
+        if (errors.length === 1) {
+          showError(`${verb} failed: ${errors[0].path} — ${errors[0].message}`);
+        } else if (errors.length > 1) {
+          showError(`${errors.length} items failed to ${mode}`);
+        }
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [showError, setFilesRefreshKey],
+  );
+
   const createFileInDir = useCallback(
     async (dirPath: string) => {
       const name = (await promptDialog("New file name"))?.trim();
@@ -408,6 +434,7 @@ export function useFileActions(
     pasteIntoDir,
     clearClipboard,
     refreshClipboardMirror,
+    transferEntries,
     fileTreeRootMenuItems,
     fileMenuItems,
     fileMultiMenuItems,

@@ -987,6 +987,7 @@ export default function App() {
     pasteIntoDir,
     clearClipboard,
     refreshClipboardMirror,
+    transferEntries,
   } = useFileActions(
     showError,
     confirmDialog,
@@ -1052,6 +1053,7 @@ export default function App() {
             onCutEntries={cutEntries}
             onPasteInto={pasteIntoDir}
             onClearClipboard={clearClipboard}
+            onTransferEntries={transferEntries}
             extensionPanels={extSidebarPanels}
             extensionWindowActions={extWindowActions}
             extensions={extensions}

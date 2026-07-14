@@ -38,7 +38,23 @@ interface Props {
   onCutEntries: (paths: string[]) => void;
   onPasteInto: (destDir: string) => void;
   onClearClipboard: () => void;
+  // Drag-and-drop within the tree: plain drag moves, Ctrl+drag copies (VS Code
+  // Explorer's convention). Routes to a dedicated server endpoint, NOT through
+  // the copy/cut clipboard above — a drag must leave a pending cut intact.
+  onTransferEntries: (paths: string[], destDir: string, mode: "move" | "copy") => void;
 }
+
+// Marks a drag as originating from this tree (vs. an OS file drag, which the
+// browser marks with the "Files" type). The dragged paths ride along as JSON,
+// so a drag between two windows of the same server works too — but the payload
+// is unreadable during "dragover" (only `types` is exposed until drop), which
+// is why dragPathsRef mirrors it for the live validity/highlight checks.
+const INTERNAL_DRAG_TYPE = "application/x-tmux-files";
+
+// Distance from the tree's top/bottom edge at which a drag starts autoscrolling
+// it, and how far each "dragover" pulse scrolls by.
+const DRAG_SCROLL_EDGE_PX = 24;
+const DRAG_SCROLL_STEP_PX = 12;
 
 const GIT_STATUS_LABEL: Record<GitFileStatus, string> = {
   modified: "M",
@@ -115,6 +131,7 @@ export default function FileTree({
   onCutEntries,
   onPasteInto,
   onClearClipboard,
+  onTransferEntries,
 }: Props) {
   // Unused value — subscribing is enough to re-render on icon-theme change,
   // since getFileIconResult/getFolderIconResult read module state directly.
@@ -122,6 +139,12 @@ export default function FileTree({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Map<string, DirState>>(new Map());
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
+  // Rows currently being dragged out of the tree — dims them for the duration
+  // of the drag. The ref is the source of truth during the drag itself (the
+  // DataTransfer payload can't be read on "dragover"); the state exists purely
+  // to re-render the dimming.
+  const dragPathsRef = useRef<string[] | null>(null);
+  const [draggingPaths, setDraggingPaths] = useState<Set<string> | null>(null);
   // Roving-tabindex focus target; null falls back to the first visible row
   // (see effectiveFocusedPath below) so an empty tree never has a stuck ref.
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
@@ -275,16 +298,31 @@ export default function FileTree({
   // "dragover" pulses — so a self-refreshing timeout is the one signal that
   // works in every case, with "dragend"/window "drop" kept as a faster clear
   // when the browser does happen to fire them.
+  // Forgets what was being dragged *from* the tree. Deliberately separate from
+  // clearDragState (which owns the drop-target highlight): dragging out of the
+  // tree and back in fires "dragleave" → clearDragState, but the drag itself is
+  // still very much alive, and dropping the source paths there would break both
+  // the dimming and the drop-target validity checks that read them.
+  const clearDragSource = useCallback(() => {
+    dragPathsRef.current = null;
+    setDraggingPaths(null);
+  }, []);
+
+  const endDrag = useCallback(() => {
+    clearDragState();
+    clearDragSource();
+  }, [clearDragState, clearDragSource]);
+
   useEffect(() => {
-    window.addEventListener("dragend", clearDragState);
-    window.addEventListener("drop", clearDragState);
+    window.addEventListener("dragend", endDrag);
+    window.addEventListener("drop", endDrag);
     return () => {
-      window.removeEventListener("dragend", clearDragState);
-      window.removeEventListener("drop", clearDragState);
+      window.removeEventListener("dragend", endDrag);
+      window.removeEventListener("drop", endDrag);
       window.clearTimeout(dragClearTimer.current);
       cancelExpandTimer();
     };
-  }, [clearDragState]);
+  }, [endDrag]);
 
   const toggle = (dirPath: string) => {
     setExpanded((prev) => {
@@ -604,16 +642,14 @@ export default function FileTree({
   // keydown handler for the same combo. clipboardData *is* a DataTransfer,
   // so the OS-file branch reuses the existing drop pipeline unchanged.
   const handleTreePaste = (e: React.ClipboardEvent) => {
-    // focusedPath, not effectiveFocusedPath: that fallback exists for
-    // keyboard roving-tabindex, which needs *some* landing row even after a
-    // click-to-deselect clears the visible selection — but focusedPath
-    // itself is untouched by that click (DOM focus stays on the row; see
-    // handleTreeKeyDown's Escape case and the container's onClick), so a
-    // paste right after deselecting still correctly targets the folder the
-    // user was last in. Falling through to visibleRows[0] here instead
-    // would silently redirect to whatever the first *visible* row happens
-    // to be (often a file, whose parent is rootDir) any time nothing has
-    // ever been focused — rootDir is the honest default for that case.
+    // focusedPath, not effectiveFocusedPath: that fallback exists for keyboard
+    // roving-tabindex, which needs *some* landing row to exist even when no row
+    // has ever been focused. Reading it here would silently redirect a paste to
+    // whatever the first visible row happens to be (often a file, i.e. rootDir
+    // by accident); a null focusedPath means "no row is targeted", and rootDir
+    // is the honest destination for that — which is exactly the case after a
+    // click on empty tree space, where onClick below clears focusedPath so this
+    // pastes into the root.
     const idx = indexOf(focusedPath);
     const row = idx !== -1 ? visibleRows[idx] : null;
     const destDir = row ? (row.isDir ? row.path : row.path.slice(0, row.path.lastIndexOf("/"))) : rootDir;
@@ -642,25 +678,120 @@ export default function FileTree({
     expandTimer.current = { path: dirPath, timer };
   };
 
+  // Starts an internal drag. Mirrors handleRowContextMenu's selection rule: a
+  // row inside a live multi-selection drags the whole selection; anything else
+  // collapses the selection to itself first, so what's dragged is always what's
+  // visibly selected.
+  const handleRowDragStart = (e: React.DragEvent, path: string) => {
+    let paths: string[];
+    if (selectedPaths.has(path) && selectedPaths.size > 1) {
+      paths = visibleRows.filter((r) => selectedPaths.has(r.path)).map((r) => r.path);
+    } else {
+      paths = [path];
+      setSelectedPaths(new Set([path]));
+      setAnchorPath(path);
+    }
+    // Drop anything nested under another dragged folder: moving/copying the
+    // parent already carries its descendants, and transferring both would race
+    // against a source path that no longer exists by the time its turn comes.
+    paths = paths.filter((p) => !paths.some((other) => other !== p && p.startsWith(`${other}/`)));
+    dragPathsRef.current = paths;
+    setDraggingPaths(new Set(paths));
+    e.dataTransfer.setData(INTERNAL_DRAG_TYPE, JSON.stringify(paths));
+    e.dataTransfer.effectAllowed = "copyMove";
+  };
+
+  // A drop target is invalid when it IS one of the dragged paths, or sits
+  // inside one of the dragged folders — movePath/copyPath reject both anyway,
+  // but catching it here means the browser paints a "no drop" cursor instead of
+  // accepting a drop that can only fail.
+  const isInvalidTarget = (dirPath: string, paths: string[]) =>
+    paths.some((p) => dirPath === p || dirPath.startsWith(`${p}/`));
+
+  // Autoscrolls the tree when a drag hovers near its top/bottom edge, so a drop
+  // target scrolled out of view is still reachable without dropping first.
+  const autoScrollOnDrag = (clientY: number) => {
+    const el = treeContainerRef.current;
+    if (!el) return;
+    const { top, bottom } = el.getBoundingClientRect();
+    if (clientY < top + DRAG_SCROLL_EDGE_PX) el.scrollTop -= DRAG_SCROLL_STEP_PX;
+    else if (clientY > bottom - DRAG_SCROLL_EDGE_PX) el.scrollTop += DRAG_SCROLL_STEP_PX;
+  };
+
   // Attached to a folder's wrapper div (not just its header row) so hovering
   // anywhere inside an expanded folder — including over its files — targets
   // that folder; a deeper nested folder's own handlers win via stopPropagation.
+  // Handles both drag kinds: an OS file drag (always an upload/copy) and an
+  // internal row drag (move, or copy with Ctrl held at drop time).
   const dragHandlers = (dirPath: string) => ({
     onDragOver: (e: React.DragEvent) => {
-      if (!e.dataTransfer.types.includes("Files")) return;
+      const internal = e.dataTransfer.types.includes(INTERNAL_DRAG_TYPE);
+      if (!internal && !e.dataTransfer.types.includes("Files")) return;
+      // dragPathsRef is null for a drag from another window — nothing to
+      // validate against locally, so the server has the final say (its own
+      // movePath/copyPath guards reject a self-nesting drop).
+      const dragged = dragPathsRef.current;
+      if (internal && dragged && isInvalidTarget(dirPath, dragged)) {
+        // stopPropagation, not a bare return: these handlers sit on nested
+        // folder wrappers, so an un-stopped event keeps bubbling until some
+        // *ancestor* folder accepts it — dropping a folder on its own child
+        // would silently land in an ancestor instead of showing "no drop".
+        // Swallowing it here means nothing calls preventDefault, which is what
+        // makes the browser paint the not-allowed cursor and withhold the drop.
+        e.stopPropagation();
+        setDragOverPath(null);
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = "copy";
+      // Read live on every pulse, so pressing/releasing Ctrl mid-drag flips the
+      // cursor between move and copy without the user restarting the drag.
+      e.dataTransfer.dropEffect = internal ? (e.ctrlKey ? "copy" : "move") : "copy";
       setDragOverPath(dirPath);
+      autoScrollOnDrag(e.clientY);
       window.clearTimeout(dragClearTimer.current);
       dragClearTimer.current = window.setTimeout(clearHighlightOnly, DRAG_CLEAR_MS);
-      if (dirPath !== rootDir) scheduleExpand(dirPath);
+      // Never auto-expand a folder that's being dragged: the isInvalidTarget
+      // gate above already returns early for it, but this stands on its own so
+      // a future change there can't quietly resurrect a source folder popping
+      // open underneath its own drag.
+      if (dirPath !== rootDir && !dragged?.includes(dirPath)) scheduleExpand(dirPath);
     },
     onDrop: (e: React.DragEvent) => {
-      if (!e.dataTransfer.types.includes("Files")) return;
+      const internal = e.dataTransfer.types.includes(INTERNAL_DRAG_TYPE);
+      if (!internal && !e.dataTransfer.types.includes("Files")) return;
+      // Mirrors the dragover gate above: an invalid target must not let the
+      // drop bubble to an ancestor folder. In practice the browser won't even
+      // fire a drop here (dragover refused it), but a stray one must not be
+      // quietly rerouted upward.
+      const draggedNow = dragPathsRef.current;
+      if (internal && draggedNow && isInvalidTarget(dirPath, draggedNow)) {
+        e.stopPropagation();
+        endDrag();
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
-      clearDragState();
+      if (internal) {
+        // getData is only readable now (not during dragover) and is what makes
+        // a cross-window drag work; the ref is the same-window fallback.
+        const raw = e.dataTransfer.getData(INTERNAL_DRAG_TYPE);
+        let paths: string[] = dragPathsRef.current ?? [];
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.every((p) => typeof p === "string")) paths = parsed;
+          } catch {
+            // Malformed payload — fall back to the ref (same-window drag).
+          }
+        }
+        const ctrl = e.ctrlKey;
+        endDrag();
+        if (paths.length === 0 || isInvalidTarget(dirPath, paths)) return;
+        onTransferEntries(paths, dirPath, ctrl ? "copy" : "move");
+        return;
+      }
+      endDrag();
       onDropFiles(dirPath, e.dataTransfer);
     },
   });
@@ -680,6 +811,7 @@ export default function FileTree({
       const gitClass = entry.gitStatus ? ` git-status-${entry.gitStatus}` : "";
       const selectedClass = selectedPaths.has(entryPath) ? " selected" : "";
       const cutClass = cutPaths?.has(entryPath) ? " cut" : "";
+      const draggingClass = draggingPaths?.has(entryPath) ? " dragging" : "";
       const rowTabIndex = entryPath === effectiveFocusedPath ? 0 : -1;
       const setRowRef = (el: HTMLElement | null) => {
         if (el) rowRefs.current.set(entryPath, el);
@@ -697,13 +829,16 @@ export default function FileTree({
               aria-level={depth + 1}
               aria-selected={selectedPaths.has(entryPath)}
               tabIndex={rowTabIndex}
+              draggable
               className={`file-tree-row file-tree-dir${
                 dragOverPath === entryPath ? " drag-over" : ""
-              }${gitClass}${selectedClass}${cutClass}`}
+              }${gitClass}${selectedClass}${cutClass}${draggingClass}`}
               style={{ paddingLeft: 6 + depth * 14 }}
               title={entryPath}
               onClick={(e) => handleRowClick(e, entryPath, true, entry.name)}
               onContextMenu={(e) => handleRowContextMenu(e, entryPath, true)}
+              onDragStart={(e) => handleRowDragStart(e, entryPath)}
+              onDragEnd={endDrag}
             >
               <span className="chevron">
                 <Icon name={isExpanded ? "chevron-down" : "chevron-right"} />
@@ -730,11 +865,14 @@ export default function FileTree({
           aria-level={depth + 1}
           aria-selected={selectedPaths.has(entryPath)}
           tabIndex={rowTabIndex}
-          className={`file-tree-row file-tree-file${gitClass}${selectedClass}${cutClass}`}
+          draggable
+          className={`file-tree-row file-tree-file${gitClass}${selectedClass}${cutClass}${draggingClass}`}
           style={{ paddingLeft: 6 + depth * 14 }}
           title={entry.name}
           onClick={(e) => handleRowClick(e, entryPath, false, entry.name)}
           onContextMenu={(e) => handleRowContextMenu(e, entryPath, false)}
+          onDragStart={(e) => handleRowDragStart(e, entryPath)}
+          onDragEnd={endDrag}
         >
           <span className="chevron-spacer" />
           <FileIcon className="file-tree-file-icon" result={fileIcon} />
@@ -786,14 +924,28 @@ export default function FileTree({
       }}
       onKeyDown={handleTreeKeyDown}
       onPaste={handleTreePaste}
+      // A paste event is only delivered to whatever holds DOM focus. Rows are
+      // focusable but this container wasn't, so clicking empty tree space left
+      // focus wherever it already was (typically the terminal) — and Ctrl+V
+      // then pasted into *that*, never reaching handleTreePaste at all. There
+      // was no way to paste into the root. -1 keeps it out of the Tab order
+      // while letting it hold focus when clicked; keyboard nav is unaffected,
+      // since handleTreeKeyDown already lives on this same element and an arrow
+      // key moves focus into a real row via effectiveFocusedPath's fallback.
+      tabIndex={-1}
       onMouseDown={(e) => {
         if ((e.target as HTMLElement).closest(".file-tree-row, button, input")) return;
+        treeContainerRef.current?.focus();
         onMarqueeMouseDown(e);
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
           setSelectedPaths(new Set());
           setAnchorPath(null);
+          // Drop the focused row too, so a paste right after clicking empty
+          // space targets the root (see handleTreePaste) rather than silently
+          // going to whichever folder was last touched.
+          setFocusedPath(null);
         }
       }}
     >

@@ -701,6 +701,12 @@ body.resizing-row {
 
 /* ---- Files panel content ---- */
 
+/* Focusable (tabIndex -1) purely so it can receive paste events when the click
+   landed on empty space rather than a row — never a visible focus target. */
+.file-tree:focus {
+  outline: none;
+}
+
 .file-tree {
   flex: 1;
   overflow-y: auto;
@@ -914,6 +920,13 @@ body.resizing-row {
 /* A row whose entry is on the clipboard in "cut" mode, awaiting paste
    elsewhere — matches VS Code Explorer's cut-row dimming convention. */
 .file-tree-row.cut {
+  opacity: 0.5;
+}
+
+/* Rows being dragged elsewhere in the tree (drag = move, Ctrl+drag = copy) —
+   dimmed for the duration of the drag, same treatment as a cut row above,
+   which is likewise "this is on its way somewhere else". */
+.file-tree-row.dragging {
   opacity: 0.5;
 }
 

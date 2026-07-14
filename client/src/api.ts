@@ -249,6 +249,20 @@ export function pasteFsClipboard(
   });
 }
 
+// FILES-tree drag-and-drop move/copy — a separate route from the clipboard
+// above on purpose, so a drag never clobbers a pending cut/copy.
+export function transferEntries(
+  paths: string[],
+  destDir: string,
+  mode: "move" | "copy",
+): Promise<{ done: string[]; errors: { path: string; message: string }[] }> {
+  return request("/api/fs/transfer", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths, destDir, mode }),
+  });
+}
+
 export function downloadUrl(targetPath: string): string {
   return `/api/download?path=${encodeURIComponent(targetPath)}`;
 }

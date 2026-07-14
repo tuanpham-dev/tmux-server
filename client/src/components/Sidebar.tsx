@@ -163,6 +163,9 @@ interface Props {
   onCutEntries: (paths: string[]) => void;
   onPasteInto: (destDir: string) => void;
   onClearClipboard: () => void;
+  // FILES-tree drag-and-drop: drag = move, Ctrl+drag = copy. Independent of
+  // the clipboard props above — a drag never touches the cut/copy clipboard.
+  onTransferEntries: (paths: string[], destDir: string, mode: "move" | "copy") => void;
   extensionPanels: RegisteredSidebarPanel[];
   extensionWindowActions: RegisteredWindowAction[];
   extensions: ExtensionInfo[];
@@ -223,6 +226,7 @@ export default function Sidebar({
   onCutEntries,
   onPasteInto,
   onClearClipboard,
+  onTransferEntries,
   extensionPanels,
   extensionWindowActions,
   extensions,
@@ -722,6 +726,7 @@ export default function Sidebar({
           onCutEntries={onCutEntries}
           onPasteInto={onPasteInto}
           onClearClipboard={onClearClipboard}
+          onTransferEntries={onTransferEntries}
         />
       );
     }
