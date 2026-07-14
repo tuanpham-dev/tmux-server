@@ -234,6 +234,25 @@ export default function TerminalView({
       document.addEventListener = realAddEventListener;
       termRef.current = term;
 
+      // ghostty-web's open() makes the screen div contenteditable and
+      // leaves it focused (its trailing this.focus()). On touch devices
+      // that arms the on-screen keyboard: Android pops it on ANY later
+      // touch of a focused editable — swipes included, no focus() call
+      // involved (confirmed on-device; a tab switch's display:none blur
+      // was what made it seem intermittent). Blurring after open() proved
+      // insufficient — the div ended up focused again through native
+      // paths — so remove editability itself: a focused non-editable div
+      // cannot summon the keyboard. Typing is unaffected on touch — the
+      // hidden textarea is the IME target (onTouchEnd's tap path below)
+      // and its key/composition/beforeinput events bubble to this
+      // container where ghostty's InputHandler and the app's Android
+      // bridge listen.
+      if (window.matchMedia("(pointer: coarse)").matches) {
+        screen.removeAttribute("contenteditable");
+        screen.removeAttribute("role");
+        screen.blur();
+      }
+
       // Display settings ghostty-web has no options for — lineHeight,
       // letterSpacing, minimumContrastRatio — applied by shimming the
       // renderer (ghosttyShims.ts). The shim re-measures immediately;
@@ -871,8 +890,23 @@ export default function TerminalView({
         pending = null;
       }
 
+      // Set by the touch handlers below when a swipe-scroll ends: Android
+      // synthesizes compatibility mouse events after a touchend it wasn't
+      // allowed to cancel (they're often non-cancelable post-scroll), and
+      // that ghost mousedown would focus the hidden textarea — popping the
+      // on-screen keyboard — through this handler AND ghostty's canvas
+      // listener. Swallowing every mouse event in this window kills the
+      // whole synthesized burst; real mice are unaffected (nothing sets it
+      // without touch).
+      let suppressMouseUntil = 0;
+
       const onCapture = (e: MouseEvent) => {
         if (syntheticSelectStarts.has(e)) return;
+        if (performance.now() < suppressMouseUntil) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         if (e.type === "mousemove") {
           // Tracked unconditionally (before any bail-out below): the link
           // hover tooltip has no MouseEvent of its own to position from.
@@ -1043,12 +1077,10 @@ export default function TerminalView({
       // dispatched at the canvas: they funnel through the custom wheel
       // handler above, so every policy there (SGR reports under tracking,
       // nvim hscroll, ghostty's own fallback) applies to touch unchanged.
-      // Once a drag crosses the threshold the whole gesture is a scroll:
-      // touchmove is preventDefault()ed to stop browser pan/pull-to-refresh
-      // (belt-and-braces with the CSS touch-action: none), and the trailing
-      // touchend is swallowed in capture phase — before ghostty's canvas
-      // listener — so a scroll doesn't focus the textarea and pop the
-      // on-screen keyboard. Taps pass through untouched.
+      // Once a drag crosses the threshold the whole gesture is a scroll,
+      // and touchmove is preventDefault()ed to stop browser
+      // pan/pull-to-refresh (belt-and-braces with the CSS touch-action:
+      // none). Gesture endings are owned entirely by onTouchEnd below.
       const TOUCH_SCROLL_THRESHOLD_PX = 8;
       let touchLast: { x: number; y: number } | null = null;
       let touchScrolling = false;
@@ -1093,6 +1125,7 @@ export default function TerminalView({
         // granted here and only here: a completed single-finger tap.
         // Swipes, cancelled gestures, and multi-touch never focus.
         const wasTap = touchLast !== null && !touchScrolling;
+        if (!wasTap) suppressMouseUntil = performance.now() + 700;
         touchLast = null;
         touchScrolling = false;
         e.stopPropagation();
@@ -1125,7 +1158,26 @@ export default function TerminalView({
       // Observes the screen div (what FitAddon measures), not the host: the
       // touch key bar mounting/unmounting resizes only the flex body around
       // the screen, never the host itself.
-      const observer = new ResizeObserver(refit);
+      //
+      // The trailing settle pass exists for mobile keyboard show/hide storms
+      // (win/vv observed bouncing 825→425→825→797 within milliseconds):
+      // per-step refits have left the canvas mis-scaled — internal buffer at
+      // the wrong resolution for its final CSS size, rendering blurry
+      // stretched glyphs — until something forced a full re-layout (users
+      // had to switch tabs). bounceFont is the one public path that
+      // re-sizes the canvas to the shimmed metrics AND force-renders, so
+      // running it once the storm goes quiet performs that tab-switch reset
+      // automatically.
+      let settleTimer: number | undefined;
+      const observer = new ResizeObserver(() => {
+        refit();
+        window.clearTimeout(settleTimer);
+        settleTimer = window.setTimeout(() => {
+          if (disposed) return;
+          bounceFont();
+          refit();
+        }, 350);
+      });
       observer.observe(screen);
 
       // Same coarse-pointer gate as the [focused] effect below: a tab
@@ -1136,6 +1188,7 @@ export default function TerminalView({
       cleanup = () => {
         clearTimeout(reconnectTimer);
         clearTimeout(queryThrottleTimer);
+        clearTimeout(settleTimer);
         onDragEnd();
         endPending();
         endHeld();

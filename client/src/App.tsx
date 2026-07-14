@@ -175,8 +175,7 @@ export default function App() {
   // re-layout. visualViewport is authoritative everywhere, so mirror its
   // height into --app-height (consumed by .app) and undo any pan the
   // browser applied to reveal the focused field — this is a fixed layout
-  // that must stay pinned at 0,0. Skipped while pinch-zoomed: height
-  // changes then are the zoom, not the keyboard.
+  // that must stay pinned at 0,0.
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -248,6 +247,7 @@ export default function App() {
       document.removeEventListener("touchcancel", onTouchCancel, true);
     };
   }, []);
+
   useEffect(() => {
     setSidebarVisibleHandler({
       isVisible: () => sidebarVisibleRef.current,
