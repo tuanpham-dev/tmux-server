@@ -157,6 +157,14 @@ interface Props {
   fileMultiMenuItems: (entries: { path: string; isDir: boolean }[]) => MenuItem[];
   deleteFileEntry: (path: string, isDir: boolean) => void;
   deleteFileEntries: (entries: { path: string; isDir: boolean }[]) => void;
+  renameFileEntry: (path: string) => void;
+  // Backs FileTree's files.findInFolder/newFile/newFolder/copyPath/
+  // copyRelativePath keyboard dispatch (see FileTree.tsx's own prop docs).
+  onFindInFolder: (path: string, rootDir: string) => void;
+  onCreateFile: (dirPath: string) => void;
+  onCreateFolder: (dirPath: string) => void;
+  onCopyPath: (paths: string[]) => void;
+  onCopyRelativePath: (paths: string[], rootDir: string) => void;
   prunePath: { paths: string[] } | null;
   cutPaths: Set<string> | null;
   onCopyEntries: (paths: string[]) => void;
@@ -220,6 +228,12 @@ export default function Sidebar({
   fileMultiMenuItems,
   deleteFileEntry,
   deleteFileEntries,
+  renameFileEntry,
+  onFindInFolder,
+  onCreateFile,
+  onCreateFolder,
+  onCopyPath,
+  onCopyRelativePath,
   prunePath,
   cutPaths,
   onCopyEntries,
@@ -720,6 +734,13 @@ export default function Sidebar({
           fileMultiMenuItems={fileMultiMenuItems}
           deleteFileEntry={deleteFileEntry}
           deleteFileEntries={deleteFileEntries}
+          renameFileEntry={renameFileEntry}
+          onFindInFolder={onFindInFolder}
+          onCreateFile={onCreateFile}
+          onCreateFolder={onCreateFolder}
+          onCopyPath={onCopyPath}
+          onCopyRelativePath={onCopyRelativePath}
+          resolvedBindings={resolvedBindings}
           prunePath={prunePath}
           cutPaths={cutPaths}
           onCopyEntries={onCopyEntries}

@@ -253,6 +253,30 @@ export function useFileActions(
     [showError],
   );
 
+  // Backs files.copyPath/files.copyRelativePath (FileTree's keyboard
+  // dispatch): selection-aware like copy/cut/delete, newline-joined to match
+  // the bulk context menu's existing "Copy Paths" item.
+  const copyFilePaths = useCallback(
+    (paths: string[]) => {
+      copyText(paths.join("\n")).catch(showError);
+    },
+    [showError],
+  );
+
+  const copyFileRelativePaths = useCallback(
+    (paths: string[], rootDir: string) => {
+      const rels = paths.map((entryPath) =>
+        entryPath.startsWith(rootDir + "/")
+          ? entryPath.slice(rootDir.length + 1)
+          : entryPath === rootDir
+            ? "."
+            : entryPath,
+      );
+      copyText(rels.join("\n")).catch(showError);
+    },
+    [showError],
+  );
+
   const downloadFileEntry = useCallback((entryPath: string) => {
     const a = document.createElement("a");
     a.href = api.downloadUrl(entryPath);
@@ -264,13 +288,13 @@ export function useFileActions(
 
   const fileTreeRootMenuItems = useCallback(
     (rootDir: string): MenuItem[] => [
-      { label: "New File…", onClick: () => createFileInDir(rootDir) },
-      { label: "New Folder…", onClick: () => createFolderInDir(rootDir) },
+      { label: "New File…", shortcutCommand: "files.newFile", onClick: () => createFileInDir(rootDir) },
+      { label: "New Folder…", shortcutCommand: "files.newFolder", onClick: () => createFolderInDir(rootDir) },
       // Always offered rather than disabled when empty: knowing the server
       // clipboard's emptiness synchronously would need a fetch per menu open
       // (it may have been set from another browser). An empty paste just
       // shows the "clipboard is empty" error toast.
-      { label: "Paste", shortcut: "Ctrl+V", onClick: () => pasteIntoDir(rootDir) },
+      { label: "Paste", shortcutCommand: "files.paste", onClick: () => pasteIntoDir(rootDir) },
     ],
     [createFileInDir, createFolderInDir, pasteIntoDir],
   );
@@ -333,22 +357,38 @@ export function useFileActions(
       const items: MenuItem[] = [];
       if (isDir) {
         items.push(
-          { label: "New File…", onClick: () => createFileInDir(entryPath) },
-          { label: "New Folder…", onClick: () => createFolderInDir(entryPath) },
-          { label: "Find in Folder…", onClick: () => findInFolder(entryPath, rootDir) },
+          { label: "New File…", shortcutCommand: "files.newFile", onClick: () => createFileInDir(entryPath) },
+          {
+            label: "New Folder…",
+            shortcutCommand: "files.newFolder",
+            onClick: () => createFolderInDir(entryPath),
+          },
+          {
+            label: "Find in Folder…",
+            shortcutCommand: "files.findInFolder",
+            onClick: () => findInFolder(entryPath, rootDir),
+          },
         );
       }
       items.push(
-        { label: "Cut", shortcut: "Ctrl+X", onClick: () => cutEntries([entryPath]) },
-        { label: "Copy", shortcut: "Ctrl+C", onClick: () => copyEntries([entryPath]) },
+        { label: "Cut", shortcutCommand: "files.cut", onClick: () => cutEntries([entryPath]) },
+        { label: "Copy", shortcutCommand: "files.copy", onClick: () => copyEntries([entryPath]) },
       );
       if (isDir) {
-        items.push({ label: "Paste", shortcut: "Ctrl+V", onClick: () => pasteIntoDir(entryPath) });
+        items.push({
+          label: "Paste",
+          shortcutCommand: "files.paste",
+          onClick: () => pasteIntoDir(entryPath),
+        });
       }
       items.push(
-        { label: "Rename…", onClick: () => renameFileEntry(entryPath) },
-        { label: "Copy Path", onClick: () => copyFilePath(entryPath) },
-        { label: "Copy Relative Path", onClick: () => copyFileRelativePath(entryPath, rootDir) },
+        { label: "Rename…", shortcutCommand: "files.rename", onClick: () => renameFileEntry(entryPath) },
+        { label: "Copy Path", shortcutCommand: "files.copyPath", onClick: () => copyFilePath(entryPath) },
+        {
+          label: "Copy Relative Path",
+          shortcutCommand: "files.copyRelativePath",
+          onClick: () => copyFileRelativePath(entryPath, rootDir),
+        },
         { label: "Download", onClick: () => downloadFileEntry(entryPath) },
       );
       // Images/media/PDFs open in their viewer by default (see
@@ -367,7 +407,7 @@ export function useFileActions(
       }
       items.push({
         label: "Delete",
-        shortcut: "Delete",
+        shortcutCommand: "files.delete",
         danger: true,
         onClick: () => deleteFileEntry(entryPath, isDir),
       });
@@ -397,21 +437,26 @@ export function useFileActions(
   // selection of files and folders).
   const fileMultiMenuItems = useCallback(
     (entries: { path: string; isDir: boolean }[]): MenuItem[] => [
-      { label: "Cut", shortcut: "Ctrl+X", onClick: () => cutEntries(entries.map((e) => e.path)) },
-      { label: "Copy", shortcut: "Ctrl+C", onClick: () => copyEntries(entries.map((e) => e.path)) },
+      { label: "Cut", shortcutCommand: "files.cut", onClick: () => cutEntries(entries.map((e) => e.path)) },
+      {
+        label: "Copy",
+        shortcutCommand: "files.copy",
+        onClick: () => copyEntries(entries.map((e) => e.path)),
+      },
       {
         label: "Copy Paths",
-        onClick: () => copyText(entries.map((e) => e.path).join("\n")).catch(showError),
+        shortcutCommand: "files.copyPath",
+        onClick: () => copyFilePaths(entries.map((e) => e.path)),
       },
       { label: "Download", onClick: () => entries.forEach((e) => downloadFileEntry(e.path)) },
       {
         label: `Delete ${entries.length} items`,
-        shortcut: "Delete",
+        shortcutCommand: "files.delete",
         danger: true,
         onClick: () => deleteFileEntries(entries),
       },
     ],
-    [showError, downloadFileEntry, deleteFileEntries, cutEntries, copyEntries],
+    [downloadFileEntry, deleteFileEntries, cutEntries, copyEntries, copyFilePaths],
   );
 
   return {
@@ -428,6 +473,9 @@ export function useFileActions(
     createFolderInDir,
     copyFilePath,
     copyFileRelativePath,
+    copyFilePaths,
+    copyFileRelativePaths,
+    findInFolder,
     downloadFileEntry,
     copyEntries,
     cutEntries,

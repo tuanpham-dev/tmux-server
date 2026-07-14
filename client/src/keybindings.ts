@@ -18,9 +18,11 @@ export interface Command {
   id: string;
   label: string;
   defaultBindings: Keybinding[];
-  // Terminal-scoped commands are dispatched from the terminal's own key handler in
-  // TerminalView, not the global window dispatcher.
-  scope: "global" | "terminal";
+  // Terminal-scoped commands are dispatched from the terminal's own key handler
+  // in TerminalView; files-scoped commands are dispatched from the FILES tree's
+  // own key handler in FileTree.tsx. Neither goes through the global window
+  // dispatcher (useGlobalKeybindings), which yields to both scopes instead.
+  scope: "global" | "terminal" | "files";
   // When-expression gating this command's *palette row* (not its keybinding
   // dispatch — a binding's own `when` on Keybinding does that). Evaluated
   // against context keys the same way a binding's when is; absent means
@@ -88,6 +90,16 @@ export const COMMANDS: Command[] = [
   { id: "terminal.fontSizeReset", label: "Terminal: Reset Font Size", defaultBindings: [{ key: "ctrl+Digit0" }], scope: "global" },
   { id: "terminal.clear", label: "Terminal: Clear Scrollback", defaultBindings: [], scope: "terminal" },
   { id: "terminal.scrollToBottom", label: "Terminal: Scroll to Bottom", defaultBindings: [], scope: "terminal" },
+  { id: "files.copy", label: "Files: Copy", defaultBindings: [{ key: "ctrl+KeyC", when: "filesTreeFocus" }], scope: "files" },
+  { id: "files.cut", label: "Files: Cut", defaultBindings: [{ key: "ctrl+KeyX", when: "filesTreeFocus" }], scope: "files" },
+  { id: "files.paste", label: "Files: Paste", defaultBindings: [{ key: "ctrl+KeyV", when: "filesTreeFocus" }], scope: "files" },
+  { id: "files.delete", label: "Files: Delete", defaultBindings: [{ key: "Delete", when: "filesTreeFocus" }], scope: "files" },
+  { id: "files.rename", label: "Files: Rename…", defaultBindings: [{ key: "F2", when: "filesTreeFocus" }], scope: "files" },
+  { id: "files.findInFolder", label: "Files: Find in Folder…", defaultBindings: [], scope: "files" },
+  { id: "files.newFile", label: "Files: New File…", defaultBindings: [], scope: "files" },
+  { id: "files.newFolder", label: "Files: New Folder…", defaultBindings: [], scope: "files" },
+  { id: "files.copyPath", label: "Files: Copy Path", defaultBindings: [], scope: "files" },
+  { id: "files.copyRelativePath", label: "Files: Copy Relative Path", defaultBindings: [], scope: "files" },
 ];
 
 // Overrides only (command id → its full replacement binding set, [] meaning

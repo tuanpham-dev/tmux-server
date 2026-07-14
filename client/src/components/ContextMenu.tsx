@@ -1,12 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { formatBinding, type Keybinding } from "../keybindings";
 import type { MenuState } from "../types";
 
 interface Props {
   menu: MenuState;
   onClose: () => void;
+  // Resolves each item's shortcutCommand to a live hint — a Settings rebind
+  // re-renders App (this component's sole render site), so even a menu
+  // already open when the rebind happens shows the new combo immediately.
+  resolvedBindings: Record<string, Keybinding[]>;
 }
 
-export default function ContextMenu({ menu, onClose }: Props) {
+export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: menu.x, y: menu.y });
 
@@ -38,6 +43,11 @@ export default function ContextMenu({ menu, onClose }: Props) {
     };
   }, [onClose]);
 
+  const shortcutHint = (commandId: string | undefined): string | undefined => {
+    const key = commandId ? resolvedBindings[commandId]?.[0]?.key : undefined;
+    return key ? formatBinding(key) : undefined;
+  };
+
   return (
     <div ref={ref} className="context-menu" style={{ left: pos.x, top: pos.y }}>
       {menu.items.map((item, i) =>
@@ -66,7 +76,9 @@ export default function ContextMenu({ menu, onClose }: Props) {
             }}
           >
             <span className="context-menu-item-label">{item.label}</span>
-            {item.shortcut && <span className="context-menu-item-shortcut">{item.shortcut}</span>}
+            {shortcutHint(item.shortcutCommand) && (
+              <span className="context-menu-item-shortcut">{shortcutHint(item.shortcutCommand)}</span>
+            )}
           </button>
         ),
       )}

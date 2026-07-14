@@ -982,6 +982,12 @@ export default function App() {
     fileMultiMenuItems,
     deleteFileEntry,
     deleteFileEntries,
+    renameFileEntry,
+    findInFolder,
+    createFileInDir,
+    createFolderInDir,
+    copyFilePaths,
+    copyFileRelativePaths,
     copyEntries,
     cutEntries,
     pasteIntoDir,
@@ -1047,6 +1053,12 @@ export default function App() {
             fileMultiMenuItems={fileMultiMenuItems}
             deleteFileEntry={deleteFileEntry}
             deleteFileEntries={deleteFileEntries}
+            renameFileEntry={renameFileEntry}
+            onFindInFolder={findInFolder}
+            onCreateFile={createFileInDir}
+            onCreateFolder={createFolderInDir}
+            onCopyPath={copyFilePaths}
+            onCopyRelativePath={copyFileRelativePaths}
             prunePath={prunePath}
             cutPaths={cutPaths}
             onCopyEntries={copyEntries}
@@ -1286,7 +1298,9 @@ export default function App() {
           />
         )}
       </main>
-      {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {menu && (
+        <ContextMenu menu={menu} onClose={() => setMenu(null)} resolvedBindings={resolvedBindings} />
+      )}
       {dialog && <Dialog dialog={dialog} />}
       {switcherQuery !== null && (
         <QuickSwitcher

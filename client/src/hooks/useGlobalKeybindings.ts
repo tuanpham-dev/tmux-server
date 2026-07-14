@@ -14,9 +14,10 @@ import {
 } from "../keybindings";
 
 // Extension commands are always scope "global" (see KeyboardShortcutsView.tsx's
-// extCommandDefs), so terminal-scoped ids only ever come from the static
-// built-in list — safe to compute once at module scope.
+// extCommandDefs), so terminal-scoped and files-scoped ids only ever come from
+// the static built-in list — safe to compute once at module scope.
 const TERMINAL_COMMAND_IDS = COMMANDS.filter((c) => c.scope === "terminal").map((c) => c.id);
+const FILES_COMMAND_IDS = COMMANDS.filter((c) => c.scope === "files").map((c) => c.id);
 
 // Every global shortcut in one capture-phase dispatcher, driven by the
 // rebindable keybindings map (keybindings.ts). A matched combo gets
@@ -71,6 +72,16 @@ export function useGlobalKeybindings(
       if (
         target?.closest(".terminal-host") &&
         TERMINAL_COMMAND_IDS.some((id) => bindingMatches(bindings[id], combo, get))
+      ) {
+        return;
+      }
+      // Same yield, for the FILES tree's own key handler (FileTree.tsx) — a
+      // global command that happens to share a combo with a files.* one
+      // (e.g. a user rebinding something onto Ctrl+C) must not steal the
+      // keystroke from the tree while it has focus.
+      if (
+        target?.closest(".file-tree") &&
+        FILES_COMMAND_IDS.some((id) => bindingMatches(bindings[id], combo, get))
       ) {
         return;
       }

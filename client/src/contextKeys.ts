@@ -13,6 +13,7 @@ const contextStore: Record<string, unknown> = {};
 // store from React state by effects (App.tsx, Sidebar.tsx).
 export const CONTEXT_KEYS: { key: string; description: string }[] = [
   { key: "terminalFocus", description: "A terminal has keyboard focus" },
+  { key: "filesTreeFocus", description: "The FILES tree has keyboard focus" },
   { key: "panelFocus", description: "The bottom terminal panel holds keyboard focus" },
   { key: "sidebarVisible", description: "The sidebar is shown" },
   { key: "sidebarFocus", description: "Focus is currently within the sidebar" },
@@ -26,12 +27,16 @@ export function setContextKey(key: string, value: unknown): void {
   contextStore[key] = value;
 }
 
-// `e` is passed when called from a keydown handler so terminalFocus reflects
-// the actual event target rather than a possibly-stale store value.
+// `e` is passed when called from a keydown handler so terminalFocus/
+// filesTreeFocus reflect the actual event target rather than a possibly-stale
+// store value.
 export function getContextGetter(e?: KeyboardEvent): (key: string) => unknown {
   return (key: string) => {
     if (key === "terminalFocus" && e) {
       return (e.target as HTMLElement | null)?.closest(".terminal-host") != null;
+    }
+    if (key === "filesTreeFocus" && e) {
+      return (e.target as HTMLElement | null)?.closest(".file-tree") != null;
     }
     return contextStore[key];
   };

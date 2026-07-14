@@ -110,12 +110,14 @@ export interface MenuItem {
   label: string;
   danger?: boolean;
   onClick: () => void;
-  // Right-aligned keyboard-shortcut hint, e.g. "Ctrl+C" — display only, not
-  // wired to the keybindings.ts command system (these are local FileTree
-  // handlers, not global commands). Matches formatBinding's plain "Ctrl"
-  // text convention elsewhere in the app rather than a platform-specific
-  // "⌘" symbol.
-  shortcut?: string;
+  // Right-aligned keyboard-shortcut hint — a files.* command id (e.g.
+  // "files.copy") resolved to its first live binding by ContextMenu via
+  // formatBinding, so a Settings rebind updates the hint on the very next
+  // render (even in a menu already open when the rebind happens). Display
+  // only: it doesn't dispatch the shortcut itself — these are local FileTree
+  // handlers dispatched by FileTree's own key handler, not global commands.
+  // No hint renders when the command is unbound.
+  shortcutCommand?: string;
   // Renders a row of color swatches instead of the normal label/click row —
   // used by a tab-group chip's context menu to pick the group's color.
   // label/onClick are unused placeholders on a swatches item; ContextMenu

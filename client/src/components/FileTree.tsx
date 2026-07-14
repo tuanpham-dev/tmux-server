@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
+import { getContextGetter } from "../contextKeys";
+import { bindingMatches, recorderState, serializeEvent, type Keybinding } from "../keybindings";
 import type { FsEntry, GitFileStatus, MenuItem } from "../types";
 import FileIcon from "./FileIcon";
 import Icon from "./Icon";
@@ -29,6 +31,20 @@ interface Props {
   // and fileMultiMenuItems' own "Delete" items use.
   deleteFileEntry: (path: string, isDir: boolean) => void;
   deleteFileEntries: (entries: { path: string; isDir: boolean }[]) => void;
+  // Backs F2 (and the context menu's "Rename…"). Single-row only — see the F2
+  // case in handleTreeKeyDown.
+  renameFileEntry: (path: string) => void;
+  // Backs files.findInFolder/newFile/newFolder/copyPath/copyRelativePath —
+  // all otherwise reachable only from the context menu (useFileActions.ts).
+  onFindInFolder: (path: string, rootDir: string) => void;
+  onCreateFile: (dirPath: string) => void;
+  onCreateFolder: (dirPath: string) => void;
+  onCopyPath: (paths: string[]) => void;
+  onCopyRelativePath: (paths: string[], rootDir: string) => void;
+  // Live keybinding map (keybindings.ts's resolveBindings) — handleTreeKeyDown
+  // dispatches every files.* command from this instead of hardcoded key
+  // checks, so Settings → Keyboard Shortcuts rebinds apply without a remount.
+  resolvedBindings: Record<string, Keybinding[]>;
   prunePath: { paths: string[] } | null;
   // Paths currently on the clipboard in "cut" mode (dimmed rows) — null when
   // the clipboard is empty or in "copy" mode. Backs Ctrl/Cmd+C/X/V, mirroring
@@ -125,6 +141,13 @@ export default function FileTree({
   fileMultiMenuItems,
   deleteFileEntry,
   deleteFileEntries,
+  renameFileEntry,
+  onFindInFolder,
+  onCreateFile,
+  onCreateFolder,
+  onCopyPath,
+  onCopyRelativePath,
+  resolvedBindings,
   prunePath,
   cutPaths,
   onCopyEntries,
@@ -508,11 +531,138 @@ export default function FileTree({
     onShowMenu(e.clientX, e.clientY, fileMenuItems(path, isDir, rootDir!));
   };
 
+  // Shared by files.paste/newFile/newFolder dispatch below and by
+  // handleTreePaste. Deliberately reads focusedPath, not effectiveFocusedPath:
+  // that fallback exists for keyboard roving-tabindex, which needs *some*
+  // landing row even after a click-to-deselect clears the visible selection —
+  // but focusedPath itself is untouched by that click, so an operation right
+  // after deselecting still correctly targets the folder last focused.
+  // Falling through to visibleRows[0] instead would silently redirect to
+  // whatever the first *visible* row happens to be (often a file, whose
+  // parent is rootDir) any time nothing has ever been focused — rootDir is
+  // the honest default for that case, and is exactly what's wanted right
+  // after a click on empty tree space (which clears focusedPath below).
+  const pasteDestDir = (): string | null => {
+    const idx = indexOf(focusedPath);
+    const r = idx !== -1 ? visibleRows[idx] : null;
+    return r ? (r.isDir ? r.path : r.path.slice(0, r.path.lastIndexOf("/"))) : rootDir;
+  };
+
   const handleTreeKeyDown = (e: React.KeyboardEvent) => {
     if (visibleRows.length === 0) return;
+    if (!rootDir) return;
     const currentPath = effectiveFocusedPath;
     const idx = indexOf(currentPath);
     const row = idx !== -1 ? visibleRows[idx] : null;
+
+    // Every files.* operation dispatches here, driven by the live keybinding
+    // map (resolvedBindings) so a Settings → Keyboard Shortcuts rebind takes
+    // effect without remounting the tree — mirrors TerminalView's
+    // attachCustomKeyEventHandler dispatch for terminal.* commands. Bails
+    // while the Keyboard Shortcuts recorder owns the keyboard, same as the
+    // global dispatcher. Runs before the hardcoded navigation switch below:
+    // arrows/Home/End/Enter/Space/Escape stay hardcoded list-widget behavior,
+    // not file operations — same split VS Code makes.
+    if (!recorderState.recording) {
+      const combo = serializeEvent(e.nativeEvent);
+      if (combo) {
+        const get = getContextGetter(e.nativeEvent);
+        const matches = (id: string) => bindingMatches(resolvedBindings[id], combo, get);
+        const selectionOrFocused = () =>
+          selectedPaths.size > 0 ? visibleRows.filter((r) => selectedPaths.has(r.path)) : row ? [row] : [];
+
+        if (matches("files.copy")) {
+          const targets = selectionOrFocused();
+          if (targets.length > 0) {
+            e.preventDefault();
+            onCopyEntries(targets.map((t) => t.path));
+            return;
+          }
+        }
+        if (matches("files.cut")) {
+          const targets = selectionOrFocused();
+          if (targets.length > 0) {
+            e.preventDefault();
+            onCutEntries(targets.map((t) => t.path));
+            return;
+          }
+        }
+        if (matches("files.paste")) {
+          // The default binding IS the browser's own paste gesture
+          // (ctrl+KeyV / meta+KeyV) — that exact combo must fall through
+          // un-prevented so the native "paste" event still fires (see
+          // handleTreePaste below), the only path that can deliver OS-file
+          // paste (a DataTransfer with real File objects). A combo the user
+          // rebound onto files.paste has no such native event to defer to,
+          // so it pastes the internal server-held clipboard directly —
+          // rebinding paste away from Ctrl+V does not disable native Ctrl+V
+          // paste, since that OS gesture carries OS-file paste too and the
+          // "paste" event has no key info to filter on.
+          if (combo !== "ctrl+KeyV" && combo !== "meta+KeyV") {
+            e.preventDefault();
+            const destDir = pasteDestDir();
+            if (destDir) onPasteInto(destDir);
+          }
+          return;
+        }
+        if (matches("files.delete")) {
+          const targets = selectionOrFocused();
+          if (targets.length > 0) {
+            e.preventDefault();
+            if (targets.length === 1) deleteFileEntry(targets[0].path, targets[0].isDir);
+            else deleteFileEntries(targets.map((t) => ({ path: t.path, isDir: t.isDir })));
+            return;
+          }
+        }
+        if (matches("files.rename")) {
+          // No selection fallback, unlike copy/cut/delete above: a rename
+          // prompts for one new name, meaningless across a multi-selection.
+          // Acts on the focused row only, exactly as the context menu's
+          // "Rename…" does (not offered for a multi-selection either).
+          if (row) {
+            e.preventDefault();
+            renameFileEntry(row.path);
+            return;
+          }
+        }
+        if (matches("files.findInFolder")) {
+          if (row) {
+            e.preventDefault();
+            const folder = row.isDir ? row.path : row.path.slice(0, row.path.lastIndexOf("/"));
+            onFindInFolder(folder, rootDir);
+            return;
+          }
+        }
+        if (matches("files.newFile")) {
+          e.preventDefault();
+          const destDir = pasteDestDir();
+          if (destDir) onCreateFile(destDir);
+          return;
+        }
+        if (matches("files.newFolder")) {
+          e.preventDefault();
+          const destDir = pasteDestDir();
+          if (destDir) onCreateFolder(destDir);
+          return;
+        }
+        if (matches("files.copyPath")) {
+          const targets = selectionOrFocused();
+          if (targets.length > 0) {
+            e.preventDefault();
+            onCopyPath(targets.map((t) => t.path));
+            return;
+          }
+        }
+        if (matches("files.copyRelativePath")) {
+          const targets = selectionOrFocused();
+          if (targets.length > 0) {
+            e.preventDefault();
+            onCopyRelativePath(targets.map((t) => t.path), rootDir);
+            return;
+          }
+        }
+      }
+    }
 
     const moveFocus = (newIdx: number, extendSelection: boolean) => {
       const clamped = Math.max(0, Math.min(visibleRows.length - 1, newIdx));
@@ -595,41 +745,10 @@ export default function FileTree({
         setSelectedPaths(new Set());
         setAnchorPath(null);
         return;
-      case "c":
-      case "x": {
-        if (!(e.ctrlKey || e.metaKey)) return;
-        const targets =
-          selectedPaths.size > 0
-            ? visibleRows.filter((r) => selectedPaths.has(r.path))
-            : row
-              ? [row]
-              : [];
-        if (targets.length === 0) return;
-        e.preventDefault();
-        const paths = targets.map((t) => t.path);
-        if (e.key === "c") onCopyEntries(paths);
-        else onCutEntries(paths);
-        return;
-      }
-      // Ctrl/Cmd+V is deliberately not handled here — the native "paste"
-      // event (see onPaste on the tree container below) is the single path
-      // for both OS-file paste and the internal clipboard, so the two can't
-      // double-fire.
-      case "Delete": {
-        // Same single/bulk split the context menu uses: an active multi-
-        // selection deletes all of it, otherwise just the focused row.
-        const targets =
-          selectedPaths.size > 0
-            ? visibleRows.filter((r) => selectedPaths.has(r.path))
-            : row
-              ? [row]
-              : [];
-        if (targets.length === 0) return;
-        e.preventDefault();
-        if (targets.length === 1) deleteFileEntry(targets[0].path, targets[0].isDir);
-        else deleteFileEntries(targets.map((t) => ({ path: t.path, isDir: t.isDir })));
-        return;
-      }
+      // Copy/Cut/Paste/Delete/Rename/Find in Folder/New File/New Folder/Copy
+      // Path/Copy Relative Path all dispatch above, from the live
+      // resolvedBindings map — not hardcoded here (see the block preceding
+      // this switch).
       default:
         return;
     }
@@ -642,17 +761,7 @@ export default function FileTree({
   // keydown handler for the same combo. clipboardData *is* a DataTransfer,
   // so the OS-file branch reuses the existing drop pipeline unchanged.
   const handleTreePaste = (e: React.ClipboardEvent) => {
-    // focusedPath, not effectiveFocusedPath: that fallback exists for keyboard
-    // roving-tabindex, which needs *some* landing row to exist even when no row
-    // has ever been focused. Reading it here would silently redirect a paste to
-    // whatever the first visible row happens to be (often a file, i.e. rootDir
-    // by accident); a null focusedPath means "no row is targeted", and rootDir
-    // is the honest destination for that — which is exactly the case after a
-    // click on empty tree space, where onClick below clears focusedPath so this
-    // pastes into the root.
-    const idx = indexOf(focusedPath);
-    const row = idx !== -1 ? visibleRows[idx] : null;
-    const destDir = row ? (row.isDir ? row.path : row.path.slice(0, row.path.lastIndexOf("/"))) : rootDir;
+    const destDir = pasteDestDir();
     if (!destDir) return;
     if (e.clipboardData.files.length > 0) {
       e.preventDefault();
