@@ -1271,6 +1271,19 @@ body.tab-dragging .split-content-host {
   position: absolute;
   inset: 0;
   padding: 6px 0 0 8px;
+  /* Column flex so the touch key bar occupies real space below the
+     terminal body instead of overlaying its last rows. */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Positioning context for the terminal's overlays (search bar, scrollbar,
+   reconnect badge) — they anchor here rather than to the host so they stay
+   above the touch key bar when it's visible. */
+.terminal-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 .terminal-host.hidden {
@@ -1280,7 +1293,7 @@ body.tab-dragging .split-content-host {
 /* The div handed to ghostty-web's term.open() — it appends its canvas and
    hidden IME textarea here and makes the div itself focusable/editable-ish
    (tabindex, contenteditable, role=textbox) for keyboard input. Kept as a
-   dedicated child of .terminal-host so the sibling widgets (search bar,
+   dedicated child of .terminal-body so the sibling widgets (search bar,
    scrollbar, touch key bar) stay outside ghostty's key/paste listeners.
    The focus outline and any contenteditable caret must not render over the
    canvas. */
@@ -2848,12 +2861,10 @@ body.scrollbar-dragging {
   text-overflow: ellipsis;
 }
 
+/* In normal flow as the terminal host's last flex child — the terminal
+   body shrinks above it (and refits) rather than rendering underneath. */
 .touch-key-bar {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 15;
+  flex-shrink: 0;
   display: flex;
   gap: 4px;
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));

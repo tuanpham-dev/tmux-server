@@ -1055,8 +1055,11 @@ export default function TerminalView({
 
       // Fires when the tab becomes visible again (display:none → block) and on
       // window resizes, so hidden terminals refit as soon as they can measure.
+      // Observes the screen div (what FitAddon measures), not the host: the
+      // touch key bar mounting/unmounting resizes only the flex body around
+      // the screen, never the host itself.
       const observer = new ResizeObserver(refit);
-      observer.observe(container);
+      observer.observe(screen);
 
       if (focused) term.focus();
 
@@ -1162,20 +1165,26 @@ export default function TerminalView({
       ref={containerRef}
       className={`terminal-host${visible ? "" : " hidden"}`}
     >
-      <div ref={screenRef} className="terminal-screen" />
-      {searchOpen && (
-        <SearchBar
-          query={searchQuery}
-          onQueryChange={handleSearchQueryChange}
-          onNext={handleSearchNext}
-          onPrev={handleSearchPrev}
-          onClose={handleSearchClose}
-        />
-      )}
-      <div ref={scrollTrackRef} className="tmux-scrollbar">
-        <div className="tmux-scrollbar-thumb" />
+      {/* The touch key bar sits below this body in normal flow (flex
+          column), so the terminal shrinks above it instead of rendering
+          its last rows underneath; the overlays anchor to the body so
+          they too stay clear of the bar. */}
+      <div className="terminal-body">
+        <div ref={screenRef} className="terminal-screen" />
+        {searchOpen && (
+          <SearchBar
+            query={searchQuery}
+            onQueryChange={handleSearchQueryChange}
+            onNext={handleSearchNext}
+            onPrev={handleSearchPrev}
+            onClose={handleSearchClose}
+          />
+        )}
+        <div ref={scrollTrackRef} className="tmux-scrollbar">
+          <div className="tmux-scrollbar-thumb" />
+        </div>
+        <div className="reconnect-overlay">Reconnecting…</div>
       </div>
-      <div className="reconnect-overlay">Reconnecting…</div>
       <TouchKeyBar
         visible={keyBarVisible}
         stickyCtrl={stickyCtrl}
