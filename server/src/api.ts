@@ -30,7 +30,13 @@ import {
   setExtensionEnabled,
   uninstallExtension,
 } from "./extensions.js";
-import { getRepoBranch, getRepoStatuses, listRepoFiles, statusForEntry } from "./git.js";
+import {
+  getRepoBranch,
+  getRepoStatuses,
+  invalidateGitCache,
+  listRepoFiles,
+  statusForEntry,
+} from "./git.js";
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { primaryProxyDomain } from "./security.js";
@@ -39,6 +45,7 @@ import {
   createSession,
   createWindow,
   createWindowTab,
+  invalidateSessionsCache,
   killSession,
   killWindow,
   killWindowTab,
@@ -57,6 +64,25 @@ export const api = Router();
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+// Git status and the session listing are both cached for a beat (see git.ts /
+// tmux.ts) so N tabs polling for the same answer don't each pay to recompute
+// it. Any mutation we perform can invalidate those, so drop them once the
+// request that made it has finished — cheaper and harder to forget than tagging
+// each write/rename/delete/paste/transfer/upload route individually, and a
+// spurious drop (a session rename touches no files) only costs one recomputed
+// scan. On "finish", not before next(): invalidating up front would leave a
+// window where a concurrent listing re-populates the cache from the
+// pre-mutation tree, and that stale answer would then outlive the write.
+api.use((req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.on("finish", () => {
+      invalidateGitCache();
+      invalidateSessionsCache();
+    });
+  }
+  next();
+});
 
 
 function sendFsError(res: Response, err: unknown): void {

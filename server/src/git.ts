@@ -56,16 +56,67 @@ async function getBranch(root: string): Promise<string | null> {
   }
 }
 
+// A repo scan is whole-repo work keyed by the repo ROOT, so every directory in
+// the same repo produces the identical answer — yet it ran once per "/api/fs"
+// request. The FILES tree re-lists the root plus every expanded folder on each
+// 3s poll, in every open tab, so the same scan (three git forks, one of them a
+// full working-tree walk) was recomputed dozens of times a second for an answer
+// that hadn't changed. Cache it per root, briefly, and share one in-flight scan
+// among every caller that asks while it runs.
+//
+// The TTL is short enough that badges still feel live on the 3s poll, and any
+// filesystem mutation this server performs drops the cache outright
+// (invalidateGitCache), so an edit made through the UI shows up immediately
+// rather than waiting it out. Edits made OUTSIDE the app (an editor, a build)
+// are picked up on the next poll after the TTL — same as before, within a
+// second.
+const STATUS_TTL_MS = 1000;
+// dir -> repo root. Effectively immutable for a given directory, so this is
+// cached far longer; it exists to kill the `git rev-parse` fork on every call.
+const ROOT_TTL_MS = 30_000;
+
+const rootCache = new Map<string, { at: number; root: string | null }>();
+const statusCache = new Map<string, { at: number; value: RepoStatus | null }>();
+const statusInFlight = new Map<string, Promise<RepoStatus | null>>();
+const branchCache = new Map<string, { at: number; branch: string | null }>();
+
+// Called after any mutation this server makes to a working tree (write, rename,
+// delete, paste, upload) so the next listing reflects it without waiting out
+// the TTL.
+export function invalidateGitCache(): void {
+  statusCache.clear();
+  branchCache.clear();
+}
+
+async function repoRoot(anyDirInRepo: string): Promise<string | null> {
+  const cached = rootCache.get(anyDirInRepo);
+  if (cached && Date.now() - cached.at < ROOT_TTL_MS) return cached.root;
+  let root: string | null;
+  try {
+    root = (await git(["rev-parse", "--show-toplevel"], anyDirInRepo)).trim() || null;
+  } catch {
+    root = null;
+  }
+  rootCache.set(anyDirInRepo, { at: Date.now(), root });
+  return root;
+}
+
 // Branch-only variant of getRepoStatuses, for callers that skip the (much
 // more expensive) porcelain status scan but still want the branch pill
 // populated — i.e. /api/fs?git=0 when the git-status setting is off.
 export async function getRepoBranch(anyDirInRepo: string): Promise<string | null> {
+  const root = await repoRoot(anyDirInRepo);
+  if (!root) return null;
+  const cached = branchCache.get(root);
+  if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.branch;
+  let branch: string | null;
   try {
-    const root = (await git(["rev-parse", "--show-toplevel"], anyDirInRepo)).trim();
-    return await getBranch(root);
+    branch = await getBranch(root);
   } catch {
-    return null;
+    branch = null;
   }
+  branchCache.set(root, { at: Date.now(), branch });
+  return branch;
 }
 
 export interface RepoStatus {
@@ -119,14 +170,27 @@ async function getTrackedDirs(root: string): Promise<Set<string>> {
 // ignored directory (node_modules, dist, .backups …) into individual "!! …"
 // lines — easily producing 1 MB+ of output that made execFile throw silently.
 export async function getRepoStatuses(anyDirInRepo: string): Promise<RepoStatus | null> {
-  let root: string;
-  try {
-    root = (await git(["rev-parse", "--show-toplevel"], anyDirInRepo)).trim();
-  } catch {
-    return null;
-  }
+  const root = await repoRoot(anyDirInRepo);
   if (!root) return null;
 
+  const cached = statusCache.get(root);
+  if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.value;
+  const pending = statusInFlight.get(root);
+  if (pending) return pending;
+
+  const scan = scanRepoStatuses(root)
+    .then((value) => {
+      statusCache.set(root, { at: Date.now(), value });
+      return value;
+    })
+    .finally(() => {
+      statusInFlight.delete(root);
+    });
+  statusInFlight.set(root, scan);
+  return scan;
+}
+
+async function scanRepoStatuses(root: string): Promise<RepoStatus | null> {
   // --- 1. modified / added / deleted / untracked (no ignored) ---
   let statusOut: string;
   try {

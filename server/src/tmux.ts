@@ -62,7 +62,38 @@ function shortenHome(path: string): string {
   return path;
 }
 
-export async function listSessions(): Promise<TmuxSession[]> {
+// Same story as getScrollState/getRepoStatuses: every open tab polls
+// "/api/sessions" every 3s, and each poll forked its own list-sessions +
+// list-windows even though every caller gets the identical answer. Share one
+// listing across all of them for a beat. The window is short enough that the
+// UI can't perceive it (the poll it feeds is 3s), and any mutation this server
+// makes — new/kill/rename session or window — invalidates it on response
+// (see api.ts's middleware), so a user's own action is never served stale.
+const SESSIONS_TTL_MS = 500;
+let sessionsCache: { at: number; value: TmuxSession[] } | null = null;
+let sessionsInFlight: Promise<TmuxSession[]> | null = null;
+
+export function invalidateSessionsCache(): void {
+  sessionsCache = null;
+}
+
+export function listSessions(): Promise<TmuxSession[]> {
+  if (sessionsCache && Date.now() - sessionsCache.at < SESSIONS_TTL_MS) {
+    return Promise.resolve(sessionsCache.value);
+  }
+  if (sessionsInFlight) return sessionsInFlight;
+  sessionsInFlight = querySessions()
+    .then((value) => {
+      sessionsCache = { at: Date.now(), value };
+      return value;
+    })
+    .finally(() => {
+      sessionsInFlight = null;
+    });
+  return sessionsInFlight;
+}
+
+async function querySessions(): Promise<TmuxSession[]> {
   const [sessionsOut, windowsOut] = await Promise.all([
     tmux([
       "list-sessions",
