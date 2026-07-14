@@ -64,6 +64,17 @@ export default function TerminalSection() {
       </label>
 
       <label className="settings-row">
+        <span className="settings-label">Text thickness (px)</span>
+        <NumberField
+          value={settings.textThickness}
+          min={0}
+          max={1}
+          step={0.05}
+          onCommit={(v) => set("textThickness", v)}
+        />
+      </label>
+
+      <label className="settings-row">
         <span className="settings-label">Bold text weight</span>
         <select
           className="dialog-input settings-select"

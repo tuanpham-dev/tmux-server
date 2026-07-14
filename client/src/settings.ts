@@ -11,6 +11,11 @@ export interface AppSettings {
   // fontWeightBold below — and with the same limitation: extension-loaded
   // fonts only.
   fontWeight: "normal" | "medium";
+  // Synthetic glyph thickening: stroke width in px added around every glyph
+  // (0 = off). Fractional control between the font's designed weights, at
+  // the cost of slightly softer edges — implemented in ghosttyShims.ts.
+  // Applies to any font, including system fallbacks (unlike fontWeight).
+  textThickness: number;
   // ghostty-web has no fontWeightBold option; "normal" is implemented by
   // registering the text-weight font face across all weights so the
   // renderer's "bold …" canvas font lookups resolve to it (utils/fonts.ts).
@@ -86,6 +91,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
   fontWeight: "normal",
+  textThickness: 0,
   fontWeightBold: "normal",
   cursorStyle: "block",
   cursorBlink: true,

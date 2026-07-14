@@ -245,6 +245,7 @@ export default function TerminalView({
           lineHeight: initialSettings.current.lineHeight,
           letterSpacing: initialSettings.current.letterSpacing,
           minimumContrastRatio: initialSettings.current.minimumContrastRatio,
+          textThickness: initialSettings.current.textThickness,
         },
         parseHexColor(theme.background),
       );
@@ -1048,6 +1049,7 @@ export default function TerminalView({
       lineHeight: settings.lineHeight,
       letterSpacing: settings.letterSpacing,
       minimumContrastRatio: settings.minimumContrastRatio,
+      textThickness: settings.textThickness,
     });
     // Same rationale as the mount-time bounce: handleFontChange is the one
     // public path that re-sizes AND force-renders with the shimmed metrics —

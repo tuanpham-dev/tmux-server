@@ -27,6 +27,10 @@ export interface RendererOverrides {
   letterSpacing: number;
   // 1 disables the contrast adjustment entirely.
   minimumContrastRatio: number;
+  // Stroke width (px) added around every glyph — synthetic fractional
+  // thickening for weights the font doesn't ship (0 = off). Background-like
+  // glyphs (box drawing, powerline) are exempt, same as the contrast rule.
+  textThickness: number;
 }
 
 export interface RendererShim {
@@ -62,11 +66,21 @@ export function parseHexColor(hex: string | undefined): Rgb {
 interface RendererInternals {
   fontSize: number;
   fontFamily: string;
+  cursorStyle: "block" | "underline" | "bar";
+  theme: { cursor?: string; cursorAccent?: string; background?: string };
+  ctx: CanvasRenderingContext2D;
   metrics: { width: number; height: number; baseline: number };
+  currentBuffer?: {
+    getLine(y: number): GhosttyCell[] | null;
+    getGraphemeString?(row: number, col: number): string;
+  };
   measureFont(): { width: number; height: number; baseline: number };
   remeasureFont(): void;
   renderCellText(cell: GhosttyCell, x: number, y: number): void;
+  renderCursor(x: number, y: number): void;
 }
+
+const ITALIC = 2;
 
 // ghostty-web 0.4.0's measureFont() Math.ceil()s the glyph advance to whole
 // CSS pixels, silently padding every cell (IBM Plex Mono at 14px advances
@@ -163,7 +177,64 @@ export function applyRendererOverrides(
           }
         }
       }
-      return originalRenderCellText.call(this, cell, x, y);
+      strokeNextFill =
+        overrides.textThickness > 0 && !excludedFromContrast(cell.codepoint);
+      const result = originalRenderCellText.call(this, cell, x, y);
+      strokeNextFill = false;
+      return result;
+    };
+  }
+
+  // ---- textThickness: stroke glyphs after they're filled ----
+  // renderCellText draws each glyph with one ctx.fillText; re-stroking the
+  // same text in the same color fattens every stem by lineWidth px —
+  // synthetic fractional weight for fonts that only ship fixed weights.
+  // Wrapping ctx.fillText (armed per-cell by the renderCellText shadow
+  // above, so cursor/box-drawing/powerline draws stay untouched) reuses the
+  // exact string, position, font, and color without duplicating the
+  // renderer's layout logic.
+  let strokeNextFill = false;
+  const ctx2d = internals.ctx;
+  if (ctx2d) {
+    const originalFillText = ctx2d.fillText.bind(ctx2d);
+    ctx2d.fillText = (text: string, x: number, y: number, maxWidth?: number) => {
+      if (maxWidth === undefined) originalFillText(text, x, y);
+      else originalFillText(text, x, y, maxWidth);
+      if (strokeNextFill && overrides.textThickness > 0) {
+        ctx2d.lineWidth = overrides.textThickness;
+        ctx2d.lineJoin = "round";
+        ctx2d.strokeStyle = ctx2d.fillStyle as string;
+        ctx2d.strokeText(text, x, y);
+      }
+    };
+  }
+
+  // ---- block cursor: repaint the glyph the cursor covers ----
+  // Upstream's renderCursor fills a solid rect and stops — the character
+  // under a block cursor disappears. xterm repaints it in cursorAccent;
+  // do the same from the current buffer (underline/bar cursors don't
+  // cover the glyph, so they need nothing).
+  const originalRenderCursor = (Object.getPrototypeOf(renderer) as RendererInternals)
+    .renderCursor;
+  if (typeof originalRenderCursor === "function") {
+    internals.renderCursor = function (x: number, y: number) {
+      originalRenderCursor.call(this, x, y);
+      if (internals.cursorStyle !== "block") return;
+      const cells = internals.currentBuffer?.getLine(y);
+      const cell = cells?.[x];
+      if (!cell || !cell.codepoint) return;
+      const m = internals.metrics;
+      let style = "";
+      if (cell.flags & ITALIC) style += "italic ";
+      if (cell.flags & BOLD) style += "bold ";
+      ctx2d.font = `${style}${internals.fontSize}px ${internals.fontFamily}`;
+      ctx2d.fillStyle =
+        internals.theme.cursorAccent ?? internals.theme.background ?? "#000000";
+      const text =
+        cell.grapheme_len > 0 && internals.currentBuffer?.getGraphemeString
+          ? internals.currentBuffer.getGraphemeString(y, x)
+          : String.fromCodePoint(cell.codepoint);
+      ctx2d.fillText(text, x * m.width, y * m.height + m.baseline);
     };
   }
 
