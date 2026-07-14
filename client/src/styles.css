@@ -1700,6 +1700,13 @@ body.scrollbar-dragging {
   border-top: 1px solid var(--border);
 }
 
+.settings-build {
+  margin-top: 10px;
+  font-size: 11px;
+  opacity: 0.55;
+  user-select: text;
+}
+
 .keybinding-filter {
   width: 100%;
   max-width: 420px;

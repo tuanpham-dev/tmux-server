@@ -44,14 +44,25 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ["**/*.{js,css,html,ttf,woff2,svg,png,ico}"],
+        // index.html deliberately NOT precached and no navigateFallback:
+        // navigations always fetch fresh HTML from the server, so a deploy
+        // takes effect on the next reload instead of whenever the service
+        // worker deigns to update — devices were stuck on stale bundles
+        // for hours (the app is useless offline anyway; the hashed assets
+        // below stay precached purely for load speed).
+        globPatterns: ["**/*.{js,css,ttf,woff2,svg,png,ico}"],
+        navigateFallback: null,
         // Symbols Nerd Font Mono (Powerline/prompt icon glyphs) is ~2.5 MB,
         // just over workbox's 2 MiB default.
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
-        navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/tunnel\.mjs$/],
       },
     }),
   ],
+  // Shown in the Settings footer as ground truth for which build a device
+  // is actually running (see settings-build).
+  define: {
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC"),
+  },
   server: {
     proxy: {
       "/api": "http://127.0.0.1:3001",

@@ -155,6 +155,10 @@ export default function SettingsView({
                 Reset Settings to Defaults
               </button>
             )}
+            {/* Ground truth for "which build is this device actually
+                running" — stale service workers have served old bundles
+                that were indistinguishable from deploy failures. */}
+            <div className="settings-build">Build {__BUILD_TIME__}</div>
           </div>
         </div>
       </div>
