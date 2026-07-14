@@ -65,7 +65,8 @@ export default function ContextMenu({ menu, onClose }: Props) {
               item.onClick();
             }}
           >
-            {item.label}
+            <span className="context-menu-item-label">{item.label}</span>
+            {item.shortcut && <span className="context-menu-item-shortcut">{item.shortcut}</span>}
           </button>
         ),
       )}

@@ -7,6 +7,7 @@ import path from "node:path";
 import { Router, type Response } from "express";
 import {
   ConflictError,
+  copyPath,
   createEmptyFile,
   deletePath,
   ensureDir,
@@ -15,6 +16,7 @@ import {
   isDirectory,
   isFile,
   listDir,
+  movePath,
   renamePath,
   resolveDestination,
   uniquePath,
@@ -617,6 +619,79 @@ api.delete("/fs", async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }
+});
+
+// FILES-tree copy/cut/paste clipboard. In-memory (not per-session) so it
+// crosses browsers/tabs/devices talking to this same server — cleared on a
+// server restart, which is acceptable for a clipboard. Paste is a pure
+// server-side cp/mv (see copyPath/movePath), never round-tripping bytes
+// through the client.
+let fsClipboard: { paths: string[]; mode: "copy" | "cut" } | null = null;
+
+api.put("/fs/clipboard", async (req, res) => {
+  const paths = Array.isArray(req.body?.paths) ? req.body.paths : null;
+  const mode = req.body?.mode === "copy" || req.body?.mode === "cut" ? req.body.mode : null;
+  if (!paths || paths.length === 0 || !paths.every((p: unknown) => typeof p === "string") || !mode) {
+    res.status(400).json({ error: "paths (non-empty string[]) and mode ('copy'|'cut') are required" });
+    return;
+  }
+  const expanded = (paths as string[]).map(expandHome);
+  // Validate at copy time, not just at paste time, so a stale/mistyped path
+  // surfaces immediately instead of silently failing whenever paste happens.
+  for (const p of expanded) {
+    if (!(await exists(p))) {
+      res.status(400).json({ error: `no such file or folder: ${p}` });
+      return;
+    }
+  }
+  fsClipboard = { paths: expanded, mode };
+  res.status(204).end();
+});
+
+api.get("/fs/clipboard", (_req, res) => {
+  res.json(fsClipboard ?? { paths: [], mode: null });
+});
+
+api.delete("/fs/clipboard", (_req, res) => {
+  fsClipboard = null;
+  res.status(204).end();
+});
+
+api.post("/fs/paste", async (req, res) => {
+  const destDirRaw = typeof req.body?.destDir === "string" ? req.body.destDir : "";
+  if (!destDirRaw) {
+    res.status(400).json({ error: "destDir is required" });
+    return;
+  }
+  if (!fsClipboard) {
+    res.status(400).json({ error: "clipboard is empty" });
+    return;
+  }
+  const destDir = expandHome(destDirRaw);
+  if (!(await isDirectory(destDir))) {
+    res.status(400).json({ error: "destDir is not a directory" });
+    return;
+  }
+
+  const { paths, mode } = fsClipboard;
+  const pasted: string[] = [];
+  const errors: { path: string; message: string }[] = [];
+  for (const src of paths) {
+    try {
+      const target =
+        mode === "copy" ? await copyPath(src, destDir) : await movePath(src, destDir);
+      if (target) pasted.push(target);
+    } catch (err) {
+      errors.push({ path: src, message: errMessage(err) });
+    }
+  }
+  // A cut is a one-shot move: clear it once at least one source landed, so a
+  // second Ctrl+V doesn't try to move already-moved files. A copy stays on
+  // the clipboard so it can be pasted repeatedly.
+  if (mode === "cut" && pasted.length > 0) {
+    fsClipboard = null;
+  }
+  res.status(200).json({ pasted, errors });
 });
 
 api.post("/newfile", async (req, res) => {

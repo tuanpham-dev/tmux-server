@@ -110,6 +110,12 @@ export interface MenuItem {
   label: string;
   danger?: boolean;
   onClick: () => void;
+  // Right-aligned keyboard-shortcut hint, e.g. "Ctrl+C" — display only, not
+  // wired to the keybindings.ts command system (these are local FileTree
+  // handlers, not global commands). Matches formatBinding's plain "Ctrl"
+  // text convention elsewhere in the app rather than a platform-specific
+  // "⌘" symbol.
+  shortcut?: string;
   // Renders a row of color swatches instead of the normal label/click row —
   // used by a tab-group chip's context menu to pick the group's color.
   // label/onClick are unused placeholders on a swatches item; ContextMenu

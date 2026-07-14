@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { GitFileStatus } from "./git.js";
 
@@ -158,4 +158,45 @@ export async function createEmptyFile(target: string): Promise<void> {
     throw new ConflictError();
   }
   await writeFile(target, "");
+}
+
+// True if child is parent itself or nested anywhere under it — separator-
+// safe (unlike a plain startsWith, "/foo-bar" isn't considered inside "/foo").
+export function isInside(parent: string, child: string): boolean {
+  const p = path.resolve(parent);
+  const c = path.resolve(child);
+  return c === p || c.startsWith(p + path.sep);
+}
+
+// Copies src into destDir, auto-renaming on a name collision (uniquePath).
+// Rejects copying a folder into itself or one of its own descendants.
+export async function copyPath(src: string, destDir: string): Promise<string> {
+  if (isInside(src, destDir)) {
+    throw new Error("cannot copy a folder into itself");
+  }
+  const target = await uniquePath(path.join(destDir, path.basename(src)));
+  await cp(src, target, { recursive: true });
+  return target;
+}
+
+// Moves src into destDir, auto-renaming on a name collision (uniquePath).
+// Returns null for a no-op (destDir is already src's parent). Rejects moving
+// a folder into itself or one of its own descendants. rename() fails across
+// filesystems/mounts (EXDEV) — falls back to a copy+delete in that case.
+export async function movePath(src: string, destDir: string): Promise<string | null> {
+  if (path.resolve(path.dirname(src)) === path.resolve(destDir)) {
+    return null;
+  }
+  if (isInside(src, destDir)) {
+    throw new Error("cannot move a folder into itself");
+  }
+  const target = await uniquePath(path.join(destDir, path.basename(src)));
+  try {
+    await rename(src, target);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    await cp(src, target, { recursive: true });
+    await rm(src, { recursive: true });
+  }
+  return target;
 }

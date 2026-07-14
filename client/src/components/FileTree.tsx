@@ -30,6 +30,14 @@ interface Props {
   deleteFileEntry: (path: string, isDir: boolean) => void;
   deleteFileEntries: (entries: { path: string; isDir: boolean }[]) => void;
   prunePath: { paths: string[] } | null;
+  // Paths currently on the clipboard in "cut" mode (dimmed rows) — null when
+  // the clipboard is empty or in "copy" mode. Backs Ctrl/Cmd+C/X/V, mirroring
+  // the Delete key's single/bulk split.
+  cutPaths: Set<string> | null;
+  onCopyEntries: (paths: string[]) => void;
+  onCutEntries: (paths: string[]) => void;
+  onPasteInto: (destDir: string) => void;
+  onClearClipboard: () => void;
 }
 
 const GIT_STATUS_LABEL: Record<GitFileStatus, string> = {
@@ -102,6 +110,11 @@ export default function FileTree({
   deleteFileEntry,
   deleteFileEntries,
   prunePath,
+  cutPaths,
+  onCopyEntries,
+  onCutEntries,
+  onPasteInto,
+  onClearClipboard,
 }: Props) {
   // Unused value — subscribing is enough to re-render on icon-theme change,
   // since getFileIconResult/getFolderIconResult read module state directly.
@@ -535,12 +548,35 @@ export default function FileTree({
       case "Escape":
         // Clears back to the "no selection" state so the next Shift+click
         // is free to act as the secondary (preview) shortcut again, instead
-        // of extending a range from a leftover anchor.
+        // of extending a range from a leftover anchor. Also abandons a
+        // pending cut (if any) — Escape is the conventional way to cancel a
+        // cut/paste in a file manager.
+        if (cutPaths) onClearClipboard();
         if (selectedPaths.size === 0 && anchorPath === null) return;
         e.preventDefault();
         setSelectedPaths(new Set());
         setAnchorPath(null);
         return;
+      case "c":
+      case "x": {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        const targets =
+          selectedPaths.size > 0
+            ? visibleRows.filter((r) => selectedPaths.has(r.path))
+            : row
+              ? [row]
+              : [];
+        if (targets.length === 0) return;
+        e.preventDefault();
+        const paths = targets.map((t) => t.path);
+        if (e.key === "c") onCopyEntries(paths);
+        else onCutEntries(paths);
+        return;
+      }
+      // Ctrl/Cmd+V is deliberately not handled here — the native "paste"
+      // event (see onPaste on the tree container below) is the single path
+      // for both OS-file paste and the internal clipboard, so the two can't
+      // double-fire.
       case "Delete": {
         // Same single/bulk split the context menu uses: an active multi-
         // selection deletes all of it, otherwise just the focused row.
@@ -559,6 +595,36 @@ export default function FileTree({
       default:
         return;
     }
+  };
+
+  // The single entry point for Ctrl/Cmd+V — both OS-file paste (files
+  // physically copied in the OS file manager, which the browser surfaces as
+  // real File objects on clipboardData) and the internal server-side
+  // clipboard route through here, so they can't double-fire against a
+  // keydown handler for the same combo. clipboardData *is* a DataTransfer,
+  // so the OS-file branch reuses the existing drop pipeline unchanged.
+  const handleTreePaste = (e: React.ClipboardEvent) => {
+    // focusedPath, not effectiveFocusedPath: that fallback exists for
+    // keyboard roving-tabindex, which needs *some* landing row even after a
+    // click-to-deselect clears the visible selection — but focusedPath
+    // itself is untouched by that click (DOM focus stays on the row; see
+    // handleTreeKeyDown's Escape case and the container's onClick), so a
+    // paste right after deselecting still correctly targets the folder the
+    // user was last in. Falling through to visibleRows[0] here instead
+    // would silently redirect to whatever the first *visible* row happens
+    // to be (often a file, whose parent is rootDir) any time nothing has
+    // ever been focused — rootDir is the honest default for that case.
+    const idx = indexOf(focusedPath);
+    const row = idx !== -1 ? visibleRows[idx] : null;
+    const destDir = row ? (row.isDir ? row.path : row.path.slice(0, row.path.lastIndexOf("/"))) : rootDir;
+    if (!destDir) return;
+    if (e.clipboardData.files.length > 0) {
+      e.preventDefault();
+      onDropFiles(destDir, e.clipboardData);
+      return;
+    }
+    e.preventDefault();
+    onPasteInto(destDir);
   };
 
   // Called on every "dragover" pulse for a collapsed folder: the first pulse
@@ -613,6 +679,7 @@ export default function FileTree({
       const entryPath = `${dirPath}/${entry.name}`;
       const gitClass = entry.gitStatus ? ` git-status-${entry.gitStatus}` : "";
       const selectedClass = selectedPaths.has(entryPath) ? " selected" : "";
+      const cutClass = cutPaths?.has(entryPath) ? " cut" : "";
       const rowTabIndex = entryPath === effectiveFocusedPath ? 0 : -1;
       const setRowRef = (el: HTMLElement | null) => {
         if (el) rowRefs.current.set(entryPath, el);
@@ -632,7 +699,7 @@ export default function FileTree({
               tabIndex={rowTabIndex}
               className={`file-tree-row file-tree-dir${
                 dragOverPath === entryPath ? " drag-over" : ""
-              }${gitClass}${selectedClass}`}
+              }${gitClass}${selectedClass}${cutClass}`}
               style={{ paddingLeft: 6 + depth * 14 }}
               title={entryPath}
               onClick={(e) => handleRowClick(e, entryPath, true, entry.name)}
@@ -663,7 +730,7 @@ export default function FileTree({
           aria-level={depth + 1}
           aria-selected={selectedPaths.has(entryPath)}
           tabIndex={rowTabIndex}
-          className={`file-tree-row file-tree-file${gitClass}${selectedClass}`}
+          className={`file-tree-row file-tree-file${gitClass}${selectedClass}${cutClass}`}
           style={{ paddingLeft: 6 + depth * 14 }}
           title={entry.name}
           onClick={(e) => handleRowClick(e, entryPath, false, entry.name)}
@@ -718,6 +785,7 @@ export default function FileTree({
         onShowMenu(e.clientX, e.clientY, fileTreeRootMenuItems(rootDir));
       }}
       onKeyDown={handleTreeKeyDown}
+      onPaste={handleTreePaste}
       onMouseDown={(e) => {
         if ((e.target as HTMLElement).closest(".file-tree-row, button, input")) return;
         onMarqueeMouseDown(e);

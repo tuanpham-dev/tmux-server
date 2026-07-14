@@ -158,6 +158,11 @@ interface Props {
   deleteFileEntry: (path: string, isDir: boolean) => void;
   deleteFileEntries: (entries: { path: string; isDir: boolean }[]) => void;
   prunePath: { paths: string[] } | null;
+  cutPaths: Set<string> | null;
+  onCopyEntries: (paths: string[]) => void;
+  onCutEntries: (paths: string[]) => void;
+  onPasteInto: (destDir: string) => void;
+  onClearClipboard: () => void;
   extensionPanels: RegisteredSidebarPanel[];
   extensionWindowActions: RegisteredWindowAction[];
   extensions: ExtensionInfo[];
@@ -213,6 +218,11 @@ export default function Sidebar({
   deleteFileEntry,
   deleteFileEntries,
   prunePath,
+  cutPaths,
+  onCopyEntries,
+  onCutEntries,
+  onPasteInto,
+  onClearClipboard,
   extensionPanels,
   extensionWindowActions,
   extensions,
@@ -707,6 +717,11 @@ export default function Sidebar({
           deleteFileEntry={deleteFileEntry}
           deleteFileEntries={deleteFileEntries}
           prunePath={prunePath}
+          cutPaths={cutPaths}
+          onCopyEntries={onCopyEntries}
+          onCutEntries={onCutEntries}
+          onPasteInto={onPasteInto}
+          onClearClipboard={onClearClipboard}
         />
       );
     }

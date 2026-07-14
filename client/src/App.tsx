@@ -66,13 +66,22 @@ export default function App() {
   }, [error]);
 
   const [filesRefreshKey, setFilesRefreshKey] = useState(0);
+  // refreshClipboardMirror itself comes from useFileActions, called much
+  // later in this component (it needs setFilesRefreshKey, declared here) —
+  // a ref bridges that ordering gap, same pattern as useBottomPanel's
+  // panelRef: populated every render, read from the stable callback below.
+  const refreshClipboardMirrorRef = useRef<() => void>(() => {});
   // Piggybacks on the session poll so git status badges in the FILES panel
-  // stay live (e.g. after a commit or save in the terminal) without a
-  // second timer. Must be a stable useCallback, not an inline arrow — an
-  // unstable identity here would change useSessions' internal `refresh`
-  // callback's identity every render, retriggering its mount effect (and
-  // firing a fresh fetch) on every render instead of once every 3s.
-  const onSessionsRefreshed = useCallback(() => setFilesRefreshKey((k) => k + 1), []);
+  // (and, via the ref above, the FILES-tree cut-clipboard mirror) stay live
+  // without a second timer. Must be a stable useCallback, not an inline
+  // arrow — an unstable identity here would change useSessions' internal
+  // `refresh` callback's identity every render, retriggering its mount
+  // effect (and firing a fresh fetch) on every render instead of once every
+  // 3s.
+  const onSessionsRefreshed = useCallback(() => {
+    setFilesRefreshKey((k) => k + 1);
+    refreshClipboardMirrorRef.current();
+  }, []);
 
   const { sessions, refresh, sessionsLoadedRef } = useSessions(showError, onSessionsRefreshed);
 
@@ -964,6 +973,7 @@ export default function App() {
   const {
     uploadProgress,
     prunePath,
+    fsClipboard,
     handleUpload,
     handleFileTreeDrop,
     handleFilesRefresh,
@@ -972,6 +982,11 @@ export default function App() {
     fileMultiMenuItems,
     deleteFileEntry,
     deleteFileEntries,
+    copyEntries,
+    cutEntries,
+    pasteIntoDir,
+    clearClipboard,
+    refreshClipboardMirror,
   } = useFileActions(
     showError,
     confirmDialog,
@@ -982,6 +997,8 @@ export default function App() {
     openFileInSession,
     openPreviewViewerTab,
   );
+  refreshClipboardMirrorRef.current = refreshClipboardMirror;
+  const cutPaths = fsClipboard?.mode === "cut" ? new Set(fsClipboard.paths) : null;
 
   useEffect(() => {
     document.title = activeTab ? `${tabLabel(activeTab)} — ${APP_NAME}` : APP_NAME;
@@ -1030,6 +1047,11 @@ export default function App() {
             deleteFileEntry={deleteFileEntry}
             deleteFileEntries={deleteFileEntries}
             prunePath={prunePath}
+            cutPaths={cutPaths}
+            onCopyEntries={copyEntries}
+            onCutEntries={cutEntries}
+            onPasteInto={pasteIntoDir}
+            onClearClipboard={clearClipboard}
             extensionPanels={extSidebarPanels}
             extensionWindowActions={extWindowActions}
             extensions={extensions}

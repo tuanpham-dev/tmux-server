@@ -220,6 +220,35 @@ export function deleteEntry(targetPath: string): Promise<void> {
   return request(`/api/fs?path=${encodeURIComponent(targetPath)}`, { method: "DELETE" });
 }
 
+// Server-held FILES-tree clipboard — see server/src/api.ts's fsClipboard.
+// Copy/cut write here; paste reads the server's own state, so it works
+// across browsers/tabs pointed at the same server.
+export function setFsClipboard(paths: string[], mode: "copy" | "cut"): Promise<void> {
+  return request("/api/fs/clipboard", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths, mode }),
+  });
+}
+
+export function getFsClipboard(): Promise<{ paths: string[]; mode: "copy" | "cut" | null }> {
+  return request("/api/fs/clipboard");
+}
+
+export function clearFsClipboard(): Promise<void> {
+  return request("/api/fs/clipboard", { method: "DELETE" });
+}
+
+export function pasteFsClipboard(
+  destDir: string,
+): Promise<{ pasted: string[]; errors: { path: string; message: string }[] }> {
+  return request("/api/fs/paste", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ destDir }),
+  });
+}
+
 export function downloadUrl(targetPath: string): string {
   return `/api/download?path=${encodeURIComponent(targetPath)}`;
 }

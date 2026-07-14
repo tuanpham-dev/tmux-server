@@ -33,6 +33,17 @@ export function useFileActions(
   // selection state instead of waiting for a refetch to notice they're gone.
   const [prunePath, setPrunePath] = useState<{ paths: string[] } | null>(null);
 
+  // Local mirror of the server-held FILES-tree clipboard (see api.ts's
+  // setFsClipboard/getFsClipboard) — used only to dim cut rows in FileTree.
+  // Paste itself never reads this; it always defers to the server's own
+  // state, which is what makes paste correct across browsers/tabs. Refreshed
+  // on the existing 3s session poll (see App.tsx's onAfterRefresh piggyback)
+  // so a cut made in another browser dims here within one tick too.
+  const [fsClipboard, setFsClipboardState] = useState<{
+    paths: string[];
+    mode: "copy" | "cut";
+  } | null>(null);
+
   const renameFileEntry = useCallback(
     async (entryPath: string) => {
       const base = entryPath.slice(entryPath.lastIndexOf("/") + 1);
@@ -96,6 +107,79 @@ export function useFileActions(
     [confirmDialog, showError, setFilesRefreshKey],
   );
 
+  // Copy/Cut also best-effort write the path list as plain text to the OS
+  // clipboard (same mechanism as "Copy Path") — a browser can't put real
+  // files on the OS clipboard, so this is the closest a paste into e.g. a
+  // terminal can get. Failures are swallowed: the server-side clipboard
+  // write above is what actually matters for FILES-tree paste.
+  const copyEntries = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return;
+      try {
+        await api.setFsClipboard(paths, "copy");
+        setFsClipboardState({ paths, mode: "copy" });
+        copyText(paths.join("\n")).catch(() => {});
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [showError],
+  );
+
+  const cutEntries = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return;
+      try {
+        await api.setFsClipboard(paths, "cut");
+        setFsClipboardState({ paths, mode: "cut" });
+        copyText(paths.join("\n")).catch(() => {});
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [showError],
+  );
+
+  const clearClipboard = useCallback(() => {
+    setFsClipboardState(null);
+    api.clearFsClipboard().catch(() => {});
+  }, []);
+
+  // Called on the existing 3s session poll (see App.tsx) so a copy/cut made
+  // in another browser/tab against this same server shows up here too —
+  // dimming only, paste itself always defers to the server's own state.
+  const refreshClipboardMirror = useCallback(() => {
+    api
+      .getFsClipboard()
+      .then(({ paths, mode }) => {
+        setFsClipboardState(mode ? { paths, mode } : null);
+      })
+      .catch(() => {
+        // Offline tick — leave the mirror as-is, don't toast.
+      });
+  }, []);
+
+  const pasteIntoDir = useCallback(
+    async (destDir: string) => {
+      try {
+        const { pasted, errors } = await api.pasteFsClipboard(destDir);
+        if (fsClipboard?.mode === "cut" && pasted.length > 0) {
+          setPrunePath({ paths: fsClipboard.paths });
+          setFsClipboardState(null);
+        }
+        if (pasted.length > 0) setFilesRefreshKey((k) => k + 1);
+        if (errors.length === 1) {
+          showError(`Paste failed: ${errors[0].path} — ${errors[0].message}`);
+        } else if (errors.length > 1) {
+          showError(`${errors.length} items failed to paste`);
+        }
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [fsClipboard, showError, setFilesRefreshKey],
+  );
+
   const createFileInDir = useCallback(
     async (dirPath: string) => {
       const name = (await promptDialog("New file name"))?.trim();
@@ -156,8 +240,13 @@ export function useFileActions(
     (rootDir: string): MenuItem[] => [
       { label: "New File…", onClick: () => createFileInDir(rootDir) },
       { label: "New Folder…", onClick: () => createFolderInDir(rootDir) },
+      // Always offered rather than disabled when empty: knowing the server
+      // clipboard's emptiness synchronously would need a fetch per menu open
+      // (it may have been set from another browser). An empty paste just
+      // shows the "clipboard is empty" error toast.
+      { label: "Paste", shortcut: "Ctrl+V", onClick: () => pasteIntoDir(rootDir) },
     ],
-    [createFileInDir, createFolderInDir],
+    [createFileInDir, createFolderInDir, pasteIntoDir],
   );
 
   const handleUpload = useCallback(
@@ -224,6 +313,13 @@ export function useFileActions(
         );
       }
       items.push(
+        { label: "Cut", shortcut: "Ctrl+X", onClick: () => cutEntries([entryPath]) },
+        { label: "Copy", shortcut: "Ctrl+C", onClick: () => copyEntries([entryPath]) },
+      );
+      if (isDir) {
+        items.push({ label: "Paste", shortcut: "Ctrl+V", onClick: () => pasteIntoDir(entryPath) });
+      }
+      items.push(
         { label: "Rename…", onClick: () => renameFileEntry(entryPath) },
         { label: "Copy Path", onClick: () => copyFilePath(entryPath) },
         { label: "Copy Relative Path", onClick: () => copyFileRelativePath(entryPath, rootDir) },
@@ -243,13 +339,21 @@ export function useFileActions(
       if (!isDir && findFileViewerFor(entryPath, extFileViewers, "preview")) {
         items.push({ label: "Preview", onClick: () => openPreviewViewerTab(entryPath) });
       }
-      items.push({ label: "Delete", danger: true, onClick: () => deleteFileEntry(entryPath, isDir) });
+      items.push({
+        label: "Delete",
+        shortcut: "Delete",
+        danger: true,
+        onClick: () => deleteFileEntry(entryPath, isDir),
+      });
       return items;
     },
     [
       createFileInDir,
       createFolderInDir,
       findInFolder,
+      cutEntries,
+      copyEntries,
+      pasteIntoDir,
       renameFileEntry,
       copyFilePath,
       copyFileRelativePath,
@@ -267,6 +371,8 @@ export function useFileActions(
   // selection of files and folders).
   const fileMultiMenuItems = useCallback(
     (entries: { path: string; isDir: boolean }[]): MenuItem[] => [
+      { label: "Cut", shortcut: "Ctrl+X", onClick: () => cutEntries(entries.map((e) => e.path)) },
+      { label: "Copy", shortcut: "Ctrl+C", onClick: () => copyEntries(entries.map((e) => e.path)) },
       {
         label: "Copy Paths",
         onClick: () => copyText(entries.map((e) => e.path).join("\n")).catch(showError),
@@ -274,16 +380,18 @@ export function useFileActions(
       { label: "Download", onClick: () => entries.forEach((e) => downloadFileEntry(e.path)) },
       {
         label: `Delete ${entries.length} items`,
+        shortcut: "Delete",
         danger: true,
         onClick: () => deleteFileEntries(entries),
       },
     ],
-    [showError, downloadFileEntry, deleteFileEntries],
+    [showError, downloadFileEntry, deleteFileEntries, cutEntries, copyEntries],
   );
 
   return {
     uploadProgress,
     prunePath,
+    fsClipboard,
     handleUpload,
     handleFileTreeDrop,
     handleFilesRefresh,
@@ -295,6 +403,11 @@ export function useFileActions(
     copyFilePath,
     copyFileRelativePath,
     downloadFileEntry,
+    copyEntries,
+    cutEntries,
+    pasteIntoDir,
+    clearClipboard,
+    refreshClipboardMirror,
     fileTreeRootMenuItems,
     fileMenuItems,
     fileMultiMenuItems,
