@@ -38,9 +38,11 @@ import {
   statusForEntry,
 } from "./git.js";
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
+import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
 import { getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
-import { primaryProxyDomain } from "./security.js";
+import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
 import { mergeSettingsDoc, readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
+import { getSubagentDetails } from "./subagentWatcher.js";
 import {
   createSession,
   createWindow,
@@ -96,6 +98,23 @@ function sendFsError(res: Response, err: unknown): void {
 api.get("/sessions", async (_req, res) => {
   try {
     res.json(await listSessions());
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// Full subagent detail for one window's cwd (plans/subagent-activity-
+// viewer.md) — on-demand, only fetched while the agents panel is open;
+// the cheap running-count that rides the sessions poll above lives in
+// subagentWatcher.ts's getCounts, called from tmux.ts's querySessions.
+api.get("/subagents", async (req, res) => {
+  const rawCwd = typeof req.query.cwd === "string" ? req.query.cwd : "";
+  if (!rawCwd) {
+    res.status(400).json({ error: "cwd is required" });
+    return;
+  }
+  try {
+    res.json(await getSubagentDetails(expandHome(rawCwd)));
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
@@ -860,4 +879,78 @@ api.post("/upload", async (req, res) => {
     unlink(target).catch(() => {});
     if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
   });
+});
+
+// Web-push notifications (plans/codeman-mobile-features.md Phase 4). Every
+// route below except /push/bell is a normal authenticated /api endpoint;
+// /push/bell is reached by tmux's own alert-bell hook (a local `curl`
+// process, see tmux.ts's applyTmuxOptions) rather than the browser, so it's
+// exempted from the auth-token gate (security.ts's isAuthExemptPath) and
+// instead enforces its own loopback-only check here.
+
+api.get("/push/vapid-key", async (_req, res) => {
+  try {
+    res.json({ publicKey: await getVapidPublicKey() });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+function isPushSubscriptionBody(
+  body: unknown,
+): body is { endpoint: string; keys: { p256dh: string; auth: string } } {
+  if (typeof body !== "object" || body === null) return false;
+  const b = body as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+  return (
+    typeof b.endpoint === "string" &&
+    typeof b.keys === "object" &&
+    b.keys !== null &&
+    typeof b.keys.p256dh === "string" &&
+    typeof b.keys.auth === "string"
+  );
+}
+
+api.post("/push/subscribe", async (req, res) => {
+  if (!isPushSubscriptionBody(req.body)) {
+    res.status(400).json({ error: "invalid push subscription" });
+    return;
+  }
+  try {
+    await addSubscription({ endpoint: req.body.endpoint, keys: req.body.keys });
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/push/unsubscribe", async (req, res) => {
+  const endpoint = req.body?.endpoint;
+  if (typeof endpoint !== "string" || !endpoint) {
+    res.status(400).json({ error: "endpoint is required" });
+    return;
+  }
+  try {
+    await removeSubscription(endpoint);
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+api.post("/push/bell", async (req, res) => {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const pane = typeof req.query.pane === "string" ? req.query.pane : "";
+  if (!pane) {
+    res.status(400).json({ error: "pane is required" });
+    return;
+  }
+  try {
+    await notifyBell(pane);
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
 });

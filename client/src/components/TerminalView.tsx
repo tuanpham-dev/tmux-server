@@ -5,7 +5,9 @@ import { getContextGetter } from "../contextKeys";
 import { loadEngine, type TerminalEngineName } from "../engines";
 import { isSyntheticSelectStart, type TerminalEngineHandle, type TerminalTheme } from "../engines/types";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
+import { LocalEcho } from "../localEcho";
 import type { AppSettings } from "../settings";
+import { sendWithInkSafeEnters, whenMatches } from "../touchKeys";
 import FloatingTouchKeys from "./FloatingTouchKeys";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
@@ -15,6 +17,27 @@ import {
   WheelLineAccumulator,
 } from "../mouseReports";
 import { isOpenGesture, openUrl } from "../terminalLinks";
+
+// A single onData call is either a plain-text/IME burst or one full control
+// sequence (an escape code, a lone control byte) — never a mix — so this
+// only needs to check "any control byte present", not tokenize per-key.
+function isPrintableBurst(data: string): boolean {
+  return data.length > 0 && !/[\x00-\x1f\x7f]/.test(data);
+}
+
+// Clipboard images have no filename; the ones dropped from a file manager
+// (handled separately, via file.name) do.
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/bmp": "bmp",
+  "image/svg+xml": "svg",
+};
+function extensionForImageMime(mime: string): string {
+  return IMAGE_EXTENSIONS[mime] ?? "png";
+}
 
 type SearchAction = "start" | "next" | "prev" | "cancel";
 
@@ -53,6 +76,11 @@ interface Props {
   // Enter/Shift+Enter.
   onOpenFile?: (path: string, line?: number) => void;
   onOpenFileSecondary?: (path: string, line?: number) => void;
+  // The pane's current working directory (App.tsx's sessions data), used as
+  // the destination for image paste/drop uploads (plans/codeman-mobile-
+  // features.md Phase 3) — "" (window not found yet) just disables that
+  // feature for this render, same as an empty localEchoWhen.
+  cwd?: string;
 }
 
 export default function TerminalView({
@@ -69,6 +97,7 @@ export default function TerminalView({
   onSessionSwitch,
   onOpenFile,
   onOpenFileSecondary,
+  cwd,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // The engine's open() takes over the element it's given: contenteditable,
@@ -210,10 +239,29 @@ export default function TerminalView({
   const stickyCtrlRef = useRef(false);
   stickyCtrlRef.current = stickyCtrl;
   const sendInputRef = useRef<(data: string) => void>(() => {});
+  // Voice transcripts (Phase 5) route through this instead — set to the
+  // mount effect's sendTextOrEcho, the same local-echo-or-direct fork image
+  // paste/drop already uses (Phase 3), so spoken text lands in the buffered
+  // overlay when local echo is active instead of going straight to the PTY.
+  const sendTextRef = useRef<(text: string) => void>(() => {});
   // Pushed by the server's attach watcher (a "command" WS message) whenever
   // this attach's foreground program changes — drives touch keys' `when`
   // filter. "" until the first push arrives.
   const [currentCommand, setCurrentCommand] = useState("");
+  // Read from inside the mount effect's long-lived forwardInput closure,
+  // which only ever sees the values it mounted with — same ref-mirroring
+  // pattern as bindingsRef/visibleRef above, gating zero-lag local echo.
+  const mobilePointerRef = useRef(mobilePointer);
+  mobilePointerRef.current = mobilePointer;
+  const localEchoWhenRef = useRef(settings.localEchoWhen);
+  localEchoWhenRef.current = settings.localEchoWhen;
+  const localEchoRef = useRef<LocalEcho | null>(null);
+  // Image paste/drop (plans/codeman-mobile-features.md Phase 3) reads these
+  // live from inside the same long-lived mount-effect closure.
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+  const uploadConflictRef = useRef(settings.uploadConflict);
+  uploadConflictRef.current = settings.uploadConflict;
 
   useEffect(() => {
     const container = containerRef.current!;
@@ -259,6 +307,47 @@ export default function TerminalView({
       };
       sendInputRef.current = sendInput;
 
+      // Assigned once the engine (LocalEcho's adapter) exists below;
+      // forwardInput only ever runs from real user input, which can't
+      // happen before then — same "mutable, read live" idiom as `ws`.
+      let localEcho: LocalEcho | null = null;
+      // Mirrors currentCommand React state inside this closure (which the
+      // "command" message handler below updates directly, in the same
+      // scope) so forwardInput/routeLocalEcho always see the live value —
+      // the outer `currentCommand` variable this effect captured at mount
+      // time never changes without a remount.
+      let liveCommand = "";
+
+      // Buffered-until-Enter local echo (plans/codeman-mobile-features.md):
+      // Enter sends whatever's pending through the same Ink-safe delayed-\r
+      // path touch keys use (T1); backspace edits the pending text locally
+      // until it's empty, then cascades to a real \x7f; any other control
+      // byte (Ctrl+C, Esc, Tab, arrows) flushes pending text immediately
+      // alongside it — only Enter has the Ink text+\r race this delays for.
+      const routeLocalEcho = (data: string, echo: LocalEcho) => {
+        if (data === "\r") {
+          const pending = echo.pendingText;
+          echo.clear();
+          sendWithInkSafeEnters(pending + "\r", sendInput);
+          return;
+        }
+        if (data === "\x7f") {
+          if (echo.hasPending) echo.removeChar();
+          else sendInput(data);
+          return;
+        }
+        if (isPrintableBurst(data)) {
+          echo.appendText(data);
+          return;
+        }
+        const pending = echo.pendingText;
+        echo.clear();
+        sendInput(pending + data);
+      };
+
+      const localEchoActive = () =>
+        !!localEcho && mobilePointerRef.current && whenMatches(localEchoWhenRef.current, liveCommand);
+
       const forwardInput = (data: string) => {
         let toSend = data;
         // Sticky Ctrl from the touch key bar: converts the next single
@@ -272,7 +361,38 @@ export default function TerminalView({
           stickyCtrlRef.current = false;
           setStickyCtrl(false);
         }
+        if (localEchoActive()) {
+          routeLocalEcho(toSend, localEcho!);
+          return;
+        }
         sendInput(toSend);
+      };
+
+      // Image paste/drop (plans/codeman-mobile-features.md Phase 3): typed
+      // through local echo when it's currently active (mobile + matching
+      // pane), sent directly otherwise — same fork every other input path
+      // in this file uses, just without the sticky-Ctrl/control-byte cases
+      // that don't apply to a plain path string.
+      const sendTextOrEcho = (text: string) => {
+        if (localEchoActive()) localEcho!.appendText(text);
+        else sendInput(text);
+      };
+      sendTextRef.current = sendTextOrEcho;
+
+      // Gated by localEchoWhen alone (not mobilePointer — desktop paste is
+      // the common case for this one) so it works independently of the
+      // local-echo feature itself.
+      const uploadAndType = async (blob: Blob, filename: string) => {
+        const destDir = cwdRef.current;
+        if (!destDir) return;
+        const conflict = uploadConflictRef.current;
+        const apiConflict = conflict === "ask" ? "fail" : conflict;
+        try {
+          const result = await api.uploadFile(`${destDir}/uploads`, filename, blob, apiConflict);
+          sendTextOrEcho(result.path);
+        } catch (err) {
+          onErrorRef.current(err);
+        }
       };
 
       const engine = await create({
@@ -305,6 +425,13 @@ export default function TerminalView({
         return;
       }
       engineRef.current = engine;
+      // engine structurally satisfies LocalEchoAdapter (same five T2a
+      // methods) — no wrapping needed. Constructed unconditionally and
+      // cheaply (one overlay div + one onRender subscription); forwardInput
+      // decides per-call whether to actually route through it, so gating
+      // (mobile pointer, currentCommand) can change live without a remount.
+      localEcho = new LocalEcho(terminalBodyRef.current!, engine);
+      localEchoRef.current = localEcho;
 
       const refit = () => {
         // fit() itself no-ops (returns null) on a disposed/zero-size
@@ -434,6 +561,11 @@ export default function TerminalView({
           ) {
             onSessionSwitchRef.current?.(msg.session, msg.windowIndex);
           } else if (msg.type === "command" && typeof msg.command === "string") {
+            // A program switch invalidates any buffered pending text —
+            // e.g. exiting claude mid-type would otherwise leave a stale
+            // overlay in front of whatever now owns the pane.
+            if (msg.command !== liveCommand) localEcho?.clear();
+            liveCommand = msg.command;
             setCurrentCommand(msg.command);
           } else if (msg.type === "exit") {
             receivedExit = true;
@@ -976,9 +1108,50 @@ export default function TerminalView({
       const onFocusOut = (e: FocusEvent) => {
         if (e.relatedTarget instanceof Node && screen.contains(e.relatedTarget)) return;
         if (engine.getMode(1004)) sendReport(focusReport(false));
+        localEcho?.clear();
       };
       screen.addEventListener("focusin", onFocusIn);
       screen.addEventListener("focusout", onFocusOut);
+
+      // Image paste/drop (plans/codeman-mobile-features.md Phase 3): upload
+      // to <cwd>/uploads and type the resulting path. Capture phase on
+      // paste, ahead of ghostty-web's own bundled paste handling, so a
+      // non-image paste (the common case) is left completely alone — only
+      // an image item gets preventDefault/stopPropagation, never a plain
+      // text paste.
+      const onPaste = (e: ClipboardEvent) => {
+        if (!whenMatches(localEchoWhenRef.current, liveCommand)) return;
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        const imageItem = Array.from(items).find((it) => it.type.startsWith("image/"));
+        if (!imageItem) return;
+        const blob = imageItem.getAsFile();
+        if (!blob) return;
+        e.preventDefault();
+        e.stopPropagation();
+        uploadAndType(blob, `paste-${Date.now()}.${extensionForImageMime(imageItem.type)}`);
+      };
+      screen.addEventListener("paste", onPaste, true);
+
+      // Drop targets the whole terminal body (scrollbar/search-bar/touch-key
+      // gutters included), not just the screen — anywhere over the pane is a
+      // reasonable drop target. dragover must preventDefault too, or the
+      // browser never fires drop at all (its default is "reject the drop").
+      const onDragOver = (e: DragEvent) => {
+        if (!whenMatches(localEchoWhenRef.current, liveCommand)) return;
+        if (!Array.from(e.dataTransfer?.items ?? []).some((it) => it.kind === "file")) return;
+        e.preventDefault();
+      };
+      const onDrop = (e: DragEvent) => {
+        if (!whenMatches(localEchoWhenRef.current, liveCommand)) return;
+        const files = Array.from(e.dataTransfer?.files ?? []);
+        const imageFile = files.find((f) => f.type.startsWith("image/"));
+        if (!imageFile) return;
+        e.preventDefault();
+        uploadAndType(imageFile, imageFile.name || `drop-${Date.now()}.${extensionForImageMime(imageFile.type)}`);
+      };
+      terminalBodyRef.current!.addEventListener("dragover", onDragOver);
+      terminalBodyRef.current!.addEventListener("drop", onDrop);
 
       // Fires when the tab becomes visible again (display:none → block) and on
       // window resizes, so hidden terminals refit as soon as they can measure.
@@ -1029,9 +1202,14 @@ export default function TerminalView({
         screen.removeEventListener("touchcancel", onTouchEnd, true);
         screen.removeEventListener("focusin", onFocusIn);
         screen.removeEventListener("focusout", onFocusOut);
+        screen.removeEventListener("paste", onPaste, true);
+        terminalBodyRef.current?.removeEventListener("dragover", onDragOver);
+        terminalBodyRef.current?.removeEventListener("drop", onDrop);
         observer.disconnect();
         ws.onclose = null;
         ws.close();
+        localEcho?.dispose();
+        localEchoRef.current = null;
         engine.dispose();
         engineRef.current = null;
         refitRef.current = null;
@@ -1080,6 +1258,7 @@ export default function TerminalView({
   useEffect(() => {
     engineRef.current?.refreshFonts();
     refitRef.current?.();
+    localEchoRef.current?.refreshFont();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fontsVersion]);
 
@@ -1145,6 +1324,7 @@ export default function TerminalView({
             stickyCtrl={stickyCtrl}
             onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
             onSendInput={(data) => sendInputRef.current(data)}
+            onSendVoiceText={(text) => sendTextRef.current(text)}
             containerRef={terminalBodyRef}
           />
         )}
@@ -1157,6 +1337,7 @@ export default function TerminalView({
           stickyCtrl={stickyCtrl}
           onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
           onSendInput={(data) => sendInputRef.current(data)}
+          onSendVoiceText={(text) => sendTextRef.current(text)}
         />
       )}
     </div>

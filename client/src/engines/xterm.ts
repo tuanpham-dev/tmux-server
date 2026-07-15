@@ -185,6 +185,13 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
     return cellFromPoint(clientX, clientY, rect, width, height, term.cols, term.rows);
   };
 
+  // Fan-out for onRender: one real subscription to xterm's event,
+  // broadcast to however many callers have asked to be notified.
+  const renderListeners = new Set<() => void>();
+  const renderSub = term.onRender(() => {
+    for (const cb of renderListeners) cb();
+  });
+
   // Active drag-selection teardown, set while a beginLocalSelection() drag
   // is in progress so a second call (shouldn't happen, but cheap to guard)
   // or dispose() can clean it up.
@@ -303,11 +310,38 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
     dispatchSyntheticWheel: (init) => {
       screen.dispatchEvent(new WheelEvent("wheel", init));
     },
+    // Global (0 = top of scrollback) and screen-relative indexing meet at
+    // buffer.baseY — the same offset buildXtermLinkProvider (terminalLinks.ts)
+    // already uses for the inverse conversion.
+    readLine: (row) => {
+      const idx = term.buffer.active.baseY + row;
+      // xterm's buffer is a circular list: get() wraps the index modulo
+      // length and never returns undefined, so out-of-range has to be
+      // checked explicitly rather than relying on a falsy return.
+      if (idx < 0 || idx >= term.buffer.active.length) return "";
+      const line = term.buffer.active.getLine(idx);
+      if (!line) return "";
+      return line.translateToString(true, 0, term.cols);
+    },
+    getCursor: () => ({ col: term.buffer.active.cursorX, row: term.buffer.active.cursorY }),
+    // baseY: top of the bottom page when fully scrolled down. viewportY:
+    // top of what's currently shown. Equal means pinned to the bottom.
+    isScrolledUp: () => term.buffer.active.viewportY !== term.buffer.active.baseY,
+    getCellMetrics: () => {
+      const rect = screen.getBoundingClientRect();
+      return { width: rect.width / term.cols, height: rect.height / term.rows };
+    },
+    onRender: (cb) => {
+      renderListeners.add(cb);
+      return () => renderListeners.delete(cb);
+    },
     dispose: () => {
       disposed = true;
       endLocalSelectionDrag?.();
       screen.removeEventListener("mousemove", onTooltipMouseMove);
       dataSub.dispose();
+      renderSub.dispose();
+      renderListeners.clear();
       linkProviderDisposable.dispose();
       hoverTooltip.remove();
       term.dispose();

@@ -1,4 +1,6 @@
-import { parseSend, whenMatches, type TouchKey } from "../touchKeys";
+import { useEffect, useRef, useState } from "react";
+import { parseSend, sendWithInkSafeEnters, whenMatches, type TouchKey } from "../touchKeys";
+import { isVoiceInputSupported, VoiceInput } from "../voiceInput";
 
 interface Props {
   visible: boolean;
@@ -9,12 +11,22 @@ interface Props {
   stickyCtrl: boolean;
   onToggleStickyCtrl: () => void;
   onSendInput: (data: string) => void;
+  // Final voice transcripts (plans/codeman-mobile-features.md Phase 5) route
+  // through this instead of onSendInput: TerminalView wires it to the same
+  // local-echo-or-direct fork image paste/drop already uses (sendTextOrEcho)
+  // — voice text is plain printable text, not a control sequence, so it
+  // belongs in the buffered overlay when local echo is active, unlike every
+  // other touch key.
+  onSendVoiceText: (text: string) => void;
 }
 
 // Filters `keys` down to the ones that should render right now: `when`
 // matched against currentCommand, and `send` successfully parsed (a key
 // authored with a bad token, or still empty mid-edit in Settings, is
-// skipped rather than rendered broken). Exported so FloatingTouchKeys
+// skipped rather than rendered broken). `{mic}` is filtered out entirely on
+// a browser without SpeechRecognition ("hidden when unsupported" — checked
+// here, not just inside the button, so an all-unsupported bar still collapses
+// via the shown.length === 0 check below). Exported so FloatingTouchKeys
 // renders the identical set.
 export function visibleKeys(
   keys: TouchKey[],
@@ -27,6 +39,10 @@ export function visibleKeys(
       result.push({ key, data: "" });
       continue;
     }
+    if (key.send === "{mic}") {
+      if (isVoiceInputSupported()) result.push({ key, data: "" });
+      continue;
+    }
     const parsed = parseSend(key.send);
     if ("error" in parsed || parsed.data === "") continue;
     result.push({ key, data: parsed.data });
@@ -34,24 +50,63 @@ export function visibleKeys(
   return result;
 }
 
+// A `{mic}` key: toggles a VoiceInput session on tap, sending each final
+// transcript through onTranscript. Its own component (unlike the stateless
+// {ctrl} branch below) since it owns a VoiceInput instance's lifecycle —
+// created once per mount, disposed on unmount, independent of whichever
+// parent (TouchKeyBar or FloatingTouchKeys) renders it.
+function MicKeyButton({ label, onTranscript }: { label: string; onTranscript: (text: string) => void }) {
+  const [listening, setListening] = useState(false);
+  const voiceRef = useRef<VoiceInput | null>(null);
+  // Ref-mirrored so the VoiceInput instance (created once, in the effect
+  // below) always calls the latest onTranscript without needing to be
+  // recreated whenever the parent re-renders with a new closure identity.
+  const onTranscriptRef = useRef(onTranscript);
+  onTranscriptRef.current = onTranscript;
+
+  useEffect(() => {
+    const voice = new VoiceInput({
+      onFinalResult: (text) => onTranscriptRef.current(text),
+      onStateChange: setListening,
+    });
+    voiceRef.current = voice;
+    return () => voice.dispose();
+  }, []);
+
+  return (
+    <button
+      className={`touch-key touch-key-mic${listening ? " active" : ""}`}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        voiceRef.current?.toggle();
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 // One key button: the sticky-Ctrl toggle for send === "{ctrl}" (applies to
 // the next character typed, since holding Ctrl isn't possible with an
-// on-screen keyboard), otherwise a plain send button. onPointerDown (not
-// onClick) + preventDefault so tapping a button never steals focus from the
-// terminal's hidden textarea — losing it would dismiss the on-screen
-// keyboard. Exported for reuse by FloatingTouchKeys.
+// on-screen keyboard), the mic toggle for send === "{mic}", otherwise a
+// plain send button. onPointerDown (not onClick) + preventDefault so tapping
+// a button never steals focus from the terminal's hidden textarea — losing
+// it would dismiss the on-screen keyboard. Exported for reuse by
+// FloatingTouchKeys.
 export function TouchKeyButton({
   touchKey,
   data,
   stickyCtrl,
   onToggleStickyCtrl,
   onSendInput,
+  onSendVoiceText,
 }: {
   touchKey: TouchKey;
   data: string;
   stickyCtrl: boolean;
   onToggleStickyCtrl: () => void;
   onSendInput: (data: string) => void;
+  onSendVoiceText: (text: string) => void;
 }) {
   if (touchKey.send === "{ctrl}") {
     return (
@@ -66,12 +121,15 @@ export function TouchKeyButton({
       </button>
     );
   }
+  if (touchKey.send === "{mic}") {
+    return <MicKeyButton label={touchKey.label} onTranscript={onSendVoiceText} />;
+  }
   return (
     <button
       className="touch-key"
       onPointerDown={(e) => {
         e.preventDefault();
-        onSendInput(data);
+        sendWithInkSafeEnters(data, onSendInput);
       }}
     >
       {touchKey.label}
@@ -89,6 +147,7 @@ export default function TouchKeyBar({
   stickyCtrl,
   onToggleStickyCtrl,
   onSendInput,
+  onSendVoiceText,
 }: Props) {
   if (!visible) return null;
   const shown = visibleKeys(keys, currentCommand);
@@ -104,6 +163,7 @@ export default function TouchKeyBar({
           stickyCtrl={stickyCtrl}
           onToggleStickyCtrl={onToggleStickyCtrl}
           onSendInput={onSendInput}
+          onSendVoiceText={onSendVoiceText}
         />
       ))}
     </div>

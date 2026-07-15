@@ -127,12 +127,22 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
   // nothing to look at — output still streams into the WASM terminal and
   // marks its rows dirty, so reveal() below can force-render without a
   // stale frame being shown.
+  //
+  // Also this engine's ONLY source of render-completion notifications:
+  // ghostty-web 0.4.0's own `term.onRender` is dead code — its backing
+  // emitter is constructed and exposed but `.fire()` is never called
+  // anywhere in the bundle (confirmed by reading the shipped source; a
+  // bare Terminal never fires it even after real writes). Fan out from
+  // here instead, since this wrapper already runs on every actual paint.
+  const renderListeners = new Set<() => void>();
   const renderer = term.renderer!;
   const originalRender = renderer.render.bind(renderer);
   renderer.render = ((...args: Parameters<typeof originalRender>) => {
     if (disposed) return;
     if (!isVisible() || document.hidden) return;
-    return originalRender(...args);
+    const result = originalRender(...args);
+    for (const cb of renderListeners) cb();
+    return result;
   }) as typeof renderer.render;
 
   if (import.meta.env.DEV) {
@@ -376,12 +386,34 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
     dispatchSyntheticWheel: (init) => {
       term.renderer?.getCanvas().dispatchEvent(new WheelEvent("wheel", init));
     },
+    // Global (0 = top of scrollback) and screen-relative indexing meet at
+    // getScrollbackLength() — the same offset terminalLinks.ts's
+    // buildLinkProvider already uses for the inverse conversion.
+    readLine: (row) => {
+      const idx = term.getScrollbackLength() + row;
+      const line = term.buffer.active.getLine(idx);
+      if (!line) return "";
+      return line.translateToString(true, 0, term.cols);
+    },
+    getCursor: () => ({ col: term.buffer.active.cursorX, row: term.buffer.active.cursorY }),
+    isScrolledUp: () => term.buffer.active.viewportY !== 0,
+    // term.renderer's own charWidth/charHeight already reflect the shim's
+    // lineHeight/letterSpacing overrides — the shim works by patching the
+    // renderer's internal measureFont(), so every public metric derived
+    // from it (including these) is already adjusted, same as
+    // cellFromPointOnEngine/getCharHeight above rely on.
+    getCellMetrics: () => ({ width: term.renderer!.charWidth, height: term.renderer!.charHeight }),
+    onRender: (cb) => {
+      renderListeners.add(cb);
+      return () => renderListeners.delete(cb);
+    },
     dispose: () => {
       disposed = true;
       screen.removeEventListener("mousemove", onTooltipMouseMove);
       screen.removeEventListener("compositionend", onCompositionEnd);
       screen.removeEventListener("beforeinput", onBeforeInput);
       dataSub.dispose();
+      renderListeners.clear();
       hoverTooltip.remove();
       term.dispose();
       for (const [listener, opts] of leakedMousedownListeners) {

@@ -142,6 +142,9 @@ interface Props {
   onNewWindowInDir: (cwd: string) => void;
   onOpenLazygit: () => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
+  // plans/subagent-activity-viewer.md — opens the read-only agents popover
+  // for a window's cwd, anchored at the clicking badge's position.
+  onShowAgents: (cwd: string, x: number, y: number) => void;
   sessionMenuItems: (name: string, dead: boolean) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
   pinnedSessions: PinnedSession[];
@@ -221,6 +224,7 @@ export default function Sidebar({
   onNewWindowInDir,
   onOpenLazygit,
   onShowMenu,
+  onShowAgents,
   sessionMenuItems,
   windowMenuItems,
   pinnedSessions,
@@ -581,6 +585,7 @@ export default function Sidebar({
           onNewWindowInDir={onNewWindowInDir}
           onRestorePinned={onRestorePinned}
           onShowMenu={onShowMenu}
+          onShowAgents={onShowAgents}
           sessionMenuItems={sessionMenuItems}
           windowMenuItems={windowMenuItems}
           extensionWindowActions={extensionWindowActions}

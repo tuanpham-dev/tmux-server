@@ -98,11 +98,13 @@ export default function UiSection() {
         <span className="settings-label">Touch keys</span>
         <div className="touch-key-editor-legend">
           send: literal text, or tokens {"{esc} {tab} {enter} {up} {down} {left} {right} {home} {end} {pgup} {pgdn} {space} {^x}"}{" "}
-          (Ctrl+x, e.g. {"{^c}"}), {"{{"} for a literal {"{"}. when: comma-separated program names (e.g. "nvim"); empty = always.
+          (Ctrl+x, e.g. {"{^c}"}), {"{{"} for a literal {"{"}, {"{ctrl}"} for sticky-Ctrl, {"{mic}"} for voice input (hidden if
+          unsupported). when: comma-separated program names (e.g. "nvim"); empty = always.
         </div>
         <div className="touch-key-editor">
           {settings.touchKeys.map((key, i) => {
-            const parsed = key.send === "{ctrl}" || key.send === "" ? null : parseSend(key.send);
+            const parsed =
+              key.send === "{ctrl}" || key.send === "{mic}" || key.send === "" ? null : parseSend(key.send);
             const error = parsed && "error" in parsed ? parsed.error : null;
             return (
               <div className="touch-key-editor-row" key={i}>

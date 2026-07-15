@@ -55,6 +55,13 @@ export interface AppSettings {
   // sent, and which program (if any) must be running for the key to show.
   // See touchKeys.ts for the send-token notation and when-matching rules.
   touchKeys: TouchKey[];
+  // Comma-separated program names (touchKeys.ts's whenMatches rules) gating
+  // zero-lag local echo (plans/codeman-mobile-features.md): on a mobile
+  // pointer device, while the pane's foreground command matches, typed
+  // input renders instantly in a DOM overlay and buffers until Enter
+  // instead of round-tripping through the PTY per keystroke. "" disables
+  // it entirely. Desktop and non-matching panes are unaffected regardless.
+  localEchoWhen: string;
   // Gates the "Kill Session"/"Kill Window" confirm dialogs. Unsaved-changes
   // confirms (dirty CSV tabs) are never gated — that's data loss, not a
   // preference.
@@ -120,6 +127,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   touchKeyBar: "auto",
   touchKeyBarStyle: "bar",
   touchKeys: DEFAULT_TOUCH_KEYS,
+  localEchoWhen: "claude",
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",

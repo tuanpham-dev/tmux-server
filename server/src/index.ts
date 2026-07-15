@@ -236,7 +236,7 @@ server.on("upgrade", (req, socket, head) => {
   const parsedProxy = subdomainPort === null ? parseProxyPath(pathname) : null;
   if (pathname === "/ws/attach") {
     wss.handleUpgrade(req, socket, head, (ws) => {
-      handleAttach(ws, req);
+      handleAttach(ws, req, PORT);
     });
   } else if (pathname === "/ws/tunnel") {
     wss.handleUpgrade(req, socket, head, (ws) => {

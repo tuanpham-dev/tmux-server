@@ -1,4 +1,5 @@
 import type {
+  AgentSummary,
   ExtensionInfo,
   FsFilesListing,
   FsListing,
@@ -30,6 +31,13 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchSessions(): Promise<TmuxSession[]> {
   return request("/api/sessions");
+}
+
+// plans/subagent-activity-viewer.md — cwd is the window's own (possibly
+// "~"-shortened) cwd field; the server expands it before resolving Claude
+// Code's project directory.
+export function fetchSubagents(cwd: string): Promise<AgentSummary[]> {
+  return request(`/api/subagents?cwd=${encodeURIComponent(cwd)}`);
 }
 
 export function fetchPorts(): Promise<ListeningPort[]> {
@@ -428,4 +436,25 @@ export function registryIconUrl(source: string, id: string): string {
 // enabled — 404s otherwise (see extensionHookMiddleware).
 export function extensionApiBase(id: string): string {
   return `/api/ext/${encodeURIComponent(id)}`;
+}
+
+// Web-push notifications (plans/codeman-mobile-features.md Phase 4).
+export function fetchPushVapidKey(): Promise<{ publicKey: string }> {
+  return request("/api/push/vapid-key");
+}
+
+export function subscribePush(subscription: PushSubscriptionJSON): Promise<void> {
+  return request("/api/push/subscribe", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(subscription),
+  });
+}
+
+export function unsubscribePush(endpoint: string): Promise<void> {
+  return request("/api/push/unsubscribe", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ endpoint }),
+  });
 }

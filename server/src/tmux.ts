@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { getCounts as getSubagentCounts } from "./subagentWatcher.js";
 
 // Synthetic tmux sessions created for per-window tabs (see createWindowTab)
 // are grouped with a real session so they share its windows, but are never
@@ -21,6 +22,10 @@ export interface TmuxWindow {
   // on what's actually running there (see registerWindowAction) without a
   // second tmux query; this rides along on the same list-windows call below.
   command: string;
+  // Count of currently-running Claude Code subagents for this window's cwd
+  // (subagentWatcher.ts reading its on-disk JSONL sidecars) — only present
+  // (and only ever > 0) on claude windows; see plans/subagent-activity-viewer.md.
+  agents?: number;
 }
 
 export interface TmuxSession {
@@ -120,9 +125,14 @@ async function querySessions(): Promise<TmuxSession[]> {
       windows: [],
     });
   }
+  // Raw (un-shortened) cwd kept alongside each claude window so the agent
+  // count lookup below can resolve Claude Code's own project directory
+  // naming, which is keyed off the real absolute path — shortenHome's
+  // "~"-prefixed display form would resolve to the wrong directory.
+  const claudeWindows: { window: TmuxWindow; rawCwd: string }[] = [];
   for (const line of windowsOut.split("\n").filter(Boolean)) {
     const [sessionName, id, index, name, active, cwd, activity, command] = line.split("\t");
-    sessions.get(sessionName)?.windows.push({
+    const window: TmuxWindow = {
       id,
       index: Number(index),
       name,
@@ -130,7 +140,16 @@ async function querySessions(): Promise<TmuxSession[]> {
       cwd: shortenHome(cwd),
       activity: activity === "1",
       command: command ?? "",
-    });
+    };
+    sessions.get(sessionName)?.windows.push(window);
+    if (command === "claude") claudeWindows.push({ window, rawCwd: cwd });
+  }
+  if (claudeWindows.length > 0) {
+    const counts = await getSubagentCounts(claudeWindows.map((w) => w.rawCwd));
+    for (const { window, rawCwd } of claudeWindows) {
+      const count = counts.get(rawCwd);
+      if (count) window.agents = count;
+    }
   }
   return [...sessions.values()];
 }
@@ -987,7 +1006,7 @@ export async function openFileInPaneWithKeys(paneId: string, filePath: string, l
   await tmux(["send-keys", "-t", paneId, "Enter"]);
 }
 
-export async function applyTmuxOptions(): Promise<void> {
+export async function applyTmuxOptions(port: number): Promise<void> {
   // aggressive-resize: size windows to the largest interested client rather
   // than the smallest attached one, so a small browser viewport doesn't clamp
   // other clients.
@@ -1012,4 +1031,20 @@ export async function applyTmuxOptions(): Promise<void> {
   // capability flags across all entries whose pattern matches the client's
   // TERM, so both entries' flags apply together.
   await tmux(["set", "-a", "-g", "terminal-features", "xterm*:hyperlinks"]).catch(() => {});
+  // alert-bell: fires whenever any pane rings the terminal bell (Claude Code
+  // bells on permission prompts) — POSTs to the loopback-only /api/push/bell
+  // (server/src/push.ts), which fans out a web-push notification to every
+  // subscribed browser. #{session_name}/#{window_index} are tmux format
+  // strings, expanded by tmux itself at fire time, not by this process —
+  // this whole 4th argv element is delivered to execFile verbatim (no shell
+  // in between), then re-parsed by tmux's own command language when the hook
+  // actually runs `run-shell "..."`. -m 2: never let a slow/dead server hang
+  // the pane on every bell. Reissued on every attach (this function's only
+  // call site) — harmless, `set-hook -g` just overwrites the same value.
+  await tmux([
+    "set-hook",
+    "-g",
+    "alert-bell",
+    `run-shell "curl -s -m 2 -XPOST http://127.0.0.1:${port}/api/push/bell?pane=#{session_name}:#{window_index}"`,
+  ]).catch(() => {});
 }

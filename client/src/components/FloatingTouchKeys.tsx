@@ -9,6 +9,7 @@ interface Props {
   stickyCtrl: boolean;
   onToggleStickyCtrl: () => void;
   onSendInput: (data: string) => void;
+  onSendVoiceText: (text: string) => void;
   // TerminalView's .terminal-body — the toggle's position is clamped within
   // its bounds and re-clamped on resize (rotation, sidebar toggle).
   containerRef: RefObject<HTMLElement | null>;
@@ -58,6 +59,7 @@ export default function FloatingTouchKeys({
   stickyCtrl,
   onToggleStickyCtrl,
   onSendInput,
+  onSendVoiceText,
   containerRef,
 }: Props) {
   const [pos, setPos] = useState<FabPos>(loadPos);
@@ -147,6 +149,7 @@ export default function FloatingTouchKeys({
               stickyCtrl={stickyCtrl}
               onToggleStickyCtrl={onToggleStickyCtrl}
               onSendInput={onSendInput}
+              onSendVoiceText={onSendVoiceText}
             />
           ))}
         </div>

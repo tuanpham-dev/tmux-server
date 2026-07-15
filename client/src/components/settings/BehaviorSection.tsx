@@ -1,5 +1,70 @@
+import { useEffect, useState } from "react";
+import {
+  disablePush,
+  enablePush,
+  getCurrentSubscription,
+  pushUnavailableReason,
+} from "../../pushSubscribe";
 import type { AppSettings } from "../../settings";
 import { useSettingsContext } from "./context";
+
+// Local component state, not a synced AppSettings field — see
+// pushSubscribe.ts's module comment for why a subscription can't be a
+// cross-device preference. "unavailable" carries the specific reason so the
+// UI can explain rather than just disappear (LESSONS-adjacent: fail loud).
+type PushUiState =
+  | { kind: "loading" }
+  | { kind: "unavailable"; reason: string }
+  | { kind: "subscribed" }
+  | { kind: "unsubscribed" }
+  | { kind: "busy" }
+  | { kind: "error"; message: string };
+
+function PushNotificationToggle() {
+  const [state, setState] = useState<PushUiState>({ kind: "loading" });
+
+  useEffect(() => {
+    const reason = pushUnavailableReason();
+    if (reason) {
+      setState({ kind: "unavailable", reason });
+      return;
+    }
+    getCurrentSubscription()
+      .then((sub) => setState({ kind: sub ? "subscribed" : "unsubscribed" }))
+      .catch((err) => setState({ kind: "error", message: String(err) }));
+  }, []);
+
+  const toggle = async (checked: boolean) => {
+    setState({ kind: "busy" });
+    try {
+      if (checked) await enablePush();
+      else await disablePush();
+      setState({ kind: checked ? "subscribed" : "unsubscribed" });
+    } catch (err) {
+      setState({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  if (state.kind === "loading") return null;
+  if (state.kind === "unavailable") {
+    return <div className="settings-hint">{state.reason}</div>;
+  }
+
+  return (
+    <>
+      <label className="settings-row checkbox-row">
+        <input
+          type="checkbox"
+          checked={state.kind === "subscribed"}
+          disabled={state.kind === "busy"}
+          onChange={(e) => toggle(e.target.checked)}
+        />
+        <span>Push notifications on this device when a pane rings the bell</span>
+      </label>
+      {state.kind === "error" && <div className="settings-hint">{state.message}</div>}
+    </>
+  );
+}
 
 export default function BehaviorSection() {
   const { settings, set } = useSettingsContext();
@@ -85,6 +150,8 @@ export default function BehaviorSection() {
         />
         <span>Sort command palette by most-used</span>
       </label>
+
+      <PushNotificationToggle />
     </>
   );
 }

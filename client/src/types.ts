@@ -9,6 +9,24 @@ export interface TmuxWindow {
   // The active pane's current foreground command (e.g. "bash", "claude") —
   // see the server-side TmuxWindow's matching field for why this exists.
   command: string;
+  // Count of currently-running Claude Code subagents for this window's cwd
+  // — only present (and only ever > 0) on claude windows. See
+  // plans/subagent-activity-viewer.md and the server-side TmuxWindow's
+  // matching field.
+  agents?: number;
+}
+
+// Mirrors the server's subagentWatcher.ts AgentSummary — one entry per
+// subagent found for a window's cwd (plans/subagent-activity-viewer.md).
+export interface AgentSummary {
+  agentId: string;
+  agentType: string;
+  description: string;
+  model: string | null;
+  status: "running" | "completed";
+  tokens: number;
+  toolCalls: number;
+  lastActivityAt: string | null;
 }
 
 export interface TmuxSession {

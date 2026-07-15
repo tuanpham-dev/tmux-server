@@ -137,6 +137,21 @@ export default function TerminalSection() {
         />
         <span>Cursor blink</span>
       </label>
+
+      <label className="settings-row">
+        <span className="settings-label">Local echo when</span>
+        <input
+          className="dialog-input"
+          placeholder="e.g. claude (empty disables)"
+          value={settings.localEchoWhen}
+          onChange={(e) => set("localEchoWhen", e.target.value)}
+        />
+      </label>
+      <div className="settings-hint">
+        On mobile, typed input renders instantly and buffers until Enter
+        while the pane's foreground command matches this comma-separated
+        list (case-insensitive, exact match). Empty disables local echo.
+      </div>
     </>
   );
 }

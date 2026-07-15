@@ -39,7 +39,7 @@ const HIGH_WATER = 1024 * 1024;
 const LOW_WATER = 256 * 1024;
 const RESUME_POLL_MS = 50;
 
-export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
+export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number): void {
   const url = new URL(req.url ?? "", "http://localhost");
   const session = url.searchParams.get("session");
   if (!session) {
@@ -50,7 +50,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
   // Fire-and-forget: awaiting here would open an async gap between the WS
   // handshake and registering the "close" handler below — a socket that
   // closes inside that gap would leak its PTY forever.
-  void applyTmuxOptions();
+  void applyTmuxOptions(port);
 
   const term = pty.spawn("tmux", ["attach-session", "-t", `=${session}`], {
     name: "xterm-256color",

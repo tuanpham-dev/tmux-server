@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
+import AgentsPanel from "./components/AgentsPanel";
 import BottomPanel from "./components/BottomPanel";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
@@ -92,6 +93,9 @@ export default function App() {
   const { sessions, refresh, sessionsLoadedRef } = useSessions(showError, onSessionsRefreshed);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // plans/subagent-activity-viewer.md — the agents popover triggered from a
+  // session-list window row's badge; null when closed.
+  const [agentsPanel, setAgentsPanel] = useState<{ cwd: string; x: number; y: number } | null>(null);
   // Each editor group's own TabBar right-side actions container — an image
   // tab portals its zoom toolbar into its own group's bar while active (VS
   // Code/code-server editor-actions placement). State (not a plain ref)
@@ -614,6 +618,10 @@ export default function App() {
     setMenu({ x, y, items });
   }, []);
 
+  const showAgents = useCallback((cwd: string, x: number, y: number) => {
+    setAgentsPanel({ cwd, x, y });
+  }, []);
+
   // Opens a panel terminal, resolving which session its new tmux window goes
   // in: the active real tab's session when there is one, otherwise a picker at
   // `anchor` (the + button, or the panel's own top-left for the keyboard
@@ -1044,6 +1052,7 @@ export default function App() {
             onNewWindowInDir={newWindowInDir}
             onOpenLazygit={openLazygit}
             onShowMenu={showMenu}
+            onShowAgents={showAgents}
             sessionMenuItems={sessionMenuItems}
             windowMenuItems={windowMenuItems}
             pinnedSessions={pinnedSessions}
@@ -1219,6 +1228,15 @@ export default function App() {
               </div>
             );
           } else {
+            // Same session/window lookup tabExtrasFor uses above — window
+            // absent (session not live yet, or index stale mid-reconcile)
+            // just leaves image paste/drop disabled for this render; it
+            // self-heals on the next sessions poll.
+            const paneSession = sessions.find((s) => s.name === tab.sessionName);
+            const paneWindow =
+              tab.windowIndex !== undefined
+                ? paneSession?.windows.find((w) => w.index === tab.windowIndex)
+                : paneSession?.windows.find((w) => w.active);
             content = (
               <TerminalView
                 attachName={tab.attachName}
@@ -1237,6 +1255,7 @@ export default function App() {
                 onSessionSwitch={openSwitchedSession}
                 onOpenFile={openFileOrViewer}
                 onOpenFileSecondary={openFileOrViewerSecondary}
+                cwd={paneWindow?.cwd}
               />
             );
           }
@@ -1312,6 +1331,13 @@ export default function App() {
       </main>
       {menu && (
         <ContextMenu menu={menu} onClose={() => setMenu(null)} resolvedBindings={resolvedBindings} />
+      )}
+      {agentsPanel && (
+        <AgentsPanel
+          cwd={agentsPanel.cwd}
+          anchor={{ x: agentsPanel.x, y: agentsPanel.y }}
+          onClose={() => setAgentsPanel(null)}
+        />
       )}
       {dialog && <Dialog dialog={dialog} />}
       {switcherQuery !== null && (

@@ -23,6 +23,13 @@ export default defineConfig({
     appNameTitlePlugin(),
     VitePWA({
       registerType: "autoUpdate",
+      // injectManifest (not the default generateSW) so client/src/sw.ts can
+      // add its own push/notificationclick handlers (plans/codeman-mobile-
+      // features.md Phase 4) — generateSW only lets you tune caching, not
+      // add arbitrary event listeners to the generated worker.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       includeAssets: ["favicon.ico", "icon.svg", "apple-touch-icon-180x180.png"],
       manifest: {
         name: "tmux-server",
@@ -43,7 +50,7 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
+      injectManifest: {
         // index.html deliberately NOT precached and no navigateFallback:
         // navigations always fetch fresh HTML from the server, so a deploy
         // takes effect on the next reload instead of whenever the service
@@ -51,7 +58,6 @@ export default defineConfig({
         // for hours (the app is useless offline anyway; the hashed assets
         // below stay precached purely for load speed).
         globPatterns: ["**/*.{js,css,ttf,woff2,svg,png,ico}"],
-        navigateFallback: null,
         // Symbols Nerd Font Mono (Powerline/prompt icon glyphs) is ~2.5 MB,
         // just over workbox's 2 MiB default.
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,

@@ -192,9 +192,19 @@ export function tokenFromRequest(
 }
 
 // Routes that must stay reachable without the auth cookie even when the gate
-// is on — currently identical to the Origin exemption (see its module
-// comment): a capability-token-protected /public/ route under an
-// extension's own namespace.
+// is on: the Origin-exempt /public/ routes (see its module comment), plus
+// /api/push/bell — called by tmux's own `run-shell curl` alert-bell hook
+// (server/src/tmux.ts's applyTmuxOptions), a plain local process with no way
+// to carry a cookie or token. That handler enforces its own loopback-only
+// check instead (isLoopbackAddress below) — this exemption alone would
+// otherwise open it to anyone who can reach the port.
 export function isAuthExemptPath(path: string): boolean {
-  return isOriginExemptPath(path);
+  return isOriginExemptPath(path) || path === "/api/push/bell";
+}
+
+// Bell-hook endpoint gate: the hook always calls http://127.0.0.1:<port>,
+// so a request whose remote address isn't loopback didn't come from it.
+export function isLoopbackAddress(remoteAddress: string | undefined): boolean {
+  if (!remoteAddress) return false;
+  return remoteAddress === "127.0.0.1" || remoteAddress === "::1" || remoteAddress === "::ffff:127.0.0.1";
 }

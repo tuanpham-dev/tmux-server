@@ -57,6 +57,15 @@ export interface CellPosition {
   row: number;
 }
 
+// 0-based screen-relative coordinates (row 0 = top of the visible
+// viewport) — matches readLine's row numbering. Deliberately a distinct
+// type from CellPosition: that one is 1-based for SGR wire compatibility,
+// this one isn't a wire format at all.
+export interface ScreenPosition {
+  col: number;
+  row: number;
+}
+
 export interface TerminalEngineOptions {
   // Element the engine mounts into (TerminalView's `screen` ref, never the
   // outer host) — sibling widgets stay outside whatever key/paste
@@ -137,6 +146,25 @@ export interface TerminalEngineHandle {
   // touch-swipe gestures (computed in TerminalView) through the same wheel
   // policy real wheel events go through.
   dispatchSyntheticWheel(init: WheelEventInit): void;
+  // Reads one screen-relative row's text (0 = top of the visible viewport),
+  // right-trimmed of trailing whitespace, at most `cols` characters — used
+  // by LocalEcho's prompt finder (plans/codeman-mobile-features.md).
+  // Out-of-range rows return "".
+  readLine(row: number): string;
+  // The cursor's screen-relative position (0-based, matches readLine's row
+  // numbering).
+  getCursor(): ScreenPosition;
+  // True when the local viewport isn't pinned to the bottom of the
+  // engine's own buffer — tmux owns real scrollback, so this only ever
+  // reflects a momentary local scroll, not tmux copy-mode.
+  isScrolledUp(): boolean;
+  // Cell size in CSS pixels, respecting lineHeight/letterSpacing — the
+  // same grid both cellFromPoint and the engine's own renderer use.
+  getCellMetrics(): { width: number; height: number };
+  // Fires after each repaint completes; returns an unsubscribe. Multiple
+  // subscribers are supported (unlike onKeyEvent/onWheelEvent, which each
+  // set a single handler).
+  onRender(cb: () => void): () => void;
   dispose(): void;
 }
 
