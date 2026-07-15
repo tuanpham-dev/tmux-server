@@ -2,15 +2,31 @@ import type { AppSettings } from "../../settings";
 import { useSettingsContext } from "./context";
 import { FontFamilyPicker, NumberField } from "./controls";
 
-// Line height, letter spacing, bold weight, and minimum contrast ratio have
-// no ghostty-web options — they're implemented app-side (ghosttyShims.ts,
-// utils/fonts.ts; see plans/swap-xterm-to-ghostty-web.md's Phase 5).
+// ghostty-web has no native options for line height, letter spacing, bold
+// weight, or minimum contrast ratio — the ghostty engine implements them
+// app-side (ghosttyShims.ts, utils/fonts.ts). The xterm engine
+// (plans/terminal-engine-setting.md) has native options for all of these;
+// textThickness stays app-side either way (canvas shim vs
+// -webkit-text-stroke — see settings.ts).
 export default function TerminalSection() {
   const { settings, set, extensions } = useSettingsContext();
 
   return (
     <>
       <h2 className="settings-section-title">Terminal</h2>
+
+      <label className="settings-row">
+        <span className="settings-label">Engine</span>
+        <select
+          className="dialog-input settings-select"
+          value={settings.terminalEngine}
+          onChange={(e) => set("terminalEngine", e.target.value as AppSettings["terminalEngine"])}
+        >
+          <option value="ghostty">Ghostty</option>
+          <option value="xterm">xterm.js</option>
+          <option value="auto">Auto (xterm.js on mobile)</option>
+        </select>
+      </label>
 
       <FontFamilyPicker
         value={settings.fontFamily}

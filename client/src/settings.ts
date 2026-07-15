@@ -3,6 +3,12 @@ import { DEFAULT_TOUCH_KEYS, type TouchKey } from "./touchKeys";
 import type { PinnedSession } from "./types";
 
 export interface AppSettings {
+  // "auto" resolves to xterm on mobile devices (same predicate as
+  // touchKeyBar's "auto") and ghostty on desktop — synced across devices,
+  // so a phone and a desktop each get the engine suited to them from one
+  // setting. Switching (directly or via auto re-resolving) remounts the
+  // terminal and reattaches, same cost as a reconnect.
+  terminalEngine: "ghostty" | "xterm" | "auto";
   fontFamily: string;
   fontSize: number;
   // Weight used for ordinary (non-bold) text: "medium" renders everything
@@ -14,26 +20,28 @@ export interface AppSettings {
   fontWeight: "normal" | "medium";
   // Synthetic glyph thickening: stroke width in px added around every glyph
   // (0 = off). Fractional control between the font's designed weights, at
-  // the cost of slightly softer edges — implemented in ghosttyShims.ts.
-  // Applies to any font, including system fallbacks (unlike fontWeight).
+  // the cost of slightly softer edges. ghostty engine: canvas rasterizer
+  // shim (ghosttyShims.ts). xterm engine: native -webkit-text-stroke on the
+  // DOM renderer. Applies to any font, including system fallbacks (unlike
+  // fontWeight).
   textThickness: number;
-  // ghostty-web has no fontWeightBold option; "normal" is implemented by
-  // registering the text-weight font face across all weights so the
-  // renderer's "bold …" canvas font lookups resolve to it (utils/fonts.ts).
-  // Only covers extension-loaded fonts — system fonts in the stack keep
-  // their real bold.
+  // ghostty-web has no fontWeightBold option, so the ghostty engine
+  // implements "normal" by registering the text-weight font face across all
+  // weights so the renderer's "bold …" canvas font lookups resolve to it
+  // (utils/fonts.ts) — only covers extension-loaded fonts, system fonts in
+  // the stack keep their real bold. xterm engine: native option.
   fontWeightBold: "normal" | "bold";
   cursorStyle: "block" | "bar" | "underline";
   cursorBlink: boolean;
-  // Line height multiplier / letter spacing in px. ghostty-web has no such
-  // options; both are applied by adjusting the renderer's measured cell
-  // metrics (ghosttyShims.ts).
+  // Line height multiplier / letter spacing in px. ghostty engine: no
+  // native options, applied by adjusting the renderer's measured cell
+  // metrics (ghosttyShims.ts). xterm engine: native options.
   lineHeight: number;
   letterSpacing: number;
   // 1 disables it; 4.5 is the VS Code/code-server default (WCAG AA) —
   // without it, e.g. lazygit's selected row keeps its original foreground
   // colors on the blue selection background and becomes unreadable.
-  // Implemented in ghosttyShims.ts (ghostty-web has no equivalent).
+  // ghostty engine: shim (ghosttyShims.ts). xterm engine: native option.
   minimumContrastRatio: number;
   uploadConflict: "rename" | "overwrite" | "ask";
   // "auto" shows the on-screen key bar only on mobile devices — coarse
@@ -97,6 +105,7 @@ export interface AppSettings {
 // exists) — so an unavailable bundled font still lands on something native
 // to the machine before falling through to the browser's generic mapping.
 export const DEFAULT_SETTINGS: AppSettings = {
+  terminalEngine: "ghostty",
   fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
   fontWeight: "normal",

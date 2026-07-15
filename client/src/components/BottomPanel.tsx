@@ -1,5 +1,5 @@
-import type { ITheme } from "ghostty-web";
 import { useRef } from "react";
+import type { TerminalTheme } from "../engines/types";
 import type { Keybinding } from "../keybindings";
 import type { AppSettings } from "../settings";
 import type { TmuxSession } from "../types";
@@ -28,7 +28,7 @@ interface Props {
   panelFocused: boolean;
   sessions: TmuxSession[];
   settings: AppSettings;
-  theme: ITheme;
+  theme: TerminalTheme;
   fontsVersion: number;
   bindings: Record<string, Keybinding[]>;
   onSelectTab: (tabId: string) => void;
