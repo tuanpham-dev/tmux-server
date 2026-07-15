@@ -231,7 +231,7 @@ export default function App() {
   // touchend the terminal swallows after one of its own scrolls.
   useEffect(() => {
     const MIN_DX_PX = 60;
-    const MIN_VELOCITY_PX_PER_MS = 0.6;
+    const MIN_VELOCITY_PX_PER_MS = 1;
     let start: { x: number; y: number; t: number } | null = null;
     const onTouchStart = (e: TouchEvent) => {
       start =
