@@ -326,7 +326,11 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
       composingHandler = handler;
     },
     dispatchSyntheticWheel: (init) => {
-      screen.dispatchEvent(new WheelEvent("wheel", init));
+      // xterm's own wheel listener is bound to term.element (a div it
+      // creates as a *child* of screen via term.open), not screen itself —
+      // dispatching on screen never reaches it since events only bubble up
+      // from their target, never down into descendants.
+      (term.element ?? screen).dispatchEvent(new WheelEvent("wheel", init));
     },
     // Global (0 = top of scrollback) and screen-relative indexing meet at
     // buffer.baseY — the same offset buildXtermLinkProvider (terminalLinks.ts)
