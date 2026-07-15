@@ -1084,6 +1084,17 @@ export default function TerminalView({
         const dx = touchLast.x - t.clientX;
         const dy = touchLast.y - t.clientY;
         if (!touchScrolling && Math.hypot(dx, dy) < TOUCH_SCROLL_THRESHOLD_PX) return;
+        if (!touchScrolling) {
+          // Gesture just confirmed as a scroll, not a tap: drop any
+          // existing focus. Covers two cases with one rule — the keyboard
+          // is currently open (this closes it, matching "scrolling means
+          // you're reading, not typing") and the keyboard was already
+          // dismissed via the OS back gesture but the hidden input quietly
+          // kept DOM focus (nothing left focused for the IME to reopen on
+          // this touch). No dependency on guessing keyboard-close timing.
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && screen.contains(active)) active.blur();
+        }
         touchScrolling = true;
         e.preventDefault();
         touchLast = { x: t.clientX, y: t.clientY };
