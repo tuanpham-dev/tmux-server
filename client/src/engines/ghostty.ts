@@ -225,6 +225,19 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
   // ghostty already forwards the committed text on compositionend. Desktop
   // typing can't double-send: every keydown InputHandler forwards is
   // preventDefault()ed, so it never produces a beforeinput.
+  //
+  // insertCompositionText / insertFromComposition join the same case as
+  // insertText: Gboard (and other predictive keyboards) commit a composed
+  // word — including its auto-appended trailing space — through one of
+  // these two inputTypes rather than insertText, even for plain English
+  // typing with no real IME composition involved. Only reachable once
+  // isComposing is false (the guard below), so this can't intercept a
+  // still-in-progress composition, only its committed result — the same
+  // text ghostty's own compositionend handler already forwarded once, so
+  // the existing de-dup guard still applies. Before this, every word
+  // committed this way (which is most Android typing) was silently
+  // dropped by the `default: return` below — the space was just the most
+  // visible casualty, since it sits at the boundary of every word commit.
   let lastCompositionData = "";
   let lastCompositionTime = 0;
   const onCompositionEnd = (e: CompositionEvent) => {
@@ -248,6 +261,8 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
     switch (e.inputType) {
       case "insertText":
       case "insertReplacementText":
+      case "insertCompositionText":
+      case "insertFromComposition":
         out = e.data ? e.data.replace(/\n/g, "\r") : null;
         break;
       case "insertLineBreak":
