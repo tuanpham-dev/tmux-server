@@ -1031,6 +1031,7 @@ export default function App() {
     <div className="app">
       {sidebarVisible ? (
         <>
+          <div className="sidebar-backdrop" onClick={() => setSidebarVisible(false)} />
           <Sidebar
             width={sidebarWidth}
             sessions={sessions}

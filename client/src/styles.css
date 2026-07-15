@@ -130,6 +130,44 @@ body {
   overflow: hidden;
 }
 
+.sidebar-backdrop {
+  display: none;
+}
+
+/* On a real touch device (no mouse, coarse pointer — same test TerminalView
+   uses for its own mobile branches) the sidebar has no room to permanently
+   share the screen with the terminal, so it floats over the content instead
+   of squeezing it, and a tap outside — the backdrop — auto-hides it again,
+   same as the swipe-to-close gesture above. */
+@media (pointer: coarse) and (hover: none) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 801;
+    /* Overrides the resize-driven inline width — a floating drawer keeps a
+       comfortable, fixed reading width regardless of the desktop resize
+       state stored in localStorage. */
+    width: min(85vw, 320px) !important;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.45);
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 800;
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  /* The floating sidebar no longer shares flex space with .main, so the
+     drag-to-resize handle next to it has nothing to resize. */
+  .resize-handle {
+    display: none;
+  }
+}
+
 .resize-handle {
   position: relative;
   z-index: 1;
@@ -2317,7 +2355,7 @@ body.scrollbar-dragging {
 }
 
 .touch-key-editor-when {
-  width: 110px;
+  width: 200px;
 }
 
 .touch-key-editor-actions {
@@ -2413,7 +2451,7 @@ body.scrollbar-dragging {
   }
 
   .touch-key-editor-when {
-    width: 52px;
+    width: 90px;
     padding-left: 4px;
     padding-right: 4px;
   }
