@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { BranchNode, SplitDirection, SplitNode } from "../lib/splits";
 import type { MenuItem, Tab, TabGroupState } from "../types";
 import TabBar from "./TabBar";
@@ -117,7 +117,12 @@ function Leaf({
   onTabPointerDown,
   tabJustDraggedRef,
 }: SharedProps & { groupId: string; flexStyle: CSSProperties; innerRef: (el: HTMLDivElement | null) => void }) {
-  const groupTabs = tabs.filter((t) => t.groupId === groupId);
+  // Memoized so a re-render that leaves `tabs` referentially unchanged (e.g.
+  // the 3s session poll, which always swaps in a fresh `sessions` array even
+  // when nothing relevant changed) doesn't hand TabBar a new-but-equal
+  // array — that was resetting its own scrollIntoView effect (keyed on
+  // `tabs`) and snapping a mid-scroll tab strip back to the active tab.
+  const groupTabs = useMemo(() => tabs.filter((t) => t.groupId === groupId), [tabs, groupId]);
   const dropIndicator =
     dropTarget?.kind === "bar" && dropTarget.groupId === groupId && dropTarget.indicatorId
       ? { id: dropTarget.indicatorId, edge: dropTarget.indicatorEdge }
