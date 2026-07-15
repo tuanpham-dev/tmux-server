@@ -1385,6 +1385,18 @@ body.tab-dragging .split-content-host {
   color: var(--fg-bright);
 }
 
+/* xterm.js's own IME composition preview box — a known-buggy overlay even
+   in xterm's own shipped CSS ("TODO: Composition position got messed up
+   somewhere"). Every composed word (which is most Android/Gboard typing,
+   not just CJK IME) briefly shows this at a wrong, unrelated position —
+   observed nowhere near the real cursor — flashing in front of the local
+   echo overlay above, which already renders the correct in-progress text
+   at the right place. Suppressed entirely rather than left to fight our
+   own overlay for the same job it does correctly. */
+.xterm .composition-view {
+  display: none !important;
+}
+
 /* Link hover tooltip — shows the link's target, which can differ from the
    visible cell text (a resolved file path's :line suffix, a trimmed URL). */
 .terminal-link-tooltip {
