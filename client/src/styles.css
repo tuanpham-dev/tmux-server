@@ -2243,6 +2243,33 @@ body.scrollbar-dragging {
   flex-wrap: wrap;
 }
 
+.touch-key-editor-row.dragging {
+  opacity: 0.4;
+}
+
+/* 2px accent line on the edge a dragged row would land on — box-shadow
+   rather than a border so it doesn't shift row layout. */
+.touch-key-editor-row.drop-indicator-top {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+
+.touch-key-editor-row.drop-indicator-bottom {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.touch-key-editor-grip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  align-self: stretch;
+  color: var(--fg-dim);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
 .touch-key-editor-label {
   width: 90px;
 }
@@ -2279,10 +2306,71 @@ body.scrollbar-dragging {
   margin-top: 8px;
 }
 
+/* Live preview of the on-screen key bar, filtered by the tag pills below —
+   mirrors .touch-key-bar's own padding/gap but sits inline in the settings
+   panel instead of being fixed to the terminal's bottom edge. */
+.touch-key-preview {
+  margin-bottom: 10px;
+}
+
+.touch-key-preview-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.touch-key-preview-tag {
+  padding: 3px 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.touch-key-preview-tag.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+.touch-key-preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-height: 36px;
+}
+
+.touch-key-preview-bar .touch-key {
+  flex: 0 0 auto;
+  cursor: default;
+}
+
+.touch-key-preview-empty {
+  font-size: 11px;
+  color: var(--fg-dim);
+  align-self: center;
+}
+
 @media (max-width: 640px) {
   .touch-key-editor-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .touch-key-editor-grip {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    align-self: auto;
   }
 
   .touch-key-editor-label,
