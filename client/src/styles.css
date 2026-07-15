@@ -1391,10 +1391,18 @@ body.tab-dragging .split-content-host {
    not just CJK IME) briefly shows this at a wrong, unrelated position —
    observed nowhere near the real cursor — flashing in front of the local
    echo overlay above, which already renders the correct in-progress text
-   at the right place. Suppressed entirely rather than left to fight our
-   own overlay for the same job it does correctly. */
+   at the right place. Made invisible rather than left to fight our own
+   overlay for the same job it does correctly.
+   opacity (not display: none) is required: CompositionHelper.
+   updateCompositionElements reads this element's own getBoundingClientRect()
+   on every render to size the REAL hidden IME textarea
+   (textarea.style.width/height = Math.max(rect.width/height, 1)) —
+   display: none collapses that rect to zero, shrinking the actual typing
+   target to 1x1px and silently breaking all input. opacity preserves
+   layout (and thus a real, non-zero rect) while hiding the pixels. */
 .xterm .composition-view {
-  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* Link hover tooltip — shows the link's target, which can differ from the
