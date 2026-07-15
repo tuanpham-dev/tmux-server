@@ -438,8 +438,20 @@ export default function TerminalView({
         // terminal; a ResizeObserver callback can still fire after cleanup
         // disconnects it.
         const result = engine.fit();
-        if (result && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: result.cols, rows: result.rows }));
+        if (result) {
+          // LocalEcho caches cellMetrics at construction time (before this
+          // terminal's very first fit ever runs, since refit is defined and
+          // called after `new LocalEcho(...)` above) and only otherwise
+          // refreshes it on a font change — never on a resize. Left stale,
+          // every subsequent refit (rotation, keyboard show/hide, sidebar
+          // toggle) silently drifts the overlay's cell size away from the
+          // terminal's real one, anchoring buffered text at the wrong
+          // pixel row/column even though findAnchor's own row/col math is
+          // correct.
+          localEcho?.refreshFont();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "resize", cols: result.cols, rows: result.rows }));
+          }
         }
       };
       refitRef.current = refit;
