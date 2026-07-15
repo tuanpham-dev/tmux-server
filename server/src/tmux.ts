@@ -224,21 +224,26 @@ export interface SessionCurrentWindow {
   name: string;
   windowId: string;
   windowIndex: number;
+  // pane_current_command of the current window's active pane — e.g. "bash",
+  // "vim", "claude". Lets the attach watcher push foreground-program changes
+  // to the client without a dedicated poll (see attachWatcher.ts).
+  command: string;
 }
 
-// In list-sessions' format context, window_* expands to each session's
-// *current* window — one call yields every session's current window (id and
-// index), keyed by stable session id. Verified live on tmux 3.5a.
+// In list-sessions' format context, window_*/pane_* expand to each session's
+// *current* window and its active pane — one call yields every session's
+// current window (id, index, foreground command), keyed by stable session
+// id. Verified live on tmux 3.5a.
 export async function listSessionCurrentWindows(): Promise<Map<string, SessionCurrentWindow>> {
   const out = await tmux([
     "list-sessions",
     "-F",
-    "#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}",
+    "#{session_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{pane_current_command}",
   ]).catch(emptyIfNoServer);
   const map = new Map<string, SessionCurrentWindow>();
   for (const line of out.split("\n").filter(Boolean)) {
-    const [sessionId, name, windowId, windowIndex] = line.split("\t");
-    map.set(sessionId, { name, windowId, windowIndex: Number(windowIndex) });
+    const [sessionId, name, windowId, windowIndex, command] = line.split("\t");
+    map.set(sessionId, { name, windowId, windowIndex: Number(windowIndex), command: command ?? "" });
   }
   return map;
 }

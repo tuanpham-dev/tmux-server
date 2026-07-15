@@ -1723,6 +1723,47 @@ body.scrollbar-dragging {
   padding: 20px 28px 40px;
 }
 
+/* Phone-width Settings: the fixed-width side nav would squeeze the content
+   to nothing, so it becomes a horizontally scrollable strip on top and the
+   content takes the full width below. KeyboardShortcutsView reuses
+   settings-host/content and inherits the same treatment. */
+@media (max-width: 640px) {
+  .settings-host {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    width: auto;
+    gap: 4px;
+    padding: 8px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .settings-nav-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .settings-nav-divider {
+    width: 1px;
+    height: auto;
+    margin: 4px 6px;
+    flex-shrink: 0;
+  }
+
+  .settings-content {
+    padding: 16px 12px 32px;
+  }
+
+  .settings-select {
+    width: 100%;
+  }
+}
+
 .settings-section-title {
   margin: 0 0 16px;
   font-size: 16px;
@@ -2033,6 +2074,88 @@ body.scrollbar-dragging {
 .checkbox-row input {
   accent-color: var(--focus-border);
   margin-top: 2px;
+}
+
+/* Touch key bar customization editor (Settings > UI) — one row per
+   TouchKey, switching to a stacked card below 640px (settings-content is
+   already narrow due to the fixed-width nav, so this also covers a real
+   phone viewport, not just resized desktop windows). */
+.touch-key-editor-legend {
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-weight: normal;
+  margin-bottom: 4px;
+}
+
+.touch-key-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.touch-key-editor-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex-wrap: wrap;
+}
+
+.touch-key-editor-label {
+  width: 90px;
+}
+
+.touch-key-editor-send {
+  flex: 1;
+  min-width: 120px;
+  font-family: var(--font-mono, monospace);
+}
+
+.touch-key-editor-send.invalid {
+  border-color: var(--error, #e05252);
+}
+
+.touch-key-editor-when {
+  width: 110px;
+}
+
+.touch-key-editor-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.touch-key-editor-error {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--error, #e05252);
+}
+
+.touch-key-editor-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .touch-key-editor-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .touch-key-editor-label,
+  .touch-key-editor-send,
+  .touch-key-editor-when {
+    width: 100%;
+  }
+
+  .touch-key-editor-actions {
+    justify-content: flex-end;
+  }
 }
 
 .settings-hint {
@@ -2964,6 +3087,52 @@ body.scrollbar-dragging {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--bg);
+}
+
+/* touchKeyBarStyle "floating" — a movable AssistiveTouch-style toggle
+   overlaying the terminal, plus the key cluster it expands. Positioned via
+   inline left/top (toggle) and left/right + top/bottom (cluster), computed
+   in FloatingTouchKeys.tsx from the container's live rect. */
+.touch-key-fab {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  color: var(--fg-bright);
+  font-size: 18px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 5;
+}
+
+.touch-key-fab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+.touch-key-fab-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 5;
+}
+
+.touch-key-fab-cluster .touch-key {
+  flex: 0 0 auto;
 }
 
 /* ── Bottom terminal panel (plans/bottom-terminal-panel.md) ──────────────

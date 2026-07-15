@@ -1,4 +1,5 @@
 import { migrateKeybindingOverrides, type KeybindingOverrides } from "./keybindings";
+import { DEFAULT_TOUCH_KEYS, type TouchKey } from "./touchKeys";
 import type { PinnedSession } from "./types";
 
 export interface AppSettings {
@@ -35,9 +36,17 @@ export interface AppSettings {
   // Implemented in ghosttyShims.ts (ghostty-web has no equivalent).
   minimumContrastRatio: number;
   uploadConflict: "rename" | "overwrite" | "ask";
-  // "auto" shows the on-screen key bar only on coarse-pointer devices
-  // (phones/tablets, and touch laptops).
+  // "auto" shows the on-screen key bar only on mobile devices — coarse
+  // pointer AND no hover, so phones/tablets match but touch-screen laptops
+  // (whose primary input hovers) don't.
   touchKeyBar: "auto" | "always" | "never";
+  // "bar" is the fixed strip below the terminal; "floating" is a movable
+  // toggle that expands the same keys next to it (see FloatingTouchKeys).
+  touchKeyBarStyle: "bar" | "floating";
+  // User-defined keys for the on-screen bar/toggle above — label, what's
+  // sent, and which program (if any) must be running for the key to show.
+  // See touchKeys.ts for the send-token notation and when-matching rules.
+  touchKeys: TouchKey[];
   // Gates the "Kill Session"/"Kill Window" confirm dialogs. Unsaved-changes
   // confirms (dirty CSV tabs) are never gated — that's data loss, not a
   // preference.
@@ -100,6 +109,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   minimumContrastRatio: 4.5,
   uploadConflict: "rename",
   touchKeyBar: "auto",
+  touchKeyBarStyle: "bar",
+  touchKeys: DEFAULT_TOUCH_KEYS,
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",

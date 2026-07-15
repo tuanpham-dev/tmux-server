@@ -107,6 +107,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
     onWindowSwitched: (windowIndex) => send({ type: "windowSwitched", windowIndex }),
     onSessionSwitched: (targetSession, windowIndex) =>
       send({ type: "sessionSwitched", session: targetSession, windowIndex }),
+    onCommandChanged: (command) => send({ type: "command", command }),
   };
   getAttachIdentity(session)
     .then(({ sessionId, windowId }) => {

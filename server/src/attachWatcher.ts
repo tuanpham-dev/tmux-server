@@ -51,6 +51,12 @@ export interface AttachCallbacks {
   // `windowIndex` its current window — for a choose-tree window pick, the
   // exact window picked, since switch-client selects it before switching.
   onSessionSwitched: (session: string, windowIndex: number) => void;
+  // The pinned (or, for a whole-session tab, current) window's foreground
+  // command changed — e.g. a shell exec'd into nvim, or nvim quit back to
+  // the shell. Rides the same 200ms tick as the deviation checks below, so
+  // the client's touch-key "when" filter (see touchKeys.ts) reacts without
+  // a dedicated poll.
+  onCommandChanged: (command: string) => void;
 }
 
 interface Entry {
@@ -62,6 +68,10 @@ interface Entry {
   // A settle/revert cycle for this entry is still in flight; skip it in the
   // regular tick until done.
   busy: boolean;
+  // Last foreground command reported to this entry's callback — null until
+  // the first tick, so that tick always fires onCommandChanged once even if
+  // the initial value happens to be "".
+  lastCommand: string | null;
 }
 
 const entries = new Set<Entry>();
@@ -79,6 +89,7 @@ export function registerAttach(
     pinnedWindowId,
     callbacks,
     busy: false,
+    lastCommand: null,
   };
   entries.add(entry);
   if (!timer) timer = setInterval(tick, TICK_MS);
@@ -126,6 +137,14 @@ function checkEntry(
     entry.pinnedWindowId !== null &&
     curw !== undefined &&
     curw.windowId !== entry.pinnedWindowId;
+  // Command tracking: only trust curw's command when it's actually the
+  // window this attach is showing right now (no pending cross-session or pin
+  // deviation) — mid-deviation, curw briefly reflects wherever tmux
+  // navigated to, not what's still on screen until the revert lands.
+  if (!crossSession && !windowMoved && curw !== undefined && curw.command !== entry.lastCommand) {
+    entry.lastCommand = curw.command;
+    entry.callbacks.onCommandChanged(curw.command);
+  }
   // Nothing deviated (or the session itself is gone, which term.onExit
   // handles) — nothing to do.
   if (!crossSession && !windowMoved) return;

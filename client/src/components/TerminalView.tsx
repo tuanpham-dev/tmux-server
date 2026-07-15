@@ -5,6 +5,7 @@ import { copyText } from "../clipboard";
 import { getContextGetter } from "../contextKeys";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
 import type { AppSettings } from "../settings";
+import FloatingTouchKeys from "./FloatingTouchKeys";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
 import {
@@ -82,6 +83,9 @@ export default function TerminalView({
   // and simultaneously leak into the PTY via the key listeners), so the
   // terminal gets this dedicated inner div and the widgets stay siblings.
   const screenRef = useRef<HTMLDivElement>(null);
+  // Positioning context for FloatingTouchKeys (touchKeyBarStyle "floating")
+  // — the toggle clamps its drag/expand geometry to this element's bounds.
+  const terminalBodyRef = useRef<HTMLDivElement>(null);
   const scrollTrackRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const rendererShimRef = useRef<RendererShim | null>(null);
@@ -179,23 +183,33 @@ export default function TerminalView({
   // arrows, Ctrl+C) plus sticky Ctrl for the next character typed. The
   // sendInput/stickyCtrl refs are read from inside term.onData in the mount
   // effect below, which needs the always-current values without re-running.
-  const [coarsePointer, setCoarsePointer] = useState(
-    () => window.matchMedia("(pointer: coarse)").matches,
+  // "auto" requires hover: none on top of pointer: coarse so it means real
+  // mobile devices (phones/tablets) — a touch-screen laptop's primary input
+  // still hovers, and its hardware keyboard makes the bar pure noise there.
+  // The bare pointer:coarse checks elsewhere in this file (focus-grab
+  // suppression) intentionally keep the looser meaning.
+  const MOBILE_MQ = "(pointer: coarse) and (hover: none)";
+  const [mobilePointer, setMobilePointer] = useState(
+    () => window.matchMedia(MOBILE_MQ).matches,
   );
   useEffect(() => {
-    const mq = window.matchMedia("(pointer: coarse)");
-    const onChange = () => setCoarsePointer(mq.matches);
+    const mq = window.matchMedia(MOBILE_MQ);
+    const onChange = () => setMobilePointer(mq.matches);
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
   const keyBarVisible =
     focused &&
     (settings.touchKeyBar === "always" ||
-      (settings.touchKeyBar === "auto" && coarsePointer));
+      (settings.touchKeyBar === "auto" && mobilePointer));
   const [stickyCtrl, setStickyCtrl] = useState(false);
   const stickyCtrlRef = useRef(false);
   stickyCtrlRef.current = stickyCtrl;
   const sendInputRef = useRef<(data: string) => void>(() => {});
+  // Pushed by the server's attach watcher (a "command" WS message) whenever
+  // this attach's foreground program changes — drives touch keys' `when`
+  // filter. "" until the first push arrives.
+  const [currentCommand, setCurrentCommand] = useState("");
 
   useEffect(() => {
     const container = containerRef.current!;
@@ -526,6 +540,8 @@ export default function TerminalView({
             Number.isFinite(msg.windowIndex)
           ) {
             onSessionSwitchRef.current?.(msg.session, msg.windowIndex);
+          } else if (msg.type === "command" && typeof msg.command === "string") {
+            setCurrentCommand(msg.command);
           } else if (msg.type === "exit") {
             receivedExit = true;
             ws.close();
@@ -1383,7 +1399,7 @@ export default function TerminalView({
           column), so the terminal shrinks above it instead of rendering
           its last rows underneath; the overlays anchor to the body so
           they too stay clear of the bar. */}
-      <div className="terminal-body">
+      <div ref={terminalBodyRef} className="terminal-body">
         <div ref={screenRef} className="terminal-screen" />
         {searchOpen && (
           <SearchBar
@@ -1398,13 +1414,28 @@ export default function TerminalView({
           <div className="tmux-scrollbar-thumb" />
         </div>
         <div className="reconnect-overlay">Reconnecting…</div>
+        {settings.touchKeyBarStyle === "floating" && (
+          <FloatingTouchKeys
+            visible={keyBarVisible}
+            keys={settings.touchKeys}
+            currentCommand={currentCommand}
+            stickyCtrl={stickyCtrl}
+            onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
+            onSendInput={(data) => sendInputRef.current(data)}
+            containerRef={terminalBodyRef}
+          />
+        )}
       </div>
-      <TouchKeyBar
-        visible={keyBarVisible}
-        stickyCtrl={stickyCtrl}
-        onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
-        onSendInput={(data) => sendInputRef.current(data)}
-      />
+      {settings.touchKeyBarStyle !== "floating" && (
+        <TouchKeyBar
+          visible={keyBarVisible}
+          keys={settings.touchKeys}
+          currentCommand={currentCommand}
+          stickyCtrl={stickyCtrl}
+          onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
+          onSendInput={(data) => sendInputRef.current(data)}
+        />
+      )}
     </div>
   );
 }
