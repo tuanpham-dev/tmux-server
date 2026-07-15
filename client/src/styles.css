@@ -2359,28 +2359,35 @@ body.scrollbar-dragging {
 }
 
 @media (max-width: 640px) {
+  /* Keep every key on one line — the panel is too narrow for all four
+     fields at their desktop widths, so each shrinks to just enough for
+     its typical content instead of stacking into a multi-line card. */
   .touch-key-editor-row {
-    flex-direction: column;
-    align-items: stretch;
+    flex-wrap: nowrap;
+    padding: 4px;
+    gap: 4px;
   }
 
-  .touch-key-editor-grip {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 24px;
-    height: 24px;
-    align-self: auto;
+  .touch-key-editor-label {
+    width: 44px;
+    padding-left: 4px;
+    padding-right: 4px;
   }
 
-  .touch-key-editor-label,
-  .touch-key-editor-send,
+  .touch-key-editor-send {
+    min-width: 0;
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
   .touch-key-editor-when {
-    width: 100%;
+    width: 52px;
+    padding-left: 4px;
+    padding-right: 4px;
   }
 
-  .touch-key-editor-actions {
-    justify-content: flex-end;
+  .touch-key-editor-error {
+    flex-basis: 100%;
   }
 }
 
