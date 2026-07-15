@@ -24,6 +24,18 @@ export class LocalEcho {
   private readonly unsubRender: () => void;
   private cellMetrics: { width: number; height: number };
   private pending = "";
+  // The word currently being IME-composed (Gboard/predictive keyboards),
+  // shown but not yet committed by the OS — never part of `pending` and
+  // never sent. Predictive keyboards deliver nothing at all through the
+  // normal onData path until a word commits (space, punctuation, or a
+  // suggestion tap), so without this a phone typing a sentence shows
+  // nothing on screen for the whole word, not just zero lag on the
+  // individual keystroke — indistinguishable from "typing doesn't work"
+  // even though the real terminal round trip was never the bottleneck.
+  // Tracked separately so a mid-word Enter (composition auto-commits
+  // first on every tested platform, but if it somehow didn't) can never
+  // send an unconfirmed composition.
+  private composing = "";
 
   constructor(overlayHost: HTMLElement, adapter: LocalEchoAdapter) {
     this.adapter = adapter;
@@ -31,12 +43,13 @@ export class LocalEcho {
     this.container = document.createElement("div");
     this.container.className = "local-echo-overlay";
     overlayHost.appendChild(this.container);
-    // Only re-renders while text is pending: the terminal's own cursor
-    // can't move from typing alone (nothing is sent to the PTY until
-    // Enter), but real output (a Claude response streaming in) still
-    // repaints underneath, so the overlay needs to redraw on top of it.
+    // Only re-renders while there's something to show: the terminal's own
+    // cursor can't move from typing/composing alone (nothing is sent to
+    // the PTY until Enter), but real output (a Claude response streaming
+    // in) still repaints underneath, so the overlay needs to redraw on
+    // top of it.
     this.unsubRender = adapter.onRender(() => {
-      if (this.pending) this.render();
+      if (this.pending || this.composing) this.render();
     });
   }
 
@@ -64,8 +77,28 @@ export class LocalEcho {
     this.render();
   }
 
+  // `text` is the IME's current full composition (compositionupdate's own
+  // `data`, e.g. "h" → "he" → "hel"), a replacement of the in-progress
+  // word each call, not an incremental delta — never appended to.
+  setComposing(text: string): void {
+    this.composing = text;
+    this.render();
+  }
+
+  // The composition ended (compositionend). Only clears the transient
+  // preview — never touches `pending`. The OS delivers the actual
+  // committed text through the engine's normal onData path immediately
+  // after, which reaches `pending` the same way any other typed burst
+  // does; adding it here too would double it.
+  clearComposing(): void {
+    if (!this.composing) return;
+    this.composing = "";
+    this.render();
+  }
+
   clear(): void {
     this.pending = "";
+    this.composing = "";
     this.container.replaceChildren();
   }
 
@@ -100,14 +133,18 @@ export class LocalEcho {
 
   private render(): void {
     this.container.replaceChildren();
-    if (!this.pending || this.adapter.isScrolledUp()) return;
+    const text = this.pending + this.composing;
+    if (!text || this.adapter.isScrolledUp()) return;
     const anchor = this.findAnchor();
     const { width, height } = this.cellMetrics;
     const frag = document.createDocumentFragment();
-    for (let i = 0; i < this.pending.length; i++) {
+    for (let i = 0; i < text.length; i++) {
       const span = document.createElement("span");
-      span.className = "local-echo-char";
-      span.textContent = this.pending[i];
+      // Composing (not-yet-committed) chars get their own class — matches
+      // the underline convention native IME composition renders with, so
+      // there's still a visible cue that this part hasn't committed yet.
+      span.className = i < this.pending.length ? "local-echo-char" : "local-echo-char local-echo-char-composing";
+      span.textContent = text[i];
       span.style.left = `${(anchor.col + i) * width}px`;
       span.style.top = `${anchor.row * height}px`;
       span.style.width = `${width}px`;

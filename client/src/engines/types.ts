@@ -141,6 +141,12 @@ export interface TerminalEngineHandle {
   // shared "true = handled" shape.
   onKeyEvent(handler: (e: KeyboardEvent) => boolean): void;
   onWheelEvent(handler: (e: WheelEvent) => boolean): void;
+  // Fires on every compositionupdate with the IME's current full
+  // in-progress word (not an incremental delta), and once more with null
+  // on compositionend — used to preview a not-yet-committed predictive-
+  // keyboard word through LocalEcho, since the OS delivers nothing through
+  // onData at all until the word actually commits.
+  onComposingChange(handler: (text: string | null) => void): void;
   // Dispatches a synthetic wheel event at whichever internal element the
   // engine's own onWheelEvent handler actually listens on — used to route
   // touch-swipe gestures (computed in TerminalView) through the same wheel

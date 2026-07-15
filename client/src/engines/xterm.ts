@@ -178,6 +178,21 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
 
   const dataSub = term.onData(onData);
 
+  // Predictive keyboards (Gboard etc.) deliver nothing through onData at
+  // all until a word actually commits (space, punctuation, a suggestion
+  // tap) — xterm.js's own textarea still fires the standard Composition
+  // Events throughout, which is the only signal available for previewing
+  // the in-progress word before then. Listened on directly rather than
+  // through xterm's own CompositionHelper (private, no public hook) —
+  // xterm's own compositionend handler on the same element independently
+  // reads the committed text and forwards it through the normal onData
+  // path once this fires, so no double-send risk here either.
+  let composingHandler: ((text: string | null) => void) | null = null;
+  const onCompositionUpdate = (e: CompositionEvent) => composingHandler?.(e.data);
+  const onCompositionEndForPreview = () => composingHandler?.(null);
+  term.textarea?.addEventListener("compositionupdate", onCompositionUpdate);
+  term.textarea?.addEventListener("compositionend", onCompositionEndForPreview);
+
   const cellFromPointOnEngine = (clientX: number, clientY: number): CellPosition => {
     const rect = screen.getBoundingClientRect();
     const width = rect.width / term.cols;
@@ -307,6 +322,9 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
     onWheelEvent: (handler) => {
       term.attachCustomWheelEventHandler((e) => !handler(e));
     },
+    onComposingChange: (handler) => {
+      composingHandler = handler;
+    },
     dispatchSyntheticWheel: (init) => {
       screen.dispatchEvent(new WheelEvent("wheel", init));
     },
@@ -339,6 +357,8 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
       disposed = true;
       endLocalSelectionDrag?.();
       screen.removeEventListener("mousemove", onTooltipMouseMove);
+      term.textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
+      term.textarea?.removeEventListener("compositionend", onCompositionEndForPreview);
       dataSub.dispose();
       renderSub.dispose();
       renderListeners.clear();

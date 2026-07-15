@@ -433,6 +433,18 @@ export default function TerminalView({
       localEcho = new LocalEcho(terminalBodyRef.current!, engine);
       localEchoRef.current = localEcho;
 
+      // Predictive keyboards deliver nothing through onData at all until a
+      // word commits, so without this, local echo shows nothing for the
+      // whole word being typed, not just zero lag on the keystroke — gated
+      // by the same localEchoActive() check every other input path already
+      // uses, so a composition on a non-matching pane (or desktop) never
+      // shows a preview local echo itself wouldn't otherwise be active for.
+      engine.onComposingChange((text) => {
+        if (!localEchoActive()) return;
+        if (text === null) localEcho?.clearComposing();
+        else localEcho?.setComposing(text);
+      });
+
       const refit = () => {
         // fit() itself no-ops (returns null) on a disposed/zero-size
         // terminal; a ResizeObserver callback can still fire after cleanup

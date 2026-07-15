@@ -290,7 +290,17 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
     }
     onData(out);
   };
+  // Predictive keyboards deliver nothing through onData/beforeinput at all
+  // until a word actually commits — compositionupdate is the only signal
+  // available for previewing the in-progress word before then. `data` here
+  // is the composition's current full text (not a delta), matching what
+  // compositionend/onCompositionEnd above already reads the same way.
+  let composingHandler: ((text: string | null) => void) | null = null;
+  const onCompositionUpdate = (e: CompositionEvent) => composingHandler?.(e.data);
+  const onCompositionEndForPreview = () => composingHandler?.(null);
   screen.addEventListener("compositionend", onCompositionEnd);
+  screen.addEventListener("compositionend", onCompositionEndForPreview);
+  screen.addEventListener("compositionupdate", onCompositionUpdate);
   screen.addEventListener("beforeinput", onBeforeInput);
 
   const cellFromPointOnEngine = (clientX: number, clientY: number): CellPosition => {
@@ -398,6 +408,9 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
     onWheelEvent: (handler) => {
       term.attachCustomWheelEventHandler((e) => handler(e));
     },
+    onComposingChange: (handler) => {
+      composingHandler = handler;
+    },
     dispatchSyntheticWheel: (init) => {
       term.renderer?.getCanvas().dispatchEvent(new WheelEvent("wheel", init));
     },
@@ -426,6 +439,8 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
       disposed = true;
       screen.removeEventListener("mousemove", onTooltipMouseMove);
       screen.removeEventListener("compositionend", onCompositionEnd);
+      screen.removeEventListener("compositionend", onCompositionEndForPreview);
+      screen.removeEventListener("compositionupdate", onCompositionUpdate);
       screen.removeEventListener("beforeinput", onBeforeInput);
       dataSub.dispose();
       renderListeners.clear();

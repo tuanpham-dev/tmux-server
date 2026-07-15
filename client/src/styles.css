@@ -1389,6 +1389,14 @@ body.tab-dragging .split-content-host {
   color: var(--fg-bright);
 }
 
+/* The in-progress IME word (not yet committed by the OS) — underlined
+   like native composition rendering, so it stays visually distinct from
+   already-committed pending text. */
+.local-echo-char-composing {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
 /* xterm.js's own IME composition preview box — a known-buggy overlay even
    in xterm's own shipped CSS ("TODO: Composition position got messed up
    somewhere"). Every composed word (which is most Android/Gboard typing,
