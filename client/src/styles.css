@@ -1380,7 +1380,11 @@ body.tab-dragging .split-content-host {
   white-space: pre;
   font-family: var(--terminal-font, monospace);
   font-size: var(--terminal-font-size, 14px);
-  line-height: var(--terminal-line-height, 1);
+  /* line-height set inline per-span (localEcho.ts) to the measured cell
+     height in px — the engine's lineHeight setting means "x times the
+     font's own measured natural line height", not CSS's "x times
+     font-size", so a var(--terminal-line-height) value here would resolve
+     to the wrong number even at the default of 1. */
   font-variant-ligatures: none;
   color: var(--fg-bright);
 }

@@ -112,6 +112,17 @@ export class LocalEcho {
       span.style.top = `${anchor.row * height}px`;
       span.style.width = `${width}px`;
       span.style.height = `${height}px`;
+      // Overrides the CSS line-height (var(--terminal-line-height), a
+      // unitless multiplier meaning "x times the font's own size" per CSS
+      // semantics) with the actual measured cell height in px. The
+      // engine's lineHeight *setting* means something different — "x times
+      // the font's own measured natural line height" — so even the
+      // default value of 1 resolves to a different, smaller number
+      // (fontSize itself, e.g. 14px) than the real terminal's actual
+      // per-cell line height (e.g. 18px, IBM Plex Mono's natural metric)
+      // — visibly shrinking and mispositioning every overlay glyph inside
+      // its own (correctly sized) cell box.
+      span.style.lineHeight = `${height}px`;
       frag.appendChild(span);
     }
     this.container.appendChild(frag);
