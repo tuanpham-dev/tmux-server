@@ -93,6 +93,24 @@ export function registerAttach(
   };
   entries.add(entry);
   if (!timer) timer = setInterval(tick, TICK_MS);
+  // Report this entry's command immediately rather than waiting for the next
+  // shared TICK_MS tick (up to 200ms, on top of whatever this attach's own
+  // async setup already cost) — a client that starts typing right after
+  // opening/switching to a pane needs onCommandChanged to have already fired
+  // by then, or its local-echo "when" gate reads a stale empty command and
+  // silently falls through to the slow real-PTY round trip local echo
+  // exists to avoid. Uses a fresh one-off read rather than reusing whatever
+  // the shared tick last saw, since that snapshot can already be stale by
+  // the time a new attach registers.
+  void (async () => {
+    try {
+      const [clients, currentWindows] = await Promise.all([listClients(), listSessionCurrentWindows()]);
+      if (!entries.has(entry) || entry.busy) return;
+      checkEntry(entry, new Map(clients.map((c) => [c.pid, c])), currentWindows);
+    } catch {
+      // tmux hiccup — the regular tick will pick this entry up shortly.
+    }
+  })();
   return () => {
     entries.delete(entry);
     if (entries.size === 0 && timer) {
