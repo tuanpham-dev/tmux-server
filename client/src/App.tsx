@@ -716,7 +716,8 @@ export default function App() {
           checked: openIndexes.has(w.index),
           onClick: () => openWindowTab(sessionName, w.index),
         })),
-        { label: "New Window", onClick: () => createWindow(sessionName) },
+        { separator: true, label: "", onClick: () => {} },
+        { label: "New Window", icon: "add", onClick: () => createWindow(sessionName) },
       ];
     },
     [sessions, tabs, groupActive, openWindowTab, createWindow],

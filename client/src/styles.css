@@ -1709,6 +1709,12 @@ body.scrollbar-dragging {
   color: var(--error);
 }
 
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border);
+}
+
 /* Tab-group color picker row (tab-group chip's context menu) */
 .context-menu-swatches {
   display: flex;

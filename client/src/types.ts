@@ -153,6 +153,13 @@ export interface MenuItem {
   // "No windows" placeholder when a chip's session has vanished or has no
   // windows.
   disabled?: boolean;
+  // Renders a thin horizontal divider instead of the normal label/click row
+  // — label/onClick are unused placeholders, same convention as `swatches`.
+  separator?: boolean;
+  // Leading codicon name (e.g. "add"), rendered in the same gutter as
+  // `checked` — used by the chip dropdown's "New Window" item. `checked`
+  // wins if both are set.
+  icon?: string;
 }
 
 // Per-session tab-group UI state (client/src/App.tsx's tabGroupState),

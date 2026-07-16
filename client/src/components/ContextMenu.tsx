@@ -71,12 +71,14 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
     return key ? formatBinding(key) : undefined;
   };
 
-  const hasChecks = menu.items.some((item) => item.checked !== undefined);
+  const hasChecks = menu.items.some((item) => item.checked !== undefined || item.icon !== undefined);
 
   return (
     <div ref={ref} className="context-menu" style={{ left: pos.x, top: pos.y }}>
       {menu.items.map((item, i) =>
-        item.swatches ? (
+        item.separator ? (
+          <div key={i} className="context-menu-separator" />
+        ) : item.swatches ? (
           <div key={i} className="context-menu-swatches">
             {item.swatches.colors.map((c) => (
               <button
@@ -104,7 +106,7 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
           >
             {hasChecks && (
               <span className="context-menu-item-check">
-                {item.checked && <Icon name="check" />}
+                {item.checked ? <Icon name="check" /> : item.icon ? <Icon name={item.icon} /> : null}
               </span>
             )}
             <span className="context-menu-item-label">{item.label}</span>
