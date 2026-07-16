@@ -33,6 +33,9 @@ interface Props {
   groupState: Record<string, TabGroupState>;
   onToggleGroupCollapsed: (sessionName: string) => void;
   groupMenuItems: (sessionName: string) => MenuItem[];
+  // Populates the chip arrow button's dropdown — the session's tmux windows,
+  // opened as a new tab (or focused if already open) on click.
+  windowMenuItems: (sessionName: string) => MenuItem[];
   // Drag-a-chip (or "Move Group Left/Right") reordering — see
   // plans/reorder-tab-groups.md. toIndex is a position among group keys
   // only (lib/tabs.ts's moveGroup), never a tab-array index. Kept entirely
@@ -78,6 +81,7 @@ export default function TabBar({
   groupState,
   onToggleGroupCollapsed,
   groupMenuItems,
+  windowMenuItems,
   onReorderGroup,
   dragTabId,
   dropIndicator,
@@ -404,7 +408,23 @@ export default function TabBar({
           onShowMenu(e.clientX, e.clientY, groupMenuItems(sessionName));
         }}
       >
-        <Icon name={collapsed ? "chevron-right" : "chevron-down"} className="tab-group-chip-arrow" />
+        <button
+          className="tab-group-chip-window-btn"
+          title="Session windows"
+          aria-haspopup="menu"
+          aria-label={`${sessionName} windows`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (justDraggedRef.current) {
+              justDraggedRef.current = false;
+              return;
+            }
+            const rect = e.currentTarget.getBoundingClientRect();
+            onShowMenu(rect.left, rect.bottom + 2, windowMenuItems(sessionName));
+          }}
+        >
+          <Icon name="chevron-down" />
+        </button>
         <span className="tab-group-chip-label">{sessionName}</span>
         {groupHasActivity[sessionName] && <span className="activity-dot" />}
       </div>

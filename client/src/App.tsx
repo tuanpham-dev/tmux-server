@@ -535,6 +535,27 @@ export default function App() {
     confirmDialog,
   );
 
+  // Session-windows dropdown for a tab-group chip's arrow button — the
+  // session's window list is global, unlike groupMenuItems above which is
+  // scoped per editor group (a window-tab can be opened into any pane). Not
+  // to be confused with useSessionActions' windowMenuItems below, which
+  // builds a single window row's right-click menu (rename/kill/etc.) in the
+  // sidebar.
+  const chipWindowMenuItems = useCallback(
+    (sessionName: string): MenuItem[] => {
+      const windows = sessions.find((s) => s.name === sessionName)?.windows ?? [];
+      if (windows.length === 0) {
+        return [{ label: "No windows", disabled: true, onClick: () => {} }];
+      }
+      return windows.map((w) => ({
+        label: `${w.index} ${w.name}`,
+        checked: w.active,
+        onClick: () => openWindowTab(sessionName, w.index),
+      }));
+    },
+    [sessions, openWindowTab],
+  );
+
   // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
   // model, separate from the editor's tabs/split tree, since it only ever
   // holds terminals and only ever splits side-by-side.
@@ -1133,6 +1154,7 @@ export default function App() {
           groupState={tabGroupState}
           onToggleGroupCollapsed={toggleGroupCollapsed}
           groupMenuItems={groupMenuItems}
+          windowMenuItems={chipWindowMenuItems}
           onReorderGroup={moveGroup}
           onFocusGroup={focusGroup}
           onResizeBranch={resizeBranch}

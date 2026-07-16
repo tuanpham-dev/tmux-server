@@ -1211,6 +1211,22 @@ body.resizing-row {
   font-size: 13px;
 }
 
+.tab-group-chip-window-btn {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  margin-left: -4px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.tab-group-chip-window-btn:hover {
+  background: rgba(0, 0, 0, 0.15);
+}
+
 .tab-group-chip-label {
   max-width: 160px;
   overflow: hidden;
@@ -1641,6 +1657,31 @@ body.scrollbar-dragging {
   padding: 5px 10px;
   border-radius: 4px;
   cursor: pointer;
+}
+
+/* flex: 1 (rather than relying solely on the parent's justify-content:
+   space-between) so the leading check gutter below can sit before the label
+   without throwing off the label/shortcut spacing. */
+.context-menu-item-label {
+  flex: 1;
+}
+
+.context-menu-item-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.context-menu-item.disabled {
+  color: var(--fg-inactive);
+  cursor: default;
+}
+
+.context-menu-item.disabled:hover {
+  background: none;
+  color: var(--fg-inactive);
 }
 
 .context-menu-item-shortcut {

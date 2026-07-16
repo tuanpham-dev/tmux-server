@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { formatBinding, type Keybinding } from "../keybindings";
 import type { MenuState } from "../types";
+import Icon from "./Icon";
 
 interface Props {
   menu: MenuState;
@@ -48,6 +49,8 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
     return key ? formatBinding(key) : undefined;
   };
 
+  const hasChecks = menu.items.some((item) => item.checked !== undefined);
+
   return (
     <div ref={ref} className="context-menu" style={{ left: pos.x, top: pos.y }}>
       {menu.items.map((item, i) =>
@@ -69,12 +72,19 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
         ) : (
           <button
             key={i}
-            className={`context-menu-item${item.danger ? " danger" : ""}`}
+            className={`context-menu-item${item.danger ? " danger" : ""}${item.disabled ? " disabled" : ""}`}
+            disabled={item.disabled}
             onClick={() => {
+              if (item.disabled) return;
               onClose();
               item.onClick();
             }}
           >
+            {hasChecks && (
+              <span className="context-menu-item-check">
+                {item.checked && <Icon name="check" />}
+              </span>
+            )}
             <span className="context-menu-item-label">{item.label}</span>
             {shortcutHint(item.shortcutCommand) && (
               <span className="context-menu-item-shortcut">{shortcutHint(item.shortcutCommand)}</span>

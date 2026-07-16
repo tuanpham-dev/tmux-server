@@ -145,6 +145,14 @@ export interface MenuItem {
     selected: string;
     onPick: (key: string) => void;
   };
+  // Leading check icon — marks the session's active tmux window in the tab
+  // group chip's windows dropdown. When any item in a menu sets this (true
+  // or false), ContextMenu reserves a leading gutter so labels stay aligned.
+  checked?: boolean;
+  // Renders the row dimmed and inert (no click handling) — used for the
+  // "No windows" placeholder when a chip's session has vanished or has no
+  // windows.
+  disabled?: boolean;
 }
 
 // Per-session tab-group UI state (client/src/App.tsx's tabGroupState),
