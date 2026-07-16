@@ -3418,7 +3418,9 @@ body.scrollbar-dragging {
 }
 
 /* In normal flow as the terminal host's last flex child — the terminal
-   body shrinks above it (and refits) rather than rendering underneath. */
+   body shrinks above it (and refits) rather than rendering underneath.
+   Swipes horizontally when the keys don't fit — the buttons only fire on a
+   still tap (see TouchKeyButton), so panning across them never sends. */
 .touch-key-bar {
   flex-shrink: 0;
   display: flex;
@@ -3426,10 +3428,21 @@ body.scrollbar-dragging {
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
   background: var(--panel-bg);
   border-top: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* Cancel .terminal-host's 8px left padding (a terminal-canvas inset) so
+     the bar spans edge to edge and the keys' left inset matches the right. */
+  margin-left: -8px;
+}
+
+.touch-key-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .touch-key {
-  flex: 1;
+  /* Natural width, packed to the left — never shrink below the label; extra
+     keys overflow into the bar's horizontal scroll instead of squishing. */
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;

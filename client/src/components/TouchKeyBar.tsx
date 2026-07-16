@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { parseSend, sendWithInkSafeEnters, whenMatches, type TouchKey } from "../touchKeys";
 import { isVoiceInputSupported, VoiceInput } from "../voiceInput";
 
@@ -50,6 +50,31 @@ export function visibleKeys(
   return result;
 }
 
+// Pointer handlers that fire onTap only for a still tap. preventDefault on
+// pointerdown keeps focus on the terminal's hidden textarea (so tapping a
+// key never dismisses the on-screen keyboard), while the action itself waits
+// for pointerup within a small movement threshold: when the bar overflows
+// and the user swipes it, the browser's pan takes the pointer (pointercancel,
+// no pointerup) — or the finger has moved — so the key the swipe started on
+// doesn't send.
+function useTapHandlers(onTap: () => void) {
+  const start = useRef<{ x: number; y: number } | null>(null);
+  return {
+    onPointerDown: (e: PointerEvent) => {
+      e.preventDefault();
+      start.current = { x: e.clientX, y: e.clientY };
+    },
+    onPointerUp: (e: PointerEvent) => {
+      const s = start.current;
+      start.current = null;
+      if (s && Math.hypot(e.clientX - s.x, e.clientY - s.y) < 10) onTap();
+    },
+    onPointerCancel: () => {
+      start.current = null;
+    },
+  };
+}
+
 // A `{mic}` key: toggles a VoiceInput session on tap, sending each final
 // transcript through onTranscript. Its own component (unlike the stateless
 // {ctrl} branch below) since it owns a VoiceInput instance's lifecycle —
@@ -73,14 +98,10 @@ function MicKeyButton({ label, onTranscript }: { label: string; onTranscript: (t
     return () => voice.dispose();
   }, []);
 
+  const tap = useTapHandlers(() => voiceRef.current?.toggle());
+
   return (
-    <button
-      className={`touch-key touch-key-mic${listening ? " active" : ""}`}
-      onPointerDown={(e) => {
-        e.preventDefault();
-        voiceRef.current?.toggle();
-      }}
-    >
+    <button className={`touch-key touch-key-mic${listening ? " active" : ""}`} {...tap}>
       {label}
     </button>
   );
@@ -89,10 +110,10 @@ function MicKeyButton({ label, onTranscript }: { label: string; onTranscript: (t
 // One key button: the sticky-Ctrl toggle for send === "{ctrl}" (applies to
 // the next character typed, since holding Ctrl isn't possible with an
 // on-screen keyboard), the mic toggle for send === "{mic}", otherwise a
-// plain send button. onPointerDown (not onClick) + preventDefault so tapping
-// a button never steals focus from the terminal's hidden textarea — losing
-// it would dismiss the on-screen keyboard. Exported for reuse by
-// FloatingTouchKeys.
+// plain send button. Pointer handlers (not onClick) via useTapHandlers so
+// tapping a button never steals focus from the terminal's hidden textarea —
+// losing it would dismiss the on-screen keyboard — and so panning an
+// overflowing bar doesn't send. Exported for reuse by FloatingTouchKeys.
 export function TouchKeyButton({
   touchKey,
   data,
@@ -108,30 +129,23 @@ export function TouchKeyButton({
   onSendInput: (data: string) => void;
   onSendVoiceText: (text: string) => void;
 }) {
-  if (touchKey.send === "{ctrl}") {
+  const isCtrl = touchKey.send === "{ctrl}";
+  const tap = useTapHandlers(() => {
+    if (isCtrl) onToggleStickyCtrl();
+    else sendWithInkSafeEnters(data, onSendInput);
+  });
+  if (touchKey.send === "{mic}") {
+    return <MicKeyButton label={touchKey.label} onTranscript={onSendVoiceText} />;
+  }
+  if (isCtrl) {
     return (
-      <button
-        className={`touch-key touch-key-ctrl${stickyCtrl ? " active" : ""}`}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          onToggleStickyCtrl();
-        }}
-      >
+      <button className={`touch-key touch-key-ctrl${stickyCtrl ? " active" : ""}`} {...tap}>
         {touchKey.label}
       </button>
     );
   }
-  if (touchKey.send === "{mic}") {
-    return <MicKeyButton label={touchKey.label} onTranscript={onSendVoiceText} />;
-  }
   return (
-    <button
-      className="touch-key"
-      onPointerDown={(e) => {
-        e.preventDefault();
-        sendWithInkSafeEnters(data, onSendInput);
-      }}
-    >
+    <button className="touch-key" {...tap}>
       {touchKey.label}
     </button>
   );
