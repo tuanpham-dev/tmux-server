@@ -34,10 +34,12 @@ interface SharedProps {
   // and "Close Group" are scoped to one split pane's own tab bar; Leaf binds
   // its own groupId before handing these to TabBar (see useTabGroups.ts).
   groupMenuItems: (editorGroupId: string, sessionName: string) => MenuItem[];
-  // The chip arrow's windows dropdown — not scoped per editor group, since a
-  // session's window list is the same regardless of which pane's chip is
-  // clicked (see useTabGroups.ts's groupMenuItems comment for the contrast).
-  windowMenuItems: (sessionName: string) => MenuItem[];
+  // The chip arrow's windows dropdown. Takes the editor group id first, like
+  // groupMenuItems above, since a window's "checked" state means "already
+  // open as a tab in this pane" (see App.tsx's chipWindowMenuItems) — the
+  // window data itself is the same regardless of which pane's chip is
+  // clicked, but which ones are open as tabs is scoped per pane.
+  windowMenuItems: (editorGroupId: string, sessionName: string) => MenuItem[];
   onReorderGroup: (editorGroupId: string, groupKey: string, toIndex: number) => void;
   onFocusGroup: (groupId: string) => void;
   actionsRefFor: (groupId: string) => (el: HTMLDivElement | null) => void;
@@ -157,7 +159,7 @@ function Leaf({
         groupState={groupState}
         onToggleGroupCollapsed={onToggleGroupCollapsed}
         groupMenuItems={(sessionName) => groupMenuItems(groupId, sessionName)}
-        windowMenuItems={windowMenuItems}
+        windowMenuItems={(sessionName) => windowMenuItems(groupId, sessionName)}
         onReorderGroup={(sessionKey, toIndex) => onReorderGroup(groupId, sessionKey, toIndex)}
         dragTabId={dragTabId}
         dropIndicator={dropIndicator}

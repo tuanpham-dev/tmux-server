@@ -535,25 +535,37 @@ export default function App() {
     confirmDialog,
   );
 
-  // Session-windows dropdown for a tab-group chip's arrow button — the
-  // session's window list is global, unlike groupMenuItems above which is
-  // scoped per editor group (a window-tab can be opened into any pane). Not
-  // to be confused with useSessionActions' windowMenuItems below, which
+  // Session-windows dropdown for a tab-group chip's arrow button. Scoped per
+  // editor group (like groupMenuItems above), since "checked" below means
+  // "already open as a tab in this bar" — a window open only in a different
+  // split pane shouldn't show as checked here, since clicking it here would
+  // still open a fresh tab in this pane (see useTabs.ts's openWindowTab,
+  // whose own dedupe is scoped the same way, to the focused editor group).
+  // Not to be confused with useSessionActions' windowMenuItems below, which
   // builds a single window row's right-click menu (rename/kill/etc.) in the
   // sidebar.
   const chipWindowMenuItems = useCallback(
-    (sessionName: string): MenuItem[] => {
+    (editorGroupId: string, sessionName: string): MenuItem[] => {
       const windows = sessions.find((s) => s.name === sessionName)?.windows ?? [];
       if (windows.length === 0) {
         return [{ label: "No windows", disabled: true, onClick: () => {} }];
       }
+      // A window-tab pins a specific index; the whole-session tab (no
+      // windowIndex) instead shows whichever window tmux currently has
+      // active for this session — so it "opens" that one.
+      const groupTabs = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t) === sessionName);
+      const openIndexes = new Set(
+        groupTabs
+          .map((t) => t.windowIndex ?? windows.find((w) => w.active)?.index)
+          .filter((index): index is number => index !== undefined),
+      );
       return windows.map((w) => ({
         label: `${w.index} ${w.name}`,
-        checked: w.active,
+        checked: openIndexes.has(w.index),
         onClick: () => openWindowTab(sessionName, w.index),
       }));
     },
-    [sessions, openWindowTab],
+    [sessions, tabs, openWindowTab],
   );
 
   // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
