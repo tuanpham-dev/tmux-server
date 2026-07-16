@@ -42,11 +42,18 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    window.addEventListener("mousedown", onMouseDown);
+    // Capture phase, not bubble: the terminal view stops propagation on its
+    // own mousedown handling (link/selection gestures) at the capture phase
+    // on its screen element, which would otherwise swallow the event before
+    // a bubble-phase window listener ever saw it — clicking into a terminal
+    // wouldn't close the menu. A capture listener on window itself always
+    // runs first (capture visits ancestors before descendants), so this
+    // sees every mousedown regardless of what a descendant does with it.
+    window.addEventListener("mousedown", onMouseDown, true);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("blur", onClose);
     return () => {
-      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousedown", onMouseDown, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("blur", onClose);
     };
