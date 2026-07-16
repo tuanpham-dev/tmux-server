@@ -414,17 +414,32 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
     dispatchSyntheticWheel: (init) => {
       term.renderer?.getCanvas().dispatchEvent(new WheelEvent("wheel", init));
     },
-    // Global (0 = top of scrollback) and screen-relative indexing meet at
-    // getScrollbackLength() — the same offset terminalLinks.ts's
-    // buildLinkProvider already uses for the inverse conversion.
+    // Screen-relative → buffer index. The offset is derived from the
+    // buffer object itself (length − rows: the screen is the buffer's
+    // last page) and NOT from term.getScrollbackLength() — after lines
+    // scroll off and get discarded (this app runs with no local
+    // scrollback; tmux owns it), ghostty-web's scrollback counter keeps
+    // counting lines the buffer no longer holds (seen live: counter 6
+    // with length == rows == 50), which shifted every read 6 rows down
+    // and dragged the local-echo overlay 6 rows up the screen.
     readLine: (row) => {
-      const idx = term.getScrollbackLength() + row;
-      const line = term.buffer.active.getLine(idx);
+      const buf = term.buffer.active;
+      const idx = Math.max(0, buf.length - term.rows) + row;
+      const line = buf.getLine(idx);
       if (!line) return "";
       return line.translateToString(true, 0, term.cols);
     },
     getCursor: () => ({ col: term.buffer.active.cursorX, row: term.buffer.active.cursorY }),
-    isScrolledUp: () => term.buffer.active.viewportY !== 0,
+    // Always false: this app never scrolls ghostty locally — tmux owns all
+    // scrollback, and a touch-swipe/wheel scrolls tmux copy-mode, not this
+    // terminal (its own scrollback is the phantom counter readLine's
+    // comment above describes). viewportY still drifts nonzero when the
+    // swipe gesture's synthetic wheels hit ghostty's default handler, and
+    // it never comes back — one swipe then permanently hid the local-echo
+    // overlay AND disabled its word-flush (anchorIsStable can only be set
+    // by a render that actually runs), caught live on a phone as "typing
+    // shows nothing until Enter".
+    isScrolledUp: () => false,
     // term.renderer's own charWidth/charHeight already reflect the shim's
     // lineHeight/letterSpacing overrides — the shim works by patching the
     // renderer's internal measureFont(), so every public metric derived
