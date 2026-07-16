@@ -6,6 +6,18 @@ import type { AppSettings } from "../settings";
 import type { MenuItem } from "../types";
 import { collectDropped, uploadAll, type DroppedItems } from "../upload";
 
+// Used only by refreshClipboardMirror's poll-driven update below, to keep
+// the same state object identity (and skip the re-render it'd otherwise
+// cause) when an idle tick's answer matches what's already mirrored.
+function sameClipboard(
+  a: { paths: string[]; mode: "copy" | "cut" } | null,
+  b: { paths: string[]; mode: "copy" | "cut" } | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.mode !== b.mode || a.paths.length !== b.paths.length) return false;
+  return a.paths.every((p, i) => p === b.paths[i]);
+}
+
 // File-entry actions (rename/delete/create/copy/download), the FILES-tree
 // context menus built on them, and the upload/drop pipeline. Takes
 // setFilesRefreshKey as a parameter rather than owning that state itself —
@@ -152,7 +164,10 @@ export function useFileActions(
     api
       .getFsClipboard()
       .then(({ paths, mode }) => {
-        setFsClipboardState(mode ? { paths, mode } : null);
+        const next = mode ? { paths, mode } : null;
+        // Keeps the same object identity (skipping the re-render) when an
+        // idle tick's answer matches what's already mirrored.
+        setFsClipboardState((prev) => (sameClipboard(prev, next) ? prev : next));
       })
       .catch(() => {
         // Offline tick — leave the mirror as-is, don't toast.

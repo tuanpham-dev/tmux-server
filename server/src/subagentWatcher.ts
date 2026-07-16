@@ -78,6 +78,23 @@ async function mostRecentSessionId(projectDir: string): Promise<string | null> {
   return best?.id ?? null;
 }
 
+// A claude window's cwd rarely switches which session is "most recent" —
+// that only happens when a new session starts in the same cwd — yet the raw
+// lookup above stats every historical *.jsonl sibling in the project dir
+// (which accumulates across a project's whole lifetime) on every 2s cache
+// miss from getCounts below. Cache the resolved id per project dir; a new
+// session in the same cwd is picked up within one TTL window.
+const SESSION_ID_TTL_MS = 15_000;
+const sessionIdCache = new Map<string, { at: number; id: string | null }>();
+
+async function mostRecentSessionIdCached(projectDir: string): Promise<string | null> {
+  const cached = sessionIdCache.get(projectDir);
+  if (cached && Date.now() - cached.at < SESSION_ID_TTL_MS) return cached.id;
+  const id = await mostRecentSessionId(projectDir);
+  sessionIdCache.set(projectDir, { at: Date.now(), id });
+  return id;
+}
+
 interface SubagentFile {
   agentId: string;
   metaPath: string;
@@ -120,7 +137,7 @@ async function readMeta(metaPath: string): Promise<AgentMeta | null> {
 // the count) and jsonl mtimes (for the active check).
 async function countRunningAgents(cwd: string): Promise<number> {
   const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(cwd));
-  const sessionId = await mostRecentSessionId(projectDir);
+  const sessionId = await mostRecentSessionIdCached(projectDir);
   if (!sessionId) return 0;
   const files = await listSubagentFiles(projectDir, sessionId);
   if (files.length === 0) return 0;
@@ -260,7 +277,7 @@ async function summarizeAgent(file: SubagentFile): Promise<AgentSummary | null> 
 // called while the panel is open, not on every sessions poll.
 export async function getSubagentDetails(cwd: string): Promise<AgentSummary[]> {
   const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(cwd));
-  const sessionId = await mostRecentSessionId(projectDir);
+  const sessionId = await mostRecentSessionIdCached(projectDir);
   if (!sessionId) return [];
   const files = await listSubagentFiles(projectDir, sessionId);
   const summaries = await Promise.all(files.map(summarizeAgent));

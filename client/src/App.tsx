@@ -38,6 +38,7 @@ import { useThemeAssets } from "./hooks/useThemeAssets";
 import type { MenuItem, MenuState, RegistrySourceResult } from "./types";
 import { groupKeyForTab, isRealTab } from "./lib/tabs";
 import { leaves } from "./lib/splits";
+import { emitPollTick } from "./lib/pollTick";
 import { compareVersions } from "./lib/version";
 
 const SIDEBAR_MIN = 180;
@@ -60,8 +61,9 @@ const NON_PALETTE_IDS = new Set([
 
 export default function App() {
   // Declared first so useSessions (which needs showError) and the files
-  // concern below (filesRefreshKey, piggybacked on the session poll) are
-  // both available before that hook call.
+  // concern below (filesRefreshKey, driven by mutation actions — the poll
+  // itself now drives FileTree via pollTick, not this state) are both
+  // available before that hook call.
   const [error, setError] = useState<string | null>(null);
   const showError = useCallback((err: unknown) => {
     setError(err instanceof Error ? err.message : String(err));
@@ -80,13 +82,17 @@ export default function App() {
   const refreshClipboardMirrorRef = useRef<() => void>(() => {});
   // Piggybacks on the session poll so git status badges in the FILES panel
   // (and, via the ref above, the FILES-tree cut-clipboard mirror) stay live
-  // without a second timer. Must be a stable useCallback, not an inline
-  // arrow — an unstable identity here would change useSessions' internal
-  // `refresh` callback's identity every render, retriggering its mount
-  // effect (and firing a fresh fetch) on every render instead of once every
-  // 3s.
+  // without a second timer. emitPollTick fans out to every subscribed
+  // FileTree directly (see lib/pollTick.ts) — deliberately NOT App state
+  // (filesRefreshKey stays reserved for mutation-driven refreshes below):
+  // bumping state here would re-render this entire component tree on every
+  // idle 3s tick even when nothing changed. Must be a stable useCallback,
+  // not an inline arrow — an unstable identity here would change
+  // useSessions' internal `refresh` callback's identity every render,
+  // retriggering its mount effect (and firing a fresh fetch) on every
+  // render instead of once every 3s.
   const onSessionsRefreshed = useCallback(() => {
-    setFilesRefreshKey((k) => k + 1);
+    emitPollTick();
     refreshClipboardMirrorRef.current();
   }, []);
 

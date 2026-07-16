@@ -646,6 +646,10 @@ export default function TerminalView({
         ws = new WebSocket(
           `${proto}://${location.host}/ws/attach?session=${encodeURIComponent(attachNameRef.current)}`,
         );
+        // Terminal output rides binary WS frames straight from the PTY (see
+        // wsAttach.ts) — everything else stays JSON text. Set per-socket
+        // since reconnects create a fresh WebSocket instance.
+        ws.binaryType = "arraybuffer";
 
         ws.onopen = () => {
           reconnectAttempt = 0;
@@ -654,11 +658,13 @@ export default function TerminalView({
         };
 
         ws.onmessage = (ev) => {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === "data") {
-            engine.write(msg.data);
+          if (ev.data instanceof ArrayBuffer) {
+            engine.write(new Uint8Array(ev.data));
             requestScrollState();
-          } else if (msg.type === "scroll") {
+            return;
+          }
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "scroll") {
             queryInFlight = false;
             applyScrollState(msg);
             if (queryDirty) {

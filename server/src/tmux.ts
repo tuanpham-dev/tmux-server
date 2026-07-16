@@ -197,6 +197,11 @@ export function isWindowTabSession(name: string): boolean {
 export interface AttachIdentity {
   sessionId: string;
   windowId: string;
+  // The tmux server process's own pid (#{pid} — Server PID per tmux(1)'s
+  // FORMATS section, not a client/pane pid) — lets applyTmuxOptions tell
+  // whether this attach is hitting the same tmux server instance its
+  // options were last applied to (see that function's doc).
+  serverPid: number;
 }
 
 // The stable ids (e.g. "$3" / "@12") of the attached session and whatever
@@ -209,10 +214,10 @@ export async function getAttachIdentity(session: string): Promise<AttachIdentity
     "-t",
     `=${session}:`,
     "-p",
-    "#{session_id}\t#{window_id}",
+    "#{session_id}\t#{window_id}\t#{pid}",
   ]);
-  const [sessionId, windowId] = out.trim().split("\t");
-  return { sessionId, windowId };
+  const [sessionId, windowId, serverPid] = out.trim().split("\t");
+  return { sessionId, windowId, serverPid: Number(serverPid) };
 }
 
 export interface TmuxClient {
@@ -1006,7 +1011,16 @@ export async function openFileInPaneWithKeys(paneId: string, filePath: string, l
   await tmux(["send-keys", "-t", paneId, "Enter"]);
 }
 
-export async function applyTmuxOptions(port: number): Promise<void> {
+// Last tmux server pid these options were successfully applied to — a fresh
+// tmux server (first attach ever, or one started after a `kill-server`) has
+// none of them set, but every attach after that first one is hitting the
+// exact same long-lived server process, so re-running 5 `tmux set*` forks on
+// every single attach/reconnect is pure waste. Module-level, not per-attach:
+// intentionally shared across every concurrent attach.
+let lastOptionsAppliedPid: number | null = null;
+
+export async function applyTmuxOptions(port: number, serverPid: number): Promise<void> {
+  if (serverPid === lastOptionsAppliedPid) return;
   // aggressive-resize: size windows to the largest interested client rather
   // than the smallest attached one, so a small browser viewport doesn't clamp
   // other clients.
@@ -1039,12 +1053,12 @@ export async function applyTmuxOptions(port: number): Promise<void> {
   // this whole 4th argv element is delivered to execFile verbatim (no shell
   // in between), then re-parsed by tmux's own command language when the hook
   // actually runs `run-shell "..."`. -m 2: never let a slow/dead server hang
-  // the pane on every bell. Reissued on every attach (this function's only
-  // call site) — harmless, `set-hook -g` just overwrites the same value.
+  // the pane on every bell.
   await tmux([
     "set-hook",
     "-g",
     "alert-bell",
     `run-shell "curl -s -m 2 -XPOST http://127.0.0.1:${port}/api/push/bell?pane=#{session_name}:#{window_index}"`,
   ]).catch(() => {});
+  lastOptionsAppliedPid = serverPid;
 }

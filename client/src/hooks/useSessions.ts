@@ -13,10 +13,22 @@ export function useSessions(showError: (err: unknown) => void, onAfterRefresh: (
   // restored window-tab would look "gone" and get closed before the first
   // fetch even completes.
   const sessionsLoadedRef = useRef(false);
+  // An idle poll (no session/window/activity change) fetches the identical
+  // payload most of the time — comparing it here skips setSessions (and the
+  // whole app-tree re-render it triggers) rather than paying that cost on
+  // every 3s tick regardless. onAfterRefresh still fires unconditionally
+  // below: the FILES-panel poll and clipboard mirror it drives don't depend
+  // on the session list actually having changed.
+  const lastJsonRef = useRef("");
 
   const refresh = useCallback(async () => {
     try {
-      setSessions(await api.fetchSessions());
+      const next = await api.fetchSessions();
+      const json = JSON.stringify(next);
+      if (json !== lastJsonRef.current) {
+        lastJsonRef.current = json;
+        setSessions(next);
+      }
       sessionsLoadedRef.current = true;
     } catch (err) {
       showError(err);

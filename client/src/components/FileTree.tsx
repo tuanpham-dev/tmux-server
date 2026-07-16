@@ -7,6 +7,7 @@ import FileIcon from "./FileIcon";
 import Icon from "./Icon";
 import { getFileIconResult, getFolderIconResult, useIconThemeVersion } from "../utils/iconThemes";
 import { useMarqueeSelection } from "../hooks/useMarqueeSelection";
+import { subscribePollTick } from "../lib/pollTick";
 
 
 interface Props {
@@ -97,6 +98,19 @@ interface DirState {
   entries: FsEntry[];
   loading: boolean;
   error: string | null;
+}
+
+// Same-length, same-order, same-fields comparison — the two responses being
+// compared always come from the same "/api/fs" listing (server sorts
+// deterministically), so this never needs to tolerate reordering.
+function entriesEqual(a: FsEntry[], b: FsEntry[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].name !== b[i].name || a[i].dir !== b[i].dir || a[i].gitStatus !== b[i].gitStatus) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // One row in on-screen order — mirrors exactly what renderEntries below
@@ -190,28 +204,53 @@ export default function FileTree({
   // belongs to an expanded subfolder) can be told apart from the root's own.
   const rootDirRef = useRef(rootDir);
   rootDirRef.current = rootDir;
+  // Mirrors `expanded` for the poll-tick background refetch below, which
+  // (like rootDirRef above) needs a mount-stable callback that still always
+  // sees the live set without being rebuilt on every expand/collapse.
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
   // Tracks the last prunePath object already applied, so an unrelated
-  // refreshKey bump (e.g. the 3s session poll) doesn't re-run the prune scan.
+  // refreshKey bump (a mutation action — see the effect below) doesn't
+  // re-run the prune scan twice for the same prune.
   const lastPrunedRef = useRef<{ paths: string[] } | null>(null);
   // Read at fetch time (fetchDir is mount-stable) so a toggle applies to
   // every fetch from then on without rebuilding the callback.
   const showGitStatusRef = useRef(showGitStatus);
   showGitStatusRef.current = showGitStatus;
+  // Dedupes the poll-tick background refetch against a fetch already in
+  // flight for the same dir (foreground callers — toggle, root change,
+  // mutation refresh — always proceed regardless, since those must never
+  // silently no-op a user action). A background fetch landing on a dir a
+  // foreground caller is already fetching is harmless either way (idempotent
+  // GET); this only trims the common case of the poll re-requesting a dir
+  // its own previous tick is still waiting on.
+  const inFlightDirsRef = useRef<Set<string>>(new Set());
 
-  const fetchDir = useCallback((dirPath: string) => {
-    setDirCache((prev) => {
-      const next = new Map(prev);
-      next.set(dirPath, { entries: prev.get(dirPath)?.entries ?? [], loading: true, error: null });
-      return next;
-    });
+  const fetchDir = useCallback((dirPath: string, opts?: { background?: boolean }) => {
+    const background = opts?.background ?? false;
+    if (background && inFlightDirsRef.current.has(dirPath)) return;
+    inFlightDirsRef.current.add(dirPath);
+    if (!background) {
+      setDirCache((prev) => {
+        const next = new Map(prev);
+        next.set(dirPath, { entries: prev.get(dirPath)?.entries ?? [], loading: true, error: null });
+        return next;
+      });
+    }
     api
       .listDir(dirPath, showGitStatusRef.current)
       .then((listing) => {
-        setDirCache((prev) => new Map(prev).set(dirPath, {
-          entries: listing.entries,
-          loading: false,
-          error: null,
-        }));
+        inFlightDirsRef.current.delete(dirPath);
+        setDirCache((prev) => {
+          const current = prev.get(dirPath);
+          // Identical to what's already cached (common case for a
+          // background poll tick with nothing actually changed) — keep the
+          // same Map identity so nothing downstream re-renders over it.
+          if (current && !current.loading && !current.error && entriesEqual(current.entries, listing.entries)) {
+            return prev;
+          }
+          return new Map(prev).set(dirPath, { entries: listing.entries, loading: false, error: null });
+        });
         // Only the root's own listing may set the branch. Every "/api/fs"
         // call reports a branch, but for an expanded subfolder that's *its*
         // repo — a nested repo under a non-git root would otherwise light up
@@ -219,6 +258,7 @@ export default function FileTree({
         if (dirPath === rootDirRef.current) onBranchChangeRef.current(listing.branch);
       })
       .catch((err) => {
+        inFlightDirsRef.current.delete(dirPath);
         setDirCache((prev) => new Map(prev).set(dirPath, {
           entries: [],
           loading: false,
@@ -285,6 +325,22 @@ export default function FileTree({
     // handled by the effects above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showGitStatus]);
+
+  // Piggybacks on the 3s sessions poll (see lib/pollTick.ts) to keep git
+  // badges live without a second timer — mirrors what refreshKey used to do
+  // for this same tick before it moved off App state (see App.tsx's
+  // onSessionsRefreshed). Reads rootDir/expanded via refs so this callback
+  // stays mount-stable (registered once) while always seeing their current
+  // values; background: true skips the loading flicker and keeps unchanged
+  // responses from touching dirCache's identity (see fetchDir).
+  const refetchVisibleBackground = useCallback(() => {
+    const dir = rootDirRef.current;
+    if (!dir) return;
+    fetchDir(dir, { background: true });
+    for (const dirPath of expandedRef.current) fetchDir(dirPath, { background: true });
+  }, [fetchDir]);
+
+  useEffect(() => subscribePollTick(refetchVisibleBackground), [refetchVisibleBackground]);
 
   const cancelExpandTimer = () => {
     if (expandTimer.current) {

@@ -101,7 +101,10 @@ export interface TerminalEngineOptions {
 export interface TerminalEngineHandle {
   readonly cols: number;
   readonly rows: number;
-  write(data: string): void;
+  // Uint8Array for a binary WS "data" frame straight from the PTY (see
+  // wsAttach.ts) — both engines' underlying write() already accept it
+  // alongside string.
+  write(data: string | Uint8Array): void;
   // General terminal focus (e.g. tab activation, search close).
   focus(): void;
   // Focuses whichever element actually receives keyboard input — may

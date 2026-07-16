@@ -74,11 +74,18 @@ const STATUS_TTL_MS = 1000;
 // dir -> repo root. Effectively immutable for a given directory, so this is
 // cached far longer; it exists to kill the `git rev-parse` fork on every call.
 const ROOT_TTL_MS = 30_000;
+// getTrackedDirs' answer (a full `git ls-files` walk) only affects the
+// "fully ignored vs. mixed" dimming distinction, and only changes when the
+// index changes — a much longer TTL than STATUS_TTL_MS is safe here. A
+// server-made mutation still invalidates immediately via invalidateGitCache;
+// this only bounds staleness from commits/adds made outside the app.
+const TRACKED_DIRS_TTL_MS = 30_000;
 
 const rootCache = new Map<string, { at: number; root: string | null }>();
 const statusCache = new Map<string, { at: number; value: RepoStatus | null }>();
 const statusInFlight = new Map<string, Promise<RepoStatus | null>>();
 const branchCache = new Map<string, { at: number; branch: string | null }>();
+const trackedDirsCache = new Map<string, { at: number; dirs: Set<string> }>();
 
 // Called after any mutation this server makes to a working tree (write, rename,
 // delete, paste, upload) so the next listing reflects it without waiting out
@@ -86,6 +93,7 @@ const branchCache = new Map<string, { at: number; branch: string | null }>();
 export function invalidateGitCache(): void {
   statusCache.clear();
   branchCache.clear();
+  trackedDirsCache.clear();
 }
 
 async function repoRoot(anyDirInRepo: string): Promise<string | null> {
@@ -124,6 +132,10 @@ export interface RepoStatus {
   branch: string | null;
   statuses: Map<string, GitFileStatus>;
   trackedDirs: Set<string>;
+  // Worst-status rollup per containing directory (see buildDirStatuses) —
+  // precomputed once per scan so statusForEntry's directory case is a
+  // single Map lookup instead of a scan over every changed path.
+  dirStatuses: Map<string, GitFileStatus>;
 }
 
 // Every ancestor directory (relative to root, no trailing slash) that
@@ -148,6 +160,17 @@ async function getTrackedDirs(root: string): Promise<Set<string>> {
       idx = dir.lastIndexOf("/");
     }
   }
+  return dirs;
+}
+
+// TRACKED_DIRS_TTL_MS-cached wrapper — the full `git ls-files` walk this
+// backs is the most expensive part of getTrackedDirs, and its answer is
+// stable far longer than a status scan's.
+async function getTrackedDirsCached(root: string): Promise<Set<string>> {
+  const cached = trackedDirsCache.get(root);
+  if (cached && Date.now() - cached.at < TRACKED_DIRS_TTL_MS) return cached.dirs;
+  const dirs = await getTrackedDirs(root);
+  trackedDirsCache.set(root, { at: Date.now(), dirs });
   return dirs;
 }
 
@@ -231,8 +254,9 @@ async function scanRepoStatuses(root: string): Promise<RepoStatus | null> {
     // the main status display.
   }
 
-  const [branch, trackedDirs] = await Promise.all([getBranch(root), getTrackedDirs(root)]);
-  return { root, branch, statuses, trackedDirs };
+  const [branch, trackedDirs] = await Promise.all([getBranch(root), getTrackedDirsCached(root)]);
+  const dirStatuses = buildDirStatuses(statuses);
+  return { root, branch, statuses, trackedDirs, dirStatuses };
 }
 
 // Lists every file under dirPath that isn't gitignored (tracked +
@@ -282,24 +306,65 @@ const PRIORITY: GitFileStatus[] = [
   "ignored",
 ];
 
+// Numeric rank matching PRIORITY's worst-first order — lower is worse, so
+// an aggregate directory status is the *minimum* rank among any entry
+// nested inside it.
+const RANK: Record<GitFileStatus, number> = Object.fromEntries(
+  PRIORITY.map((status, i) => [status, i]),
+) as Record<GitFileStatus, number>;
+
+// One rollup pass over the flat status map, run once per scan (not once per
+// listDir entry — see statusForEntry below): each entry's status propagates
+// up its ancestor chain as the worst aggregate status for every containing
+// directory. Stops climbing a chain once it reaches an ancestor already at
+// least as bad — dominance is transitive (an ancestor's aggregate is always
+// at least as bad as any descendant directory's), so if this ancestor
+// already reflects a status this bad or worse, whichever earlier entry
+// caused that already propagated it past this point.
+export function buildDirStatuses(statuses: Map<string, GitFileStatus>): Map<string, GitFileStatus> {
+  const dirStatuses = new Map<string, GitFileStatus>();
+  for (const [path, status] of statuses) {
+    const rank = RANK[status];
+    let idx = path.lastIndexOf("/");
+    while (idx !== -1) {
+      const dir = path.slice(0, idx);
+      const current = dirStatuses.get(dir);
+      if (current !== undefined && RANK[current] <= rank) break;
+      dirStatuses.set(dir, status);
+      idx = dir.lastIndexOf("/");
+    }
+  }
+  return dirStatuses;
+}
+
 // relPath is the entry's path relative to the repo root. Checks for an exact
-// match first, then falls back to nested matches in either direction: a
-// directory aggregates the "worst" status among any changed path inside it,
-// while a file nested inside a collapsed ignored/untracked directory
-// inherits that directory's status.
+// match first, then falls back to nested matches: a directory looks up its
+// precomputed worst-status rollup (dirStatuses, built once per scan by
+// buildDirStatuses), while a file nested inside a collapsed ignored/
+// untracked directory entry inherits that directory's status by walking its
+// own ancestor chain — cheap since it's bounded by path depth, not the
+// number of changed files.
 export function statusForEntry(
   statuses: Map<string, GitFileStatus>,
+  dirStatuses: Map<string, GitFileStatus>,
   trackedDirs: Set<string>,
   relPath: string,
   isDir: boolean,
 ): GitFileStatus | undefined {
   let result = statuses.get(relPath);
   if (!result) {
-    const dirPrefix = `${relPath}/`;
-    for (const [p, status] of statuses) {
-      const matches = isDir ? p.startsWith(dirPrefix) : relPath.startsWith(`${p}/`);
-      if (!matches) continue;
-      if (!result || PRIORITY.indexOf(status) < PRIORITY.indexOf(result)) result = status;
+    if (isDir) {
+      result = dirStatuses.get(relPath);
+    } else {
+      let idx = relPath.lastIndexOf("/");
+      while (idx !== -1) {
+        const dir = relPath.slice(0, idx);
+        const candidate = statuses.get(dir);
+        if (candidate !== undefined && (!result || RANK[candidate] < RANK[result])) {
+          result = candidate;
+        }
+        idx = dir.lastIndexOf("/");
+      }
     }
   }
   // A directory is only dimmed as "ignored" when it's fully covered by

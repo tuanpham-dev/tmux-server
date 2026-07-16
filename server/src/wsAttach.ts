@@ -47,17 +47,18 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     return;
   }
 
-  // Fire-and-forget: awaiting here would open an async gap between the WS
-  // handshake and registering the "close" handler below — a socket that
-  // closes inside that gap would leak its PTY forever.
-  void applyTmuxOptions(port);
-
   const term = pty.spawn("tmux", ["attach-session", "-t", `=${session}`], {
     name: "xterm-256color",
     cols: 80,
     rows: 24,
     cwd: process.env.HOME,
     env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
+    // Skips node-pty's own utf8-decode-then-JSON-escape round trip for
+    // every output chunk — onData below gets the PTY's raw bytes and ships
+    // them as a binary WS frame instead. IPty.onData is typed string
+    // regardless of this option (verified empirically: with encoding: null
+    // it emits real Buffers at runtime) — cast at the one call site below.
+    encoding: null,
   });
 
   const send = (payload: object) => {
@@ -76,7 +77,10 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
   };
 
   term.onData((data) => {
-    send({ type: "data", data });
+    // Binary WS frame — every other message in this file (scroll, exit,
+    // command, ...) stays JSON text, so the frame type itself is the
+    // discriminator the client dispatches on (see TerminalView's onmessage).
+    if (ws.readyState === WebSocket.OPEN) ws.send(data as unknown as Buffer);
     if (!paused && ws.bufferedAmount > HIGH_WATER) {
       paused = true;
       term.pause();
@@ -110,7 +114,13 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     onCommandChanged: (command) => send({ type: "command", command }),
   };
   getAttachIdentity(session)
-    .then(({ sessionId, windowId }) => {
+    .then(({ sessionId, windowId, serverPid }) => {
+      // Fire-and-forget, same as the rest of this chain: this handler
+      // already runs asynchronously (relative to the WS handshake and the
+      // "close" listener below, both registered synchronously beforehand),
+      // so there's no new leak window from awaiting it here — but nothing
+      // downstream depends on it finishing either.
+      void applyTmuxOptions(port, serverPid);
       if (exited) return;
       unregister = registerAttach(
         term.pid,
