@@ -535,44 +535,6 @@ export default function App() {
     confirmDialog,
   );
 
-  // Session-windows dropdown for a tab-group chip's arrow button. Scoped per
-  // editor group (like groupMenuItems above), since "checked" below means
-  // "already open as a tab in this bar" — a window open only in a different
-  // split pane shouldn't show as checked here, since clicking it here would
-  // still open a fresh tab in this pane (see useTabs.ts's openWindowTab,
-  // whose own dedupe is scoped the same way, to the focused editor group).
-  // Not to be confused with useSessionActions' windowMenuItems below, which
-  // builds a single window row's right-click menu (rename/kill/etc.) in the
-  // sidebar.
-  const chipWindowMenuItems = useCallback(
-    (editorGroupId: string, sessionName: string): MenuItem[] => {
-      const windows = sessions.find((s) => s.name === sessionName)?.windows ?? [];
-      if (windows.length === 0) {
-        return [{ label: "No windows", disabled: true, onClick: () => {} }];
-      }
-      // A window-tab pins a specific index; the whole-session tab (no
-      // windowIndex) instead shows whichever window tmux currently has
-      // active for this session — so it "opens" (and can be the "active *"
-      // one for) that one.
-      const groupTabs = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t) === sessionName);
-      const activeGroupTabId = groupActive[editorGroupId];
-      const openIndexes = new Set<number>();
-      let activeIndex: number | undefined;
-      for (const t of groupTabs) {
-        const index = t.windowIndex ?? windows.find((w) => w.active)?.index;
-        if (index === undefined) continue;
-        openIndexes.add(index);
-        if (t.id === activeGroupTabId) activeIndex = index;
-      }
-      return windows.map((w) => ({
-        label: `${w.index} ${w.name}${w.index === activeIndex ? " *" : ""}`,
-        checked: openIndexes.has(w.index),
-        onClick: () => openWindowTab(sessionName, w.index),
-      }));
-    },
-    [sessions, tabs, groupActive, openWindowTab],
-  );
-
   // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
   // model, separate from the editor's tabs/split tree, since it only ever
   // holds terminals and only ever splits side-by-side.
@@ -716,6 +678,48 @@ export default function App() {
     setPinnedSessions,
     splitGroup,
     moveTabToAdjacentGroup,
+  );
+
+  // Session-windows dropdown for a tab-group chip's arrow button. Scoped per
+  // editor group (like groupMenuItems), since "checked" below means "already
+  // open as a tab in this bar" — a window open only in a different split
+  // pane shouldn't show as checked here, since clicking it here would still
+  // open a fresh tab in this pane (see useTabs.ts's openWindowTab, whose own
+  // dedupe is scoped the same way, to the focused editor group). Defined
+  // after useSessionActions since the trailing "New Window" item reuses its
+  // createWindow (which also opens the new window as a tab). Not to be
+  // confused with useSessionActions' windowMenuItems, which builds a single
+  // window row's right-click menu (rename/kill/etc.) in the sidebar.
+  const chipWindowMenuItems = useCallback(
+    (editorGroupId: string, sessionName: string): MenuItem[] => {
+      const windows = sessions.find((s) => s.name === sessionName)?.windows ?? [];
+      if (windows.length === 0) {
+        return [{ label: "No windows", disabled: true, onClick: () => {} }];
+      }
+      // A window-tab pins a specific index; the whole-session tab (no
+      // windowIndex) instead shows whichever window tmux currently has
+      // active for this session — so it "opens" (and can be the "active *"
+      // one for) that one.
+      const groupTabs = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t) === sessionName);
+      const activeGroupTabId = groupActive[editorGroupId];
+      const openIndexes = new Set<number>();
+      let activeIndex: number | undefined;
+      for (const t of groupTabs) {
+        const index = t.windowIndex ?? windows.find((w) => w.active)?.index;
+        if (index === undefined) continue;
+        openIndexes.add(index);
+        if (t.id === activeGroupTabId) activeIndex = index;
+      }
+      return [
+        ...windows.map((w) => ({
+          label: `${w.index} ${w.name}${w.index === activeIndex ? " *" : ""}`,
+          checked: openIndexes.has(w.index),
+          onClick: () => openWindowTab(sessionName, w.index),
+        })),
+        { label: "New Window", onClick: () => createWindow(sessionName) },
+      ];
+    },
+    [sessions, tabs, groupActive, openWindowTab, createWindow],
   );
 
   // Session/window commands need an active real tab (a session/window, not a
