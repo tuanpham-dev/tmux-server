@@ -167,6 +167,11 @@ export interface MenuState {
   x: number;
   y: number;
   items: MenuItem[];
+  // Set only by the tab-group chip's windows-dropdown trigger, so that
+  // button can tell whether its OWN menu is the one currently open and
+  // toggle it closed on a second click — every other showMenu caller leaves
+  // this undefined.
+  sourceId?: string;
 }
 
 export type GitFileStatus =

@@ -552,20 +552,25 @@ export default function App() {
       }
       // A window-tab pins a specific index; the whole-session tab (no
       // windowIndex) instead shows whichever window tmux currently has
-      // active for this session — so it "opens" that one.
+      // active for this session — so it "opens" (and can be the "active *"
+      // one for) that one.
       const groupTabs = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t) === sessionName);
-      const openIndexes = new Set(
-        groupTabs
-          .map((t) => t.windowIndex ?? windows.find((w) => w.active)?.index)
-          .filter((index): index is number => index !== undefined),
-      );
+      const activeGroupTabId = groupActive[editorGroupId];
+      const openIndexes = new Set<number>();
+      let activeIndex: number | undefined;
+      for (const t of groupTabs) {
+        const index = t.windowIndex ?? windows.find((w) => w.active)?.index;
+        if (index === undefined) continue;
+        openIndexes.add(index);
+        if (t.id === activeGroupTabId) activeIndex = index;
+      }
       return windows.map((w) => ({
-        label: `${w.index} ${w.name}`,
+        label: `${w.index} ${w.name}${w.index === activeIndex ? " *" : ""}`,
         checked: openIndexes.has(w.index),
         onClick: () => openWindowTab(sessionName, w.index),
       }));
     },
-    [sessions, tabs, openWindowTab],
+    [sessions, tabs, groupActive, openWindowTab],
   );
 
   // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
@@ -647,9 +652,11 @@ export default function App() {
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  const showMenu = useCallback((x: number, y: number, items: MenuItem[]) => {
-    setMenu({ x, y, items });
+  const showMenu = useCallback((x: number, y: number, items: MenuItem[], sourceId?: string) => {
+    setMenu({ x, y, items, sourceId });
   }, []);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   const showAgents = useCallback((cwd: string, x: number, y: number) => {
     setAgentsPanel({ cwd, x, y });
@@ -1156,6 +1163,8 @@ export default function App() {
           onActivate={setActiveTabId}
           onClose={closeTab}
           onShowMenu={showMenu}
+          activeMenuSourceId={menu?.sourceId ?? null}
+          onCloseMenu={closeMenu}
           tabMenuItems={tabMenuItems}
           onReorder={moveTab}
           onMoveTabToGroup={moveTabToGroup}

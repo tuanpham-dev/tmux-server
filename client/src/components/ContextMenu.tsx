@@ -29,7 +29,15 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
 
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose();
+      if (ref.current?.contains(e.target as Node)) return;
+      // A toggle-style trigger (e.g. the tab-group chip's windows-dropdown
+      // arrow) marks itself with this attribute so its own click handler
+      // can decide whether to open or close the menu — without this, the
+      // mousedown here would close it first, and the trigger's own click
+      // (which fires after mousedown) would immediately reopen it, making
+      // the toggle look like it does nothing.
+      if ((e.target as HTMLElement).closest("[data-menu-trigger]")) return;
+      onClose();
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();

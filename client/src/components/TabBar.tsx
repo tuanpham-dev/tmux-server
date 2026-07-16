@@ -13,7 +13,17 @@ interface Props {
   activity: (tab: Tab) => boolean;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
-  onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
+  // sourceId (optional) tags who opened this menu — the chip arrow button
+  // below passes its own tag so it can later tell whether its menu is the
+  // one currently open (activeMenuSourceId) and toggle it closed.
+  onShowMenu: (x: number, y: number, items: MenuItem[], sourceId?: string) => void;
+  activeMenuSourceId: string | null;
+  onCloseMenu: () => void;
+  // This bar's own editor-group id — used only to build the chip arrow's
+  // sourceId (so two panes showing the same session's chip don't confuse
+  // each other's toggle state), not for scoping tabs (groupTabs is already
+  // filtered by the caller).
+  editorGroupId: string;
   tabMenuItems: (tab: Tab) => MenuItem[];
   // Reports the actions container's DOM element as it mounts/unmounts, so a
   // tab (e.g. an image viewer) can portal per-tab controls into it — VS
@@ -72,6 +82,9 @@ export default function TabBar({
   onActivate,
   onClose,
   onShowMenu,
+  activeMenuSourceId,
+  onCloseMenu,
+  editorGroupId,
   tabMenuItems,
   actionsRef,
   extras,
@@ -413,14 +426,20 @@ export default function TabBar({
           title="Session windows"
           aria-haspopup="menu"
           aria-label={`${sessionName} windows`}
+          data-menu-trigger="true"
           onClick={(e) => {
             e.stopPropagation();
             if (justDraggedRef.current) {
               justDraggedRef.current = false;
               return;
             }
+            const sourceId = `chip-windows:${editorGroupId}:${sessionName}`;
+            if (activeMenuSourceId === sourceId) {
+              onCloseMenu();
+              return;
+            }
             const rect = e.currentTarget.getBoundingClientRect();
-            onShowMenu(rect.left, rect.bottom + 2, windowMenuItems(sessionName));
+            onShowMenu(rect.left, rect.bottom + 2, windowMenuItems(sessionName), sourceId);
           }}
         >
           <Icon name="chevron-down" />

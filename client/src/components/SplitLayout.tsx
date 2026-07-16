@@ -23,7 +23,15 @@ interface SharedProps {
   activity: (tab: Tab) => boolean;
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
-  onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
+  // sourceId (optional) tags who opened this menu — only the tab-group
+  // chip's windows-dropdown trigger sets it, so it can tell whether its own
+  // menu is the one currently open (see activeMenuSourceId/onCloseMenu).
+  onShowMenu: (x: number, y: number, items: MenuItem[], sourceId?: string) => void;
+  // The currently open menu's sourceId, or null if none/untagged — lets the
+  // chip arrow button (TabBar) decide whether a click should toggle its own
+  // menu closed instead of reopening it.
+  activeMenuSourceId: string | null;
+  onCloseMenu: () => void;
   tabMenuItems: (tab: Tab) => MenuItem[];
   onToggleSidebar: () => void;
   groupingEnabled: boolean;
@@ -106,6 +114,8 @@ function Leaf({
   onActivate,
   onClose,
   onShowMenu,
+  activeMenuSourceId,
+  onCloseMenu,
   tabMenuItems,
   onToggleSidebar,
   groupingEnabled,
@@ -150,6 +160,9 @@ function Leaf({
         onActivate={onActivate}
         onClose={onClose}
         onShowMenu={onShowMenu}
+        activeMenuSourceId={activeMenuSourceId}
+        onCloseMenu={onCloseMenu}
+        editorGroupId={groupId}
         tabMenuItems={tabMenuItems}
         actionsRef={actionsRefFor(groupId)}
         extras={tabExtrasFor(groupId)}
