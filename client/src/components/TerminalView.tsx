@@ -318,31 +318,43 @@ export default function TerminalView({
       // time never changes without a remount.
       let liveCommand = "";
 
-      // Buffered-until-Enter local echo (plans/codeman-mobile-features.md):
-      // Enter sends whatever's pending through the same Ink-safe delayed-\r
-      // path touch keys use (T1); backspace edits the pending text locally
-      // until it's empty, then cascades to a real \x7f; any other control
-      // byte (Ctrl+C, Esc, Tab, arrows) flushes pending text immediately
+      // Buffered-until-Enter local echo (plans/codeman-mobile-features.md),
+      // with a word-boundary flush on top: a completed word (space-
+      // terminated) is sent to the PTY for real the moment it's typed,
+      // rather than waiting for Enter, so Claude's own input box gets to
+      // redraw/resize roughly once per word instead of staying static —
+      // still far short of the per-keystroke round trip buffering was built
+      // to avoid. Enter sends only whatever's left unsent (echo.unsentText)
+      // through the same Ink-safe delayed-\r path touch keys use (T1) —
+      // never the full pendingText, which would resend an already-flushed
+      // word. Backspace edits the pending text locally until it crosses
+      // back into an already-flushed word, then cascades a real \x7f (see
+      // LocalEcho.removeChar's "flushed" case); any other control byte
+      // (Ctrl+C, Esc, Tab, arrows) flushes the unsent remainder immediately
       // alongside it — only Enter has the Ink text+\r race this delays for.
       const routeLocalEcho = (data: string, echo: LocalEcho) => {
         if (data === "\r") {
-          const pending = echo.pendingText;
+          const remainder = echo.unsentText;
           echo.clear();
-          sendWithInkSafeEnters(pending + "\r", sendInput);
+          sendWithInkSafeEnters(remainder + "\r", sendInput);
           return;
         }
         if (data === "\x7f") {
-          if (echo.hasPending) echo.removeChar();
-          else sendInput(data);
+          if (!echo.hasPending) {
+            sendInput(data);
+            return;
+          }
+          if (echo.removeChar() === "flushed") sendInput(data);
           return;
         }
         if (isPrintableBurst(data)) {
-          echo.appendText(data);
+          const completedWord = echo.appendText(data);
+          if (completedWord) sendInput(completedWord);
           return;
         }
-        const pending = echo.pendingText;
+        const remainder = echo.unsentText;
         echo.clear();
-        sendInput(pending + data);
+        sendInput(remainder + data);
       };
 
       const localEchoActive = () =>
@@ -374,8 +386,12 @@ export default function TerminalView({
       // in this file uses, just without the sticky-Ctrl/control-byte cases
       // that don't apply to a plain path string.
       const sendTextOrEcho = (text: string) => {
-        if (localEchoActive()) localEcho!.appendText(text);
-        else sendInput(text);
+        if (!localEchoActive()) {
+          sendInput(text);
+          return;
+        }
+        const completedWord = localEcho!.appendText(text);
+        if (completedWord) sendInput(completedWord);
       };
       sendTextRef.current = sendTextOrEcho;
 

@@ -16,8 +16,14 @@ export interface LocalEchoAdapter {
 
 // Matched by shape (glyph + trailing space), not a fixed string — Claude
 // Code's and Codex's prompts differ, and either could change between
-// versions (LESSONS 2026-07-12: parse structure, not known strings).
+// versions (LESSONS 2026-07-12: parse structure, not known strings). The
+// space is a class, not a literal " " — Claude Code's Ink UI pads the glyph
+// with a non-breaking space (U+00A0), presumably so the terminal never
+// treats the gap as a wrap point, which a literal-space match silently
+// never finds (confirmed live: readLine returns the glyph correctly, just
+// followed by   instead of  ).
 const PROMPT_GLYPHS = ["❯", ">"];
+const PROMPT_GLYPH_PATTERNS = PROMPT_GLYPHS.map((g) => new RegExp(`${g}[  ]`));
 
 export class LocalEcho {
   private readonly adapter: LocalEchoAdapter;
@@ -25,6 +31,24 @@ export class LocalEcho {
   private readonly unsubRender: () => void;
   private cellMetrics: { width: number; height: number };
   private pending = "";
+  // How much of `pending`, from the start, has already been sent to the PTY
+  // for real (word-boundary flush, below) — never re-sent by a later Enter/
+  // control-char flush, which must only forward the remainder. The overlay
+  // itself doesn't care about this split: it always draws the full
+  // `pending` string at the (freshly recomputed, every render) anchor, so
+  // once the flushed prefix's real echo lands the two coincide exactly —
+  // same text, same cell position — with no special-casing needed to hide
+  // or reconcile the overlap.
+  private flushedOffset = 0;
+  // Whether the most recent findAnchor() call landed on the prompt glyph
+  // (true) or had to fall back to the raw cursor cell (false) — see
+  // flushCompletedWord's guard. A glyph-anchored position is pinned to the
+  // prompt and stays put regardless of anything a word-boundary flush's
+  // real echo does to the cursor; the cursor-fallback position, by
+  // definition, *is* the cursor, so a flushed word's real echo moving the
+  // cursor mid-typing would silently re-base the whole overlay on top of
+  // text that's already really there, duplicating it.
+  private anchorIsStable = false;
   // The word currently being IME-composed (Gboard/predictive keyboards),
   // shown but not yet committed by the OS — never part of `pending` and
   // never sent. Predictive keyboards deliver nothing at all through the
@@ -62,20 +86,57 @@ export class LocalEcho {
     return this.pending.length > 0;
   }
 
-  addChar(ch: string): void {
+  // The part of `pending` not yet sent anywhere — what an Enter/control-char
+  // flush (or the next word-boundary flush) still needs to forward. Equal to
+  // `pendingText` until the first word-boundary flush.
+  get unsentText(): string {
+    return this.pending.slice(this.flushedOffset);
+  }
+
+  // Returns the text to send to the PTY immediately (a just-completed word,
+  // trailing space included) once the just-added text ends on a word
+  // boundary, so Claude's own input box gets to redraw/resize at roughly
+  // one-word granularity instead of staying static until Enter — or null
+  // if nothing's due yet. Caller (TerminalView's routeLocalEcho) is
+  // responsible for actually sending it.
+  //
+  // Gated on anchorIsStable: only safe once the prompt glyph itself has
+  // been found, since a cursor-fallback anchor *is* the cursor — the real
+  // echo of an early-flushed word would move it, silently re-basing every
+  // future render's overlay on top of text already really there. Skipping
+  // the flush there just falls back to today's buffer-until-Enter behavior
+  // for that render, not a regression.
+  private flushCompletedWord(): string | null {
+    if (!this.anchorIsStable) return null;
+    const remainder = this.unsentText;
+    if (!remainder.endsWith(" ")) return null;
+    this.flushedOffset = this.pending.length;
+    return remainder;
+  }
+
+  addChar(ch: string): string | null {
     this.pending += ch;
     this.render();
+    return this.flushCompletedWord();
   }
 
-  appendText(text: string): void {
+  appendText(text: string): string | null {
     this.pending += text;
     this.render();
+    return this.flushCompletedWord();
   }
 
-  removeChar(): void {
-    if (!this.pending) return;
+  // "pending": removed a char never sent anywhere — purely local, caller
+  // does nothing further. "flushed": the removed char was already sent to
+  // the PTY for real (word-boundary flush ran ahead of it) — caller must
+  // still send a real backspace. `false`: nothing to remove.
+  removeChar(): "pending" | "flushed" | false {
+    if (!this.pending) return false;
+    const source = this.pending.length > this.flushedOffset ? "pending" : "flushed";
     this.pending = this.pending.slice(0, -1);
+    this.flushedOffset = Math.min(this.flushedOffset, this.pending.length);
     this.render();
+    return source;
   }
 
   // `text` is the IME's current full composition (compositionupdate's own
@@ -99,6 +160,7 @@ export class LocalEcho {
 
   clear(): void {
     this.pending = "";
+    this.flushedOffset = 0;
     this.composing = "";
     this.container.replaceChildren();
   }
@@ -124,12 +186,64 @@ export class LocalEcho {
     const cursor = this.adapter.getCursor();
     for (let row = cursor.row; row >= 0; row--) {
       const line = this.adapter.readLine(row);
-      for (const glyph of PROMPT_GLYPHS) {
-        const idx = line.indexOf(`${glyph} `);
-        if (idx !== -1) return { col: idx + 2, row };
+      for (const pattern of PROMPT_GLYPH_PATTERNS) {
+        const match = pattern.exec(line);
+        if (match) {
+          this.anchorIsStable = true;
+          return { col: match.index + 2, row };
+        }
       }
     }
+    this.anchorIsStable = false;
     return cursor;
+  }
+
+  // Greedy word-wrap matching Ink's own box (confirmed live: it never
+  // splits a word across rows, unlike a naive per-column wrap — which put
+  // the overlay's wrap point wherever `cols` fell mid-word, several
+  // columns off from the real terminal's, garbling every row after the
+  // first divergence). Continuation rows re-indent to `startCol`, not 0:
+  // Ink hangs wrapped input under the first row's text, not under the
+  // "❯ " marker (confirmed live — the real wrapped row starts two columns
+  // in, exactly matching the prompt prefix's width).
+  private static wrapPositions(
+    text: string,
+    startCol: number,
+    startRow: number,
+    cols: number,
+  ): { row: number; col: number }[] {
+    const positions: { row: number; col: number }[] = [];
+    const tokens = text.match(/\S+\s*|\s+/g) ?? [];
+    let col = startCol;
+    let row = startRow;
+    for (const token of tokens) {
+      // Only wrap-before-token if the token isn't the first thing on this
+      // row (a token wider than the whole row would loop forever waiting
+      // for space that never comes) and it doesn't fit in what's left.
+      if (col > startCol && col + token.length > cols) {
+        col = startCol;
+        row++;
+      }
+      for (let j = 0; j < token.length; j++) {
+        if (col >= cols) {
+          col = startCol;
+          row++;
+        }
+        positions.push({ row, col });
+        col++;
+      }
+    }
+    // Defensive: text.match can't undercount, but keep positions.length in
+    // lockstep with text.length regardless.
+    while (positions.length < text.length) {
+      if (col >= cols) {
+        col = startCol;
+        row++;
+      }
+      positions.push({ row, col });
+      col++;
+    }
+    return positions;
   }
 
   private render(): void {
@@ -140,17 +254,9 @@ export class LocalEcho {
     const { width, height } = this.cellMetrics;
     const cols = this.adapter.cols;
     const frag = document.createDocumentFragment();
-    // Wrap at the terminal's own column count, same as the real PTY would
-    // once this text reaches it — without this, input past the right edge
-    // just keeps advancing col past `cols` and gets clipped by the
-    // overlay's `overflow: hidden` instead of continuing on the next row.
-    let col = anchor.col;
-    let row = anchor.row;
+    const positions = LocalEcho.wrapPositions(text, anchor.col, anchor.row, cols);
     for (let i = 0; i < text.length; i++) {
-      if (col >= cols) {
-        col = 0;
-        row++;
-      }
+      const { row, col } = positions[i];
       const span = document.createElement("span");
       // Composing (not-yet-committed) chars get their own class — matches
       // the underline convention native IME composition renders with, so
@@ -173,7 +279,6 @@ export class LocalEcho {
       // its own (correctly sized) cell box.
       span.style.lineHeight = `${height}px`;
       frag.appendChild(span);
-      col++;
     }
     this.container.appendChild(frag);
   }

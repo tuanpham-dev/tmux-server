@@ -349,7 +349,24 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
     // baseY: top of the bottom page when fully scrolled down. viewportY:
     // top of what's currently shown. Equal means pinned to the bottom.
     isScrolledUp: () => term.buffer.active.viewportY !== term.buffer.active.baseY,
+    // Prefers xterm's own measured cell box (same value its renderer draws
+    // glyphs with, on the same private path ecosystem addons already lean
+    // on for pixel-accurate overlays — there's no public equivalent) over
+    // rect.width/term.cols. That container-math approximation is not just
+    // imprecise (confirmed live: ~5% off even once correctly fitted, enough
+    // to visibly drift the local-echo overlay away from the real glyphs
+    // over a long line) — it's also wrong by ~2x whenever this runs before
+    // the terminal's first fit() lands (term.cols still at its default 80,
+    // not yet the real fitted column count), which the old code had no way
+    // to detect or recover from since LocalEcho only re-reads metrics on an
+    // explicit refreshFont() call, not on every resize.
     getCellMetrics: () => {
+      const cell = (
+        term as unknown as {
+          _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } };
+        }
+      )._core?._renderService?.dimensions?.css?.cell;
+      if (cell) return { width: cell.width, height: cell.height };
       const rect = screen.getBoundingClientRect();
       return { width: rect.width / term.cols, height: rect.height / term.rows };
     },
