@@ -28,32 +28,39 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
   }, [menu]);
 
   useEffect(() => {
-    const onMouseDown = (e: MouseEvent) => {
+    const onOutsidePress = (e: MouseEvent | TouchEvent) => {
       if (ref.current?.contains(e.target as Node)) return;
       // A toggle-style trigger (e.g. the tab-group chip's windows-dropdown
       // arrow) marks itself with this attribute so its own click handler
       // can decide whether to open or close the menu — without this, the
-      // mousedown here would close it first, and the trigger's own click
-      // (which fires after mousedown) would immediately reopen it, making
-      // the toggle look like it does nothing.
+      // press here would close it first, and the trigger's own click
+      // (which fires after mousedown/touchend) would immediately reopen
+      // it, making the toggle look like it does nothing.
       if ((e.target as HTMLElement).closest("[data-menu-trigger]")) return;
       onClose();
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    // Capture phase, not bubble: the terminal view stops propagation on its
-    // own mousedown handling (link/selection gestures) at the capture phase
-    // on its screen element, which would otherwise swallow the event before
-    // a bubble-phase window listener ever saw it — clicking into a terminal
-    // wouldn't close the menu. A capture listener on window itself always
-    // runs first (capture visits ancestors before descendants), so this
-    // sees every mousedown regardless of what a descendant does with it.
-    window.addEventListener("mousedown", onMouseDown, true);
+    // Capture phase, not bubble, on both mousedown and touchstart: the
+    // terminal view's own gesture handling (link/selection on mouse, tap/
+    // scroll on touch) calls stopPropagation/preventDefault at the capture
+    // phase on its screen element. For a mouse press that swallows the
+    // bubble phase before a bubble-phase window listener ever saw it; for a
+    // real touch tap, canceling its touchend suppresses the synthetic
+    // mousedown/click the browser would otherwise synthesize, so there is
+    // no mouse event at all to listen for. A capture listener on window
+    // itself always runs first (capture visits ancestors before
+    // descendants) and touchstart itself is dispatched before any of that
+    // suppression, so both variants are seen regardless of what a
+    // descendant does with the event afterward.
+    window.addEventListener("mousedown", onOutsidePress, true);
+    window.addEventListener("touchstart", onOutsidePress, true);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("blur", onClose);
     return () => {
-      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("mousedown", onOutsidePress, true);
+      window.removeEventListener("touchstart", onOutsidePress, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("blur", onClose);
     };
