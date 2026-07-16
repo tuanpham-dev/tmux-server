@@ -27,6 +27,11 @@ export const DEFAULT_TOUCH_KEYS: TouchKey[] = [
   // Self-hides on browsers without SpeechRecognition (TouchKeyBar.tsx's
   // visibleKeys) — safe to always include by default.
   { label: "🎤", send: "{mic}", when: "" },
+  // Opens the native image picker (photo library/camera on iOS/Android) and
+  // uploads through the same settings.pasteDropUploadDir pipeline paste/drop
+  // use. Gated to claude by default, matching that feature's localEchoWhen
+  // gating.
+  { label: "📷", send: "{image}", when: "claude" },
 ];
 
 const SIMPLE_TOKENS: Record<string, string> = {

@@ -86,6 +86,16 @@ export default function BehaviorSection() {
         </select>
       </label>
 
+      <label className="settings-row">
+        <span className="settings-label">Image paste/drop upload directory</span>
+        <input
+          className="dialog-input"
+          placeholder="<cwd>/uploads"
+          value={settings.pasteDropUploadDir}
+          onChange={(e) => set("pasteDropUploadDir", e.target.value)}
+        />
+      </label>
+
       <label className="settings-row checkbox-row">
         <input
           type="checkbox"

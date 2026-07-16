@@ -39,6 +39,15 @@ function extensionForImageMime(mime: string): string {
   return IMAGE_EXTENSIONS[mime] ?? "png";
 }
 
+// A camera/gallery-picked file's own name (e.g. "6996.jpg") is often just a
+// short counter reused across photos, not actually unique — prefixing every
+// upload with a timestamp (source-named or not) avoids collisions instead of
+// relying solely on the server's conflict/rename handling.
+function uniqueUploadName(originalName: string | undefined, mime: string): string {
+  const base = originalName || `image.${extensionForImageMime(mime)}`;
+  return `${Date.now()}-${base}`;
+}
+
 type SearchAction = "start" | "next" | "prev" | "cancel";
 
 interface Props {
@@ -78,8 +87,9 @@ interface Props {
   onOpenFileSecondary?: (path: string, line?: number) => void;
   // The pane's current working directory (App.tsx's sessions data), used as
   // the destination for image paste/drop uploads (plans/codeman-mobile-
-  // features.md Phase 3) — "" (window not found yet) just disables that
-  // feature for this render, same as an empty localEchoWhen.
+  // features.md Phase 3) when settings.pasteDropUploadDir is empty — "" (window
+  // not found yet) just disables the feature for this render, same as an
+  // empty localEchoWhen.
   cwd?: string;
 }
 
@@ -244,6 +254,10 @@ export default function TerminalView({
   // paste/drop already uses (Phase 3), so spoken text lands in the buffered
   // overlay when local echo is active instead of going straight to the PTY.
   const sendTextRef = useRef<(text: string) => void>(() => {});
+  // A file picked via the `{image}` touch key (plans/mobile-image-upload-key.md)
+  // routes through this — set to the mount effect's uploadAndType, the same
+  // upload pipeline desktop paste/drop already use.
+  const uploadImageRef = useRef<(file: File) => void>(() => {});
   // Pushed by the server's attach watcher (a "command" WS message) whenever
   // this attach's foreground program changes — drives touch keys' `when`
   // filter. "" until the first push arrives.
@@ -262,6 +276,8 @@ export default function TerminalView({
   cwdRef.current = cwd;
   const uploadConflictRef = useRef(settings.uploadConflict);
   uploadConflictRef.current = settings.uploadConflict;
+  const pasteDropUploadDirRef = useRef(settings.pasteDropUploadDir);
+  pasteDropUploadDirRef.current = settings.pasteDropUploadDir;
 
   useEffect(() => {
     const container = containerRef.current!;
@@ -397,19 +413,24 @@ export default function TerminalView({
 
       // Gated by localEchoWhen alone (not mobilePointer — desktop paste is
       // the common case for this one) so it works independently of the
-      // local-echo feature itself.
+      // local-echo feature itself. Destination is settings.pasteDropUploadDir
+      // (default /tmp) used as-is; empty falls back to the pane's own
+      // <cwd>/uploads, the original behavior.
       const uploadAndType = async (blob: Blob, filename: string) => {
         const destDir = cwdRef.current;
         if (!destDir) return;
         const conflict = uploadConflictRef.current;
         const apiConflict = conflict === "ask" ? "fail" : conflict;
+        const uploadDir = pasteDropUploadDirRef.current || `${destDir}/uploads`;
         try {
-          const result = await api.uploadFile(`${destDir}/uploads`, filename, blob, apiConflict);
+          const result = await api.uploadFile(uploadDir, filename, blob, apiConflict);
           sendTextOrEcho(result.path);
         } catch (err) {
           onErrorRef.current(err);
         }
       };
+      uploadImageRef.current = (file) =>
+        uploadAndType(file, uniqueUploadName(file.name, file.type));
 
       const engine = await create({
         screen,
@@ -1171,7 +1192,7 @@ export default function TerminalView({
       screen.addEventListener("focusout", onFocusOut);
 
       // Image paste/drop (plans/codeman-mobile-features.md Phase 3): upload
-      // to <cwd>/uploads and type the resulting path. Capture phase on
+      // to settings.pasteDropUploadDir and type the resulting path. Capture phase on
       // paste, ahead of ghostty-web's own bundled paste handling, so a
       // non-image paste (the common case) is left completely alone — only
       // an image item gets preventDefault/stopPropagation, never a plain
@@ -1186,7 +1207,7 @@ export default function TerminalView({
         if (!blob) return;
         e.preventDefault();
         e.stopPropagation();
-        uploadAndType(blob, `paste-${Date.now()}.${extensionForImageMime(imageItem.type)}`);
+        uploadAndType(blob, uniqueUploadName(undefined, imageItem.type));
       };
       screen.addEventListener("paste", onPaste, true);
 
@@ -1205,7 +1226,7 @@ export default function TerminalView({
         const imageFile = files.find((f) => f.type.startsWith("image/"));
         if (!imageFile) return;
         e.preventDefault();
-        uploadAndType(imageFile, imageFile.name || `drop-${Date.now()}.${extensionForImageMime(imageFile.type)}`);
+        uploadAndType(imageFile, uniqueUploadName(imageFile.name, imageFile.type));
       };
       terminalBodyRef.current!.addEventListener("dragover", onDragOver);
       terminalBodyRef.current!.addEventListener("drop", onDrop);
@@ -1382,6 +1403,7 @@ export default function TerminalView({
             onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
             onSendInput={(data) => sendInputRef.current(data)}
             onSendVoiceText={(text) => sendTextRef.current(text)}
+            onUploadImage={(file) => uploadImageRef.current(file)}
             containerRef={terminalBodyRef}
           />
         )}
@@ -1395,6 +1417,7 @@ export default function TerminalView({
           onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
           onSendInput={(data) => sendInputRef.current(data)}
           onSendVoiceText={(text) => sendTextRef.current(text)}
+          onUploadImage={(file) => uploadImageRef.current(file)}
         />
       )}
     </div>

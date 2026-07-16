@@ -179,7 +179,8 @@ export default function TouchKeysEditor() {
       <div className="touch-key-editor-legend">
         send: literal text, or tokens {"{esc} {tab} {enter} {up} {down} {left} {right} {home} {end} {pgup} {pgdn} {space} {^x}"}{" "}
         (Ctrl+x, e.g. {"{^c}"}), {"{{"} for a literal {"{"}, {"{ctrl}"} for sticky-Ctrl, {"{mic}"} for voice input (hidden if
-        unsupported). when: comma-separated program names (e.g. "nvim"); empty = always.
+        unsupported), {"{image}"} for an image picker (uploads to the Behavior settings' upload
+        directory and types the path). when: comma-separated program names (e.g. "nvim"); empty = always.
       </div>
 
       <div className="touch-key-preview">
@@ -215,6 +216,7 @@ export default function TouchKeysEditor() {
                 onToggleStickyCtrl={() => {}}
                 onSendInput={() => {}}
                 onSendVoiceText={() => {}}
+                onUploadImage={() => {}}
               />
             ))
           )}
@@ -223,7 +225,10 @@ export default function TouchKeysEditor() {
 
       <div className="touch-key-editor">
         {keys.map((key, i) => {
-          const parsed = key.send === "{ctrl}" || key.send === "{mic}" || key.send === "" ? null : parseSend(key.send);
+          const parsed =
+            key.send === "{ctrl}" || key.send === "{mic}" || key.send === "{image}" || key.send === ""
+              ? null
+              : parseSend(key.send);
           const error = parsed && "error" in parsed ? parsed.error : null;
           const indicatorClass = dropIndicator?.index === i ? ` drop-indicator-${dropIndicator.edge}` : "";
           const draggingClass = dragIndex === i ? " dragging" : "";

@@ -44,6 +44,11 @@ export interface AppSettings {
   // ghostty engine: shim (ghosttyShims.ts). xterm engine: native option.
   minimumContrastRatio: number;
   uploadConflict: "rename" | "overwrite" | "ask";
+  // Destination directory for image paste/drop and the {image} touch key
+  // (plans/mobile-image-upload-key.md) — an absolute path used as-is for
+  // every upload, regardless of the pane's cwd. Empty falls back to the
+  // pane's own `<cwd>/uploads`.
+  pasteDropUploadDir: string;
   // "auto" shows the on-screen key bar only on mobile devices — coarse
   // pointer AND no hover, so phones/tablets match but touch-screen laptops
   // (whose primary input hovers) don't.
@@ -124,6 +129,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   letterSpacing: 0,
   minimumContrastRatio: 4.5,
   uploadConflict: "rename",
+  pasteDropUploadDir: "/tmp",
   touchKeyBar: "auto",
   touchKeyBarStyle: "bar",
   touchKeys: DEFAULT_TOUCH_KEYS,
