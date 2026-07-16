@@ -6,6 +6,7 @@
 // works unchanged against either engine, and is unit-testable without one.
 
 export interface LocalEchoAdapter {
+  readonly cols: number;
   readLine(row: number): string;
   getCursor(): { col: number; row: number };
   isScrolledUp(): boolean;
@@ -137,16 +138,27 @@ export class LocalEcho {
     if (!text || this.adapter.isScrolledUp()) return;
     const anchor = this.findAnchor();
     const { width, height } = this.cellMetrics;
+    const cols = this.adapter.cols;
     const frag = document.createDocumentFragment();
+    // Wrap at the terminal's own column count, same as the real PTY would
+    // once this text reaches it — without this, input past the right edge
+    // just keeps advancing col past `cols` and gets clipped by the
+    // overlay's `overflow: hidden` instead of continuing on the next row.
+    let col = anchor.col;
+    let row = anchor.row;
     for (let i = 0; i < text.length; i++) {
+      if (col >= cols) {
+        col = 0;
+        row++;
+      }
       const span = document.createElement("span");
       // Composing (not-yet-committed) chars get their own class — matches
       // the underline convention native IME composition renders with, so
       // there's still a visible cue that this part hasn't committed yet.
       span.className = i < this.pending.length ? "local-echo-char" : "local-echo-char local-echo-char-composing";
       span.textContent = text[i];
-      span.style.left = `${(anchor.col + i) * width}px`;
-      span.style.top = `${anchor.row * height}px`;
+      span.style.left = `${col * width}px`;
+      span.style.top = `${row * height}px`;
       span.style.width = `${width}px`;
       span.style.height = `${height}px`;
       // Overrides the CSS line-height (var(--terminal-line-height), a
@@ -161,6 +173,7 @@ export class LocalEcho {
       // its own (correctly sized) cell box.
       span.style.lineHeight = `${height}px`;
       frag.appendChild(span);
+      col++;
     }
     this.container.appendChild(frag);
   }
