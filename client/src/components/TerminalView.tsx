@@ -449,16 +449,22 @@ export default function TerminalView({
       localEcho = new LocalEcho(terminalBodyRef.current!, engine);
       localEchoRef.current = localEcho;
 
-      // Predictive keyboards deliver nothing through onData at all until a
-      // word commits, so without this, local echo shows nothing for the
+      // Predictive keyboards deliver nothing through onData at all until
+      // text commits, so without this, local echo shows nothing for the
       // whole word being typed, not just zero lag on the keystroke — gated
       // by the same localEchoActive() check every other input path already
       // uses, so a composition on a non-matching pane (or desktop) never
       // shows a preview local echo itself wouldn't otherwise be active for.
+      // Both calls can hand back bytes that must reach the PTY now: the
+      // composition's newly completed words (Samsung's keyboard composes
+      // whole messages across spaces and only commits on Enter, so words
+      // must flush from the composition itself — see LocalEcho's
+      // flushComposition), or backspaces reconciling a revised/cancelled
+      // composition whose leading words were already flushed.
       engine.onComposingChange((text) => {
         if (!localEchoActive()) return;
-        if (text === null) localEcho?.clearComposing();
-        else localEcho?.setComposing(text);
+        const out = text === null ? localEcho?.clearComposing() : localEcho?.setComposing(text);
+        if (out) sendInput(out);
       });
 
       const refit = () => {
