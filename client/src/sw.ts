@@ -4,9 +4,21 @@
 // generated precache manifest. Typechecked separately (tsconfig.sw.json,
 // excluded from the main app's DOM-lib tsconfig — see its comment) since
 // this file's `self` is ServiceWorkerGlobalScope, not Window.
+import { clientsClaim } from "workbox-core";
 import { precacheAndRoute } from "workbox-precaching";
 
 declare const self: ServiceWorkerGlobalScope;
+
+// Without these, a newly-installed SW sits in "waiting" — the browser
+// default — until every tab open from before the deploy is fully closed,
+// not just reloaded. For an app people tend to leave open in a pinned tab
+// or installed PWA, that's effectively "the deploy never applies." Deriving
+// from vite.config.ts's registerType: "autoUpdate" client-side setting,
+// which already expects new-SW installs to take over immediately — that
+// setting alone does nothing for an injectManifest SW like this one unless
+// it actually skips waiting itself.
+self.skipWaiting();
+clientsClaim();
 
 precacheAndRoute(self.__WB_MANIFEST);
 
