@@ -2434,16 +2434,19 @@ body.scrollbar-dragging {
 }
 
 @media (max-width: 640px) {
-  /* Keep every key on one line — the panel is too narrow for all four
-     fields at their desktop widths, so each shrinks to just enough for
-     its typical content instead of stacking into a multi-line card. */
+  /* The panel is too narrow for all four fields at their desktop widths,
+     so each shrinks to just enough for its typical content. The row keeps
+     the base flex-wrap: wrap so the error message can break onto its own
+     line (with nowrap it would share the line and crush the send field to
+     zero width mid-typing); the fields themselves still fit on one line
+     because their flex bases sum well under any phone width. */
   .touch-key-editor-row {
-    flex-wrap: nowrap;
     padding: 4px;
     gap: 4px;
   }
 
   .touch-key-editor-label {
+    flex: 0 0 44px;
     width: 44px;
     padding-left: 4px;
     padding-right: 4px;
@@ -2456,13 +2459,17 @@ body.scrollbar-dragging {
   }
 
   .touch-key-editor-when {
+    flex: 0 1 90px;
     width: 90px;
+    min-width: 0;
     padding-left: 4px;
     padding-right: 4px;
   }
 
   .touch-key-editor-error {
     flex-basis: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 }
 
