@@ -25,6 +25,23 @@ export interface LocalEchoAdapter {
 const PROMPT_GLYPHS = ["❯", ">"];
 const PROMPT_GLYPH_PATTERNS = PROMPT_GLYPHS.map((g) => new RegExp(`${g}[  ]`));
 
+// How the program that owns the pane rewraps a too-long input line — the
+// overlay must predict the same cell positions the real echo will land on.
+// "ink": Claude Code's Ink box (word wrap, hanging indent under the first
+// row's text, final column reserved — see wrapPositions). "shell": a
+// readline/zle line editor (character wrap into every column, continuation
+// rows at column 0).
+export type WrapMode = "ink" | "shell";
+
+// Shells all share the zle/readline wrap behavior; anything else (Claude
+// Code, Codex, other TUIs) keeps the ink model this overlay was built
+// against. Matched against tmux's pane_current_command; a login shell can
+// report with a leading dash.
+const SHELL_COMMANDS = new Set(["sh", "ash", "dash", "bash", "zsh", "fish", "ksh", "csh", "tcsh", "nu"]);
+export function wrapModeForCommand(command: string): WrapMode {
+  return SHELL_COMMANDS.has(command.trim().replace(/^-/, "").toLowerCase()) ? "shell" : "ink";
+}
+
 export class LocalEcho {
   private readonly adapter: LocalEchoAdapter;
   private readonly container: HTMLDivElement;
@@ -49,6 +66,35 @@ export class LocalEcho {
   // cursor mid-typing would silently re-base the whole overlay on top of
   // text that's already really there, duplicating it.
   private anchorIsStable = false;
+  // Where the overlay's first char draws, captured once when the buffer
+  // goes empty → non-empty and held until clear(). The prompt-glyph anchor
+  // alone is only the start of the *input area* — the line can already hold
+  // real text the buffer knows nothing about (a tab-completed path, text
+  // typed before local echo activated, a recalled history entry), and the
+  // cursor at first-keystroke time is exactly where new input will echo.
+  // Never read live at render time: a word-boundary flush's real echo moves
+  // the cursor mid-typing, which is the same re-basing hazard anchorIsStable
+  // guards against. When the prompt glyph is visible the capture is
+  // *anchored*: a column plus a row delta from the glyph, so streamed
+  // output scrolling the prompt upward doesn't invalidate it. Heavily
+  // themed shell prompts often end in other glyphs entirely (powerlevel10k
+  // segments, "% ", "± ") — there, in shell wrap mode only, the capture is
+  // *unanchored*: the absolute cursor cell, safe because a shell repaints
+  // nothing while you type at its prompt, unlike an Ink TUI streaming
+  // output above its input box. null = not captured (cursor-fallback
+  // anchor in effect, and word flushing stays off).
+  private startCol: number | null = null;
+  private startAnchored = false;
+  private startRowDelta = 0; // anchored captures: rows below the glyph row
+  private startRow = 0; // unanchored captures: absolute row (fallback)
+  // Unanchored captures: the line's text left of the start cell (the
+  // prompt, plus any pre-existing input) — constant while the buffer is
+  // alive, so findUnanchoredRow can re-locate the row after the screen
+  // scrolls under the overlay.
+  private startLinePrefix = "";
+  // See WrapMode — owned by TerminalView, which knows the pane's current
+  // foreground command; the overlay itself can't tell an Ink box from zle.
+  wrapMode: WrapMode = "ink";
   // The text currently being IME-composed, shown but not yet committed by
   // the OS — never part of `pending`. Predictive keyboards deliver nothing
   // at all through the normal onData path until text commits, so without
@@ -106,14 +152,19 @@ export class LocalEcho {
   // if nothing's due yet. Caller (TerminalView's routeLocalEcho) is
   // responsible for actually sending it.
   //
-  // Gated on anchorIsStable: only safe once the prompt glyph itself has
-  // been found, since a cursor-fallback anchor *is* the cursor — the real
-  // echo of an early-flushed word would move it, silently re-basing every
-  // future render's overlay on top of text already really there. Skipping
-  // the flush there just falls back to today's buffer-until-Enter behavior
-  // for that render, not a regression.
+  // Gated on canFlush: only safe once the overlay's position is pinned to
+  // something the flushed words' own real echo can't move — the prompt
+  // glyph, or a captured start cell. The live cursor fallback *is* the
+  // cursor: an early-flushed word's echo would move it, silently re-basing
+  // every future render's overlay on top of text already really there.
+  // Skipping the flush there just falls back to buffer-until-Enter
+  // behavior for that render, not a regression.
+  private canFlush(): boolean {
+    return this.startCol !== null && (this.wrapMode === "shell" || this.anchorIsStable);
+  }
+
   private flushCompletedWord(): string | null {
-    if (!this.anchorIsStable) return null;
+    if (!this.canFlush()) return null;
     const remainder = this.unsentText;
     if (!remainder.endsWith(" ")) return null;
     this.flushedOffset = this.pending.length;
@@ -136,6 +187,7 @@ export class LocalEcho {
 
   appendText(rawText: string): string | null {
     const text = LocalEcho.normalizeSpaces(rawText);
+    this.captureStart();
     // A committed burst that begins with the composition prefix we already
     // flushed live (flushComposition below) is that composition's commit —
     // count the prefix as sent rather than re-sending it. The IME's
@@ -186,6 +238,7 @@ export class LocalEcho {
   // send to the PTY (a newly completed composed word, and/or backspaces
   // undoing a revision of already-sent text), or null.
   setComposing(text: string): string | null {
+    this.captureStart();
     this.composing = LocalEcho.normalizeSpaces(text);
     this.render();
     return this.flushComposition();
@@ -196,12 +249,12 @@ export class LocalEcho {
   // that compose the entire message across spaces and commit only on
   // Enter, where waiting for the commit (Gboard's per-word cadence) means
   // nothing ever flushes and typing degrades to buffered-until-Enter.
-  // Same anchorIsStable gate as flushCompletedWord, plus one more: every
+  // Same canFlush gate as flushCompletedWord, plus one more: every
   // committed char must already be flushed (flushedOffset at the end of
   // pending), or these bytes would arrive in the PTY ahead of committed
   // text that hasn't been sent yet.
   private flushComposition(): string | null {
-    if (!this.anchorIsStable) return null;
+    if (!this.canFlush()) return null;
     if (this.flushedOffset !== this.pending.length) return null;
     let out = "";
     if (!this.composing.startsWith(this.composingSentText)) {
@@ -244,6 +297,12 @@ export class LocalEcho {
     this.flushedOffset = 0;
     this.composing = "";
     this.composingSentText = "";
+    // Deliberately the ONLY reset point for the captured start. Emptying
+    // through backspaces or a cancelled composition puts the cursor back on
+    // the captured cell, so the capture stays valid there — and xterm's
+    // deferred commit-after-compositionend would re-capture mid-reconcile,
+    // off the not-yet-erased flushed text, if clearComposing reset it.
+    this.startCol = null;
     this.container.replaceChildren();
   }
 
@@ -280,21 +339,90 @@ export class LocalEcho {
     return cursor;
   }
 
-  // Greedy word-wrap matching Ink's own box (confirmed live: it never
-  // splits a word across rows, unlike a naive per-column wrap — which put
-  // the overlay's wrap point wherever `cols` fell mid-word, several
+  // Snapshot where the buffer's first char will echo — the cursor cell at
+  // first-keystroke time (see startCol). Idempotent: no-op while a capture
+  // is held, so every appendText/setComposing can call it unconditionally
+  // and a composition's commit burst never re-captures off a cursor the
+  // flushed composition text already moved.
+  private captureStart(): void {
+    if (this.startCol !== null) return;
+    const anchor = this.findAnchor();
+    const cursor = this.adapter.getCursor();
+    if (!this.anchorIsStable) {
+      // No prompt glyph to pin to — see startCol: shells still get an
+      // unanchored capture off the cursor cell, Ink TUIs keep the live
+      // cursor fallback (their screens repaint under the overlay).
+      if (this.wrapMode === "shell") {
+        this.startCol = cursor.col;
+        this.startRow = cursor.row;
+        this.startLinePrefix = this.adapter.readLine(cursor.row).slice(0, cursor.col);
+        this.startAnchored = false;
+      }
+      return;
+    }
+    this.startAnchored = true;
+    if (cursor.row < anchor.row || (cursor.row === anchor.row && cursor.col < anchor.col)) {
+      // Cursor behind the glyph anchor (a scan that matched above the real
+      // prompt) — trust the anchor, as before this capture existed.
+      this.startCol = anchor.col;
+      this.startRowDelta = 0;
+      return;
+    }
+    this.startCol = cursor.col;
+    this.startRowDelta = cursor.row - anchor.row;
+  }
+
+  // An unanchored capture has no glyph to re-find, but the screen still
+  // scrolls under it: an input line wrapping on the bottom row pushes the
+  // prompt up one, and a background job's output pushes it further. The
+  // recorded startLinePrefix re-locates the row — same bottom-up scan as
+  // findAnchor, keyed on text recorded from the live screen instead of a
+  // known glyph. Falls back to the captured row when the prefix is blank
+  // (nothing distinctive to match) or has scrolled off entirely.
+  private findUnanchoredRow(): number {
+    if (!this.startLinePrefix.trim()) return this.startRow;
+    const cursor = this.adapter.getCursor();
+    for (let row = cursor.row; row >= 0; row--) {
+      if (this.adapter.readLine(row).startsWith(this.startLinePrefix)) return row;
+    }
+    return this.startRow;
+  }
+
+  // "shell" mode: zle/readline rely on the terminal's own autowrap — text
+  // fills every column including the last, splits mid-word, and every
+  // continuation row starts at column 0.
+  //
+  // "ink" mode: greedy word-wrap matching Ink's own box (confirmed live: it
+  // never splits a word across rows, unlike a naive per-column wrap — which
+  // put the overlay's wrap point wherever `cols` fell mid-word, several
   // columns off from the real terminal's, garbling every row after the
-  // first divergence). Continuation rows re-indent to `startCol`, not 0:
-  // Ink hangs wrapped input under the first row's text, not under the
-  // "❯ " marker (confirmed live — the real wrapped row starts two columns
-  // in, exactly matching the prompt prefix's width).
+  // first divergence). Continuation rows re-indent to `indentCol` (the
+  // input area's first column), not 0: Ink hangs wrapped input under the
+  // first row's text, not under the "❯ " marker (confirmed live — the real
+  // wrapped row starts two columns in, exactly matching the prompt prefix's
+  // width). `start` can sit further right than `indentCol` when the line
+  // already held text at capture time (see startCol).
   private static wrapPositions(
     text: string,
-    startCol: number,
-    startRow: number,
+    start: { col: number; row: number },
+    indentCol: number,
     cols: number,
+    mode: WrapMode,
   ): { row: number; col: number }[] {
     const positions: { row: number; col: number }[] = [];
+    if (mode === "shell") {
+      let col = start.col;
+      let row = start.row;
+      for (let i = 0; i < text.length; i++) {
+        if (col >= cols) {
+          col = 0;
+          row++;
+        }
+        positions.push({ row, col });
+        col++;
+      }
+      return positions;
+    }
     const tokens = text.match(/\S+\s*|\s+/g) ?? [];
     // Ink's box never lets text touch the terminal's final column — it
     // reserves it (so its cursor block always has a cell to render in),
@@ -308,19 +436,19 @@ export class LocalEcho {
     // and visibly hops down a row the moment its space is typed, exactly
     // when the real box re-wraps it too.
     const edge = cols - 1;
-    let col = startCol;
-    let row = startRow;
+    let col = start.col;
+    let row = start.row;
     for (const token of tokens) {
       // Only wrap-before-token if the token isn't the first thing on this
       // row (a token wider than the whole row would loop forever waiting
       // for space that never comes) and it doesn't fit in what's left.
-      if (col > startCol && col + token.length > edge) {
-        col = startCol;
+      if (col > indentCol && col + token.length > edge) {
+        col = indentCol;
         row++;
       }
       for (let j = 0; j < token.length; j++) {
         if (col >= edge) {
-          col = startCol;
+          col = indentCol;
           row++;
         }
         positions.push({ row, col });
@@ -331,7 +459,7 @@ export class LocalEcho {
     // lockstep with text.length regardless.
     while (positions.length < text.length) {
       if (col >= edge) {
-        col = startCol;
+        col = indentCol;
         row++;
       }
       positions.push({ row, col });
@@ -345,10 +473,19 @@ export class LocalEcho {
     const text = this.pending + this.composing;
     if (!text || this.adapter.isScrolledUp()) return;
     const anchor = this.findAnchor();
+    // An anchored capture is only trusted while the glyph anchor is: its
+    // row delta is relative to the glyph, and the cursor-fallback anchor
+    // tracks a cursor the capture was taken to be independent of. An
+    // unanchored capture is its own absolute cell.
+    let start = anchor;
+    if (this.startCol !== null) {
+      if (!this.startAnchored) start = { col: this.startCol, row: this.findUnanchoredRow() };
+      else if (this.anchorIsStable) start = { col: this.startCol, row: anchor.row + this.startRowDelta };
+    }
     const { width, height } = this.cellMetrics;
     const cols = this.adapter.cols;
     const frag = document.createDocumentFragment();
-    const positions = LocalEcho.wrapPositions(text, anchor.col, anchor.row, cols);
+    const positions = LocalEcho.wrapPositions(text, start, anchor.col, cols, this.wrapMode);
     for (let i = 0; i < text.length; i++) {
       const { row, col } = positions[i];
       const span = document.createElement("span");

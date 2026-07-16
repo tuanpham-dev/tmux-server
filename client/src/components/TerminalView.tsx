@@ -5,7 +5,7 @@ import { getContextGetter } from "../contextKeys";
 import { loadEngine, type TerminalEngineName } from "../engines";
 import { isSyntheticSelectStart, type TerminalEngineHandle, type TerminalTheme } from "../engines/types";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
-import { LocalEcho } from "../localEcho";
+import { LocalEcho, wrapModeForCommand } from "../localEcho";
 import type { AppSettings } from "../settings";
 import { sendWithInkSafeEnters, whenMatches } from "../touchKeys";
 import FloatingTouchKeys from "./FloatingTouchKeys";
@@ -24,6 +24,14 @@ import { isOpenGesture, openUrl } from "../terminalLinks";
 function isPrintableBurst(data: string): boolean {
   return data.length > 0 && !/[\x00-\x1f\x7f]/.test(data);
 }
+
+// Keys that can land the cursor mid-line, where local echo's append-at-end
+// model stops holding (see routeLocalEcho's suspension): arrows and Home in
+// both CSI and SS3 (application-mode) encodings, readline/Ink's Ctrl+A
+// (line start) and Ctrl+B (back one), and Meta+B (back one word). End and
+// Ctrl+E are deliberately absent — they land the cursor back at the end of
+// the line, where appending is valid again.
+const CURSOR_MOVEMENT_KEY = /^(?:\x1b(?:\[|O)[ABDH]|\x01|\x02|\x1b[bB])$/;
 
 // Clipboard images have no filename; the ones dropped from a file manager
 // (handled separately, via file.name) do.
@@ -312,16 +320,17 @@ export default function TerminalView({
       let reconnectTimer: number | undefined;
       const proto = location.protocol === "https:" ? "wss" : "ws";
 
-      // Every path that puts raw bytes on the wire as terminal input —
-      // mouse reports, touch keys, focus reports — funnels through this;
-      // only the engine's own onData (real typed/pasted/composed input)
-      // additionally goes through sticky-Ctrl via forwardInput below.
+      // Every path that puts raw bytes on the wire as terminal input
+      // ultimately funnels through this. Mouse reports and focus reports
+      // call it directly; touch keys go through sendKeyOrEcho (the local-
+      // echo fork) below, and the engine's own onData (real typed/pasted/
+      // composed input) additionally goes through sticky-Ctrl via
+      // forwardInput.
       const sendInput = (data: string) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "input", data }));
         }
       };
-      sendInputRef.current = sendInput;
 
       // Assigned once the engine (LocalEcho's adapter) exists below;
       // forwardInput only ever runs from real user input, which can't
@@ -333,6 +342,13 @@ export default function TerminalView({
       // the outer `currentCommand` variable this effect captured at mount
       // time never changes without a remount.
       let liveCommand = "";
+      // Set when a cursor-movement key goes through while local echo is
+      // active: the buffer's append-at-end model (both the overlay position
+      // and the word-boundary flush) is wrong once the cursor sits mid-line,
+      // so every key passes straight through to the PTY — correct real echo,
+      // per-keystroke round trips — until something establishes a fresh line
+      // (Enter submits it, Ctrl+C discards it, a program switch replaces it).
+      let echoSuspended = false;
 
       // Buffered-until-Enter local echo (plans/codeman-mobile-features.md),
       // with a word-boundary flush on top: a completed word (space-
@@ -349,6 +365,17 @@ export default function TerminalView({
       // (Ctrl+C, Esc, Tab, arrows) flushes the unsent remainder immediately
       // alongside it — only Enter has the Ink text+\r race this delays for.
       const routeLocalEcho = (data: string, echo: LocalEcho) => {
+        if (echoSuspended) {
+          if (data === "\r" || data === "\x03") {
+            echoSuspended = false;
+            // Nothing is buffered while suspended, but the captured start
+            // position (LocalEcho.startCol) survives emptying and would
+            // otherwise carry a stale column onto the fresh line.
+            echo.clear();
+          }
+          sendInput(data);
+          return;
+        }
         if (data === "\r") {
           const remainder = echo.unsentText;
           echo.clear();
@@ -357,6 +384,11 @@ export default function TerminalView({
         }
         if (data === "\x7f") {
           if (!echo.hasPending) {
+            // Erasing real text the buffer never covered: the cursor moves
+            // left of the captured start (LocalEcho.startCol), which would
+            // otherwise pin the next burst's overlay to the stale cell —
+            // drop it so the next keystroke re-reads the cursor.
+            echo.clear();
             sendInput(data);
             return;
           }
@@ -371,10 +403,21 @@ export default function TerminalView({
         const remainder = echo.unsentText;
         echo.clear();
         sendInput(remainder + data);
+        if (CURSOR_MOVEMENT_KEY.test(data)) echoSuspended = true;
       };
 
       const localEchoActive = () =>
         !!localEcho && mobilePointerRef.current && whenMatches(localEchoWhenRef.current, liveCommand);
+
+      // The local-echo fork every raw-byte input path shares. Touch keys
+      // route through here too (not sendInput directly): a bar arrow that
+      // bypassed the router left the buffer appending — overlay and word
+      // flushes alike — while the real cursor sat mid-line.
+      const sendKeyOrEcho = (data: string) => {
+        if (localEchoActive()) routeLocalEcho(data, localEcho!);
+        else sendInput(data);
+      };
+      sendInputRef.current = sendKeyOrEcho;
 
       const forwardInput = (data: string) => {
         let toSend = data;
@@ -389,11 +432,7 @@ export default function TerminalView({
           stickyCtrlRef.current = false;
           setStickyCtrl(false);
         }
-        if (localEchoActive()) {
-          routeLocalEcho(toSend, localEcho!);
-          return;
-        }
-        sendInput(toSend);
+        sendKeyOrEcho(toSend);
       };
 
       // Image paste/drop (plans/codeman-mobile-features.md Phase 3): typed
@@ -402,7 +441,9 @@ export default function TerminalView({
       // in this file uses, just without the sticky-Ctrl/control-byte cases
       // that don't apply to a plain path string.
       const sendTextOrEcho = (text: string) => {
-        if (!localEchoActive()) {
+        // While suspended (cursor mid-line), direct send is the correct
+        // path here too: the PTY inserts at the real cursor and echoes.
+        if (!localEchoActive() || echoSuspended) {
           sendInput(text);
           return;
         }
@@ -468,6 +509,9 @@ export default function TerminalView({
       // decides per-call whether to actually route through it, so gating
       // (mobile pointer, currentCommand) can change live without a remount.
       localEcho = new LocalEcho(terminalBodyRef.current!, engine);
+      // The "command" handler above keeps this current from here on, but a
+      // command message can land before the engine finished loading.
+      localEcho.wrapMode = wrapModeForCommand(liveCommand);
       localEchoRef.current = localEcho;
 
       // Predictive keyboards deliver nothing through onData at all until
@@ -483,7 +527,9 @@ export default function TerminalView({
       // flushComposition), or backspaces reconciling a revised/cancelled
       // composition whose leading words were already flushed.
       engine.onComposingChange((text) => {
-        if (!localEchoActive()) return;
+        // No composition preview while suspended either — its commit will
+        // arrive through onData and pass straight through to the PTY.
+        if (!localEchoActive() || echoSuspended) return;
         const out = text === null ? localEcho?.clearComposing() : localEcho?.setComposing(text);
         if (out) sendInput(out);
       });
@@ -631,8 +677,12 @@ export default function TerminalView({
             // A program switch invalidates any buffered pending text —
             // e.g. exiting claude mid-type would otherwise leave a stale
             // overlay in front of whatever now owns the pane.
-            if (msg.command !== liveCommand) localEcho?.clear();
+            if (msg.command !== liveCommand) {
+              localEcho?.clear();
+              echoSuspended = false;
+            }
             liveCommand = msg.command;
+            if (localEcho) localEcho.wrapMode = wrapModeForCommand(msg.command);
             setCurrentCommand(msg.command);
           } else if (msg.type === "exit") {
             receivedExit = true;
@@ -1263,6 +1313,27 @@ export default function TerminalView({
       // contenteditable and pop the on-screen keyboard.
       if (focused && !window.matchMedia("(pointer: coarse)").matches) engine.focus();
 
+      // Mobile IME caret reveal shifts the terminal horizontally: during
+      // composition the engine re-positions (and widens) its hidden helper
+      // textarea at the cursor cell, so with the cursor near the right edge
+      // the caret lands outside the viewport, and Chrome reveals it by
+      // scrolling every scrollable ancestor — overflow:hidden ones included,
+      // which have no scrollbar the user could ever drag back, so the shift
+      // sticks. Snap horizontal scroll anywhere in the terminal body's own
+      // ancestor/descendant chain straight back; the app's one legitimate
+      // horizontal scroller (the touch key bar) is a sibling, never in the
+      // chain, and the engine's scrollback viewport only scrolls vertically.
+      const onCaretRevealScroll = (ev: Event) => {
+        const body = terminalBodyRef.current;
+        if (!body) return;
+        const target = ev.target instanceof Element ? ev.target : document.scrollingElement;
+        if (!target) return;
+        if ((body.contains(target) || target.contains(body)) && target.scrollLeft !== 0) {
+          target.scrollLeft = 0;
+        }
+      };
+      document.addEventListener("scroll", onCaretRevealScroll, true);
+
       cleanup = () => {
         clearTimeout(reconnectTimer);
         clearTimeout(queryThrottleTimer);
@@ -1283,6 +1354,7 @@ export default function TerminalView({
         screen.removeEventListener("paste", onPaste, true);
         terminalBodyRef.current?.removeEventListener("dragover", onDragOver);
         terminalBodyRef.current?.removeEventListener("drop", onDrop);
+        document.removeEventListener("scroll", onCaretRevealScroll, true);
         observer.disconnect();
         ws.onclose = null;
         ws.close();
