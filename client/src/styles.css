@@ -375,6 +375,11 @@ body.resizing {
   height: 1px;
   cursor: row-resize;
   background: var(--border);
+  /* Without this, a touch drag only moves a short distance before the
+     browser's own native scroll gesture claims it and cancels our pointer
+     sequence (same fix every other drag handle in this file already needs
+     on touch — .tmux-scrollbar, .touch-key-editor-grip, .touch-key-fab). */
+  touch-action: none;
 }
 
 /* Same 5px hover/drag bar as .resize-handle, vertical axis. */
