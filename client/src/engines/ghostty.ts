@@ -9,7 +9,7 @@ import {
   type RendererShim,
 } from "../ghosttyShims";
 import { cellFromPoint } from "../mouseReports";
-import { buildLinkProvider } from "../terminalLinks";
+import { buildLinkProvider, stitchLine } from "../terminalLinks";
 import {
   markSyntheticSelectStart,
   type CellPosition,
@@ -354,6 +354,47 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
       markSyntheticSelectStart(synthetic);
       canvas.dispatchEvent(synthetic);
     },
+    // Spike finding (mobile-touch-select-copy-open.md): term.select() clamps
+    // its row argument to rows-1, so it silently can't reach any visible row
+    // once real scrollback exists — unusable here. Replays the full
+    // mousedown/mousemove/mouseup gesture on the canvas instead (same
+    // mechanism as beginLocalSelection above, extended to a synthetic
+    // mousemove + mouseup so the selection both extends to the end cell and
+    // finalizes without a real drag). All three marked so onCapture passes
+    // them through.
+    selectCells: (col, row, length) => {
+      const r = term.renderer!;
+      const canvas = r.getCanvas();
+      const rect = canvas.getBoundingClientRect();
+      const cols = term.cols;
+      const endLinear = row * cols + col + length - 1;
+      const endCol = endLinear % cols;
+      const endRow = Math.floor(endLinear / cols);
+      const pixelOf = (c: number, rw: number) => ({
+        x: rect.left + (c + 0.5) * r.charWidth,
+        y: rect.top + (rw + 0.5) * r.charHeight,
+      });
+      const start = pixelOf(col, row);
+      const end = pixelOf(endCol, endRow);
+      const dispatch = (type: string, x: number, y: number, buttons: number) => {
+        const ev = new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          detail: 1,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons,
+        });
+        markSyntheticSelectStart(ev);
+        canvas.dispatchEvent(ev);
+      };
+      dispatch("mousedown", start.x, start.y, 1);
+      dispatch("mousemove", end.x, end.y, 1);
+      dispatch("mouseup", end.x, end.y, 0);
+    },
+    readStitchedLine: (row) => stitchLine(term, row),
     cellFromPoint: cellFromPointOnEngine,
     getCharHeight: () => term.renderer!.charHeight,
     getMode: (mode) => term.getMode(mode),

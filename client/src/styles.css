@@ -1496,6 +1496,66 @@ body.tab-dragging .split-content-host {
   pointer-events: none;
 }
 
+/* Copy/Open toolbar shown above (or below, if clipped) a touch long-press
+   selection (plans/mobile-touch-select-copy-open.md) — touch-only, positioned
+   via inline left/top computed in TerminalView from the engine's live cell
+   metrics; horizontally centered on the selection's first cell via the
+   inline translateX(-50%). */
+.touch-select-toolbar {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.touch-select-toolbar button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-bright);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.touch-select-toolbar button:active {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Drag handles (T8) anchored at the selection's start (bottom-left) and end
+   (bottom-right) cells — a 32px square touch target (never shrunk, even
+   though the visible dot is much smaller) hanging mostly below the text line
+   via the negative margin on ::before, so a finger can grab it without
+   occluding the character it's adjusting. touch-action: none stops the
+   browser from treating the drag as a page scroll. */
+.touch-select-handle {
+  position: absolute;
+  z-index: 21;
+  width: 32px;
+  height: 32px;
+  transform: translateX(-50%);
+  touch-action: none;
+  display: flex;
+  justify-content: center;
+}
+
+.touch-select-handle::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
 /* Overlay scrollbar mirroring tmux copy-mode scroll state (tmux keeps
    scrollback internally, so the terminal's local scrollbar never shows). Draggable,
    like code-server's Monaco-based scrollbar. */

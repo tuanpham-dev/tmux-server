@@ -10,7 +10,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type FontWeight } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { cellFromPoint } from "../mouseReports";
-import { buildXtermLinkProvider } from "../terminalLinks";
+import { buildXtermLinkProvider, stitchXtermLine } from "../terminalLinks";
 import type {
   CellPosition,
   TerminalEngineHandle,
@@ -249,7 +249,9 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
     // directly, updating it on each real mousemove for as long as the
     // drag continues (TerminalView's own onCapture has already released
     // the gesture by the time this is called, so these are this engine's
-    // own temporary listeners, torn down on mouseup).
+    // own temporary listeners, torn down on mouseup). term.select()'s row
+    // is buffer-absolute (mobile-touch-select-copy-open.md spike finding),
+    // so screen rows here are offset by baseY, same as selectCells below.
     beginLocalSelection: (clientX, clientY) => {
       endLocalSelectionDrag?.();
       const start = cellFromPointOnEngine(clientX, clientY);
@@ -260,10 +262,11 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
       const update = (clientX2: number, clientY2: number) => {
         const cur = cellFromPointOnEngine(clientX2, clientY2);
         const curLinear = linear(cur.row - 1, cur.col - 1);
+        const baseY = term.buffer.active.baseY;
         if (curLinear >= startLinear) {
-          term.select(startCol, startRow, curLinear - startLinear + 1);
+          term.select(startCol, baseY + startRow, curLinear - startLinear + 1);
         } else {
-          term.select(cur.col - 1, cur.row - 1, startLinear - curLinear + 1);
+          term.select(cur.col - 1, baseY + cur.row - 1, startLinear - curLinear + 1);
         }
       };
       update(clientX, clientY);
@@ -277,6 +280,12 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
         endLocalSelectionDrag = null;
       };
     },
+    // Spike finding: term.select()'s row is buffer-absolute, so a screen row
+    // (0 = top of the visible viewport) must add baseY.
+    selectCells: (col, row, length) => {
+      term.select(col, term.buffer.active.baseY + row, length);
+    },
+    readStitchedLine: (row) => stitchXtermLine(term, row),
     cellFromPoint: cellFromPointOnEngine,
     getCharHeight: () => screen.getBoundingClientRect().height / term.rows,
     getMode: (mode) => {

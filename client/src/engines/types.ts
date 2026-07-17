@@ -122,6 +122,23 @@ export interface TerminalEngineHandle {
   // once armed (ghostty: synthetic mousedown replay on its canvas; xterm:
   // term.select(), see plans/terminal-engine-setting.md's T1 findings).
   beginLocalSelection(clientX: number, clientY: number): void;
+  // Programmatic selection over a linear cell range, all in 0-based screen
+  // coordinates (row 0 = top of the visible viewport, matching readLine's
+  // numbering) — `length` spans wrapped rows the same way term.select()'s
+  // linear count does. Used by touch long-press selection (plans/mobile-
+  // touch-select-copy-open.md), where there's no real mouse gesture to
+  // replay from. xterm drives its buffer-absolute term.select() directly
+  // (offsetting by baseY); ghostty's term.select() clamps its row argument
+  // to rows-1 and can't reach visible rows once scrollback exists, so it
+  // replays marked synthetic mouse events instead, same as
+  // beginLocalSelection.
+  selectCells(col: number, row: number, length: number): void;
+  // Screen-relative wrapped-line stitching (0 = top of the visible
+  // viewport) — the same logic terminalLinks.ts's stitchLine/stitchXtermLine
+  // already do per-engine for link hover, exposed here so touch selection
+  // can run the same candidate-detection over an arbitrary pressed row
+  // without a hover event. Out-of-range rows return null.
+  readStitchedLine(row: number): { text: string; startLine: number } | null;
   cellFromPoint(clientX: number, clientY: number): CellPosition;
   getCharHeight(): number;
   // DEC private-mode query (mouse tracking, focus reporting, etc).

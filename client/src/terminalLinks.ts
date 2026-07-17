@@ -30,7 +30,7 @@ const URL_RE = /\bhttps?:\/\/[^\s"'`<>|]+/g;
 // trim autolinked URLs).
 const TRAILING_PUNCT = /[.,;:!?)\]}'"]+$/;
 
-interface Candidate {
+export interface Candidate {
   kind: "url" | "path";
   startIdx: number;
   endIdx: number;
@@ -39,7 +39,7 @@ interface Candidate {
   line?: number;
 }
 
-function findCandidates(text: string): Candidate[] {
+export function findCandidates(text: string): Candidate[] {
   const out: Candidate[] = [];
 
   for (const m of text.matchAll(URL_RE)) {
@@ -86,7 +86,7 @@ const MAX_STITCH_LINES = 500;
 // the start of the logical line, then concatenate every wrapped row's full
 // (unwrapped-width) text so buffer-index math stays a fixed `cols`-wide
 // stride per row.
-function stitchLine(term: Terminal, y: number): { text: string; startLine: number } | null {
+export function stitchLine(term: Terminal, y: number): { text: string; startLine: number } | null {
   const buffer = term.buffer.active;
   let startLine = y;
   for (let i = 0; i < MAX_STITCH_LINES && buffer.getLine(startLine)?.isWrapped; i++) {
@@ -232,7 +232,7 @@ export function buildLinkProvider(term: Terminal, handlers: TerminalLinksHandler
 // logic, but against xterm's IBuffer/IBufferLine shapes (getLine/
 // translateToString match ghostty-web's signatures exactly; only the
 // Terminal type differs).
-function stitchXtermLine(term: XtermTerminal, y: number): { text: string; startLine: number } | null {
+export function stitchXtermLine(term: XtermTerminal, y: number): { text: string; startLine: number } | null {
   const buffer = term.buffer.active;
   let startLine = y;
   for (let i = 0; i < MAX_STITCH_LINES && buffer.getLine(startLine)?.isWrapped; i++) {

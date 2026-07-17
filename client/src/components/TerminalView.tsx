@@ -8,9 +8,11 @@ import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings"
 import { LocalEcho, wrapModeForCommand } from "../localEcho";
 import type { AppSettings } from "../settings";
 import { sendWithInkSafeEnters, whenMatches } from "../touchKeys";
+import { rangeAt } from "../touchSelect";
 import FloatingTouchKeys from "./FloatingTouchKeys";
 import SearchBar from "./SearchBar";
 import TouchKeyBar from "./TouchKeyBar";
+import TouchSelection from "./TouchSelection";
 import {
   encodeSgrMouse,
   focusReport,
@@ -167,6 +169,39 @@ export default function TerminalView({
   // True from a swallowed ctrl+mousedown on a hovered link until its
   // matching mouseup — see onCapture's link-interception branch below.
   const linkPressArmedRef = useRef(false);
+  // Touch long-press selection (plans/mobile-touch-select-copy-open.md).
+  // anchor/head are plain 0-based screen (col,row) cells (row 0 = top of the
+  // visible viewport) — the same screen-row-major addressing
+  // engine.selectCells/term.select() already use internally, so extending
+  // between them needs no "stitching": it naturally spans any number of
+  // terminal rows, wrapped-line or not, exactly like the existing desktop
+  // drag-selection. Stitching only matters once, at gesture start, to detect
+  // the word/link candidate under the initial press (beginTouchSelection).
+  // `interacting` is true while the initiating touch is still down and
+  // dragging to extend — the toolbar (TouchSelection below) only renders
+  // once it settles, so it doesn't fight a live drag.
+  const [touchSel, setTouchSel] = useState<{
+    anchorCol: number;
+    anchorRow: number;
+    headCol: number;
+    headRow: number;
+    open: { kind: "url" | "path"; target: string; line?: number } | null;
+    interacting: boolean;
+  } | null>(null);
+  // Set inside the mount effect (dismissTouchSelection there is the only
+  // thing that can clear the engine's own selection alongside React state) —
+  // called from the toolbar's Copy/Open button handlers below, which run
+  // from a fresh render closure outside that effect. Same ref-forwarding
+  // idiom as handleSearchCloseRef.
+  const dismissTouchSelectionRef = useRef<() => void>(() => {});
+  // Drag-handle bridges (Phase 3, T8) — same ref-forwarding idiom.
+  // touchHandleBeginRef normalizes which end is "anchor" (fixed) vs "head"
+  // (about to be dragged) once per drag gesture; touchHandleMoveRef is
+  // extendTouchSelection itself — plain anchor-to-point range selection
+  // needs no special handling for a handle drag, since (unlike the initial
+  // candidate detection) it was never limited to one stitched line.
+  const touchHandleBeginRef = useRef<(which: "start" | "end") => void>(() => {});
+  const touchHandleMoveRef = useRef<(clientX: number, clientY: number) => void>(() => {});
   // The WS attaches to the name the tab was opened with; a later rename only
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
@@ -1155,6 +1190,166 @@ export default function TerminalView({
         return true;
       });
 
+      // Touch long-press selection (plans/mobile-touch-select-copy-open.md).
+      // `activeSel` is the mutable source of truth read/written by every
+      // handler below — same "mutable, read live" idiom as `ws`/`liveCommand`
+      // above; setActiveSel additionally pushes it into React state so the
+      // toolbar (rendered outside this effect) can react. anchor/head are
+      // plain 0-based screen (col,row) cells — see the field's declaration
+      // comment above for why this needs no "stitching" beyond the initial
+      // candidate detection.
+      type TouchSel = {
+        anchorCol: number;
+        anchorRow: number;
+        headCol: number;
+        headRow: number;
+        open: { kind: "url" | "path"; target: string; line?: number } | null;
+        interacting: boolean;
+      };
+      let activeSel: TouchSel | null = null;
+      const setActiveSel = (s: TouchSel | null) => {
+        activeSel = s;
+        setTouchSel(s);
+      };
+      // Bumped on every new selection; a resolvePaths response whose gen no
+      // longer matches belongs to a selection that was already replaced or
+      // dismissed, and must not patch stale `open` state onto the current one.
+      let touchSelGen = 0;
+
+      const cellFor = (clientX: number, clientY: number) => {
+        const c = engine.cellFromPoint(clientX, clientY);
+        return { col: c.col - 1, row: c.row - 1 };
+      };
+      // The engine's own screen-row-major addressing (matches
+      // engine.selectCells/term.select()'s linear stride) — comparing two
+      // cells' linear position is how selectRange below finds which one
+      // comes first in reading order, spanning any number of rows.
+      const linearOf = (col: number, row: number) => row * engine.cols + col;
+
+      function dismissTouchSelection() {
+        if (!activeSel) return;
+        engine.clearSelection();
+        setActiveSel(null);
+      }
+      dismissTouchSelectionRef.current = dismissTouchSelection;
+
+      // Selects the screen-row-major range between two 0-based screen cells
+      // (inclusive) — works identically whether both land on the same
+      // logical/wrapped line or on completely separate ones, since it's just
+      // the engine's own linear addressing, exactly like desktop's existing
+      // drag-to-select.
+      function selectRange(aCol: number, aRow: number, bCol: number, bRow: number) {
+        const aLin = linearOf(aCol, aRow);
+        const bLin = linearOf(bCol, bRow);
+        const startLin = Math.min(aLin, bLin);
+        const endLin = Math.max(aLin, bLin);
+        const startCol = startLin % engine.cols;
+        const startRow = Math.floor(startLin / engine.cols);
+        engine.selectCells(startCol, startRow, endLin - startLin + 1);
+      }
+
+      // Returns true when a selection was actually started (a candidate or
+      // word was found under the point) — the caller uses this to decide
+      // whether the rest of the gesture belongs to the selection or falls
+      // through as an ordinary tap. Stitching only matters here, to detect a
+      // word/link candidate that may span wrapped rows under the press —
+      // everything after this (extend, handle-drag) works in plain screen
+      // (col,row) space and never needs it again.
+      function beginTouchSelection(clientX: number, clientY: number): boolean {
+        const { col, row } = cellFor(clientX, clientY);
+        const stitched = engine.readStitchedLine(row);
+        if (!stitched) return false;
+        const { text, startLine } = stitched;
+        const pressIdx = (row - startLine) * engine.cols + col;
+        const range = rangeAt(text, pressIdx);
+        if (!range) return false;
+        // A keyboard already open from earlier typing has nothing closing it
+        // here otherwise — same rule the scroll-start branch already applies
+        // ("starting a different kind of gesture means dropping focus"),
+        // just triggered by a successful long-press instead of a swipe.
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && screen.contains(active)) active.blur();
+        const gen = ++touchSelGen;
+        const toRC = (idx: number) => ({ col: idx % engine.cols, row: startLine + Math.floor(idx / engine.cols) });
+        const startRC = toRC(range.startIdx);
+        const endRC = toRC(range.endIdx - 1);
+        selectRange(startRC.col, startRC.row, endRC.col, endRC.row);
+        navigator.vibrate?.(10);
+        const open: TouchSel["open"] =
+          range.candidate?.kind === "url" ? { kind: "url", target: range.candidate.target } : null;
+        setActiveSel({
+          anchorCol: startRC.col,
+          anchorRow: startRC.row,
+          headCol: endRC.col,
+          headRow: endRC.row,
+          open,
+          interacting: true,
+        });
+        if (range.candidate?.kind === "path") {
+          const target = range.candidate.target;
+          const line = range.candidate.line;
+          api.resolvePaths(attachNameRef.current, [target]).then((r) => {
+            if (touchSelGen !== gen || !activeSel) return;
+            const resolved = r.results[0];
+            if (!resolved) return;
+            setActiveSel({ ...activeSel, open: { kind: "path", target: resolved, line } });
+          });
+        }
+        return true;
+      }
+
+      // Extends the in-progress selection to a new point, anchored at the
+      // gesture's fixed start cell — used both while the initiating finger
+      // is still down (live-drag) and, unmodified, as a handle's own drag-move
+      // (T8): a handle drag is exactly the same anchor-fixed/point-moves
+      // operation, just driven by a different input source.
+      function extendTouchSelection(clientX: number, clientY: number) {
+        if (!activeSel) return;
+        const { col, row } = cellFor(clientX, clientY);
+        selectRange(activeSel.anchorCol, activeSel.anchorRow, col, row);
+        setActiveSel({ ...activeSel, headCol: col, headRow: row });
+      }
+      touchHandleMoveRef.current = extendTouchSelection;
+
+      // Drag-handle start (T8): normalizes anchor/head so the OTHER
+      // (undragged) end becomes the fixed anchor and the grabbed end becomes
+      // the head — done once per drag gesture (not recomputed from a
+      // possibly-already-crossed pair on every move), which is what lets
+      // extendTouchSelection's plain anchor-fixed/head-moves math handle a
+      // handle dragged past its counterpart without losing track of which
+      // cell was actually fixed.
+      function beginHandleDrag(which: "start" | "end") {
+        if (!activeSel) return;
+        const aLin = linearOf(activeSel.anchorCol, activeSel.anchorRow);
+        const hLin = linearOf(activeSel.headCol, activeSel.headRow);
+        const startPoint =
+          aLin <= hLin
+            ? { col: activeSel.anchorCol, row: activeSel.anchorRow }
+            : { col: activeSel.headCol, row: activeSel.headRow };
+        const endPoint =
+          aLin <= hLin
+            ? { col: activeSel.headCol, row: activeSel.headRow }
+            : { col: activeSel.anchorCol, row: activeSel.anchorRow };
+        const fixed = which === "start" ? endPoint : startPoint;
+        const dragged = which === "start" ? startPoint : endPoint;
+        setActiveSel({ ...activeSel, anchorCol: fixed.col, anchorRow: fixed.row, headCol: dragged.col, headRow: dragged.row });
+      }
+      touchHandleBeginRef.current = beginHandleDrag;
+
+      // Dismisses a shown selection if tmux output redrew over it and wiped
+      // the engine's own highlight out from under us (T6).
+      const unsubTouchSelRenderCheck = engine.onRender(() => {
+        if (activeSel && !engine.getSelection()) dismissTouchSelection();
+      });
+
+      // Right-click/long-press context menu would otherwise pop over a
+      // touch selection (and during the 700ms ghost-mouse suppression window
+      // below); native text-selection UI has no place here either way.
+      const onContextMenu = (e: Event) => {
+        if (activeSel || performance.now() < suppressMouseUntil) e.preventDefault();
+      };
+      screen.addEventListener("contextmenu", onContextMenu, true);
+
       // Touch swipes: the engine's only touch handling (if any) is a
       // canvas touchend that focuses the IME textarea — drags scroll
       // nothing on mobile by default. Convert single-finger swipes into
@@ -1169,21 +1364,81 @@ export default function TerminalView({
       const TOUCH_SCROLL_THRESHOLD_PX = 8;
       let touchLast: { x: number; y: number } | null = null;
       let touchScrolling = false;
+      let longPressTouchTimer: number | undefined;
+      // True once this press's long-press timer has actually started (or
+      // extended) the selection currently shown — onTouchEnd reads this to
+      // tell "finalize the selection I just made" apart from "ordinary tap".
+      let selectionArmedThisGesture = false;
+      // True as soon as the long-press timer fires, regardless of whether
+      // beginTouchSelection actually found a word/candidate under the point
+      // (whitespace, an edge cell, or any other miss). Without this, a long,
+      // stationary hold that fails to find anything selectable fell through
+      // to onTouchEnd's plain-tap branch below — touchLast was still set and
+      // touchScrolling still false, so wasTap read true, and a hold the user
+      // clearly meant as "select" instead silently opened the keyboard.
+      let longPressFiredThisGesture = false;
+      const cancelLongPressTouch = () => {
+        if (longPressTouchTimer !== undefined) {
+          window.clearTimeout(longPressTouchTimer);
+          longPressTouchTimer = undefined;
+        }
+      };
       const onTouchStart = (e: TouchEvent) => {
+        // Registered non-passive (below) specifically so this can run:
+        // touch-action:none already blocks native panning, but nothing short
+        // of preventDefault() here blocks the OS's own long-press gesture
+        // recognition (text-selection magnifier/callout, native focus of a
+        // nearby editable) from firing during a stationary hold — the
+        // -webkit-touch-callout/user-select CSS on .terminal-screen covers
+        // some of that, but not reliably across every browser/OS, and a
+        // long-press meant for our own select gesture has no business
+        // triggering any native touch handling at all.
+        e.preventDefault();
+        cancelLongPressTouch();
+        selectionArmedThisGesture = false;
+        longPressFiredThisGesture = false;
+        if (activeSel) {
+          // A fresh touch while a selection is showing dismisses it (T6);
+          // this same touch can still become a normal tap, a scroll, or a
+          // new long-press selection below.
+          dismissTouchSelection();
+        }
         if (e.touches.length !== 1) {
           touchLast = null;
           return;
         }
         touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         touchScrolling = false;
+        const startX = touchLast.x;
+        const startY = touchLast.y;
+        longPressTouchTimer = window.setTimeout(() => {
+          longPressTouchTimer = undefined;
+          longPressFiredThisGesture = true;
+          if (beginTouchSelection(startX, startY)) selectionArmedThisGesture = true;
+        }, LONG_PRESS_MS);
       };
       const onTouchMove = (e: TouchEvent) => {
+        if (activeSel) {
+          if (e.touches.length !== 1) return;
+          const t = e.touches[0];
+          e.preventDefault();
+          extendTouchSelection(t.clientX, t.clientY);
+          return;
+        }
         if (!touchLast || e.touches.length !== 1) return;
         const t = e.touches[0];
         const dx = touchLast.x - t.clientX;
         const dy = touchLast.y - t.clientY;
-        if (!touchScrolling && Math.hypot(dx, dy) < TOUCH_SCROLL_THRESHOLD_PX) return;
+        if (!touchScrolling && Math.hypot(dx, dy) < TOUCH_SCROLL_THRESHOLD_PX) {
+          // Sub-threshold jitter during a stationary long-press candidate —
+          // preventDefault() here too (same reasoning as touchstart above),
+          // so a real finger's inevitable micro-movement never gives native
+          // touch handling an opening mid-hold.
+          e.preventDefault();
+          return;
+        }
         if (!touchScrolling) {
+          cancelLongPressTouch();
           // Gesture just confirmed as a scroll, not a tap: drop any
           // existing focus. Covers two cases with one rule — the keyboard
           // is currently open (this closes it, matching "scrolling means
@@ -1210,23 +1465,39 @@ export default function TerminalView({
         });
       };
       const onTouchEnd = (e: TouchEvent) => {
+        cancelLongPressTouch();
+        if (selectionArmedThisGesture) {
+          // This press is the one that just created/extended the selection
+          // now shown: reveal its toolbar (hidden until settled), don't
+          // focus, don't treat it as a tap.
+          selectionArmedThisGesture = false;
+          if (activeSel) setActiveSel({ ...activeSel, interacting: false });
+          touchLast = null;
+          touchScrolling = false;
+          e.stopPropagation();
+          if (e.cancelable) e.preventDefault();
+          suppressMouseUntil = performance.now() + 700;
+          return;
+        }
         // Own every gesture ending on the terminal: swallow it before the
         // engine's own touchend (which may focus its textarea and pop the
         // on-screen keyboard) — real devices deliver post-scroll touchends
         // with per-browser cancelable/compat quirks, so suppressing the
         // engine's handler only on scrolls proved unreliable. Focus — the
         // thing that opens the keyboard — is granted here and only here: a
-        // completed single-finger tap. Swipes, cancelled gestures, and
-        // multi-touch never focus.
-        const wasTap = touchLast !== null && !touchScrolling;
+        // completed single-finger tap. Swipes, cancelled gestures, a long
+        // hold that missed every selectable candidate, and multi-touch never
+        // focus.
+        const wasTap = touchLast !== null && !touchScrolling && !longPressFiredThisGesture;
         if (!wasTap) suppressMouseUntil = performance.now() + 700;
+        longPressFiredThisGesture = false;
         touchLast = null;
         touchScrolling = false;
         e.stopPropagation();
         if (e.cancelable) e.preventDefault();
         if (wasTap && e.type === "touchend") engine.focusInput();
       };
-      screen.addEventListener("touchstart", onTouchStart, { passive: true });
+      screen.addEventListener("touchstart", onTouchStart, { passive: false });
       screen.addEventListener("touchmove", onTouchMove, { passive: false });
       screen.addEventListener("touchend", onTouchEnd, true);
       screen.addEventListener("touchcancel", onTouchEnd, true);
@@ -1347,10 +1618,13 @@ export default function TerminalView({
         onDragEnd();
         endPending();
         endHeld();
+        cancelLongPressTouch();
+        unsubTouchSelRenderCheck();
         for (const type of capturedMouseEvents) {
           screen.removeEventListener(type, onCapture, true);
         }
         screen.removeEventListener("click", onClickCapture, true);
+        screen.removeEventListener("contextmenu", onContextMenu, true);
         screen.removeEventListener("touchstart", onTouchStart);
         screen.removeEventListener("touchmove", onTouchMove);
         screen.removeEventListener("touchend", onTouchEnd, true);
@@ -1448,6 +1722,61 @@ export default function TerminalView({
     requestAnimationFrame(() => engineRef.current?.focus());
   }, [focused]);
 
+  // Pixel rects (relative to .terminal-body) of the touch selection's first
+  // and last cells, recomputed every render from the engine's live cell
+  // metrics — the toolbar anchors to the first, the drag handles (T8) to
+  // both. Both stay null while there's nothing settled to show yet (T7) —
+  // interacting is only ever true during the initiating finger's own live
+  // drag, never during a handle drag (T8 hides only its own toolbar, via
+  // TouchSelection's local state — see its component comment).
+  let touchSelRect: { left: number; top: number; width: number; height: number } | null = null;
+  let touchSelStartRect: { left: number; top: number; width: number; height: number } | null = null;
+  let touchSelEndRect: { left: number; top: number; width: number; height: number } | null = null;
+  if (touchSel && !touchSel.interacting) {
+    const engine = engineRef.current;
+    const screenEl = screenRef.current;
+    const bodyEl = terminalBodyRef.current;
+    if (engine && screenEl && bodyEl) {
+      const { width: cw, height: ch } = engine.getCellMetrics();
+      const screenRect = screenEl.getBoundingClientRect();
+      const bodyRect = bodyEl.getBoundingClientRect();
+      const cellRect = (col: number, row: number) => ({
+        left: screenRect.left - bodyRect.left + col * cw,
+        top: screenRect.top - bodyRect.top + row * ch,
+        width: cw,
+        height: ch,
+      });
+      const aLin = touchSel.anchorRow * engine.cols + touchSel.anchorCol;
+      const hLin = touchSel.headRow * engine.cols + touchSel.headCol;
+      const first = aLin <= hLin
+        ? { col: touchSel.anchorCol, row: touchSel.anchorRow }
+        : { col: touchSel.headCol, row: touchSel.headRow };
+      const last = aLin <= hLin
+        ? { col: touchSel.headCol, row: touchSel.headRow }
+        : { col: touchSel.anchorCol, row: touchSel.anchorRow };
+      touchSelRect = cellRect(first.col, first.row);
+      touchSelStartRect = touchSelRect;
+      touchSelEndRect = cellRect(last.col, last.row);
+    }
+  }
+
+  const handleTouchSelCopy = () => {
+    if (!touchSel) return;
+    const text = engineRef.current?.getSelection();
+    if (text) copyText(text).catch((err) => onErrorRef.current(err));
+    dismissTouchSelectionRef.current();
+  };
+
+  const handleTouchSelOpen = () => {
+    if (!touchSel?.open) return;
+    if (touchSel.open.kind === "url") {
+      openUrl(touchSel.open.target);
+    } else {
+      onOpenFileRef.current?.(touchSel.open.target, touchSel.open.line);
+    }
+    dismissTouchSelectionRef.current();
+  };
+
   return (
     <div
       ref={containerRef}
@@ -1472,6 +1801,19 @@ export default function TerminalView({
           <div className="tmux-scrollbar-thumb" />
         </div>
         <div className="reconnect-overlay">Reconnecting…</div>
+        {touchSelRect && touchSelStartRect && touchSelEndRect && (
+          <TouchSelection
+            rect={touchSelRect}
+            startRect={touchSelStartRect}
+            endRect={touchSelEndRect}
+            containerRef={terminalBodyRef}
+            openLabel={touchSel?.open ? "Open" : null}
+            onCopy={handleTouchSelCopy}
+            onOpen={handleTouchSelOpen}
+            onHandleDragStart={(which) => touchHandleBeginRef.current(which)}
+            onHandleDragMove={(x, y) => touchHandleMoveRef.current(x, y)}
+          />
+        )}
         {settings.touchKeyBarStyle === "floating" && (
           <FloatingTouchKeys
             visible={keyBarVisible}
