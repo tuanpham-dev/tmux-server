@@ -6,6 +6,7 @@
 // addons.
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type FontWeight } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { cellFromPoint } from "../mouseReports";
@@ -82,6 +83,22 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
   // (open() still adds one window "resize" listener, but dispose() now
   // correctly removes it).
   term.open(screen);
+
+  // WebGL needs the canvas term.open() just created, so it can't load
+  // earlier alongside the other addons. Wrapped in try/catch because
+  // activate() throws synchronously on WebGL2-less environments (old
+  // browsers, some embedded webviews) rather than failing gracefully —
+  // falls back to xterm's default DOM renderer in that case. A context
+  // loss later (GPU reset, driver crash) is handled the same way: dispose
+  // the addon and let xterm fall back to DOM rather than rendering a blank
+  // terminal.
+  try {
+    const webgl = new WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+  } catch {
+    // No WebGL2 support — DOM renderer remains active.
+  }
 
   const rowsEl = term.element?.querySelector(".xterm-rows") as HTMLElement | null;
   const applyTextThickness = (thickness: number) => {
