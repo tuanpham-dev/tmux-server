@@ -51,10 +51,15 @@ function tmux(args: string[]): Promise<string> {
   });
 }
 
-// tmux exits non-zero when its server isn't running, i.e. zero sessions
+// tmux exits non-zero when its server isn't running, i.e. zero sessions — and,
+// confirmed live, `list-windows -a` (unlike `list-sessions`) also exits
+// non-zero with "no current target" when the server is alive but has zero
+// sessions (nothing for "-a" to anchor "current" resolution to), rather than
+// just printing nothing. Both cases mean the same thing to every caller here:
+// there's nothing to list.
 function emptyIfNoServer(err: unknown): string {
   const msg = (err as Error).message;
-  if (/no server running|error connecting/i.test(msg)) return "";
+  if (/no server running|error connecting|no current target/i.test(msg)) return "";
   throw err;
 }
 
