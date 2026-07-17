@@ -805,10 +805,55 @@ cmd_update() {
   if is_managed && systemctl --user is-active --quiet "$UNIT_NAME"; then
     systemctl --user restart "$UNIT_NAME"
     ok "restarted"
-  elif fallback_running_pid "$PID_FILE" >/dev/null; then
-    fallback_stop "$PID_FILE"
-    fallback_start "$(read_port)" "$PID_FILE" "$LOG_FILE"
+    return 0
   fi
+  # Previously only checked the single default $PID_FILE — an instance
+  # started with --port (tracked in its own per-port pid file, e.g. from
+  # `tmux-server start --port=8044`) went unnoticed here, so `update` would
+  # pull and rebuild but silently leave that instance's OLD process running,
+  # never restarting it. Restart every currently-running fallback instance
+  # this CLI actually manages instead, found the same way `instances`/`stop`
+  # already discover them (a real process scan, not pid-file lookups) —
+  # covers the default instance and any ad-hoc --port ones alike.
+  local raw pid port app_name managed_by restarted=0
+  raw="$(list_instances_raw)"
+  while IFS='|' read -r pid port app_name managed_by; do
+    [ -n "$pid" ] || continue
+    [ "$managed_by" = "fallback" ] || continue
+
+    # Reuse whichever pid/log file was actually tracking this instance — the
+    # default $PID_FILE for a no-flags `start`, or its own per-port
+    # tmux-server-<port>.pid for an ad-hoc `start --port` one — rather than
+    # always writing a fresh per-port file. Restarting a no-flags instance
+    # onto a per-port file would silently move this exact bug onto plain
+    # `restart`/`status`, which still only check $PID_FILE directly. Matched
+    # via pgid, same as stop_instance's own pid-file cleanup just above it.
+    local pgid f tracked_pid found_pid_file=""
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    for f in "$PID_FILE" "$RUNTIME_DIR"/tmux-server-*.pid; do
+      [ -f "$f" ] || continue
+      tracked_pid="$(cat "$f" 2>/dev/null)"
+      [ -n "$tracked_pid" ] || continue
+      if [ "$tracked_pid" = "$pid" ] || [ "$tracked_pid" = "$pgid" ]; then
+        found_pid_file="$f"
+        break
+      fi
+    done
+    [ -n "$found_pid_file" ] || found_pid_file="$(pid_file_for_port "$port")"
+    local found_log_file="$LOG_FILE"
+    [ "$found_pid_file" = "$PID_FILE" ] || found_log_file="$(log_file_for_port "$port")"
+
+    local env_args=() v val
+    for v in APP_NAME ALLOWED_HOSTS AUTH_TOKEN NEW_SESSION_CWD PROXY_DOMAIN; do
+      val="$(pid_env_var "$pid" "$v")"
+      [ -n "$val" ] && env_args+=("$v=$val")
+    done
+    stop_instance "$pid" "$port" "$managed_by"
+    fallback_start "$port" "$found_pid_file" "$found_log_file" \
+      "PORT=$port" "${env_args[@]+"${env_args[@]}"}"
+    restarted=1
+  done <<< "$raw"
+  [ "$restarted" -eq 1 ] || info "no running fallback instance found — nothing to restart"
 }
 
 cmd_path() { echo "$REPO_DIR"; }
