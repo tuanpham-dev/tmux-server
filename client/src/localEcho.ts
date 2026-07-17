@@ -159,8 +159,19 @@ export class LocalEcho {
   // every future render's overlay on top of text already really there.
   // Skipping the flush there just falls back to buffer-until-Enter
   // behavior for that render, not a regression.
+  //
+  // Deliberately reads startAnchored (captured once, at this buffer's first
+  // keystroke) rather than the live anchorIsStable: findAnchor() also runs
+  // from every render(), including ones triggered by unrelated real PTY
+  // output arriving mid-typing (adapter.onRender, e.g. Claude streaming a
+  // response) — anchorIsStable can flip on a momentary rescan that has
+  // nothing to do with this buffer's own anchor. Gating a flush/backspace
+  // decision on that live flag made whether a word actually sent to the PTY
+  // depend on repaint timing rather than the keystrokes themselves —
+  // observed live as backspacing and retyping the same text sometimes
+  // landing correct, sometimes duplicated or missing characters.
   private canFlush(): boolean {
-    return this.startCol !== null && (this.wrapMode === "shell" || this.anchorIsStable);
+    return this.startCol !== null && (this.wrapMode === "shell" || this.startAnchored);
   }
 
   private flushCompletedWord(): string | null {

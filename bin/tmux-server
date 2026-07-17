@@ -297,14 +297,41 @@ fallback_start() {
   local pid=$!
   disown "$pid" 2>/dev/null || true
   echo "$pid" > "$pid_file"
-  sleep 1
-  if fallback_running_pid "$pid_file" >/dev/null; then
-    ok "started (pid $pid) — logs: $log_file"
-    info "http://127.0.0.1:$port"
-  else
-    fail "failed to start — check $log_file"
-    return 1
-  fi
+  # A flat `sleep 1; kill -0` here previously declared success as soon as the
+  # backgrounded process was merely still alive — which is also true for a
+  # few seconds of a doomed `npm start` -> `tsx` chain that's about to die of
+  # e.g. EADDRINUSE (a port collision this same call can cause, if fallback_
+  # stop above didn't actually find/kill whatever was already listening).
+  # That raced this check into reporting "started" for an instance that had
+  # already failed, leaving the OLD process (never stopped) silently serving
+  # while the caller believed a fresh one was live. Poll for the server
+  # actually answering on its port instead — same check cmd_instances uses —
+  # and fail fast the moment the process itself dies.
+  local waited=0
+  while [ "$waited" -lt 10 ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      fail "failed to start — check $log_file"
+      rm -f "$pid_file"
+      return 1
+    fi
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fs -o /dev/null --max-time 1 "http://127.0.0.1:$port" 2>/dev/null; then
+        ok "started (pid $pid) — logs: $log_file"
+        info "http://127.0.0.1:$port"
+        return 0
+      fi
+    elif [ "$waited" -ge 1 ]; then
+      # No curl to verify responsiveness — fall back to the original
+      # liveness-only check once the process has survived a second.
+      ok "started (pid $pid) — logs: $log_file"
+      info "http://127.0.0.1:$port"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  fail "started (pid $pid) but not responding on port $port after ${waited}s — check $log_file"
+  return 1
 }
 
 fallback_stop() {
