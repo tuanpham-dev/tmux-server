@@ -58,6 +58,16 @@ function emptyIfNoServer(err: unknown): string {
   throw err;
 }
 
+// Matches every shape tmux's error text takes for "the thing I was asked to
+// kill is already gone" — a plain missing target ("can't find session/window/
+// pane: x"), the whole-server-just-exited case ("no server running"), and the
+// target-resolution fallback tmux hits when a race leaves nothing to fall
+// back to ("no current target", seen when two kills for the same last-window-
+// of-the-last-session land concurrently). A caller-initiated kill racing
+// itself (a double click, a stray duplicate dispatch) or racing the session's
+// own natural death should be a no-op, not a surfaced error.
+const ALREADY_GONE = /can't find (session|window|pane)|no server running|no current target/i;
+
 const HOME = process.env.HOME ?? "";
 
 function shortenHome(path: string): string {
@@ -170,9 +180,16 @@ export async function createSession(name?: string, cwd?: string): Promise<TmuxSe
   return created;
 }
 
+// Idempotent: a racing duplicate kill (double click, stray duplicate
+// dispatch) or one that lands just after the session died on its own (last
+// window exited) is a no-op rather than an error — see ALREADY_GONE.
 export async function killSession(name: string): Promise<void> {
-  // "=" prefix forces an exact name match instead of tmux's prefix matching
-  await tmux(["kill-session", "-t", `=${name}`]);
+  try {
+    // "=" prefix forces an exact name match instead of tmux's prefix matching
+    await tmux(["kill-session", "-t", `=${name}`]);
+  } catch (err) {
+    if (!ALREADY_GONE.test((err as Error).message)) throw err;
+  }
 }
 
 export async function renameSession(name: string, newName: string): Promise<void> {
@@ -183,8 +200,13 @@ export async function selectWindow(session: string, index: number): Promise<void
   await tmux(["select-window", "-t", `=${session}:${index}`]);
 }
 
+// Idempotent for the same reason as killSession above.
 export async function killWindow(session: string, index: number): Promise<void> {
-  await tmux(["kill-window", "-t", `=${session}:${index}`]);
+  try {
+    await tmux(["kill-window", "-t", `=${session}:${index}`]);
+  } catch (err) {
+    if (!ALREADY_GONE.test((err as Error).message)) throw err;
+  }
 }
 
 // True for the synthetic per-window-tab sessions created by createWindowTab
@@ -379,7 +401,7 @@ export async function killWindowTab(attachName: string): Promise<void> {
   try {
     await tmux(["kill-session", "-t", `=${attachName}`]);
   } catch (err) {
-    if (!/session not found/i.test((err as Error).message)) throw err;
+    if (!ALREADY_GONE.test((err as Error).message)) throw err;
   }
 }
 
