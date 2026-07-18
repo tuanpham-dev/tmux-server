@@ -21,6 +21,11 @@ export interface PaletteCommand {
 interface Props {
   sessions: TmuxSession[];
   tabs: Tab[];
+  // Canonical per-tab display label (App.tsx's useTabs hook) — same one
+  // TabBar renders, so settings/keyboard-shortcuts/extension-page tabs (no
+  // sessionName of their own) get their real title instead of falling
+  // through to an empty string.
+  tabLabel: (tab: Tab) => string;
   filesRootDir: string | null;
   // Seeds the input on open — "" for a plain switch, ">" to land straight in
   // command-palette mode (see App.tsx's commandPalette.toggle handler).
@@ -80,6 +85,7 @@ function fuzzyMatch(query: string, text: string): boolean {
 export default function QuickSwitcher({
   sessions,
   tabs,
+  tabLabel,
   filesRootDir,
   initialQuery,
   commands,
@@ -128,18 +134,7 @@ export default function QuickSwitcher({
   const entries = useMemo<Entry[]>(() => {
     const list: Entry[] = [];
     for (const tab of tabs) {
-      const virtualPath = tab.imagePath ?? tab.previewPath ?? tab.extViewerPath;
-      const label =
-        tab.extViewerTitle ??
-        (virtualPath !== undefined
-          ? virtualPath.slice(virtualPath.lastIndexOf("/") + 1)
-          : tab.windowIndex === undefined
-            ? tab.sessionName
-            : `${tab.sessionName}:${
-                sessions.find((s) => s.name === tab.sessionName)?.windows.find((w) => w.index === tab.windowIndex)
-                  ?.name ?? `window ${tab.windowIndex}`
-              }`);
-      list.push({ key: `tab:${tab.id}`, label, group: "tab", run: () => onActivateTab(tab.id) });
+      list.push({ key: `tab:${tab.id}`, label: tabLabel(tab), group: "tab", run: () => onActivateTab(tab.id) });
     }
     for (const session of sessions) {
       for (const win of session.windows) {
@@ -168,7 +163,7 @@ export default function QuickSwitcher({
       });
     }
     return list;
-  }, [sessions, tabs, onActivateTab, onOpenWindow, onOpenSession]);
+  }, [sessions, tabs, tabLabel, onActivateTab, onOpenWindow, onOpenSession]);
 
   // Files only show up once a query narrows them down — an empty query
   // would otherwise drown the tabs/windows/sessions list under thousands of

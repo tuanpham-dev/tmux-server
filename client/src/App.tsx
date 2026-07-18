@@ -1393,6 +1393,7 @@ export default function App() {
         <QuickSwitcher
           sessions={sessions}
           tabs={tabs}
+          tabLabel={tabLabel}
           filesRootDir={filesRootDir}
           initialQuery={switcherQuery}
           commands={paletteCommands}
