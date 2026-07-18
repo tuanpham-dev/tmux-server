@@ -29,8 +29,15 @@ function toFontWeight(weight: TerminalEngineSettings["fontWeight"]): FontWeight 
 
 // async to match CreateTerminalEngine's shared shape — xterm has no
 // WASM-style init step (unlike ghostty), but the registry never needs to
-// know which engine is live.
-export async function createXtermEngine(options: TerminalEngineOptions): Promise<TerminalEngineHandle> {
+// know which engine is live. stylesheetReady (client.tsx's injected
+// xterm.css <link> readiness) is awaited before term.open() below attaches
+// any DOM — otherwise xterm's own raw, unstyled <textarea> can flash
+// visible for as long as that stylesheet is still in flight.
+export async function createXtermEngine(
+  options: TerminalEngineOptions,
+  stylesheetReady?: Promise<void>,
+): Promise<TerminalEngineHandle> {
+  await stylesheetReady;
   const {
     screen,
     settings: initialSettings,
