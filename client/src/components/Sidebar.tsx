@@ -925,14 +925,19 @@ export default function Sidebar({
           aria-pressed={panelVisible}
           onClick={onTogglePanel}
         >
-          <Icon name="layout-panel" />
+          {/* Filled while the panel is open, outline while closed — same
+              state convention as VS Code's own layout toggles. */}
+          <Icon name={panelVisible ? "layout-panel" : "layout-panel-off"} />
         </button>
         <button
           className="icon-button"
           title={`Hide sidebar${shortcutSuffix("sidebar.toggle")}`}
           onClick={onCollapse}
         >
-          <Icon name="layout-sidebar-left-off" />
+          {/* Always filled: this button only renders while the sidebar is
+              open (the collapsed state's affordance is App's 4px
+              .sidebar-reopen strip, which has no icon at all). */}
+          <Icon name="layout-sidebar-left" />
         </button>
       </div>
       {activeTabId === EXPLORER_TAB_ID ? (
