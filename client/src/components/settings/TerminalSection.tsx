@@ -1,5 +1,4 @@
 import type { AppSettings } from "../../settings";
-import { extensionTerminalEngines, useExtensionRegistryVersion } from "../../extensions";
 import { useSettingsContext } from "./context";
 import { FontFamilyPicker, NumberField } from "./controls";
 
@@ -11,9 +10,18 @@ import { FontFamilyPicker, NumberField } from "./controls";
 // -webkit-text-stroke — see settings.ts).
 export default function TerminalSection() {
   const { settings, set, extensions } = useSettingsContext();
-  // Re-render when engine extensions register — the Engine select lists
-  // the registry's entries.
-  useExtensionRegistryVersion();
+
+  // Listed from each enabled extension's declared contributes.terminalEngines
+  // (ExtensionInfo.terminalEngines) rather than the live extensionTerminalEngines
+  // registry — engines/index.ts now only activates whichever ONE engine a
+  // session actually resolves to (see its loadEngine), so the registry no
+  // longer necessarily has every installed engine's factory loaded. The
+  // manifest declaration is always complete regardless of activation state,
+  // and re-renders for free whenever `extensions` itself changes (a normal
+  // prop, not a module-level registry needing its own subscription).
+  const engineOptions = extensions
+    .filter((ext) => ext.enabled)
+    .flatMap((ext) => ext.terminalEngines.map((e) => ({ id: `ext.${ext.id}.${e.id}`, label: e.label })));
 
   return (
     <>
@@ -26,7 +34,7 @@ export default function TerminalSection() {
           value={settings.terminalEngine}
           onChange={(e) => set("terminalEngine", e.target.value)}
         >
-          {extensionTerminalEngines.map((engine) => (
+          {engineOptions.map((engine) => (
             <option key={engine.id} value={engine.id}>
               {engine.label}
             </option>

@@ -448,9 +448,12 @@ export interface RegisteredSettingsComponent {
 }
 
 // A terminal engine implementation supplied by an extension — the app's
-// rendering surface itself. The xterm-engine extension is a *required
-// builtin* (see the server's tmuxServer.required handling), so at least one
-// engine is always registered once extensions settle.
+// rendering surface itself. Activated lazily, on demand, by
+// engines/index.ts's loadEngine() — not part of loadExtensions()'s blanket
+// activation sweep (see its comment). The xterm-engine extension is a
+// *required builtin* (see the server's tmuxServer.required handling), so
+// loadEngine's fallback path always has one to activate even if the
+// resolved/selected engine is unavailable.
 export interface RegisteredTerminalEngine {
   // Namespaced ext.<extensionId>.<id> — what the terminalEngine setting
   // stores.
@@ -1141,12 +1144,19 @@ function deactivateClientExtension(extId: string): void {
 }
 
 // Fetches the list once and activates every enabled extension's client
-// entry. Themes/icon themes need no activation step — see the module
-// comment — so this only concerns commands/viewers/panels. onListLoaded, if
-// given, fires right after the list is known but before any client entry
-// activates — App.tsx uses this to push extension-settings overrides into
-// this module's store first, so ctx.settings.get() already resolves
-// correctly the very first time an activating extension reads it.
+// entry EXCEPT terminal engines (filtered out below) — a terminal engine's
+// code is only ever activated on demand, by engines/index.ts's loadEngine(),
+// for whichever ONE engine a session actually resolves to. Eagerly
+// activating every bundled engine here regardless of selection used to mean
+// every boot downloaded and ran all of them, and terminal rendering waited
+// on this entire Promise.all (every other extension too, not just its own
+// engine) rather than just its own engine's fetch. Themes/icon themes need
+// no activation step at all — see the module comment — so this only
+// concerns commands/viewers/panels/engines. onListLoaded, if given, fires
+// right after the list is known but before any client entry activates —
+// App.tsx uses this to push extension-settings overrides into this module's
+// store first, so ctx.settings.get() already resolves correctly the very
+// first time an activating extension reads it.
 export async function loadExtensions(onListLoaded?: (list: ExtensionInfo[]) => void): Promise<ExtensionInfo[]> {
   const list = await fetchExtensions();
   const enabledIds = new Set(list.filter((ext) => ext.enabled).map((ext) => ext.id));
@@ -1159,24 +1169,36 @@ export async function loadExtensions(onListLoaded?: (list: ExtensionInfo[]) => v
   }
   installedExtensions = list;
   notify();
+  settleExtensionsListed();
   onListLoaded?.(list);
   await Promise.all(
-    list.filter((ext) => ext.enabled && ext.hasClient).map((ext) => activateClientExtension(ext)),
+    list
+      .filter((ext) => ext.enabled && ext.hasClient && ext.terminalEngines.length === 0)
+      .map((ext) => activateClientExtension(ext)),
   );
-  settleExtensions();
   return list;
 }
 
-// Resolved after the FIRST loadExtensions pass has finished activating
-// every enabled client entry — the explicit "extensions settled" gate for
-// consumers whose behavior depends on registrations existing (the terminal
-// engine resolution, which must not declare an engine missing while its
-// extension is still activating — see engines/index.ts).
-let settleExtensions: () => void = () => {};
-const extensionsSettled = new Promise<void>((resolve) => {
-  settleExtensions = resolve;
+// Activates exactly one extension's client entry on demand — used by
+// engines/index.ts's loadEngine() to fetch/run only the terminal engine a
+// session actually needs, instead of loadExtensions()'s blanket sweep above
+// (which now deliberately skips every terminal-engine extension). A no-op
+// for an id that isn't installed, already active, or has no client — same
+// guards activateClientExtension already applies internally.
+export async function activateExtensionById(id: string): Promise<void> {
+  const ext = installedExtensions.find((e) => e.id === id);
+  if (ext) await activateClientExtension(ext);
+}
+
+// Resolved as soon as the extension LIST is known (before any activation) —
+// engines/index.ts's loadEngine() waits on this alone, so opening a terminal
+// never blocks on unrelated extensions (previews, git-scm, search, …)
+// finishing activation.
+let settleExtensionsListed: () => void = () => {};
+const extensionsListed = new Promise<void>((resolve) => {
+  settleExtensionsListed = resolve;
 });
 
-export function whenExtensionsSettled(): Promise<void> {
-  return extensionsSettled;
+export function whenExtensionsListed(): Promise<void> {
+  return extensionsListed;
 }

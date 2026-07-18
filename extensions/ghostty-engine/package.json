@@ -6,6 +6,9 @@
   "displayName": "Ghostty Terminal Engine",
   "description": "The ghostty-web (WASM) terminal rendering engine — the default desktop engine. Disabling it falls back to the required xterm.js engine (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
+  "contributes": {
+    "terminalEngines": [{ "id": "ghostty", "label": "Ghostty" }]
+  },
   "dependencies": {
     "ghostty-web": "0.4.0"
   },

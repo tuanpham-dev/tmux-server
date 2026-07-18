@@ -81,6 +81,19 @@ interface FontGroupContribution {
   fonts: FontEntry[];
 }
 
+// Not a VS Code manifest concept — tmux-server's own extension of
+// `contributes`, declared statically so the client can know which engines
+// exist (for the Settings picker, and to resolve which one a session
+// actually needs) without running any extension's client code. `id` is the
+// same unnamespaced local id the extension's own ctx.registerTerminalEngine
+// call uses at activation time (client/src/extensions.ts namespaces both the
+// same way: ext.<extensionId>.<id>) — kept in sync by convention, not
+// re-derived from the client bundle.
+interface TerminalEngineContribution {
+  id: string;
+  label: string;
+}
+
 // VS Code's contributes.configuration shape. `type` supports the four
 // primitive kinds a plain HTML control can render; `array`/`object`
 // properties (and anything else malformed) are dropped during normalization
@@ -121,6 +134,7 @@ interface ExtensionManifest {
     // logical group); normalizeConfiguration accepts both and flattens to
     // one ordered property list.
     configuration?: ConfigurationContribution | ConfigurationContribution[];
+    terminalEngines?: TerminalEngineContribution[];
   };
   tmuxServer?: {
     client?: string;
@@ -201,6 +215,11 @@ export interface ExtensionInfo {
   iconThemes: { id: string; label: string; path: string }[];
   fonts: { group: string; fonts: FontEntry[] }[];
   configuration: ExtensionConfigurationSection[];
+  // Declared, not activated — lets the client resolve/list available
+  // terminal engines (the Settings picker, and which one a session actually
+  // needs) without running any extension's client code. See
+  // TerminalEngineContribution.
+  terminalEngines: { id: string; label: string }[];
   // Extension-relative path to the client ESM entry, or null if this
   // extension has no client contribution — the client dynamic-imports it
   // via extensionFileUrl(id, clientEntry). hasServer stays a plain boolean:
@@ -331,6 +350,9 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, built
       }))
       .filter((g) => g.fonts.length > 0),
     configuration: normalizeConfiguration(manifest.contributes?.configuration),
+    terminalEngines: (manifest.contributes?.terminalEngines ?? [])
+      .filter((e) => typeof e.id === "string" && e.id && typeof e.label === "string" && e.label)
+      .map((e) => ({ id: e.id, label: e.label })),
     clientEntry: manifest.tmuxServer?.client ?? null,
     hasClient: Boolean(manifest.tmuxServer?.client),
     hasServer: Boolean(manifest.tmuxServer?.server),

@@ -271,6 +271,13 @@ export interface ExtensionInfo {
   iconThemes: ExtensionIconThemeContribution[];
   fonts: ExtensionFontGroupContribution[];
   configuration: ExtensionConfigurationSection[];
+  // Declared, not activated — lets the app resolve/list available terminal
+  // engines (the Settings picker, and which one a session actually needs)
+  // without running the extension's client code. `id` is unnamespaced, same
+  // local id its ctx.registerTerminalEngine call uses at activation time
+  // (see extensions.ts's registerTerminalEngine — both namespace it
+  // identically: ext.<extensionId>.<id>).
+  terminalEngines: { id: string; label: string }[];
   clientEntry: string | null;
   hasClient: boolean;
   hasServer: boolean;

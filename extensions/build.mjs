@@ -41,6 +41,14 @@ async function buildOne(name) {
     sourcemap: true,
     alias: shims,
     logLevel: "info",
+    // esbuild has no Vite-style import.meta.env — core's own bundle defines
+    // import.meta.env.DEV via Vite, but an extension moved from core (see
+    // e.g. ghostty-engine/src/engine.ts) can still reference it out of habit
+    // and get `undefined.DEV` instead, at runtime, in every build (this
+    // isn't a prod/dev split like Vite's — every extension build in and out
+    // of --watch ships to real usage — so this maps watch to "DEV" as the
+    // closest equivalent: on while iterating locally, off for a built dist).
+    define: { "import.meta.env.DEV": JSON.stringify(watch) },
   });
   if (watch) {
     await ctx.watch();
