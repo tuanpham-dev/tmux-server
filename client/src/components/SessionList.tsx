@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getContextGetter } from "../contextKeys";
 import { getWindowDecorations, useExtensionRegistryVersion } from "../extensions";
 import type { RegisteredWindowAction } from "../extensions";
+import { useGitRootDirs } from "../hooks/useGitRootDir";
 import { useListNavigation } from "../hooks/useListNavigation";
 import { bindingMatches, recorderState, serializeEvent, type Keybinding } from "../keybindings";
 import { sessionRowsWithPins } from "../lib/sessions";
@@ -113,17 +114,26 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
 
   const sessionRows = sessionRowsWithPins(sessions, pinnedSessions);
 
+  // The SESSIONS pane shows each window's cwd collapsed to its git repo root
+  // (matching the FILES panel), falling back to the live cwd for windows not
+  // inside a repo. rootOf resolves via a shared cache; the actual w.cwd is
+  // still what's passed to extension decoration/action contexts below, which
+  // must decorate the real path, not the project root.
+  const allCwds = useMemo(() => sessions.flatMap((s) => s.windows.map((w) => w.cwd)), [sessions]);
+  const { rootOf } = useGitRootDirs(allCwds);
+
   const dirGroups = useMemo(() => {
     const groups = new Map<string, { session: TmuxSession; window: TmuxWindow }[]>();
     for (const s of sessions) {
       for (const w of s.windows) {
-        const group = groups.get(w.cwd) ?? [];
+        const root = rootOf(w.cwd);
+        const group = groups.get(root) ?? [];
         group.push({ session: s, window: w });
-        groups.set(w.cwd, group);
+        groups.set(root, group);
       }
     }
     return groups;
-  }, [sessions]);
+  }, [sessions, rootOf]);
 
   // Flattened in the exact visual order sessionsTree/dirsTree render below —
   // kept in sync by construction since both this and the JSX walk the same
@@ -346,7 +356,7 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
       >
         {w.activity && <span className="activity-dot" />}
         <span className="window-label">{label}</span>
-        {showCwd && <span className="item-cwd">{w.cwd}</span>}
+        {showCwd && <span className="item-cwd">{rootOf(w.cwd)}</span>}
         {getWindowDecorations({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command }).map(
           ({ provider, decoration }) => (
             <button
@@ -446,7 +456,7 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
             <div className={`session-row${s.name === activeSessionName ? " active" : ""}`}>
               <button
                 className={`session-item${s.name === activeSessionName ? " active" : ""}`}
-                title={activeWin ? activeWin.cwd : s.name}
+                title={activeWin ? rootOf(activeWin.cwd) : s.name}
                 onClick={() => onOpenAllWindows(s.name)}
                 onContextMenu={(e) => {
                   e.preventDefault();
@@ -461,7 +471,7 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
                 <span className={`session-dot${s.attached > 0 ? " attached" : ""}`} />
                 {row.pinned && <Icon name="pinned" className="pin-indicator" />}
                 <span className="session-name">{s.name}</span>
-                {activeWin && <span className="item-cwd">{activeWin.cwd}</span>}
+                {activeWin && <span className="item-cwd">{rootOf(activeWin.cwd)}</span>}
               </button>
               <button
                 className="row-add-button"

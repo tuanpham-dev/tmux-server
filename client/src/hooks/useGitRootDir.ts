@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 
 // cwd → resolved root, shared across every hook instance and persisted for the
@@ -46,4 +46,48 @@ export function useGitRootDir(cwd: string | null): string | null {
   }, [cwd]);
 
   return root;
+}
+
+// Batch variant for the SESSIONS pane: resolves every window's cwd to its git
+// root, sharing the same rootCache as useGitRootDir (so a directory resolved
+// for the FILES panel is free here and vice versa). Returns a `rootOf` lookup
+// that falls back to the cwd itself until — or unless — its root resolves, so
+// rows show the live path immediately and swap to the repo root once known.
+// `version` bumps each time a batch of roots resolves; depend on it (or on
+// rootOf, whose identity tracks it) to recompute memoized groupings.
+export function useGitRootDirs(cwds: string[]): { rootOf: (cwd: string) => string; version: number } {
+  const [version, setVersion] = useState(0);
+  // Only the distinct directory set drives fetching; the sessions poll hands
+  // us fresh window objects every few seconds with unchanged cwds, and this
+  // key keeps that from re-triggering the effect.
+  const key = [...new Set(cwds)].sort().join("\0");
+
+  useEffect(() => {
+    let cancelled = false;
+    const missing = [...new Set(cwds)].filter((c) => c && !rootCache.has(c));
+    if (missing.length === 0) return;
+    Promise.all(
+      missing.map((c) =>
+        api
+          .getGitRoot(c)
+          .then(({ root }) => {
+            rootCache.set(c, root);
+          })
+          .catch(() => {
+            // Leave uncached so a transient failure retries on a later poll
+            // rather than sticking this dir on its cwd fallback forever.
+          }),
+      ),
+    ).then(() => {
+      if (!cancelled) setVersion((v) => v + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // key captures the meaningful contents of cwds; see the comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  const rootOf = useCallback((cwd: string) => rootCache.get(cwd) ?? cwd, [version]);
+  return { rootOf, version };
 }
