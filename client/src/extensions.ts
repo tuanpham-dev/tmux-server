@@ -1064,27 +1064,52 @@ interface ExtensionRuntime {
 
 const activatedIds = new Set<string>();
 const extensionRuntimes = new Map<string, ExtensionRuntime>();
+// One shared promise per in-flight activation, so concurrent callers (every
+// TerminalView mounting in the same tick calls loadEngine → here) all await
+// the same import instead of the late ones returning before the engine has
+// registered — which used to leave loadEngine's registry lookup empty and
+// surface as "Terminal engine unavailable" on first load.
+const pendingActivations = new Map<string, Promise<void>>();
 
 async function activateClientExtension(ext: ExtensionInfo): Promise<void> {
   if (activatedIds.has(ext.id) || !ext.clientEntry) return;
-  activatedIds.add(ext.id);
-  const runtime: ExtensionRuntime = { module: null, contextListeners: new Set(), iconThemeListeners: new Set() };
-  extensionRuntimes.set(ext.id, runtime);
-  try {
-    const url = extensionFileUrl(ext.id, ext.clientEntry);
-    // Vite must not try to statically analyze/pre-bundle this — the path is
-    // only known at runtime, from the server's extension list.
-    const mod: unknown = await import(/* @vite-ignore */ url);
-    runtime.module = mod;
+  const inFlight = pendingActivations.get(ext.id);
+  if (inFlight) return inFlight;
+  const url = extensionFileUrl(ext.id, ext.clientEntry);
+  const promise = (async () => {
+    let mod: unknown;
+    try {
+      // Vite must not try to statically analyze/pre-bundle this — the path is
+      // only known at runtime, from the server's extension list.
+      mod = await import(/* @vite-ignore */ url);
+    } catch (err) {
+      // Deliberately NOT latched into activatedIds: an import failure here is
+      // typically transient (server restarting mid-request, network hiccup),
+      // and latching it used to disable the extension — including the
+      // required xterm engine — for the whole page session. Leaving it
+      // unlatched lets the next activateExtensionById retry the import.
+      console.error(`extension ${ext.id}: failed to load client entry:`, err);
+      return;
+    }
+    // Latched only once the module is actually in hand — from here on,
+    // failures are deterministic (bad export, activate() bug), so a retry
+    // could only duplicate registrations.
+    activatedIds.add(ext.id);
+    const runtime: ExtensionRuntime = { module: mod, contextListeners: new Set(), iconThemeListeners: new Set() };
+    extensionRuntimes.set(ext.id, runtime);
     const activate = (mod as { activate?: unknown }).activate;
     if (typeof activate !== "function") {
       console.error(`extension ${ext.id}: client entry has no activate() export`);
       return;
     }
-    (activate as (ctx: ExtensionContext) => void)(makeContext(ext, runtime));
-  } catch (err) {
-    console.error(`extension ${ext.id}: failed to load client entry:`, err);
-  }
+    try {
+      (activate as (ctx: ExtensionContext) => void)(makeContext(ext, runtime));
+    } catch (err) {
+      console.error(`extension ${ext.id}: activate() threw:`, err);
+    }
+  })().finally(() => pendingActivations.delete(ext.id));
+  pendingActivations.set(ext.id, promise);
+  return promise;
 }
 
 // Reverses activateClientExtension: calls the module's optional deactivate()
