@@ -10,6 +10,7 @@ import {
 } from "../extensions";
 import { isSyntheticSelectStart, type TerminalEngineHandle, type TerminalTheme } from "../engines/types";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
+import { resolveGitRootDir } from "../hooks/useGitRootDir";
 import { LocalEcho, wrapModeForCommand } from "../localEcho";
 import type { AppSettings } from "../settings";
 import { sendWithInkSafeEnters, whenMatches } from "../lib/terminalInput";
@@ -22,6 +23,21 @@ import {
   WheelLineAccumulator,
 } from "../mouseReports";
 import { isOpenGesture, openUrl } from "../terminalLinks";
+
+// Expands the pasteDropUploadDir setting for one upload: {cwd} is the pane's
+// working directory, {gitroot} the git repo root containing it (the repo-less
+// fallback to cwd itself comes from the /api/fs/git-root endpoint). Brace
+// syntax matches the touch-keys extension's {esc}/{ctrl} send tokens. Empty
+// keeps the original behavior, {cwd}/uploads. The git lookup only runs when
+// the token is actually present — a literal path stays a single sync step.
+async function resolveUploadDir(setting: string, cwd: string): Promise<string> {
+  if (!setting) return `${cwd}/uploads`;
+  let dir = setting.replaceAll("{cwd}", cwd);
+  if (dir.includes("{gitroot}")) {
+    dir = dir.replaceAll("{gitroot}", await resolveGitRootDir(cwd));
+  }
+  return dir;
+}
 
 // A single onData call is either a plain-text/IME burst or one full control
 // sequence (an escape code, a lone control byte) — never a mix — so this
@@ -103,11 +119,12 @@ interface Props {
   // Enter/Shift+Enter.
   onOpenFile?: (path: string, line?: number) => void;
   onOpenFileSecondary?: (path: string, line?: number) => void;
-  // The pane's current working directory (App.tsx's sessions data), used as
-  // the destination for image paste/drop uploads (plans/codeman-mobile-
-  // features.md Phase 3) when settings.pasteDropUploadDir is empty — "" (window
-  // not found yet) just disables the feature for this render, same as an
-  // empty localEchoWhen.
+  // The pane's current working directory (App.tsx's sessions data), the basis
+  // for image paste/drop upload destinations (plans/codeman-mobile-
+  // features.md Phase 3): it backs the {cwd}/{gitroot} variables in
+  // settings.pasteDropUploadDir and the {cwd}/uploads fallback when that
+  // setting is empty — "" (window not found yet) just disables the feature
+  // for this render, same as an empty localEchoWhen.
   cwd?: string;
 }
 
@@ -519,14 +536,14 @@ export default function TerminalView({
       // Gated by localEchoWhen alone (not mobilePointer — desktop paste is
       // the common case for this one) so it works independently of the
       // local-echo feature itself. Destination is settings.pasteDropUploadDir
-      // (default /tmp) used as-is; empty falls back to the pane's own
-      // <cwd>/uploads, the original behavior.
+      // (default /tmp) with {cwd}/{gitroot} expanded per pane — see
+      // resolveUploadDir.
       const uploadAndType = async (blob: Blob, filename: string) => {
         const destDir = cwdRef.current;
         if (!destDir) return;
         const conflict = uploadConflictRef.current;
         const apiConflict = conflict === "ask" ? "fail" : conflict;
-        const uploadDir = pasteDropUploadDirRef.current || `${destDir}/uploads`;
+        const uploadDir = await resolveUploadDir(pasteDropUploadDirRef.current, destDir);
         try {
           const result = await api.uploadFile(uploadDir, filename, blob, apiConflict);
           sendTextOrEcho(result.path);

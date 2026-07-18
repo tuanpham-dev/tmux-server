@@ -8,6 +8,22 @@ import * as api from "../api";
 // shouldn't stick a directory on its cwd fallback forever).
 const rootCache = new Map<string, string>();
 
+// One-shot promise variant for non-React callers (TerminalView's image
+// paste/drop {gitroot} substitution), sharing rootCache with the hooks so a
+// repo already resolved for the FILES panel costs nothing here and vice
+// versa. Falls back to `cwd` on error, uncached, same policy as the hooks.
+export async function resolveGitRootDir(cwd: string): Promise<string> {
+  const cached = rootCache.get(cwd);
+  if (cached !== undefined) return cached;
+  try {
+    const { root } = await api.getGitRoot(cwd);
+    rootCache.set(cwd, root);
+    return root;
+  } catch {
+    return cwd;
+  }
+}
+
 // Resolves the FILES panel / quick-switcher root: the git repo containing the
 // active window's `cwd`, or `cwd` itself when it isn't inside a repo.
 //
