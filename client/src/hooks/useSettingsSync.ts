@@ -10,6 +10,7 @@ import {
   loadKeybindingOverrides,
   loadPinnedSessions,
   loadSettings,
+  loadSidebarTabsOrder,
   migrateSettings,
   saveCommandUsage,
   saveExtensionRegistries,
@@ -17,6 +18,7 @@ import {
   saveKeybindingOverrides,
   savePinnedSessions,
   saveSettings,
+  saveSidebarTabsOrder,
   type AppSettings,
   type CommandUsage,
   type ExtensionSettingsValues,
@@ -127,6 +129,23 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     saveExtensionRegistries(extensionRegistries);
   }, [extensionRegistries]);
 
+  // Sidebar tab order (Sidebar.tsx's activity-bar strip) — same
+  // localStorage-first + skip-initial-persist + server-doc flow as
+  // extensionRegistries above. Starts empty (see loadSidebarTabsOrder) and
+  // only ever gets set by Sidebar.tsx's own reorderTabs, i.e. an explicit
+  // user drag — Sidebar keeps building its own richer default order locally
+  // whenever this is empty, so a device that's never synced doesn't get that
+  // default overwritten by nothing.
+  const [sidebarTabsOrder, setSidebarTabsOrder] = useState<string[]>(loadSidebarTabsOrder);
+  const sidebarTabsOrderMounted = useRef(false);
+  useEffect(() => {
+    if (!sidebarTabsOrderMounted.current) {
+      sidebarTabsOrderMounted.current = true;
+      return;
+    }
+    saveSidebarTabsOrder(sidebarTabsOrder);
+  }, [sidebarTabsOrder]);
+
   // Command palette usage stats (count/last per command id) — same
   // localStorage-first + skip-initial-persist + server-doc flow as
   // pinnedSessions above, and for the same reason: its own top-level doc key
@@ -180,6 +199,13 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
         if (Array.isArray(doc.extensionRegistries)) {
           setExtensionRegistries(doc.extensionRegistries.filter((s): s is string => typeof s === "string"));
         }
+        // Unlike the arrays above, an empty synced order is left alone
+        // (rather than applied) — it means "never dragged on any device",
+        // and Sidebar.tsx's own local default order should stay in charge
+        // rather than being wiped out by nothing (see loadSidebarTabsOrder).
+        if (Array.isArray(doc.sidebarTabsOrder) && doc.sidebarTabsOrder.length > 0) {
+          setSidebarTabsOrder(doc.sidebarTabsOrder.filter((s): s is string => typeof s === "string"));
+        }
         if (doc.commandUsage && typeof doc.commandUsage === "object" && !Array.isArray(doc.commandUsage)) {
           const usage: CommandUsage = {};
           for (const [id, entry] of Object.entries(doc.commandUsage as Record<string, unknown>)) {
@@ -227,6 +253,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           pinnedSessions,
           commandUsage,
           extensionRegistries,
+          sidebarTabsOrder,
         }))
         .catch(() => ({
           settings,
@@ -235,12 +262,21 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           pinnedSessions,
           commandUsage,
           extensionRegistries,
+          sidebarTabsOrder,
         }))
         .then((doc) => api.putSettingsDoc(doc))
         .catch(() => {});
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [settings, keybindingOverrides, extensionSettings, pinnedSessions, commandUsage, extensionRegistries]);
+  }, [
+    settings,
+    keybindingOverrides,
+    extensionSettings,
+    pinnedSessions,
+    commandUsage,
+    extensionRegistries,
+    sidebarTabsOrder,
+  ]);
 
   return {
     settings,
@@ -260,5 +296,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     setCommandUsage,
     extensionRegistries,
     setExtensionRegistries,
+    sidebarTabsOrder,
+    setSidebarTabsOrder,
   };
 }

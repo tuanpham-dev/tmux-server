@@ -156,6 +156,7 @@ const KEYBINDINGS_KEY = "keybindings";
 const EXTENSION_SETTINGS_KEY = "extensionSettings";
 const PINNED_SESSIONS_KEY = "pinnedSessions";
 const EXTENSION_REGISTRIES_KEY = "extensionRegistries";
+const SIDEBAR_TABS_ORDER_KEY = "sidebarTabsOrder";
 
 export function loadSettings(): AppSettings {
   try {
@@ -334,4 +335,25 @@ export function loadCommandUsage(): CommandUsage {
 
 export function saveCommandUsage(usage: CommandUsage): void {
   localStorage.setItem(COMMAND_USAGE_KEY, JSON.stringify(usage));
+}
+
+// Sidebar activity-bar tab order (Sidebar.tsx's SidebarTabStrip) — a plain
+// id array, empty until the user actually drags a tab (see Sidebar.tsx's
+// reorderTabs). Empty means "no cross-device preference yet", in which case
+// Sidebar's own local reconciliation (including its bundled default order)
+// stays authoritative rather than this overwriting it with nothing. Lives
+// outside AppSettings, like pinnedSessions above, so a settings reset can't
+// wipe a drag the user made.
+export function loadSidebarTabsOrder(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(SIDEBAR_TABS_ORDER_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((s): s is string => typeof s === "string" && s.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function saveSidebarTabsOrder(order: string[]): void {
+  localStorage.setItem(SIDEBAR_TABS_ORDER_KEY, JSON.stringify(order));
 }

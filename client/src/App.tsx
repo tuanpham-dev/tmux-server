@@ -306,6 +306,8 @@ export default function App() {
     setCommandUsage,
     extensionRegistries,
     setExtensionRegistries,
+    sidebarTabsOrder,
+    setSidebarTabsOrder,
   } = useSettingsSync(extCommands);
 
   // Backs ctx.settings.set — extensions write their own configuration
@@ -1146,6 +1148,8 @@ export default function App() {
             onReloadExtensions={reloadExtensions}
             extensionRegistries={extensionRegistries}
             onExtensionRegistriesChange={setExtensionRegistries}
+            syncedTabsOrder={sidebarTabsOrder}
+            onTabsOrderChange={setSidebarTabsOrder}
             registryCatalog={registryCatalog}
             registryLoading={registryLoading}
             onEnsureRegistryLoaded={ensureRegistryLoaded}

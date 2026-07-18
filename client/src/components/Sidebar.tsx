@@ -120,18 +120,27 @@ const DEFAULT_TABS_STATE: TabsState = {
   active: EXPLORER_TAB_ID,
 };
 
+// Guarantees both core tabs are present (Explorer first) — shared by
+// loadTabsState below and the synced-order-from-server apply effect, since
+// neither localStorage nor the settings doc is guaranteed to have been
+// written by a build that already knew about both core ids.
+function sanitizeTabsOrder(order: string[]): string[] {
+  const next = [...order];
+  if (!next.includes(EXPLORER_TAB_ID)) next.unshift(EXPLORER_TAB_ID);
+  if (!next.includes(EXTENSIONS_TAB_ID)) {
+    next.splice(next.indexOf(EXPLORER_TAB_ID) + 1, 0, EXTENSIONS_TAB_ID);
+  }
+  return next;
+}
+
 function loadTabsState(): TabsState {
   try {
     const parsed = JSON.parse(localStorage.getItem(TABS_KEY) ?? "null");
     if (!parsed || typeof parsed !== "object") return { ...DEFAULT_TABS_STATE };
     const order: string[] =
       Array.isArray(parsed.order) && parsed.order.every((id: unknown) => typeof id === "string")
-        ? [...(parsed.order as string[])]
+        ? sanitizeTabsOrder(parsed.order as string[])
         : [...DEFAULT_TABS_STATE.order];
-    if (!order.includes(EXPLORER_TAB_ID)) order.unshift(EXPLORER_TAB_ID);
-    if (!order.includes(EXTENSIONS_TAB_ID)) {
-      order.splice(order.indexOf(EXPLORER_TAB_ID) + 1, 0, EXTENSIONS_TAB_ID);
-    }
     const active = typeof parsed.active === "string" ? parsed.active : EXPLORER_TAB_ID;
     return { order, active };
   } catch {
@@ -210,6 +219,13 @@ interface Props {
   onReloadExtensions: () => void;
   extensionRegistries: string[];
   onExtensionRegistriesChange: (registries: string[]) => void;
+  // Server-synced tab order (useSettingsSync's sidebarTabsOrder) — empty
+  // until the user has dragged a tab on some device (see loadTabsState in
+  // settings.ts). Applied once, the first time it arrives non-empty; every
+  // actual reorder flows the other way via onTabsOrderChange, called only
+  // from reorderTabs below (a real user drag), not from routine reconciliation.
+  syncedTabsOrder: string[];
+  onTabsOrderChange: (order: string[]) => void;
   registryCatalog: RegistrySourceResult[];
   registryLoading: boolean;
   onEnsureRegistryLoaded: () => void;
@@ -280,6 +296,8 @@ export default function Sidebar({
   onReloadExtensions,
   extensionRegistries,
   onExtensionRegistriesChange,
+  syncedTabsOrder,
+  onTabsOrderChange,
   registryCatalog,
   registryLoading,
   onEnsureRegistryLoaded,
@@ -295,6 +313,23 @@ export default function Sidebar({
   const sessionListRef = useRef<SessionListHandle>(null);
   const [panelState, setPanelState] = useState<PanelState>(loadPanelState);
   const [tabsState, setTabsState] = useState<TabsState>(loadTabsState);
+  // Applies the settings-doc-synced tab order once, the first time it shows
+  // up non-empty — either a real cross-device restore (the server fetch in
+  // useSettingsSync resolving with a previously-saved order) or a same-tab
+  // echo of a drag this Sidebar instance just reported via onTabsOrderChange
+  // (harmless: sameAsCurrent below no-ops it). Only fires once per mount so
+  // it can't fight later local drags by re-applying a now-stale synced value.
+  const appliedSyncedTabsOrderRef = useRef(false);
+  useEffect(() => {
+    if (appliedSyncedTabsOrderRef.current || syncedTabsOrder.length === 0) return;
+    appliedSyncedTabsOrderRef.current = true;
+    setTabsState((prev) => {
+      const sameAsCurrent =
+        prev.order.length === syncedTabsOrder.length &&
+        prev.order.every((id, i) => id === syncedTabsOrder[i]);
+      return sameAsCurrent ? prev : { ...prev, order: sanitizeTabsOrder(syncedTabsOrder) };
+    });
+  }, [syncedTabsOrder]);
   // Teardown for an in-progress splitter drag's window listeners — invoked by
   // both the drag's own pointerup/pointercancel AND, as a safety net, by the
   // unmount effect below if Sidebar unmounts mid-drag (e.g. the whole sidebar
@@ -425,7 +460,12 @@ export default function Sidebar({
       // reordered visible tabs, so a reorder can never look like a prune.
       const stale = prev.order.filter((id) => !CORE_TAB_IDS.includes(id) && !extPanelIds.has(id));
       const nextVisible = moveId(visibleTabOrder, draggedId, toIndex);
-      return { ...prev, order: [...nextVisible, ...stale] };
+      const nextOrder = [...nextVisible, ...stale];
+      // Only an actual drag pushes to the synced store — not the
+      // reconciliation effect below (a newly-enabled extension appending its
+      // panel id shouldn't itself trigger a sync write on every load).
+      onTabsOrderChange(nextOrder);
+      return { ...prev, order: nextOrder };
     });
   };
 
