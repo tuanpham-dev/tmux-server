@@ -75,8 +75,13 @@ interface Props {
   focused: boolean;
   settings: AppSettings;
   // The active extension color theme's terminal palette, or the built-in
-  // Plastic Legacy theme if none is selected/loaded — see theme.ts.
-  theme: TerminalTheme;
+  // Plastic Legacy theme if none is selected/loaded — see theme.ts. null
+  // while the initial resolution is still in flight on first load
+  // (useThemeAssets' themeSettled): the mount effect below builds nothing
+  // until it lands, since a theme change afterwards would tear down and
+  // rebuild the whole terminal (ghostty can't swap themes at runtime) —
+  // the "terminal loads twice on first load" flash.
+  theme: TerminalTheme | null;
   // Bumped by utils/fonts.ts whenever an extension-contributed font finishes
   // (or stops) loading — triggers a re-measure below, since a font that
   // arrives after settings.fontFamily was already applied needs a nudge
@@ -337,6 +342,9 @@ export default function TerminalView({
   pasteDropUploadDirRef.current = settings.pasteDropUploadDir;
 
   useEffect(() => {
+    // Theme still resolving (first load, extension theme JSON in flight) —
+    // build nothing yet; the [theme] dep re-runs this once it settles.
+    if (!theme) return;
     const container = containerRef.current!;
     const screen = screenRef.current!;
     let disposed = false;

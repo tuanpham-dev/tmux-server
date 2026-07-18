@@ -33,15 +33,24 @@ export function useThemeAssets(
   // the Settings dialog so this list and the color/icon theme dropdowns
   // stay current without a full page reload.
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
+  // True once the installed list is actually known (not the pre-fetch []) —
+  // the color-theme effect below gates on it so an extension theme never
+  // spuriously resolves to "builtin" against the empty list.
+  const [extensionsLoaded, setExtensionsLoaded] = useState(false);
   const reloadExtensions = useCallback(() => {
     // Pushes the current (localStorage-seeded, or already-merged-with-server)
     // overrides into extensions.ts's module-level store as soon as the list
     // is fetched — before any client entry's activate() runs — so
     // ctx.settings.get() already resolves correctly the first time an
     // extension reads it, rather than only after this component re-renders.
-    loadExtensions((list) => setExtensionSettingsOverrides(extensionSettingsRef.current, list))
-      .then(setExtensions)
-      .catch(() => {});
+    // The list state is set from the same pre-activation callback: the theme
+    // resolution (and the terminal first-build gate riding on it) only needs
+    // the list, and must not wait behind every other extension activating.
+    loadExtensions((list) => {
+      setExtensionSettingsOverrides(extensionSettingsRef.current, list);
+      setExtensions(list);
+      setExtensionsLoaded(true);
+    }).catch(() => {});
   }, []);
   useEffect(() => {
     reloadExtensions();
@@ -60,11 +69,18 @@ export function useThemeAssets(
   // applies its CSS vars to <html> and hands its terminal palette to every
   // TerminalView. "" or an unresolvable value both mean "built-in".
   const [colorTheme, setColorTheme] = useState<ResolvedColorTheme | null>(null);
+  // False until the FIRST resolution against the real installed list has
+  // fully completed (theme JSON loaded, or resolved to builtin/failed).
+  // Never goes false again — later theme switches keep the previous theme
+  // live while the new JSON loads, same as before.
+  const [themeSettled, setThemeSettled] = useState(false);
   useEffect(() => {
+    if (!extensionsLoaded) return;
     const target = resolveColorThemeValue(settings.colorTheme, extensions);
     if (!target) {
       setColorTheme(null);
       applyColorThemeCssVars(null);
+      setThemeSettled(true);
       return;
     }
     let cancelled = false;
@@ -73,19 +89,26 @@ export function useThemeAssets(
         if (cancelled) return;
         setColorTheme(resolved);
         applyColorThemeCssVars(resolved.cssVars);
+        setThemeSettled(true);
       })
       .catch((err) => {
         console.error(`failed to load color theme "${settings.colorTheme}":`, err);
         if (!cancelled) {
           setColorTheme(null);
           applyColorThemeCssVars(null);
+          setThemeSettled(true);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [settings.colorTheme, extensions]);
-  const activeTerminalTheme = colorTheme?.terminalTheme ?? builtInTerminalTheme;
+  }, [settings.colorTheme, extensions, extensionsLoaded]);
+  // null until the initial resolution settles. TerminalView holds its first
+  // engine build on this: an extension terminal theme used to arrive AFTER
+  // the terminal had already built with the builtin palette, and the theme
+  // flip remounts the whole terminal (ghostty can't swap themes at runtime)
+  // — every first load visibly built, tore down, and rebuilt each terminal.
+  const activeTerminalTheme = themeSettled ? (colorTheme?.terminalTheme ?? builtInTerminalTheme) : null;
 
   // Active icon theme: same resolve-against-installed-extensions shape as
   // color themes above, but applied through iconThemes.ts's own module

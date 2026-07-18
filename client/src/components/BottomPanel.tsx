@@ -28,7 +28,7 @@ interface Props {
   panelFocused: boolean;
   sessions: TmuxSession[];
   settings: AppSettings;
-  theme: TerminalTheme;
+  theme: TerminalTheme | null;
   fontsVersion: number;
   bindings: Record<string, Keybinding[]>;
   onSelectTab: (tabId: string) => void;
