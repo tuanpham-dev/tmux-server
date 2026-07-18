@@ -45,13 +45,6 @@ let removeStylesheet: (() => void) | null = null;
 let removeContextListener: (() => void) | null = null;
 let removeSettingsListener: (() => void) | null = null;
 
-// Credentials from a successful push/pull/sync retry, kept in memory only
-// (never localStorage, never the remote URL) so repeated syncs in the same
-// browser tab don't re-prompt — cleared on a full page reload. Shared
-// across every repo the panel visits in this tab; fine for a single-user
-// local dev tool where re-prompting per-remote would just be friction.
-let sessionCredentials: { username: string; password: string } | null = null;
-
 function readPollInterval(): number {
   const raw = Number(extSettings?.get("gitScm.pollInterval"));
   if (!Number.isFinite(raw) || raw <= 0) return 0;
@@ -296,10 +289,10 @@ function decodeConflictKey(key: string): { cwd: string; path: string } {
 // ---- Shared fetch helpers ----
 
 class ApiError extends Error {
-  authRequired?: boolean;
-  constructor(message: string, authRequired?: boolean) {
+  cancelled?: boolean;
+  constructor(message: string, cancelled?: boolean) {
     super(message);
-    this.authRequired = authRequired;
+    this.cancelled = cancelled;
   }
 }
 
@@ -310,8 +303,8 @@ async function apiPost(path: string, body: unknown): Promise<void> {
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}) as { error?: string; authRequired?: boolean });
-    throw new ApiError(data.error || `${res.status} ${res.statusText}`, data.authRequired);
+    const data = await res.json().catch(() => ({}) as { error?: string; cancelled?: boolean });
+    throw new ApiError(data.error || `${res.status} ${res.statusText}`, data.cancelled);
   }
 }
 
@@ -572,6 +565,15 @@ function onSettingsChanged() {
 
 type NetworkKind = "push" | "pull" | "sync";
 
+// Mirrors server.js's pending-prompt shape: kind drives which form variant
+// renders, prompt is git/ssh's own text shown verbatim (for hostkey it
+// carries the fingerprint the user is confirming).
+interface AuthPrompt {
+  id: string;
+  kind: "username" | "password" | "passphrase" | "hostkey" | "generic";
+  prompt: string;
+}
+
 // Structurally matches the host's SidebarPanelHostProps (client/src/
 // extensions.ts) — a local copy, not an import, per extensions/_shared's
 // module comment on why extension code never imports client/src internals.
@@ -586,9 +588,16 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [credentialPrompt, setCredentialPrompt] = useState<{ kind: NetworkKind; error: string } | null>(null);
-  const [credUsername, setCredUsername] = useState("");
-  const [credPassword, setCredPassword] = useState("");
+  // Interactive auth prompt relayed from the server while a network op is
+  // in flight (see server.js's askpass relay) — polled below in runNetwork.
+  // authSecret doubles as password/passphrase/generic-answer depending on
+  // the prompt kind; the id-compare in the poll keeps a rerender from
+  // clobbering in-progress typing.
+  const [authPrompt, setAuthPrompt] = useState<AuthPrompt | null>(null);
+  const [authUsername, setAuthUsername] = useState("");
+  const [authSecret, setAuthSecret] = useState("");
+  const [authRemember, setAuthRemember] = useState(false);
+  const opIdRef = useRef<string | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState<{ paths: string[]; untracked: string[] } | null>(null);
   const commitMessageRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -840,31 +849,66 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     });
   const abortOperation = () => runOp(() => apiPost("/abort", { cwd: activeCwd }));
 
+  const clearAuthForm = useCallback(() => {
+    setAuthPrompt(null);
+    setAuthUsername("");
+    setAuthSecret("");
+    setAuthRemember(false);
+  }, []);
+
   const runNetwork = useCallback(
-    (kind: NetworkKind, creds?: { username: string; password: string }) => {
-      const useCreds = creds ?? sessionCredentials ?? undefined;
+    (kind: NetworkKind) => {
+      const opId = crypto.randomUUID();
+      opIdRef.current = opId;
+      // 300ms keeps a relayed prompt visible ≤ ~350ms after git asks (the
+      // plan's stated latency budget); polling only runs while this op's
+      // request is in flight.
+      const pollTimer = window.setInterval(async () => {
+        if (opIdRef.current !== opId) return;
+        try {
+          const data = await apiGetJson<{ prompt: AuthPrompt | null }>(`/prompt?op=${opId}`);
+          if (opIdRef.current !== opId) return;
+          setAuthPrompt((cur) => (cur?.id === data.prompt?.id ? cur : data.prompt));
+        } catch {
+          // Transient poll failure — the op request itself surfaces errors.
+        }
+      }, 300);
       return runOp(async () => {
         try {
-          await apiPost(`/${kind}`, { cwd: activeCwd, ...useCreds });
-          if (creds) sessionCredentials = creds;
-          setCredentialPrompt(null);
+          await apiPost(`/${kind}`, { cwd: activeCwd, opId });
         } catch (err) {
-          if (err instanceof ApiError && err.authRequired) {
-            setCredentialPrompt({ kind, error: err.message });
-            return;
-          }
+          // The user declining a prompt isn't an error worth displaying.
+          if (err instanceof ApiError && err.cancelled) return;
           throw err;
+        } finally {
+          window.clearInterval(pollTimer);
+          if (opIdRef.current === opId) opIdRef.current = null;
+          clearAuthForm();
         }
       });
     },
-    [activeCwd, runOp],
+    [activeCwd, runOp, clearAuthForm],
   );
 
-  const submitCredentials = () => {
-    if (!credentialPrompt) return;
-    runNetwork(credentialPrompt.kind, { username: credUsername, password: credPassword });
-    setCredPassword("");
+  // Fire-and-forget: the reply's outcome surfaces through the still-open
+  // network-op request, not this call.
+  const replyPrompt = (body: Record<string, unknown>) => {
+    if (!authPrompt || !opIdRef.current) return;
+    const payload = { op: opIdRef.current, id: authPrompt.id, ...body };
+    clearAuthForm();
+    apiPost("/prompt-reply", payload).catch(() => {});
   };
+
+  const submitPrompt = () => {
+    if (!authPrompt) return;
+    if (authPrompt.kind === "username") {
+      replyPrompt({ username: authUsername, password: authSecret, remember: authRemember });
+    } else {
+      replyPrompt({ answer: authSecret });
+    }
+  };
+
+  const cancelPrompt = () => replyPrompt({ cancel: true });
 
   // Explicit, clickAction-independent opens — used directly by the context
   // menu (whose items name the action outright) and composed by openEntry
@@ -1361,35 +1405,74 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
         </button>
       </div>
 
-      {credentialPrompt && (
+      {authPrompt && (
         <div className="git-credential-form">
-          <div className="git-credential-error">{credentialPrompt.error}</div>
-          <input
-            className="git-credential-input"
-            placeholder="Username"
-            value={credUsername}
-            onChange={(e) => setCredUsername(e.target.value)}
-            autoFocus
-          />
-          <input
-            className="git-credential-input"
-            placeholder="Password / token"
-            type="password"
-            value={credPassword}
-            onChange={(e) => setCredPassword(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submitCredentials();
-              if (e.key === "Escape") setCredentialPrompt(null);
-            }}
-          />
-          <div className="git-credential-buttons">
-            <button className="git-credential-cancel" onClick={() => setCredentialPrompt(null)}>
-              Cancel
-            </button>
-            <button className="git-credential-submit" onClick={submitCredentials} disabled={!credUsername}>
-              Retry
-            </button>
-          </div>
+          <div className="git-auth-prompt-text">{authPrompt.prompt}</div>
+          {authPrompt.kind === "hostkey" ? (
+            <div className="git-credential-buttons">
+              <button className="git-credential-cancel" onClick={cancelPrompt}>
+                Cancel
+              </button>
+              <button className="git-credential-submit" onClick={() => replyPrompt({ answer: "yes" })}>
+                Connect
+              </button>
+            </div>
+          ) : (
+            <>
+              {authPrompt.kind === "username" && (
+                <input
+                  className="git-credential-input"
+                  placeholder="Username"
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") cancelPrompt();
+                  }}
+                />
+              )}
+              <input
+                className="git-credential-input"
+                placeholder={
+                  authPrompt.kind === "passphrase"
+                    ? "Passphrase"
+                    : authPrompt.kind === "generic"
+                      ? "Answer"
+                      : "Password / token"
+                }
+                type={authPrompt.kind === "generic" ? "text" : "password"}
+                value={authSecret}
+                onChange={(e) => setAuthSecret(e.target.value)}
+                autoFocus={authPrompt.kind !== "username"}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitPrompt();
+                  if (e.key === "Escape") cancelPrompt();
+                }}
+              />
+              {authPrompt.kind === "username" && (
+                <label className="git-auth-remember">
+                  <input
+                    type="checkbox"
+                    checked={authRemember}
+                    onChange={(e) => setAuthRemember(e.target.checked)}
+                  />
+                  Remember credentials
+                </label>
+              )}
+              <div className="git-credential-buttons">
+                <button className="git-credential-cancel" onClick={cancelPrompt}>
+                  Cancel
+                </button>
+                <button
+                  className="git-credential-submit"
+                  onClick={submitPrompt}
+                  disabled={authPrompt.kind === "username" ? !authUsername : !authSecret}
+                >
+                  OK
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 

@@ -10,19 +10,20 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
-import { createHash } from "node:crypto";
+import http from "node:http";
+import os from "node:os";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASKPASS_PATH = path.join(__dirname, "askpass.cjs");
 
 const DEFAULT_TIMEOUT = 15000;
-const NETWORK_TIMEOUT = 30000;
 
 // opts.allowNonZeroExit: `git diff --no-index` exits 1 (not 0) when it
 // finds differences — the expected case, not a failure — so the diff
-// endpoint opts out of the reject-on-nonzero-exit default.
-// opts.env: extra env vars layered onto GIT_TERMINAL_PROMPT=0, used by
-// push/pull/sync to wire up GIT_ASKPASS + the one-shot credential pair.
+// endpoint opts out of the reject-on-nonzero-exit default. Network ops
+// (push/pull/sync) don't come through here — see gitNetwork in activate,
+// which wires up the interactive askpass relay instead of a fixed timeout.
 function git(args, cwd, opts = {}) {
   return new Promise((resolve, reject) => {
     execFile(
@@ -33,7 +34,7 @@ function git(args, cwd, opts = {}) {
         encoding: "utf8",
         timeout: opts.timeout ?? DEFAULT_TIMEOUT,
         maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...opts.env },
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       },
       (err, stdout, stderr) => {
         if (err && !(opts.allowNonZeroExit && err.code === 1)) {
@@ -48,26 +49,67 @@ function git(args, cwd, opts = {}) {
   });
 }
 
-// git execs GIT_ASKPASS directly as a program (no shell) — "node <path>"
-// fails with "cannot exec", confirmed empirically — so this must point at
-// an executable file (askpass.cjs's own shebang + exec bit) rather than a
-// command-with-arguments string.
-function credentialEnv(username, password) {
-  if (!username && !password) return {};
-  return {
-    GIT_ASKPASS: ASKPASS_PATH,
-    GIT_SCM_ASKPASS_USERNAME: username ?? "",
-    GIT_SCM_ASKPASS_PASSWORD: password ?? "",
-  };
+// How long a network op may run with nothing interactive going on before
+// its git child is killed; while a prompt is open the watchdog is paused
+// and the prompt's own expiry takes over.
+const IDLE_TIMEOUT = 30000;
+const PROMPT_TIMEOUT = 120000;
+
+// Prompt-kind classification, ordered so "Enter passphrase for key ..."
+// (which never says "password") wins over the username/password pair and
+// ssh's host-key confirmation is recognized by either of its stable
+// clauses. Anything unmatched degrades to a "generic" free-text ask (and
+// is logged verbatim so future versions can tighten these from real data).
+function classifyPrompt(prompt) {
+  if (/passphrase/i.test(prompt)) return "passphrase";
+  if (/username/i.test(prompt)) return "username";
+  if (/password/i.test(prompt)) return "password";
+  if (/continue connecting|authenticity of host/i.test(prompt)) return "hostkey";
+  return "generic";
+}
+
+// Pulls protocol/host (and an embedded username, if the remote URL carries
+// one) out of git's own prompt text — "Password for 'https://me@host':" —
+// which is the exact origin git is authenticating against, more reliable
+// than re-deriving it from remote config.
+function parsePromptOrigin(prompt) {
+  const m = prompt.match(/'([a-z][a-z0-9+.-]*):\/\/(?:([^@']*)@)?([^/']+)/i);
+  if (!m) return null;
+  let username = null;
+  if (m[2]) {
+    try {
+      username = decodeURIComponent(m[2]);
+    } catch {
+      username = m[2];
+    }
+  }
+  return { protocol: m[1].toLowerCase(), username, host: m[3] };
 }
 
 // Git's exact wording varies by version/host; matching the common cases and
 // degrading to a plain error display otherwise (see the plan's confirmed
 // trade-off) rather than trying to enumerate every phrasing.
 function isAuthFailure(message) {
-  return /could not read (username|password)|authentication failed|terminal prompts disabled|invalid username or password/i.test(
+  return /could not read (username|password)|authentication failed|terminal prompts disabled|invalid username or password|permission denied \(publickey|host key verification failed/i.test(
     message,
   );
+}
+
+// Answers travel back to git/ssh as a single stdout line and remembered
+// credentials go through `git credential approve`'s line-oriented protocol
+// — an embedded newline/CR/NUL would break both, and no legitimate value
+// contains one.
+function isCleanValue(value) {
+  return typeof value === "string" && !/[\r\n\0]/.test(value);
+}
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
 }
 
 const STATUS_LETTERS = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "added", T: "modified" };
@@ -256,6 +298,238 @@ function looksBinary(buf) {
 }
 
 export function activate({ router, log }) {
+  // ---- Interactive auth-prompt relay ----
+  // git/ssh children get GIT_ASKPASS/SSH_ASKPASS pointed at askpass.cjs,
+  // which forwards every prompt here over a token-guarded unix socket. The
+  // prompt is parked per-op until the panel (polling GET /prompt while its
+  // network request is in flight) answers via POST /prompt-reply. All
+  // credential policy lives here: askpass.cjs is a dumb pipe, and a fresh
+  // process per question can't track retries anyway — the relay can (a
+  // second ask of the same kind for the same host within one op means git
+  // rejected the previous pair).
+  const relayDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-scm-"));
+  const relaySocket = path.join(relayDir, "askpass.sock");
+  const relayToken = randomBytes(32).toString("hex");
+  const ops = new Map();
+  // In-memory per-origin credentials, populated on every interactive
+  // username/password answer and kept for the server's lifetime — never
+  // written to disk by this extension. Opt-in persistence goes through
+  // `git credential approve` into the user's own helper instead.
+  const credCache = new Map(); // "protocol//host" -> { username, password }
+
+  function relayEnv(opId) {
+    return {
+      GIT_ASKPASS: ASKPASS_PATH,
+      SSH_ASKPASS: ASKPASS_PATH,
+      // OpenSSH ≥ 8.4 routes passphrase AND host-key confirmation through
+      // SSH_ASKPASS when forced; DISPLAY is the pre-8.4 precondition, set
+      // to a dummy only when the server itself has none.
+      SSH_ASKPASS_REQUIRE: "force",
+      ...(process.env.DISPLAY ? {} : { DISPLAY: ":0" }),
+      GIT_SCM_RELAY_SOCKET: relaySocket,
+      GIT_SCM_RELAY_TOKEN: relayToken,
+      GIT_SCM_OP_ID: opId,
+    };
+  }
+
+  function createOp(id) {
+    const op = {
+      id,
+      child: null,
+      abort: null, // set by gitNetwork; rejects the in-flight promise on watchdog timeout
+      watchdog: null,
+      expiry: null,
+      pending: null, // { id, kind, prompt, origin, res } — one at a time; git asks serially
+      heldPassword: null, // second half of a combined username+password answer
+      authAsks: new Map(), // "protocol//host" -> { username: n, password: n }
+      authTouched: new Set(), // origins to invalidate if the op ends in auth failure
+      remember: null, // { protocol, host, username, password } pending `credential approve`
+      cancelled: false,
+      timedOut: false,
+    };
+    ops.set(id, op);
+    return op;
+  }
+
+  function armWatchdog(op) {
+    clearTimeout(op.watchdog);
+    op.watchdog = setTimeout(() => {
+      op.timedOut = true;
+      // Kill the whole process group (gitNetwork spawns detached): a plain
+      // child.kill only reaches `git` itself, whose transport helper
+      // (git-remote-https, ssh) survives holding the stdio pipes open until
+      // its own network timeout — observed adding ~100s to a blackholed
+      // remote. op.abort rejects the pending gitNetwork promise right away
+      // so the panel hears about the timeout at 30s, not at pipe close.
+      const child = op.child;
+      if (child) {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          child.kill("SIGTERM");
+        }
+      }
+      op.abort?.();
+    }, IDLE_TIMEOUT);
+  }
+
+  // Resolves the parked askpass HTTP request: 200 + body = the answer git
+  // reads from askpass stdout; anything else makes askpass exit 1, which
+  // aborts the git/ssh operation.
+  function settlePending(op, { answer = null, cancelled = false } = {}) {
+    const p = op.pending;
+    if (!p) return;
+    op.pending = null;
+    clearTimeout(op.expiry);
+    if (cancelled) op.cancelled = true;
+    try {
+      if (answer !== null) {
+        p.res.statusCode = 200;
+        p.res.end(answer);
+      } else {
+        p.res.statusCode = 410;
+        p.res.end();
+      }
+    } catch {
+      // The askpass process may already be gone (its git parent was killed).
+    }
+    armWatchdog(op);
+  }
+
+  function destroyOp(op) {
+    settlePending(op);
+    clearTimeout(op.watchdog);
+    clearTimeout(op.expiry);
+    ops.delete(op.id);
+  }
+
+  const relay = http.createServer(async (req, res) => {
+    if (req.method !== "POST" || req.url !== "/ask") {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(await readRawBody(req));
+    } catch {
+      res.statusCode = 400;
+      res.end();
+      return;
+    }
+    if (payload?.token !== relayToken) {
+      res.statusCode = 403;
+      res.end();
+      return;
+    }
+    const op = ops.get(payload.op);
+    const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
+    if (!op) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    const kind = classifyPrompt(prompt);
+    if (kind === "generic") log(`unrecognized auth prompt: ${JSON.stringify(prompt)}`);
+
+    // The combined username+password form answered both halves at once;
+    // git asks for them as two separate prompts, so the password half was
+    // held back for this follow-up ask.
+    if (kind === "password" && op.heldPassword !== null) {
+      const pw = op.heldPassword;
+      op.heldPassword = null;
+      armWatchdog(op);
+      res.statusCode = 200;
+      res.end(pw);
+      return;
+    }
+
+    const origin = kind === "username" || kind === "password" ? parsePromptOrigin(prompt) : null;
+    if (origin) {
+      const key = `${origin.protocol}//${origin.host}`;
+      op.authTouched.add(key);
+      const asks = op.authAsks.get(key) ?? { username: 0, password: 0 };
+      asks[kind] += 1;
+      op.authAsks.set(key, asks);
+      if (asks[kind] > 1) {
+        // git asking the same question again within one op = the previous
+        // pair was rejected — drop it and go interactive.
+        credCache.delete(key);
+      } else {
+        const cached = credCache.get(key);
+        if (cached) {
+          armWatchdog(op);
+          res.statusCode = 200;
+          res.end(kind === "username" ? cached.username : cached.password);
+          return;
+        }
+      }
+    }
+
+    if (op.pending) {
+      // One prompt per op — git asks serially, so a second concurrent ask
+      // is a relay bug or a killed-and-retried child; refuse it.
+      res.statusCode = 409;
+      res.end();
+      return;
+    }
+    op.pending = { id: randomUUID(), kind, prompt, origin, res };
+    clearTimeout(op.watchdog);
+    op.expiry = setTimeout(() => settlePending(op, { cancelled: true }), PROMPT_TIMEOUT);
+  });
+  relay.listen(relaySocket);
+
+  router.get("/prompt", (req, res) => {
+    const op = typeof req.query.op === "string" ? ops.get(req.query.op) : null;
+    const p = op?.pending;
+    res.json({ prompt: p ? { id: p.id, kind: p.kind, prompt: p.prompt } : null });
+  });
+
+  router.post("/prompt-reply", (req, res) => {
+    const { op: opId, id, cancel, username, password, answer, remember } = req.body ?? {};
+    const op = typeof opId === "string" ? ops.get(opId) : null;
+    const p = op?.pending;
+    if (!op || !p || p.id !== id) {
+      res.status(410).json({ error: "That prompt is no longer pending." });
+      return;
+    }
+    if (cancel === true) {
+      settlePending(op, { cancelled: true });
+      res.json({ ok: true });
+      return;
+    }
+    let text;
+    if (p.kind === "username") {
+      if (!isCleanValue(username) || !isCleanValue(password)) {
+        res.status(400).json({ error: "username and password are required" });
+        return;
+      }
+      text = username;
+      op.heldPassword = password;
+      if (p.origin) {
+        const key = `${p.origin.protocol}//${p.origin.host}`;
+        credCache.set(key, { username, password });
+        if (remember === true) {
+          op.remember = { protocol: p.origin.protocol, host: p.origin.host, username, password };
+        }
+      }
+    } else {
+      if (!isCleanValue(answer)) {
+        res.status(400).json({ error: "answer is required" });
+        return;
+      }
+      text = answer;
+      if (p.kind === "password" && p.origin?.username) {
+        credCache.set(`${p.origin.protocol}//${p.origin.host}`, {
+          username: p.origin.username,
+          password: answer,
+        });
+      }
+    }
+    settlePending(op, { answer: text });
+    res.json({ ok: true });
+  });
+
   router.get("/status", async (req, res) => {
     const cwd = requireCwd(req, res);
     if (!cwd) return;
@@ -443,10 +717,53 @@ export function activate({ router, log }) {
     return (await git(["branch", "--show-current"], cwd)).trim();
   }
 
-  async function runNetworkOp(cwd, username, password, kind) {
-    const env = credentialEnv(username, password);
+  // Network git calls run without a fixed exec timeout — an interactive
+  // prompt can legitimately hold the op open for minutes — bounded instead
+  // by the op's watchdog (30s of non-interactive time; paused while a
+  // prompt is parked, whose own 2-minute expiry then takes over).
+  function gitNetwork(args, cwd, op) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        op.abort = null;
+        fn(value);
+      };
+      op.abort = () =>
+        settle(reject, new Error("Timed out waiting for git — check the remote and try again."));
+      const child = execFile(
+        "git",
+        args,
+        {
+          cwd,
+          encoding: "utf8",
+          maxBuffer: 8 * 1024 * 1024,
+          // detached puts git and its transport helpers in their own
+          // process group so the watchdog can kill the whole tree at once.
+          detached: true,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...relayEnv(op.id) },
+        },
+        (err, stdout, stderr) => {
+          op.child = null;
+          clearTimeout(op.watchdog);
+          if (err) {
+            const wrapped = new Error(stderr.trim() || err.message);
+            wrapped.stderr = stderr;
+            settle(reject, wrapped);
+          } else {
+            settle(resolve, stdout);
+          }
+        },
+      );
+      op.child = child;
+      armWatchdog(op);
+    });
+  }
+
+  async function runNetworkOp(cwd, op, kind) {
     if (kind === "pull") {
-      await git(["pull", "--ff-only"], cwd, { env, timeout: NETWORK_TIMEOUT });
+      await gitNetwork(["pull", "--ff-only"], cwd, op);
       return;
     }
     // push: auto-publish (`-u origin <branch>`) when no upstream is set yet
@@ -460,32 +777,65 @@ export function activate({ router, log }) {
         throw new Error("No upstream branch is configured, and no 'origin' remote exists to publish to.");
       }
       const branch = await currentBranch(cwd);
-      await git(["push", "-u", "origin", branch], cwd, { env, timeout: NETWORK_TIMEOUT });
+      await gitNetwork(["push", "-u", "origin", branch], cwd, op);
     } else {
-      await git(["push"], cwd, { env, timeout: NETWORK_TIMEOUT });
+      await gitNetwork(["push"], cwd, op);
     }
+  }
+
+  // Runs only after the op *succeeded*: hands the remembered pair to
+  // whatever credential helper the user has configured. With none
+  // configured this is a silent no-op — the in-memory cache still covers
+  // the server's lifetime — and this extension never writes secrets to
+  // disk itself.
+  function approveRemembered(op, cwd) {
+    if (!op.remember) return Promise.resolve();
+    const { protocol, host, username, password } = op.remember;
+    return new Promise((resolve) => {
+      const child = execFile(
+        "git",
+        ["credential", "approve"],
+        { cwd, timeout: DEFAULT_TIMEOUT },
+        () => resolve(),
+      );
+      child.stdin.write(`protocol=${protocol}\nhost=${host}\nusername=${username}\npassword=${password}\n\n`);
+      child.stdin.end();
+    });
   }
 
   function networkHandler(kind) {
     return async (req, res) => {
       const cwd = requireCwd(req, res);
       if (!cwd) return;
-      const { username, password } = req.body ?? {};
+      const opId = typeof req.body?.opId === "string" ? req.body.opId : "";
+      if (!opId) {
+        res.status(400).json({ error: "opId is required" });
+        return;
+      }
+      const op = createOp(opId);
       try {
         if (kind === "sync") {
-          await runNetworkOp(cwd, username, password, "pull");
-          await runNetworkOp(cwd, username, password, "push");
+          await runNetworkOp(cwd, op, "pull");
+          await runNetworkOp(cwd, op, "push");
         } else {
-          await runNetworkOp(cwd, username, password, kind);
+          await runNetworkOp(cwd, op, kind);
         }
+        await approveRemembered(op, cwd);
         res.json({ ok: true });
       } catch (err) {
-        const message = err.stderr || err.message;
-        if (isAuthFailure(message)) {
-          res.status(401).json({ error: message.trim(), authRequired: true });
+        const message = (err.stderr || err.message || "").toString().trim();
+        if (op.cancelled) {
+          res.status(400).json({ error: "Authentication cancelled", cancelled: true });
+        } else if (op.timedOut) {
+          res.status(500).json({ error: "Timed out waiting for git — check the remote and try again." });
+        } else if (isAuthFailure(message)) {
+          for (const key of op.authTouched) credCache.delete(key);
+          res.status(401).json({ error: message || "Authentication failed" });
         } else {
           res.status(500).json({ error: message });
         }
+      } finally {
+        destroyOp(op);
       }
     };
   }

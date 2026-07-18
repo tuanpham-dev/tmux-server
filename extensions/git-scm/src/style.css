@@ -118,6 +118,29 @@
   color: var(--fg);
 }
 
+/* git/ssh's own prompt text, shown verbatim — monospace because hostkey
+   prompts carry a fingerprint the user should be able to eyeball, capped
+   and scrollable so a long known-hosts warning can't swallow the panel. */
+.git-auth-prompt-text {
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.git-auth-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+
 .git-credential-input {
   padding: 5px 6px;
   background: var(--panel-bg);

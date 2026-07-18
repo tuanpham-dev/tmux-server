@@ -2,7 +2,7 @@
   "name": "git-scm",
   "private": true,
   "publisher": "tmux-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Git",
   "description": "Built-in VS Code-style Source Control panel: stage, commit, push/pull, and diff view (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
