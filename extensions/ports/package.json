@@ -1,0 +1,13 @@
+{
+  "name": "ports",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "Ports",
+  "description": "Built-in PORTS explorer section: listening ports inside tmux sessions, with open-in-browser, copy-URL, tunnel-command, and kill-process actions (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
+  "tmuxServer": {
+    "client": "./dist/client.js",
+    "server": "./server.js"
+  }
+}

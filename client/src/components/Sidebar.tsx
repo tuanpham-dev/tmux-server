@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { setContextKey } from "../contextKeys";
 import {
-  setPortsFocusBridge,
+  getRootDecorations,
+  setExplorerPanelFocusBridge,
   setSessionsFocusBridge,
   setSidebarTabsBridge,
   type RegisteredSidebarPanel,
@@ -21,14 +22,13 @@ import type {
 import ExtensionsPanel from "./ExtensionsPanel";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
-import PortsPanel, { type PortsPanelHandle } from "./PortsPanel";
 import SessionList, { type SessionListHandle } from "./SessionList";
 import SidebarTabStrip, { type SidebarTabInfo } from "./SidebarTabStrip";
 
 // Built-in ids are the literal union below; an extension panel's id is
 // whatever registerSidebarPanel namespaced it to (ext.<extensionId>.<id>),
 // so the type widens to string — PANEL_IDS stays the source of truth for
-// "is this one of the three built-ins".
+// "is this one of the built-ins".
 type PanelId = string;
 
 interface PanelState {
@@ -40,14 +40,21 @@ interface PanelState {
   sizes: Record<PanelId, number>;
 }
 
-const PANEL_IDS: PanelId[] = ["sessions", "files", "ports"];
+const PANEL_IDS: PanelId[] = ["sessions", "files"];
 const MIN_PANEL_HEIGHT = 60;
 const PANELS_KEY = "sidebarPanels";
 
+// The PORTS accordion section's id before it was extracted into the
+// bundled ports extension — loadPanelState rewrites it in stored state so
+// each user's accustomed order/collapse/size carries over to the
+// extension's namespaced panel id.
+const LEGACY_PORTS_PANEL_ID = "ports";
+const PORTS_EXT_PANEL_ID = "ext.tmux-server.ports.ports";
+
 const DEFAULT_PANEL_STATE: PanelState = {
-  order: ["sessions", "files", "ports"],
-  collapsed: { sessions: false, files: false, ports: true },
-  sizes: { sessions: 1, files: 1, ports: 1 },
+  order: ["sessions", "files"],
+  collapsed: { sessions: false, files: false },
+  sizes: { sessions: 1, files: 1 },
 };
 
 function loadPanelState(): PanelState {
@@ -56,25 +63,39 @@ function loadPanelState(): PanelState {
     if (!parsed || typeof parsed !== "object") return { ...DEFAULT_PANEL_STATE };
     // Any string id is accepted here so an id from before extension panels
     // moved out of the accordion into their own tab survives a reload — it's
-    // simply excluded at render time (see visibleOrder) since it's no
-    // longer one of the 3 built-ins.
+    // simply excluded at render time (see visibleOrder) since its extension
+    // isn't registered as an explorer section.
     const order: PanelId[] =
       Array.isArray(parsed.order) && parsed.order.every((id: unknown) => typeof id === "string")
         ? [...(parsed.order as PanelId[])]
         : [...DEFAULT_PANEL_STATE.order];
     for (const id of PANEL_IDS) if (!order.includes(id)) order.push(id);
-    return {
-      order,
-      collapsed: { ...DEFAULT_PANEL_STATE.collapsed, ...parsed.collapsed },
-      sizes: { ...DEFAULT_PANEL_STATE.sizes, ...parsed.sizes },
-    };
+    const collapsed = { ...DEFAULT_PANEL_STATE.collapsed, ...parsed.collapsed };
+    const sizes = { ...DEFAULT_PANEL_STATE.sizes, ...parsed.sizes };
+    // One-time migration: the pre-extraction PORTS id maps to the ports
+    // extension's namespaced panel id, keeping its slot/collapse/size. The
+    // rewritten state persists via the ordinary save effect.
+    const legacyIdx = order.indexOf(LEGACY_PORTS_PANEL_ID);
+    if (legacyIdx !== -1 && !order.includes(PORTS_EXT_PANEL_ID)) {
+      order[legacyIdx] = PORTS_EXT_PANEL_ID;
+    }
+    if (LEGACY_PORTS_PANEL_ID in collapsed && !(PORTS_EXT_PANEL_ID in collapsed)) {
+      collapsed[PORTS_EXT_PANEL_ID] = collapsed[LEGACY_PORTS_PANEL_ID];
+    }
+    if (LEGACY_PORTS_PANEL_ID in sizes && !(PORTS_EXT_PANEL_ID in sizes)) {
+      sizes[PORTS_EXT_PANEL_ID] = sizes[LEGACY_PORTS_PANEL_ID];
+    }
+    delete collapsed[LEGACY_PORTS_PANEL_ID];
+    delete sizes[LEGACY_PORTS_PANEL_ID];
+    return { order: order.filter((id) => id !== LEGACY_PORTS_PANEL_ID), collapsed, sizes };
   } catch {
     return { ...DEFAULT_PANEL_STATE };
   }
 }
 
 // The sidebar's activity-bar-style tab strip (plans/sidebar-tabs.md): a
-// fixed "explorer" tab holds the accordion below (sessions/files/ports),
+// fixed "explorer" tab holds the accordion below (sessions/files + any
+// extension panel registered with location "explorer", e.g. ports),
 // a fixed "extensions-view" tab holds the Extensions browser/manager, and
 // every registered extension sidebar panel — e.g. git-scm's Source Control —
 // gets its own full-height tab instead of joining the accordion.
@@ -142,9 +163,6 @@ interface Props {
   onNewWindowInDir: (cwd: string) => void;
   onOpenLazygit: () => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
-  // plans/subagent-activity-viewer.md — opens the read-only agents popover
-  // for a window's cwd, anchored at the clicking badge's position.
-  onShowAgents: (cwd: string, x: number, y: number) => void;
   sessionMenuItems: (name: string, dead: boolean) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
   pinnedSessions: PinnedSession[];
@@ -156,7 +174,6 @@ interface Props {
   // every split pane.
   panelVisible: boolean;
   onTogglePanel: () => void;
-  showGitStatus: boolean;
   onCollapse: () => void;
   filesRootDir: string | null;
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
@@ -203,7 +220,7 @@ interface Props {
   // command id — used to append each tab's current shortcut to its tooltip
   // (see tabInfos below) so a rebind in Settings shows up immediately.
   resolvedBindings: Record<string, Keybinding[]>;
-  // Threaded down to PortsPanel's Kill process action.
+  // Threaded down to extension panels (e.g. the ports panel's Kill process action).
   confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>;
 }
 
@@ -224,7 +241,6 @@ export default function Sidebar({
   onNewWindowInDir,
   onOpenLazygit,
   onShowMenu,
-  onShowAgents,
   sessionMenuItems,
   windowMenuItems,
   pinnedSessions,
@@ -232,7 +248,6 @@ export default function Sidebar({
   onOpenSettings,
   panelVisible,
   onTogglePanel,
-  showGitStatus,
   onCollapse,
   filesRootDir,
   onDropFiles,
@@ -278,7 +293,6 @@ export default function Sidebar({
     () => (localStorage.getItem("sidebarMode") as SidebarMode) ?? "sessions",
   );
   const sessionListRef = useRef<SessionListHandle>(null);
-  const portsListRef = useRef<PortsPanelHandle>(null);
   const [panelState, setPanelState] = useState<PanelState>(loadPanelState);
   const [tabsState, setTabsState] = useState<TabsState>(loadTabsState);
   // Teardown for an in-progress splitter drag's window listeners — invoked by
@@ -301,9 +315,7 @@ export default function Sidebar({
   const panelRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
     sessions: null,
     files: null,
-    ports: null,
   });
-  const [portsRefreshKey, setPortsRefreshKey] = useState(0);
 
   // Keeps tabsState in sync as extensions register sidebar panels: appends
   // any newly-registered panel id to the tab order. Purely additive and
@@ -323,18 +335,30 @@ export default function Sidebar({
   // filtered out at render time instead (see visibleTabOrder below), so
   // keeping it around in storage is harmless and the reconciliation itself
   // can't race.
+  const tabPanels = extensionPanels.filter((p) => p.location === "tab");
+  const explorerPanels = extensionPanels.filter((p) => p.location === "explorer");
   useEffect(() => {
     setTabsState((prev) => {
       const order = [...prev.order];
-      for (const panel of extensionPanels) if (!order.includes(panel.id)) order.push(panel.id);
+      for (const panel of tabPanels) if (!order.includes(panel.id)) order.push(panel.id);
       return { ...prev, order };
     });
+    // Same never-prune reconciliation for explorer-located panels joining
+    // the accordion order — see the tab effect's comment above for why
+    // pruning here is a reload-race hazard.
+    setPanelState((prev) => {
+      const order = [...prev.order];
+      for (const panel of explorerPanels) if (!order.includes(panel.id)) order.push(panel.id);
+      return order.length === prev.order.length ? prev : { ...prev, order };
+    });
+    // tabPanels/explorerPanels are fresh arrays each render; extensionPanels
+    // is the registry-tick-memoized source they derive from.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extensionPanels]);
   const [dragPanelId, setDragPanelId] = useState<PanelId | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ id: PanelId; edge: "top" | "bottom" } | null>(
     null,
   );
-  const [filesBranch, setFilesBranch] = useState<string | null>(null);
   // Per-panel header actions container, keyed by panel id — the portal
   // target an extension panel renders its header-row buttons into (mirrors
   // TabBar's actionsRef/tabActionsEl for file-viewer toolbars). State (not
@@ -371,7 +395,7 @@ export default function Sidebar({
     localStorage.setItem(TABS_KEY, JSON.stringify(tabsState));
   }, [tabsState]);
 
-  const extPanelIds = new Set(extensionPanels.map((p) => p.id));
+  const extPanelIds = new Set(tabPanels.map((p) => p.id));
   // Filters out a stale tab id (its extension disabled/uninstalled, or one
   // still activating on this render) — same "don't mutate storage, just
   // don't render it" approach as the accordion's visibleOrder.
@@ -435,10 +459,17 @@ export default function Sidebar({
     };
   });
 
+  // Effective collapse state: an id with no stored entry falls back to the
+  // extension panel's declared defaultCollapsed (the built-ins always have a
+  // stored/default entry via DEFAULT_PANEL_STATE).
+  const isPanelCollapsed = (id: PanelId): boolean =>
+    panelState.collapsed[id] ?? explorerPanels.find((p) => p.id === id)?.defaultCollapsed ?? false;
+
   const togglePanelCollapsed = (id: PanelId) => {
+    const next = !isPanelCollapsed(id);
     setPanelState((prev) => ({
       ...prev,
-      collapsed: { ...prev.collapsed, [id]: !prev.collapsed[id] },
+      collapsed: { ...prev.collapsed, [id]: next },
     }));
   };
 
@@ -488,34 +519,46 @@ export default function Sidebar({
     return () => setSessionsFocusBridge(null);
   }, []);
 
-  // Same bridge pattern as sessions, for "Sidebar: Focus Ports" — the PORTS
-  // accordion panel starts collapsed by default (DEFAULT_PANEL_STATE), so
-  // the deferred-focus path is the common case here, not the exception.
-  const pendingPortsFocusRef = useRef(false);
+  // Generic bridge for explorer-located extension panels' focus commands
+  // (the extracted PORTS panel): expand the section if collapsed, then move
+  // focus onto the first focusable row inside its content. An extension
+  // component can't expose an imperative focusList handle through the
+  // generic render, so "first roving-tabindex stop" is the contract — the
+  // same landing spot SessionList/PortsPanel's own focusList pick when
+  // nothing was focused yet. Expansion unmounts→mounts content, so the
+  // focus is deferred one render, mirroring the sessions bridge above.
+  const pendingExplorerFocusRef = useRef<string | null>(null);
+  const focusExplorerPanelContent = (panelId: string) => {
+    const content = panelRefs.current[panelId]?.querySelector<HTMLElement>(
+      '.panel-content [tabindex="0"], .panel-content button, .panel-content [href], .panel-content input',
+    );
+    content?.focus();
+  };
   useEffect(() => {
-    if (!panelState.collapsed.ports && pendingPortsFocusRef.current) {
-      pendingPortsFocusRef.current = false;
-      portsListRef.current?.focusList();
+    const pending = pendingExplorerFocusRef.current;
+    if (pending && panelState.collapsed[pending] === false) {
+      pendingExplorerFocusRef.current = null;
+      focusExplorerPanelContent(pending);
     }
-  }, [panelState.collapsed.ports]);
+  }, [panelState.collapsed]);
   useEffect(() => {
-    setPortsFocusBridge({
-      focus: () => {
-        if (panelStateRef.current.collapsed.ports) {
-          pendingPortsFocusRef.current = true;
-          setPanelState((prev) => ({ ...prev, collapsed: { ...prev.collapsed, ports: false } }));
+    setExplorerPanelFocusBridge({
+      focus: (panelId) => {
+        if (panelStateRef.current.collapsed[panelId] !== false) {
+          pendingExplorerFocusRef.current = panelId;
+          setPanelState((prev) => ({ ...prev, collapsed: { ...prev.collapsed, [panelId]: false } }));
         } else {
-          portsListRef.current?.focusList();
+          focusExplorerPanelContent(panelId);
         }
       },
     });
-    return () => setPortsFocusBridge(null);
+    return () => setExplorerPanelFocusBridge(null);
   }, []);
 
   const panelTitle = (id: PanelId): string => {
     if (id === "sessions") return mode === "sessions" ? "Sessions" : "Directories";
-    if (id === "ports") return "Ports";
-    return filesRootDir ?? "Files";
+    if (id === "files") return filesRootDir ?? "Files";
+    return explorerPanels.find((p) => p.id === id)?.title ?? id;
   };
 
   const panelActions = (id: PanelId) => {
@@ -542,17 +585,6 @@ export default function Sidebar({
         </>
       );
     }
-    if (id === "ports") {
-      return (
-        <button
-          className="icon-button"
-          title="Refresh"
-          onClick={() => setPortsRefreshKey((k) => k + 1)}
-        >
-          <Icon name="refresh" />
-        </button>
-      );
-    }
     if (id === "files") {
       return (
         <button className="icon-button" title="Refresh" onClick={onFilesRefresh}>
@@ -560,6 +592,8 @@ export default function Sidebar({
         </button>
       );
     }
+    // Extension explorer sections put their own header buttons into the
+    // actions container via the actionsTarget portal instead.
     return null;
   };
 
@@ -585,7 +619,6 @@ export default function Sidebar({
           onNewWindowInDir={onNewWindowInDir}
           onRestorePinned={onRestorePinned}
           onShowMenu={onShowMenu}
-          onShowAgents={onShowAgents}
           sessionMenuItems={sessionMenuItems}
           windowMenuItems={windowMenuItems}
           extensionWindowActions={extensionWindowActions}
@@ -593,27 +626,15 @@ export default function Sidebar({
         />
       );
     }
-    if (id === "ports") {
-      return (
-        <PortsPanel
-          ref={portsListRef}
-          refreshKey={portsRefreshKey}
-          confirmDialog={confirmDialog}
-          onShowMenu={onShowMenu}
-        />
-      );
-    }
     if (id === "files") {
       return (
         <FileTree
           rootDir={filesRootDir}
-          showGitStatus={showGitStatus}
           onDropFiles={onDropFiles}
           refreshKey={filesRefreshKey}
           onOpenFile={onOpenFile}
           onPreviewFile={onPreviewFile}
           isPreviewable={isPreviewable}
-          onBranchChange={setFilesBranch}
           onShowMenu={onShowMenu}
           fileMenuItems={fileMenuItems}
           fileTreeRootMenuItems={fileTreeRootMenuItems}
@@ -634,6 +655,17 @@ export default function Sidebar({
           onPasteInto={onPasteInto}
           onClearClipboard={onClearClipboard}
           onTransferEntries={onTransferEntries}
+        />
+      );
+    }
+    const extPanel = explorerPanels.find((p) => p.id === id);
+    if (extPanel) {
+      const PanelComponent = extPanel.component;
+      return (
+        <PanelComponent
+          actionsTarget={extPanelActionsEls[id] ?? null}
+          showMenu={onShowMenu}
+          confirmDialog={confirmDialog}
         />
       );
     }
@@ -728,9 +760,15 @@ export default function Sidebar({
     },
   });
 
+  // The FILES header branch pill, sourced from extension root decorations
+  // (git-scm's file-decoration provider) — the app re-renders on registry
+  // notify (App's useExtensionRegistry tick feeds the extensionPanels prop),
+  // so a provider refresh() lands here without a dedicated subscription.
+  const filesBranch = filesRootDir ? (getRootDecorations(filesRootDir)[0]?.label ?? null) : null;
+
   const renderPanel = (id: PanelId, nextId: PanelId | null) => {
-    const isCollapsed = panelState.collapsed[id];
-    const showSplitterAfter = !isCollapsed && nextId !== null && !panelState.collapsed[nextId];
+    const isCollapsed = isPanelCollapsed(id);
+    const showSplitterAfter = !isCollapsed && nextId !== null && !isPanelCollapsed(nextId);
     const indicatorClass =
       dropIndicator?.id === id ? ` drop-indicator-${dropIndicator.edge}` : "";
 
@@ -787,10 +825,14 @@ export default function Sidebar({
     );
   };
 
-  // panelState.order may still contain an id from before extension panels
-  // moved out into their own tab — filtering to just the 3 built-ins here
-  // (rather than mutating storage) makes that id inert without a migration.
-  const visibleOrder = panelState.order.filter((id) => PANEL_IDS.includes(id));
+  // panelState.order may contain stale ids (a disabled extension's section,
+  // or an id from before extension panels moved into their own tab) —
+  // filtering here (rather than mutating storage) makes them inert without
+  // a prune, same rationale as visibleTabOrder.
+  const explorerPanelIds = new Set(explorerPanels.map((p) => p.id));
+  const visibleOrder = panelState.order.filter(
+    (id) => PANEL_IDS.includes(id) || explorerPanelIds.has(id),
+  );
 
   const renderExtensionTab = (panel: RegisteredSidebarPanel) => {
     const PanelComponent = panel.component;
@@ -805,7 +847,11 @@ export default function Sidebar({
           />
         </div>
         <div className="panel-content ext-tab-content">
-          <PanelComponent actionsTarget={extPanelActionsEls[panel.id] ?? null} showMenu={onShowMenu} />
+          <PanelComponent
+            actionsTarget={extPanelActionsEls[panel.id] ?? null}
+            showMenu={onShowMenu}
+            confirmDialog={confirmDialog}
+          />
         </div>
       </div>
     );

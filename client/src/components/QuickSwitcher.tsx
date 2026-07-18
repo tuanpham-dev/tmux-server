@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
 import { getContextGetter } from "../contextKeys";
+import { getQuickSwitcherResults, useExtensionRegistryVersion } from "../extensions";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
 import type { Tab, TmuxSession } from "../types";
 import { isSecondaryClick } from "../utils/platform";
@@ -42,7 +43,10 @@ interface Props {
 interface Entry {
   key: string;
   label: string;
-  group: "tab" | "window" | "session" | "file" | "command";
+  // Core groups plus extension providers' free-form tags (see
+  // registerQuickSwitcherProvider) — the tag renders as the row's chip and
+  // feeds the chip's color class.
+  group: string;
   // secondary is true for Shift+Enter/Shift+click — see utils/platform.ts's
   // isSecondaryClick. Only file entries branch on it (see App.tsx's
   // openFileOrViewerSecondary); tab/window/session/command entries ignore
@@ -89,6 +93,9 @@ export default function QuickSwitcher({
 }: Props) {
   const [query, setQuery] = useState(initialQuery);
   const [selected, setSelected] = useState(0);
+  // Re-render when a quick-switcher provider registers or refresh()es —
+  // providerEntries below reads the registry imperatively.
+  const registryTick = useExtensionRegistryVersion();
   const [files, setFiles] = useState<string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -183,6 +190,21 @@ export default function QuickSwitcher({
     return matched;
   }, [isCommandMode, files, query, filesRootDir, onOpenFile, onOpenFileSecondary]);
 
+  // Extension provider results — non-command mode only (extensions reach
+  // the palette through registerCommand already). Ranked between the core
+  // tab/window/session groups and file matches.
+  const providerEntries = useMemo<Entry[]>(() => {
+    if (isCommandMode) return [];
+    return getQuickSwitcherResults(query).map(({ provider, item }, i) => ({
+      key: `ext:${provider.id}:${i}`,
+      label: item.label,
+      group: item.tag ?? "ext",
+      run: (secondary: boolean) => item.run(secondary),
+    }));
+    // registryTick re-runs this when a provider registers or refresh()es.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCommandMode, query, registryTick]);
+
   // Command mode ("> …"): fuzzy-match the part after ">" against every
   // palette command's label instead of the tab/window/session/file list.
   const commandEntries = useMemo<Entry[]>(() => {
@@ -204,8 +226,8 @@ export default function QuickSwitcher({
     () =>
       isCommandMode
         ? commandEntries
-        : [...entries.filter((e) => fuzzyMatch(query, e.label)), ...fileEntries],
-    [isCommandMode, commandEntries, entries, fileEntries, query],
+        : [...entries.filter((e) => fuzzyMatch(query, e.label)), ...providerEntries, ...fileEntries],
+    [isCommandMode, commandEntries, entries, providerEntries, fileEntries, query],
   );
 
   const showFilesLoading = !isCommandMode && filesRootDir !== null && query.length > 0 && filesLoading;

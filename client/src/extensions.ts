@@ -10,6 +10,7 @@
 // own resolver, not extension involvement in loading/activating themes.
 import * as ReactNS from "react";
 import { extensionApiBase, extensionFileUrl, fetchExtensions } from "./api";
+import type { CreateTerminalEngine } from "./engines/types";
 import type { ExtensionSettingsValues } from "./settings";
 import type { ExtensionInfo, MenuItem } from "./types";
 import { getFileExtension } from "./utils/fileExtension";
@@ -83,7 +84,17 @@ export interface SidebarPanelHostProps {
   // Opens the app's shared context menu at the given screen position — same
   // capability FileViewerHostProps.showMenu gives file viewers.
   showMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  // The app's shared confirm dialog (message → resolves true on confirm) —
+  // for destructive panel actions like the ports panel's Kill process.
+  confirmDialog?: (message: string, confirmLabel?: string) => Promise<boolean>;
 }
+
+// "tab": the panel is its own sidebar tab (SCM, Search). "explorer": the
+// panel is an accordion section inside the Explorer tab, alongside the
+// built-in SESSIONS/FILES sections (the extracted PORTS panel) — it takes
+// part in the accordion's ordering/collapse/resize persistence under its
+// namespaced id.
+export type SidebarPanelLocation = "tab" | "explorer";
 
 export interface RegisteredSidebarPanel {
   // Namespaced ext.<extensionId>.<id> — used as the sidebar's PanelId.
@@ -97,6 +108,10 @@ export interface RegisteredSidebarPanel {
   // ctx.app.setSidebarBadge, not at registration time, since it typically
   // depends on data fetched after activate() runs.
   badge?: number | null;
+  location: SidebarPanelLocation;
+  // Whether an "explorer" accordion section starts collapsed for users with
+  // no stored state for it (the tab location ignores this).
+  defaultCollapsed?: boolean;
   component: ReactNS.ComponentType<SidebarPanelHostProps>;
 }
 
@@ -150,12 +165,20 @@ export interface ExtensionContext {
     // Codicon name shown on this panel's sidebar tab. Defaults to
     // "extensions" when omitted.
     icon?: string;
+    // Where the panel renders — its own sidebar tab (default) or an
+    // accordion section inside the Explorer tab. See SidebarPanelLocation.
+    location?: SidebarPanelLocation;
+    // Explorer-location only: collapsed by default for users with no stored
+    // accordion state for this panel.
+    defaultCollapsed?: boolean;
     // Default keybinding (keybindings.ts combo syntax, e.g. "ctrl+shift+KeyG")
-    // for an auto-registered "Sidebar: Focus <title>" command that reveals
-    // the sidebar (if hidden) and switches to this tab — see
-    // focusSidebarTab. Omit for no command at all; there's no unbound
-    // default the way built-in commands get one, since most panels don't
-    // need a dedicated shortcut cluttering the palette/keybinding list.
+    // for the auto-registered "Sidebar: Focus <title>" command that reveals
+    // the sidebar (if hidden) and switches to this tab / expands this
+    // section — see focusSidebarTab/focusExplorerPanel. For "tab" panels,
+    // omitting it omits the command entirely (most panels don't need a
+    // dedicated shortcut cluttering the palette); "explorer" panels always
+    // get the command (unbound when omitted), matching the built-in
+    // sections' own always-present focus commands.
     focusBinding?: string;
     component: ReactNS.ComponentType<SidebarPanelHostProps>;
   }): void;
@@ -171,6 +194,45 @@ export interface ExtensionContext {
     onClick: (ctx: WindowActionContext) => void;
     showInTabBar?: boolean;
   }): void;
+  // Contributes per-row decorations (badge + row class + tooltip) to the
+  // FILES tree, and optionally a root decoration (the branch pill slot).
+  // provideDecoration is synchronous — serve from a cache the extension
+  // maintains itself, then call the returned refresh() after that cache
+  // changes so the tree re-renders with the new answers.
+  registerFileDecorationProvider(provider: {
+    id: string;
+    provideDecoration: (path: string, isDir: boolean) => FileDecoration | undefined;
+    provideRootDecoration?: (rootPath: string) => RootDecoration | undefined;
+  }): { refresh(): void };
+  // Contributes badges to SESSIONS-tree window rows (where the built-in
+  // subagent count rendered before extraction). Same sync-from-cache +
+  // refresh() contract as registerFileDecorationProvider.
+  registerSessionDecorationProvider(provider: {
+    id: string;
+    provideWindowDecoration: (ctx: SessionDecorationContext) => SessionDecoration | undefined;
+    onClick?: (anchorRect: DOMRect, ctx: SessionDecorationContext) => void;
+  }): { refresh(): void };
+  // Supplies a terminal engine (the CreateTerminalEngine seam from
+  // engines/types) — TerminalView resolves the engine setting against this
+  // registry after extensions settle. See engines/index.ts.
+  registerTerminalEngine(engine: { id: string; label: string; create: CreateTerminalEngine }): void;
+  // Contributes result rows to the quick switcher (non-command mode),
+  // alongside the core tab/window/session/file sources. Same sync-from-
+  // cache + refresh() contract as the decoration providers.
+  registerQuickSwitcherProvider(provider: {
+    id: string;
+    provideResults: (query: string) => QuickSwitcherItem[];
+  }): { refresh(): void };
+  // Renders per-terminal UI in the touch-key bar's old slots — see
+  // TerminalAccessoryContext/TerminalAccessoryPlacement.
+  registerTerminalAccessory(accessory: {
+    id: string;
+    placement: TerminalAccessoryPlacement;
+    component: ReactNS.ComponentType<TerminalAccessoryHostProps>;
+  }): void;
+  // Renders a custom component inside this extension's Settings section,
+  // below its scalar configuration controls.
+  registerSettingsComponent(component: { id: string; component: ReactNS.ComponentType }): void;
   app: {
     getActiveContext(): ActiveContext;
     onDidChangeContext(cb: (ctx: ActiveContext) => void): () => void;
@@ -229,14 +291,186 @@ export interface ExtensionContext {
   // as subscribeExtensionRegistry's plain re-render nudge.
   settings: {
     get(key: string): unknown;
+    // Writes one of this extension's own configuration values — same
+    // store the Settings UI edits (server-synced), so onDidChange fires
+    // and the value persists.
+    set(key: string, value: unknown): void;
     onDidChange(cb: () => void): () => void;
   };
+}
+
+// A single row's decoration in the FILES tree — the visual vocabulary
+// GitStatusBadge/git-status-* row classes used before extraction, made
+// generic. Colors live in the providing extension's own stylesheet (it
+// supplies a className), not in a color value here, so theming stays CSS.
+export interface FileDecoration {
+  // Short badge text rendered at the row's right edge (e.g. "M").
+  badge?: string;
+  // Tooltip for the badge (falls back to the badge text).
+  tooltip?: string;
+  // Extra class(es) applied to the whole row (e.g. "git-status-modified" —
+  // row coloring/dimming is the provider's stylesheet's job).
+  className?: string;
+}
+
+// Decoration for the tree's root header (the branch pill, generically):
+// label is the pill text.
+export interface RootDecoration {
+  label: string;
+  tooltip?: string;
+}
+
+export interface RegisteredFileDecorationProvider {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  // Synchronous, from provider-owned cache — called per visible row on
+  // every tree render, so it must be a plain lookup, never a fetch.
+  provideDecoration(path: string, isDir: boolean): FileDecoration | undefined;
+  provideRootDecoration?(rootPath: string): RootDecoration | undefined;
+}
+
+// What a session-window decoration's provide/onClick are evaluated against —
+// same plain-snapshot shape as WindowActionContext.
+export interface SessionDecorationContext {
+  sessionName: string;
+  windowIndex: number;
+  cwd: string;
+  command: string;
+}
+
+// A badge on a SESSIONS-tree window row (the subagent count, generically).
+export interface SessionDecoration {
+  badge: string;
+  tooltip?: string;
+  className?: string;
+}
+
+export interface RegisteredSessionDecorationProvider {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  // Synchronous, from provider-owned cache — see provideDecoration above.
+  provideWindowDecoration(ctx: SessionDecorationContext): SessionDecoration | undefined;
+  // Clicking the badge. anchorRect is the badge's bounding rect so the
+  // extension can position its own popover (rendered via its own portal
+  // root, torn down in deactivate).
+  onClick?(anchorRect: DOMRect, ctx: SessionDecorationContext): void;
+}
+
+// A quick-switcher result contributed by an extension provider — rendered
+// alongside the core tab/window/session/file rows.
+export interface QuickSwitcherItem {
+  label: string;
+  // Short chip text shown where core rows show their group ("tab", "file",
+  // …). Defaults to "ext".
+  tag?: string;
+  // secondary mirrors core rows' Shift+Enter/Shift+click argument; items
+  // without a secondary action can ignore it.
+  run: (secondary: boolean) => void;
+}
+
+export interface RegisteredQuickSwitcherProvider {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  // Synchronous, called per keystroke with the current (non-command-mode)
+  // query — answer from provider-owned cached state and self-limit result
+  // counts; call the registration handle's refresh() when that cache
+  // changes so an open switcher re-queries.
+  provideResults(query: string): QuickSwitcherItem[];
+}
+
+// The per-terminal context handed to a terminal accessory's component —
+// shaped from exactly what the extracted touch-key bar consumed (see
+// extensions/touch-keys), no speculative surface.
+export interface TerminalAccessoryContext {
+  // Whether this terminal is the focused one (accessories usually render
+  // only for it).
+  focused: boolean;
+  // matchMedia("(pointer: coarse) and (hover: none)") — a real phone or
+  // tablet, not a touch-screen laptop.
+  mobilePointer: boolean;
+  // The pane's current foreground command (for when-clause gating).
+  command: string;
+  // The app's sticky-Ctrl state for this terminal (applied to typed input
+  // by TerminalView's own input pipeline) — accessories may display and
+  // toggle it.
+  stickyCtrl: boolean;
+  toggleStickyCtrl(): void;
+  // Raw bytes to the pty (mouse-report/keystroke channel).
+  sendInput(data: string): void;
+  // Local-echo-aware text send (e.g. voice transcripts) — buffers through
+  // the echo overlay when local echo is active instead of going straight
+  // to the pty.
+  sendText(text: string): void;
+  // Routes a picked image through the terminal's upload pipeline.
+  uploadImage(file: File): void;
+  // Suppresses (or restores) the mobile soft keyboard for this terminal:
+  // the engine's hidden input element gets inputmode="none", so it stays
+  // focusable — hardware keys and accessory-drawn keyboards keep working —
+  // but tapping the terminal no longer summons the OS keyboard. The
+  // request is remembered across engine remounts and no-ops on an engine
+  // that doesn't implement the seam's setSoftKeyboardSuppressed. Make this
+  // opt-in via your own setting: while suppressed, YOUR accessory is the
+  // only on-screen text input (no OS autocomplete/dictation/IME).
+  setSoftKeyboardSuppressed(suppressed: boolean): void;
+  // Positioning container for "overlay" accessories (the terminal body).
+  containerRef: ReactNS.RefObject<HTMLDivElement | null>;
+}
+
+export interface TerminalAccessoryHostProps {
+  context: TerminalAccessoryContext;
+}
+
+// "bar": rendered after the terminal body, in document flow (the docked
+// touch-key bar's slot). "overlay": rendered inside the terminal body's
+// positioning context (the floating touch keys' slot).
+export type TerminalAccessoryPlacement = "bar" | "overlay";
+
+export interface RegisteredTerminalAccessory {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  placement: TerminalAccessoryPlacement;
+  component: ReactNS.ComponentType<TerminalAccessoryHostProps>;
+}
+
+// A custom component rendered inside the extension's own Settings section,
+// below its scalar configuration controls — for config that outgrows the
+// scalar property renderer (the touch-keys drag-and-drop layout editor).
+// Reads/writes its values through ctx.settings (get/set/onDidChange).
+export interface RegisteredSettingsComponent {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  component: ReactNS.ComponentType;
+}
+
+// A terminal engine implementation supplied by an extension — the app's
+// rendering surface itself. The xterm-engine extension is a *required
+// builtin* (see the server's tmuxServer.required handling), so at least one
+// engine is always registered once extensions settle.
+export interface RegisteredTerminalEngine {
+  // Namespaced ext.<extensionId>.<id> — what the terminalEngine setting
+  // stores.
+  id: string;
+  extensionId: string;
+  // Human label for the Settings engine select.
+  label: string;
+  create: CreateTerminalEngine;
 }
 
 export const extensionCommands: RegisteredCommand[] = [];
 export const extensionFileViewers: RegisteredFileViewer[] = [];
 export const extensionSidebarPanels: RegisteredSidebarPanel[] = [];
 export const extensionWindowActions: RegisteredWindowAction[] = [];
+export const extensionFileDecorationProviders: RegisteredFileDecorationProvider[] = [];
+export const extensionSessionDecorationProviders: RegisteredSessionDecorationProvider[] = [];
+export const extensionTerminalEngines: RegisteredTerminalEngine[] = [];
+export const extensionQuickSwitcherProviders: RegisteredQuickSwitcherProvider[] = [];
+export const extensionTerminalAccessories: RegisteredTerminalAccessory[] = [];
+export const extensionSettingsComponents: RegisteredSettingsComponent[] = [];
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -250,6 +484,66 @@ function notify(): void {
 export function subscribeExtensionRegistry(cb: Listener): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
+}
+
+// Re-render nudge for components that query the registries imperatively per
+// render (FileTree/SessionList reading decoration providers) rather than
+// consuming useExtensionRegistry's snapshot arrays — the returned tick is
+// only ever used as a dependency/render trigger. Also bumped by providers'
+// refresh() handles when their cached data (not the registry itself) changes.
+export function useExtensionRegistryVersion(): number {
+  const [tick, setTick] = ReactNS.useState(0);
+  ReactNS.useEffect(() => subscribeExtensionRegistry(() => setTick((t) => t + 1)), []);
+  return tick;
+}
+
+// First provider with an answer wins — decorations don't merge. With one
+// bundled provider (git-scm) that's exact; if two ever collide, registration
+// order (builtin-last override semantics don't apply here) decides.
+export function getFileDecoration(path: string, isDir: boolean): FileDecoration | undefined {
+  for (const p of extensionFileDecorationProviders) {
+    const d = p.provideDecoration(path, isDir);
+    if (d) return d;
+  }
+  return undefined;
+}
+
+export function getRootDecorations(rootPath: string): RootDecoration[] {
+  const out: RootDecoration[] = [];
+  for (const p of extensionFileDecorationProviders) {
+    const d = p.provideRootDecoration?.(rootPath);
+    if (d) out.push(d);
+  }
+  return out;
+}
+
+// Extension quick-switcher results for a query, in registration order — a
+// provider that throws contributes nothing rather than breaking the list.
+export function getQuickSwitcherResults(
+  query: string,
+): { provider: RegisteredQuickSwitcherProvider; item: QuickSwitcherItem }[] {
+  const out: { provider: RegisteredQuickSwitcherProvider; item: QuickSwitcherItem }[] = [];
+  for (const p of extensionQuickSwitcherProviders) {
+    try {
+      for (const item of p.provideResults(query)) out.push({ provider: p, item });
+    } catch (err) {
+      console.error(`quick-switcher provider ${p.id} threw:`, err);
+    }
+  }
+  return out;
+}
+
+// All providers' badges, in registration order — a window row can carry
+// several (unlike file decorations, where one row = one status).
+export function getWindowDecorations(
+  ctx: SessionDecorationContext,
+): { provider: RegisteredSessionDecorationProvider; decoration: SessionDecoration }[] {
+  const out: { provider: RegisteredSessionDecorationProvider; decoration: SessionDecoration }[] = [];
+  for (const p of extensionSessionDecorationProviders) {
+    const d = p.provideWindowDecoration(ctx);
+    if (d) out.push({ provider: p, decoration: d });
+  }
+  return out;
 }
 
 // Matches by extension + mode ("default": FILES-tree click target;
@@ -432,23 +726,25 @@ export function focusSessionsPanel(): void {
   sessionsFocusBridge?.focus();
 }
 
-interface PortsFocusBridge {
-  // Expands the PORTS accordion panel if collapsed, then moves keyboard
-  // focus to its focused-or-first row.
-  focus(): void;
+interface ExplorerPanelFocusBridge {
+  // Expands the given accordion section if collapsed, then moves keyboard
+  // focus into its content — the generic counterpart of the SESSIONS
+  // bridge above, for extension panels registered with location "explorer".
+  focus(panelId: string): void;
 }
 
-let portsFocusBridge: PortsFocusBridge | null = null;
+let explorerPanelFocusBridge: ExplorerPanelFocusBridge | null = null;
 
 // Wired once from Sidebar.tsx — same bridge pattern as
 // setSessionsFocusBridge above.
-export function setPortsFocusBridge(bridge: PortsFocusBridge | null): void {
-  portsFocusBridge = bridge;
+export function setExplorerPanelFocusBridge(bridge: ExplorerPanelFocusBridge | null): void {
+  explorerPanelFocusBridge = bridge;
 }
 
-// Drives the "Sidebar: Focus Ports" command — see focusSessionsPanel's doc
-// comment for the reveal/switch logic this mirrors.
-export function focusPortsPanel(): void {
+// Drives every explorer-located extension panel's "Sidebar: Focus <title>"
+// command — see focusSessionsPanel's doc comment for the reveal/switch
+// logic this mirrors.
+export function focusExplorerPanel(panelId: string): void {
   if (!sidebarVisibility) return;
   if (!sidebarVisibility.isVisible()) {
     sidebarVisibility.setVisible(true);
@@ -456,7 +752,7 @@ export function focusPortsPanel(): void {
   } else if (sidebarTabsBridge?.getActive() !== EXPLORER_TAB_ID) {
     selectSidebarTab(EXPLORER_TAB_ID);
   }
-  portsFocusBridge?.focus();
+  explorerPanelFocusBridge?.focus(panelId);
 }
 
 // "Find in Folder…" (FILES-tree folder context menu, useFileActions.ts) —
@@ -553,6 +849,16 @@ export function setExtensionSettingsOverrides(
   }
 }
 
+// Wired once from App.tsx to the server-synced extension-settings store's
+// updater — backs ctx.settings.set.
+let extensionSettingUpdater: ((extId: string, key: string, value: unknown) => void) | null = null;
+
+export function setExtensionSettingUpdater(
+  handler: ((extId: string, key: string, value: unknown) => void) | null,
+): void {
+  extensionSettingUpdater = handler;
+}
+
 function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionContext {
   return {
     React: ReactNS,
@@ -573,21 +879,26 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
     },
     registerSidebarPanel(panel) {
       const namespacedId = `ext.${ext.id}.${panel.id}`;
+      const location = panel.location ?? "tab";
       extensionSidebarPanels.push({
         id: namespacedId,
         title: panel.title,
         icon: panel.icon,
+        location,
+        defaultCollapsed: panel.defaultCollapsed,
         component: panel.component,
       });
-      // Opt-in only — most panels don't warrant their own dedicated
-      // shortcut cluttering the palette/keybinding list (see the
-      // focusBinding doc comment above).
-      if (panel.focusBinding) {
+      // Tab panels: opt-in only — most don't warrant a dedicated shortcut
+      // cluttering the palette/keybinding list. Explorer sections: always
+      // registered (unbound when no focusBinding), matching the built-in
+      // SESSIONS/FILES sections' always-present focus commands.
+      if (panel.focusBinding || location === "explorer") {
         extensionCommands.push({
           id: `${namespacedId}.focus`,
           label: `Sidebar: Focus ${panel.title}`,
           defaultBinding: panel.focusBinding,
-          run: () => focusSidebarTab(namespacedId),
+          run: () =>
+            location === "explorer" ? focusExplorerPanel(namespacedId) : focusSidebarTab(namespacedId),
         });
       }
       notify();
@@ -601,6 +912,65 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         isVisible: action.isVisible,
         onClick: action.onClick,
         showInTabBar: action.showInTabBar ?? false,
+      });
+      notify();
+    },
+    registerFileDecorationProvider(provider) {
+      extensionFileDecorationProviders.push({
+        id: `ext.${ext.id}.${provider.id}`,
+        extensionId: ext.id,
+        provideDecoration: provider.provideDecoration,
+        provideRootDecoration: provider.provideRootDecoration,
+      });
+      notify();
+      // refresh() is the provider's "my cached answers changed" nudge —
+      // same notify the registries use, so every subscribed consumer
+      // re-queries. Cheap enough at this scale to not need per-provider
+      // listener granularity.
+      return { refresh: notify };
+    },
+    registerSessionDecorationProvider(provider) {
+      extensionSessionDecorationProviders.push({
+        id: `ext.${ext.id}.${provider.id}`,
+        extensionId: ext.id,
+        provideWindowDecoration: provider.provideWindowDecoration,
+        onClick: provider.onClick,
+      });
+      notify();
+      return { refresh: notify };
+    },
+    registerTerminalEngine(engine) {
+      extensionTerminalEngines.push({
+        id: `ext.${ext.id}.${engine.id}`,
+        extensionId: ext.id,
+        label: engine.label,
+        create: engine.create,
+      });
+      notify();
+    },
+    registerQuickSwitcherProvider(provider) {
+      extensionQuickSwitcherProviders.push({
+        id: `ext.${ext.id}.${provider.id}`,
+        extensionId: ext.id,
+        provideResults: provider.provideResults,
+      });
+      notify();
+      return { refresh: notify };
+    },
+    registerTerminalAccessory(accessory) {
+      extensionTerminalAccessories.push({
+        id: `ext.${ext.id}.${accessory.id}`,
+        extensionId: ext.id,
+        placement: accessory.placement,
+        component: accessory.component,
+      });
+      notify();
+    },
+    registerSettingsComponent(component) {
+      extensionSettingsComponents.push({
+        id: `ext.${ext.id}.${component.id}`,
+        extensionId: ext.id,
+        component: component.component,
       });
       notify();
     },
@@ -656,6 +1026,9 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
     settings: {
       get(key) {
         return resolvedExtensionSettings[ext.id]?.[key];
+      },
+      set(key, value) {
+        extensionSettingUpdater?.(ext.id, key, value);
       },
       onDidChange(cb) {
         let listeners = extensionSettingsListeners.get(ext.id);
@@ -741,6 +1114,24 @@ function deactivateClientExtension(extId: string): void {
   for (let i = extensionWindowActions.length - 1; i >= 0; i--) {
     if (extensionWindowActions[i].extensionId === extId) extensionWindowActions.splice(i, 1);
   }
+  for (let i = extensionFileDecorationProviders.length - 1; i >= 0; i--) {
+    if (extensionFileDecorationProviders[i].extensionId === extId) extensionFileDecorationProviders.splice(i, 1);
+  }
+  for (let i = extensionSessionDecorationProviders.length - 1; i >= 0; i--) {
+    if (extensionSessionDecorationProviders[i].extensionId === extId) extensionSessionDecorationProviders.splice(i, 1);
+  }
+  for (let i = extensionTerminalEngines.length - 1; i >= 0; i--) {
+    if (extensionTerminalEngines[i].extensionId === extId) extensionTerminalEngines.splice(i, 1);
+  }
+  for (let i = extensionQuickSwitcherProviders.length - 1; i >= 0; i--) {
+    if (extensionQuickSwitcherProviders[i].extensionId === extId) extensionQuickSwitcherProviders.splice(i, 1);
+  }
+  for (let i = extensionTerminalAccessories.length - 1; i >= 0; i--) {
+    if (extensionTerminalAccessories[i].extensionId === extId) extensionTerminalAccessories.splice(i, 1);
+  }
+  for (let i = extensionSettingsComponents.length - 1; i >= 0; i--) {
+    if (extensionSettingsComponents[i].extensionId === extId) extensionSettingsComponents.splice(i, 1);
+  }
   if (runtime) for (const cb of runtime.contextListeners) contextListeners.delete(cb);
   if (runtime) for (const unsubscribe of runtime.iconThemeListeners) unsubscribe();
   extensionSettingsListeners.delete(extId);
@@ -772,5 +1163,20 @@ export async function loadExtensions(onListLoaded?: (list: ExtensionInfo[]) => v
   await Promise.all(
     list.filter((ext) => ext.enabled && ext.hasClient).map((ext) => activateClientExtension(ext)),
   );
+  settleExtensions();
   return list;
+}
+
+// Resolved after the FIRST loadExtensions pass has finished activating
+// every enabled client entry — the explicit "extensions settled" gate for
+// consumers whose behavior depends on registrations existing (the terminal
+// engine resolution, which must not declare an engine missing while its
+// extension is still activating — see engines/index.ts).
+let settleExtensions: () => void = () => {};
+const extensionsSettled = new Promise<void>((resolve) => {
+  settleExtensions = resolve;
+});
+
+export function whenExtensionsSettled(): Promise<void> {
+  return extensionsSettled;
 }

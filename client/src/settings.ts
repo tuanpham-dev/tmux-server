@@ -1,14 +1,14 @@
 import { migrateKeybindingOverrides, type KeybindingOverrides } from "./keybindings";
-import { DEFAULT_TOUCH_KEYS, type TouchKey } from "./touchKeys";
 import type { PinnedSession } from "./types";
 
 export interface AppSettings {
-  // "auto" resolves to xterm on mobile devices (same predicate as
-  // touchKeyBar's "auto") and ghostty on desktop — synced across devices,
-  // so a phone and a desktop each get the engine suited to them from one
-  // setting. Switching (directly or via auto re-resolving) remounts the
-  // terminal and reattaches, same cost as a reconnect.
-  terminalEngine: "ghostty" | "xterm" | "auto";
+  // "auto" resolves per device (xterm on mobile pointers, ghostty
+  // elsewhere) — synced across devices, so a phone and a desktop each get
+  // the engine suited to them from one setting. Switching (directly or via
+  // auto re-resolving) remounts the terminal and reattaches. Otherwise a
+  // namespaced extension engine id (ext.<extensionId>.<engineId>) — both
+  // engines are bundled extensions now; see client/src/engines/index.ts.
+  terminalEngine: string;
   fontFamily: string;
   fontSize: number;
   // Weight used for ordinary (non-bold) text: "medium" renders everything
@@ -21,7 +21,7 @@ export interface AppSettings {
   // Synthetic glyph thickening: stroke width in px added around every glyph
   // (0 = off). Fractional control between the font's designed weights, at
   // the cost of slightly softer edges. ghostty engine: canvas rasterizer
-  // shim (ghosttyShims.ts). xterm engine: native -webkit-text-stroke on the
+  // shim (the ghostty-engine extension). xterm engine: native -webkit-text-stroke on the
   // DOM renderer. Applies to any font, including system fallbacks (unlike
   // fontWeight).
   textThickness: number;
@@ -35,13 +35,13 @@ export interface AppSettings {
   cursorBlink: boolean;
   // Line height multiplier / letter spacing in px. ghostty engine: no
   // native options, applied by adjusting the renderer's measured cell
-  // metrics (ghosttyShims.ts). xterm engine: native options.
+  // metrics (the ghostty-engine extension's shims). xterm engine: native options.
   lineHeight: number;
   letterSpacing: number;
   // 1 disables it; 4.5 is the VS Code/code-server default (WCAG AA) —
   // without it, e.g. lazygit's selected row keeps its original foreground
   // colors on the blue selection background and becomes unreadable.
-  // ghostty engine: shim (ghosttyShims.ts). xterm engine: native option.
+  // ghostty engine: shim (its extension's renderer shims). xterm engine: native option.
   minimumContrastRatio: number;
   uploadConflict: "rename" | "overwrite" | "ask";
   // Destination directory for image paste/drop and the {image} touch key
@@ -49,18 +49,8 @@ export interface AppSettings {
   // every upload, regardless of the pane's cwd. Empty falls back to the
   // pane's own `<cwd>/uploads`.
   pasteDropUploadDir: string;
-  // "auto" shows the on-screen key bar only on mobile devices — coarse
-  // pointer AND no hover, so phones/tablets match but touch-screen laptops
-  // (whose primary input hovers) don't.
-  touchKeyBar: "auto" | "always" | "never";
-  // "bar" is the fixed strip below the terminal; "floating" is a movable
-  // toggle that expands the same keys next to it (see FloatingTouchKeys).
-  touchKeyBarStyle: "bar" | "floating";
-  // User-defined keys for the on-screen bar/toggle above — label, what's
-  // sent, and which program (if any) must be running for the key to show.
-  // See touchKeys.ts for the send-token notation and when-matching rules.
-  touchKeys: TouchKey[];
-  // Comma-separated program names (touchKeys.ts's whenMatches rules) gating
+  // Comma-separated program names (lib/terminalInput.ts's whenMatches
+  // rules) gating
   // zero-lag local echo (plans/codeman-mobile-features.md): on a mobile
   // pointer device, while the pane's foreground command matches, typed
   // input renders instantly in a DOM overlay and buffers until Enter
@@ -84,9 +74,6 @@ export interface AppSettings {
   // from server/.env, else the server's own cwd). Validated server-side; a
   // non-existent path silently falls back rather than failing the create.
   newSessionCwd: string;
-  // Git status badges/colors in the FILES tree. Off also skips the server's
-  // porcelain status scan — worthwhile on very large repos.
-  fileTreeGitStatus: boolean;
   // `${extensionId}:${themeLabel}` from an installed extension's
   // contributes.themes — see theme.ts. Defaults to the bundled
   // tmux-server.plastic-legacy-theme extension; "" (or any unresolvable
@@ -117,7 +104,7 @@ export interface AppSettings {
 // exists) — so an unavailable bundled font still lands on something native
 // to the machine before falling through to the browser's generic mapping.
 export const DEFAULT_SETTINGS: AppSettings = {
-  terminalEngine: "ghostty",
+  terminalEngine: "ext.tmux-server.ghostty-engine.ghostty",
   fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
   fontWeight: "normal",
@@ -130,16 +117,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   minimumContrastRatio: 4.5,
   uploadConflict: "rename",
   pasteDropUploadDir: "/tmp",
-  touchKeyBar: "auto",
-  touchKeyBarStyle: "bar",
-  touchKeys: DEFAULT_TOUCH_KEYS,
   localEchoWhen: "claude",
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",
   tabGroupsBySession: false,
   newSessionCwd: "",
-  fileTreeGitStatus: true,
   colorTheme: "tmux-server.plastic-legacy-theme:Plastic Legacy",
   iconTheme: "tmux-server.seti-icons:seti",
   paletteSortByUsage: false,
@@ -161,6 +144,10 @@ export function migrateSettings(settings: AppSettings): AppSettings {
   if (next.colorTheme === "") next.colorTheme = DEFAULT_SETTINGS.colorTheme;
   if (next.iconTheme === "") next.iconTheme = DEFAULT_SETTINGS.iconTheme;
   if (next.fontFamily === LEGACY_DEFAULT_FONT_FAMILY) next.fontFamily = DEFAULT_SETTINGS.fontFamily;
+  // Engine values from before both engines became bundled extensions map to
+  // the extensions' namespaced ids ("auto" is still "auto").
+  if (next.terminalEngine === "ghostty") next.terminalEngine = "ext.tmux-server.ghostty-engine.ghostty";
+  if (next.terminalEngine === "xterm") next.terminalEngine = "ext.tmux-server.xterm-engine.xterm";
   return next;
 }
 
@@ -213,15 +200,62 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function loadExtensionSettings(): ExtensionSettingsValues {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(EXTENSION_SETTINGS_KEY) ?? "{}");
-    if (!isPlainObject(parsed)) return {};
+    if (!isPlainObject(parsed)) return migrateExtensionSettings({});
     const result: ExtensionSettingsValues = {};
     for (const [extId, values] of Object.entries(parsed)) {
       if (isPlainObject(values)) result[extId] = values;
     }
-    return result;
+    return migrateExtensionSettings(result);
   } catch {
     return {};
   }
+}
+
+// One-time carry-over of the pre-extraction core `fileTreeGitStatus`
+// setting (its feature moved into the git-scm extension): a user who had
+// turned tree badges off keeps them off via the extension's own
+// gitScm.fileTreeDecorations property. Only `false` needs migrating — the
+// old and new defaults are both on. Reads the legacy app-settings blob
+// directly since the AppSettings type no longer carries the key.
+function migrateExtensionSettings(values: ExtensionSettingsValues): ExtensionSettingsValues {
+  try {
+    const legacy: unknown = JSON.parse(localStorage.getItem(KEY) ?? "{}");
+    if (isPlainObject(legacy)) {
+      if (
+        legacy.fileTreeGitStatus === false &&
+        values["tmux-server.git-scm"]?.["gitScm.fileTreeDecorations"] === undefined
+      ) {
+        values["tmux-server.git-scm"] = {
+          ...values["tmux-server.git-scm"],
+          "gitScm.fileTreeDecorations": false,
+        };
+      }
+      // Pre-extraction touch-key settings → the touch-keys extension's own
+      // properties. Only non-default values carry over; the customized key
+      // layout serializes into the extension's JSON-string setting.
+      const tk: Record<string, unknown> = { ...values["tmux-server.touch-keys"] };
+      let touched = false;
+      if (
+        (legacy.touchKeyBar === "always" || legacy.touchKeyBar === "never") &&
+        tk["touchKeys.show"] === undefined
+      ) {
+        tk["touchKeys.show"] = legacy.touchKeyBar;
+        touched = true;
+      }
+      if (legacy.touchKeyBarStyle === "floating" && tk["touchKeys.style"] === undefined) {
+        tk["touchKeys.style"] = "floating";
+        touched = true;
+      }
+      if (Array.isArray(legacy.touchKeys) && tk["touchKeys.keys"] === undefined) {
+        tk["touchKeys.keys"] = JSON.stringify(legacy.touchKeys);
+        touched = true;
+      }
+      if (touched) values["tmux-server.touch-keys"] = tk;
+    }
+  } catch {
+    // No legacy blob to migrate.
+  }
+  return values;
 }
 
 export function saveExtensionSettings(values: ExtensionSettingsValues): void {

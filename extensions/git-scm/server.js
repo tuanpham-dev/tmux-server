@@ -13,6 +13,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { buildDirStatuses, classify } from "./statusModel.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASKPASS_PATH = path.join(__dirname, "askpass.cjs");
@@ -297,7 +298,188 @@ function looksBinary(buf) {
   return false;
 }
 
-export function activate({ router, log }) {
+// ---- File-tree decorations (ported from core server/src/git.ts) ----
+//
+// A repo scan is whole-repo work keyed by the repo ROOT, so every directory
+// in the same repo produces the identical answer — the FILES tree polls its
+// root plus every expanded folder every 3s, in every open tab, so the scan
+// is cached per root, briefly, with one in-flight scan shared among every
+// caller that asks while it runs. Any mutation the core server performs
+// drops the cache outright (host.events.onApiMutation, the extension-facing
+// successor of core invalidateGitCache), so an edit made through the UI
+// shows up immediately rather than waiting out the TTL.
+const STATUS_TTL_MS = 1000;
+// dir -> repo root. Effectively immutable for a given directory, so this is
+// cached far longer; it exists to kill the `git rev-parse` fork per call.
+const ROOT_TTL_MS = 30_000;
+// getTrackedDirs' answer (a full `git ls-files` walk) only affects the
+// "fully ignored vs. mixed" dimming distinction, and only changes when the
+// index changes — a much longer TTL than STATUS_TTL_MS is safe here.
+const TRACKED_DIRS_TTL_MS = 30_000;
+
+const rootCache = new Map();
+const statusScanCache = new Map();
+const statusScanInFlight = new Map();
+const trackedDirsCache = new Map();
+
+function invalidateDecorationCaches() {
+  statusScanCache.clear();
+  trackedDirsCache.clear();
+}
+
+async function repoRootOf(anyDirInRepo) {
+  const cached = rootCache.get(anyDirInRepo);
+  if (cached && Date.now() - cached.at < ROOT_TTL_MS) return cached.root;
+  let root;
+  try {
+    root = (await git(["rev-parse", "--show-toplevel"], anyDirInRepo)).trim() || null;
+  } catch {
+    root = null;
+  }
+  rootCache.set(anyDirInRepo, { at: Date.now(), root });
+  return root;
+}
+
+// "branch --show-current" prints nothing (without erroring) for a detached
+// HEAD, so fall back to a short commit hash in that case.
+async function branchOf(root) {
+  let branch;
+  try {
+    branch = (await git(["branch", "--show-current"], root)).trim();
+  } catch {
+    return null;
+  }
+  if (branch) return branch;
+  try {
+    return (await git(["rev-parse", "--short", "HEAD"], root)).trim();
+  } catch {
+    return null;
+  }
+}
+
+// Every ancestor directory (relative to root, no trailing slash) that
+// contains at least one tracked file — tells a genuinely fully-ignored
+// directory apart from one with ignored content mixed into tracked files.
+async function getTrackedDirs(root) {
+  const cached = trackedDirsCache.get(root);
+  if (cached && Date.now() - cached.at < TRACKED_DIRS_TTL_MS) return cached.dirs;
+  const dirs = new Set();
+  try {
+    const out = await git(["ls-files", "-z"], root);
+    for (const token of out.split("\0")) {
+      if (!token) continue;
+      let idx = token.lastIndexOf("/");
+      while (idx !== -1) {
+        const dir = token.slice(0, idx);
+        if (dirs.has(dir)) break;
+        dirs.add(dir);
+        idx = dir.lastIndexOf("/");
+      }
+    }
+  } catch {
+    // Not a repo / git failed — empty set degrades to "no dimming nuance".
+  }
+  trackedDirsCache.set(root, { at: Date.now(), dirs });
+  return dirs;
+}
+
+// Two separate git calls instead of one to avoid blowing past execFile's
+// maxBuffer: `status --porcelain=v1 -z -uall` (changes; -uall recurses into
+// untracked dirs but NOT ignored ones, so output stays tiny) plus
+// `ls-files -i --others --directory` (ignored directories only, collapsed
+// to one entry each). A single `status -uall --ignored` would expand every
+// file inside node_modules/dist into "!! …" lines — 1 MB+ of output.
+async function scanRepoStatuses(root) {
+  let statusOut;
+  try {
+    statusOut = await git(["status", "--porcelain=v1", "-z", "-uall"], root);
+  } catch {
+    return null;
+  }
+
+  const statuses = new Map();
+  const tokens = statusOut.split("\0").filter((t) => t.length > 0);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const code = token.slice(0, 2);
+    const filePath = token.slice(3).replace(/\/$/, "");
+    statuses.set(filePath, classify(code));
+    // Renames/copies emit the original path as a separate NUL-terminated
+    // token right after; skip it so it isn't misread as its own entry.
+    if (code[0] === "R" || code[0] === "C" || code[1] === "R" || code[1] === "C") {
+      i++;
+    }
+  }
+
+  try {
+    const ignoredOut = await git(
+      ["ls-files", "-i", "--others", "--directory", "--exclude-standard", "-z"],
+      root,
+    );
+    for (const token of ignoredOut.split("\0")) {
+      if (!token) continue;
+      // Strip trailing slash so directory keys match the rest of the map.
+      statuses.set(token.replace(/\/$/, ""), "ignored");
+    }
+  } catch {
+    // Ignored-dir detection is best-effort; a failure here doesn't break
+    // the main status display.
+  }
+
+  const [branch, trackedDirs] = await Promise.all([branchOf(root), getTrackedDirs(root)]);
+  return { branch, statuses, dirStatuses: buildDirStatuses(statuses), trackedDirs };
+}
+
+async function getRepoDecorations(anyDirInRepo) {
+  const root = await repoRootOf(anyDirInRepo);
+  if (!root) return null;
+  const cached = statusScanCache.get(root);
+  if (cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.value;
+  const pending = statusScanInFlight.get(root);
+  if (pending) return pending;
+  const scan = scanRepoStatuses(root)
+    .then((value) => {
+      const result = value ? { root, ...value } : null;
+      statusScanCache.set(root, { at: Date.now(), value: result });
+      return result;
+    })
+    .finally(() => {
+      statusScanInFlight.delete(root);
+    });
+  statusScanInFlight.set(root, scan);
+  return scan;
+}
+
+export function activate({ router, log, host }) {
+  // Core file mutations (write/rename/delete/paste/upload) must show up in
+  // tree badges immediately, same as when the scan lived in core.
+  host?.events?.onApiMutation?.(invalidateDecorationCaches);
+
+  // File-tree decoration data for the FILES tree's root directory: the repo
+  // branch plus the per-path status maps, serialized flat — the client
+  // resolves each visible entry against them with statusModel.mjs's
+  // statusForEntry (same code the scan's own rollup uses).
+  router.get("/decorations", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    try {
+      const repo = await getRepoDecorations(cwd);
+      if (!repo) {
+        res.json({ root: null });
+        return;
+      }
+      res.json({
+        root: repo.root,
+        branch: repo.branch,
+        statuses: Object.fromEntries(repo.statuses),
+        dirStatuses: Object.fromEntries(repo.dirStatuses),
+        trackedDirs: [...repo.trackedDirs],
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ---- Interactive auth-prompt relay ----
   // git/ssh children get GIT_ASKPASS/SSH_ASKPASS pointed at askpass.cjs,
   // which forwards every prompt here over a token-guarded unix socket. The

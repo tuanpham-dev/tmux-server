@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { buildDirStatuses, statusForEntry, type GitFileStatus } from "./git.js";
+// Ported from core server/src/git.test.ts when the status scan moved into
+// this extension (statusModel.mjs). Runs under plain `node --test` — no
+// vitest, since extensions deliberately have no build/test toolchain beyond
+// esbuild bundling.
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { buildDirStatuses, statusForEntry } from "./statusModel.mjs";
 
-// Worst-first order, copied from git.ts's own PRIORITY — kept independent
-// here so a change to git.ts's ordering can't silently make this reference
-// agree with a broken implementation.
-const REFERENCE_PRIORITY: GitFileStatus[] = [
+// Worst-first order, copied from statusModel.mjs's own PRIORITY — kept
+// independent here so a change to the model's ordering can't silently make
+// this reference agree with a broken implementation.
+const REFERENCE_PRIORITY = [
   "conflicted",
   "deleted",
   "modified",
@@ -14,14 +19,9 @@ const REFERENCE_PRIORITY: GitFileStatus[] = [
   "ignored",
 ];
 
-// The pre-T1 O(entries) implementation, kept verbatim as the source of
-// truth for the new aggregate-based statusForEntry to agree with.
-function referenceStatusForEntry(
-  statuses: Map<string, GitFileStatus>,
-  trackedDirs: Set<string>,
-  relPath: string,
-  isDir: boolean,
-): GitFileStatus | undefined {
+// The pre-optimization O(entries) implementation, kept verbatim as the
+// source of truth for the aggregate-based statusForEntry to agree with.
+function referenceStatusForEntry(statuses, trackedDirs, relPath, isDir) {
   let result = statuses.get(relPath);
   if (!result) {
     const dirPrefix = `${relPath}/`;
@@ -40,11 +40,11 @@ function referenceStatusForEntry(
 // Synthetic statuses map exercising: worst-status aggregation across mixed
 // kinds, a collapsed ignored directory, a synthetic collapsed untracked
 // directory (statusForEntry's inheritance logic is generic even though only
-// "ignored" is ever collapsed in practice — see git.ts's ls-files -i call),
-// an exact-match directory entry that also has nested (worse-ranked-lower)
-// children, deep multi-level nesting, and both trackedDirs outcomes.
+// "ignored" is ever collapsed in practice — see server.js's ls-files -i
+// call), an exact-match directory entry that also has nested children,
+// deep multi-level nesting, and both trackedDirs outcomes.
 function buildFixture() {
-  const statuses = new Map<string, GitFileStatus>([
+  const statuses = new Map([
     ["src/a.ts", "modified"],
     ["src/deep/b.ts", "untracked"],
     ["vendor", "conflicted"],
@@ -55,12 +55,12 @@ function buildFixture() {
     ["mixedignored", "ignored"],
     ["a/b/c/d.ts", "modified"],
   ]);
-  const trackedDirs = new Set<string>(["mixedignored"]);
+  const trackedDirs = new Set(["mixedignored"]);
   const dirStatuses = buildDirStatuses(statuses);
   return { statuses, trackedDirs, dirStatuses };
 }
 
-const CASES: Array<{ name: string; relPath: string; isDir: boolean }> = [
+const CASES = [
   { name: "worst-status aggregation across mixed kinds", relPath: "src", isDir: true },
   { name: "deep nesting — immediate parent", relPath: "a/b/c", isDir: true },
   { name: "deep nesting — grandparent", relPath: "a/b", isDir: true },
@@ -82,46 +82,46 @@ describe("statusForEntry", () => {
     it(`matches the reference implementation: ${name}`, () => {
       const actual = statusForEntry(statuses, dirStatuses, trackedDirs, relPath, isDir);
       const expected = referenceStatusForEntry(statuses, trackedDirs, relPath, isDir);
-      expect(actual).toBe(expected);
+      assert.equal(actual, expected);
     });
   }
 
   it("resolves the worst-status directory aggregation to the documented value", () => {
-    expect(statusForEntry(statuses, dirStatuses, trackedDirs, "src", true)).toBe("modified");
+    assert.equal(statusForEntry(statuses, dirStatuses, trackedDirs, "src", true), "modified");
   });
 
   it("propagates a deeply nested status to every ancestor", () => {
-    expect(statusForEntry(statuses, dirStatuses, trackedDirs, "a", true)).toBe("modified");
-    expect(statusForEntry(statuses, dirStatuses, trackedDirs, "a/b", true)).toBe("modified");
-    expect(statusForEntry(statuses, dirStatuses, trackedDirs, "a/b/c", true)).toBe("modified");
+    assert.equal(statusForEntry(statuses, dirStatuses, trackedDirs, "a", true), "modified");
+    assert.equal(statusForEntry(statuses, dirStatuses, trackedDirs, "a/b", true), "modified");
+    assert.equal(statusForEntry(statuses, dirStatuses, trackedDirs, "a/b/c", true), "modified");
   });
 
   it("exact directory entry status wins over its nested children's aggregate", () => {
     // vendor/x.ts alone would aggregate to "modified", but vendor's own
     // exact entry ("conflicted") must take precedence.
-    expect(statusForEntry(statuses, dirStatuses, trackedDirs, "vendor", true)).toBe("conflicted");
+    assert.equal(statusForEntry(statuses, dirStatuses, trackedDirs, "vendor", true), "conflicted");
   });
 
   it("dims a fully ignored directory but not a mixed one", () => {
-    expect(statusForEntry(statuses, dirStatuses, trackedDirs, "onlyignored", true)).toBe("ignored");
-    expect(statusForEntry(statuses, dirStatuses, trackedDirs, "mixedignored", true)).toBeUndefined();
+    assert.equal(statusForEntry(statuses, dirStatuses, trackedDirs, "onlyignored", true), "ignored");
+    assert.equal(statusForEntry(statuses, dirStatuses, trackedDirs, "mixedignored", true), undefined);
   });
 });
 
 describe("buildDirStatuses", () => {
   it("aggregates the worst status per ancestor directory", () => {
     const { dirStatuses } = buildFixture();
-    expect(dirStatuses.get("src")).toBe("modified");
-    expect(dirStatuses.get("src/deep")).toBe("untracked");
-    expect(dirStatuses.get("a")).toBe("modified");
-    expect(dirStatuses.get("a/b")).toBe("modified");
-    expect(dirStatuses.get("a/b/c")).toBe("modified");
+    assert.equal(dirStatuses.get("src"), "modified");
+    assert.equal(dirStatuses.get("src/deep"), "untracked");
+    assert.equal(dirStatuses.get("a"), "modified");
+    assert.equal(dirStatuses.get("a/b"), "modified");
+    assert.equal(dirStatuses.get("a/b/c"), "modified");
     // vendor's aggregate reflects only its nested child, not its own exact entry.
-    expect(dirStatuses.get("vendor")).toBe("modified");
+    assert.equal(dirStatuses.get("vendor"), "modified");
   });
 
   it("never sets an entry for a top-level (slash-free) path", () => {
     const dirStatuses = buildDirStatuses(new Map([["README.md", "modified"]]));
-    expect(dirStatuses.size).toBe(0);
+    assert.equal(dirStatuses.size, 0);
   });
 });

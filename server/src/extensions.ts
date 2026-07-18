@@ -12,6 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Router, type NextFunction, type Request, type Response } from "express";
+import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { readSettingsDoc } from "./settingsStore.js";
 
 const configDir = path.join(
@@ -124,6 +125,10 @@ interface ExtensionManifest {
   tmuxServer?: {
     client?: string;
     server?: string;
+    // Bundled-only: a required builtin can be neither disabled nor
+    // uninstalled (the xterm terminal engine — the app's rendering floor).
+    // Ignored on user-installed extensions, which could otherwise claim it.
+    required?: boolean;
   };
 }
 
@@ -208,6 +213,10 @@ export interface ExtensionInfo {
   // see bundledExtensionsDir. Uninstalling one tombstones it in the state
   // file instead of deleting repo files (see uninstallExtension).
   builtin: boolean;
+  // manifest tmuxServer.required, honored only for builtins: the server
+  // refuses disable/uninstall and ignores stale state-file entries, and
+  // the Extensions UI shows "Required" instead of those actions.
+  required: boolean;
 }
 
 function resolveId(manifest: ExtensionManifest, folder: string): string {
@@ -288,6 +297,10 @@ async function discoverExtensions(): Promise<Map<string, DiscoveredExtension>> {
   return found;
 }
 
+function isRequired(manifest: ExtensionManifest, builtin: boolean): boolean {
+  return builtin && manifest.tmuxServer?.required === true;
+}
+
 function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, builtin: boolean): ExtensionInfo {
   return {
     id,
@@ -322,6 +335,7 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, built
     hasClient: Boolean(manifest.tmuxServer?.client),
     hasServer: Boolean(manifest.tmuxServer?.server),
     builtin,
+    required: isRequired(manifest, builtin),
   };
 }
 
@@ -329,6 +343,13 @@ export async function listExtensions(): Promise<ExtensionInfo[]> {
   const state = await readState();
   const results: ExtensionInfo[] = [];
   for (const [id, { manifest, builtin }] of await discoverExtensions()) {
+    // A required builtin ignores whatever the state file says (a stale
+    // tombstone or `false` from before the flag existed must not ship the
+    // app without its rendering floor) — always listed, always enabled.
+    if (isRequired(manifest, builtin)) {
+      results.push(toInfo(manifest, id, true, builtin));
+      continue;
+    }
     // A tombstoned builtin is hidden entirely rather than listed disabled —
     // uninstalling it should look identical to it never having existed.
     if (builtin && state[id] === "uninstalled") continue;
@@ -418,6 +439,9 @@ export async function installFromTsixFile(tsixPath: string): Promise<ExtensionIn
 export async function uninstallExtension(id: string): Promise<void> {
   const found = await findExtensionFolder(id);
   if (!found) throw new Error("extension not found");
+  if (isRequired(found.manifest, found.builtin)) {
+    throw new Error("this extension is required and cannot be uninstalled");
+  }
   unmountServerHook(id);
   const state = await readState();
   if (found.builtin) {
@@ -435,6 +459,9 @@ export async function uninstallExtension(id: string): Promise<void> {
 export async function setExtensionEnabled(id: string, enabled: boolean): Promise<ExtensionInfo> {
   const found = await findExtensionFolder(id);
   if (!found) throw new Error("extension not found");
+  if (isRequired(found.manifest, found.builtin) && !enabled) {
+    throw new Error("this extension is required and cannot be disabled");
+  }
   const state = await readState();
   state[id] = enabled;
   await writeState(state);
@@ -456,6 +483,63 @@ export async function setExtensionEnabled(id: string, enabled: boolean): Promise
 // the client shows a "restart the server" hint after disabling one — see
 // README.
 const serverHooks = new Map<string, Router>();
+
+// host.events.onApiMutation subscriptions, keyed by extension id so
+// unmountServerHook can drop exactly this extension's callbacks — the
+// module itself stays resident (no ESM unload), so without this a disabled
+// extension's listener would keep firing into dead code.
+const apiMutationListeners = new Map<string, Set<() => void>>();
+
+// Fired by api.ts's post-mutation middleware after any non-GET/HEAD core
+// API call finishes — the extension-facing generalization of the same
+// "something on disk probably changed" signal the core git cache used to
+// consume via invalidateGitCache.
+export function emitApiMutation(): void {
+  for (const set of apiMutationListeners.values()) {
+    for (const cb of set) {
+      try {
+        cb();
+      } catch (err) {
+        console.error("extension onApiMutation listener threw:", err);
+      }
+    }
+  }
+}
+
+// Curated core services handed to extension server entries — the only
+// sanctioned way an extension reaches core state (never by importing core
+// modules, which would bypass enable/disable and version accounting).
+export interface ExtensionHostApi {
+  ports: {
+    // See ports.ts — tmux-attributed listening ports (the tunnel security
+    // gate's own data source, shared rather than re-scanned).
+    list: typeof listTmuxPorts;
+    find: typeof findTmuxPort;
+  };
+  events: {
+    // Fires after any mutating (non-GET/HEAD) core API call completes.
+    // Returns an unsubscribe; all of an extension's subscriptions are also
+    // dropped when its server hook unmounts.
+    onApiMutation(cb: () => void): () => void;
+  };
+}
+
+function makeHostApi(id: string): ExtensionHostApi {
+  return {
+    ports: { list: listTmuxPorts, find: findTmuxPort },
+    events: {
+      onApiMutation(cb) {
+        let set = apiMutationListeners.get(id);
+        if (!set) {
+          set = new Set();
+          apiMutationListeners.set(id, set);
+        }
+        set.add(cb);
+        return () => set.delete(cb);
+      },
+    },
+  };
+}
 
 export function getServerHookRouter(id: string): Router | undefined {
   return serverHooks.get(id);
@@ -515,6 +599,7 @@ export async function mountServerHookIfNeeded(
       router,
       log: (...args: unknown[]) => console.log(`[ext:${id}]`, ...args),
       getSettings: () => getExtensionSettings(id, manifest),
+      host: makeHostApi(id),
     });
     serverHooks.set(id, router);
   } catch (err) {
@@ -524,6 +609,7 @@ export async function mountServerHookIfNeeded(
 
 export function unmountServerHook(id: string): void {
   serverHooks.delete(id);
+  apiMutationListeners.delete(id);
 }
 
 export async function loadEnabledServerHooks(): Promise<void> {

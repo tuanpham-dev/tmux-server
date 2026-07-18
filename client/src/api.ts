@@ -1,13 +1,9 @@
 import type {
-  AgentSummary,
   ExtensionInfo,
   FsFilesListing,
   FsListing,
-  ListeningPort,
-  ProxyConfig,
   RegistrySourceResult,
   TmuxSession,
-  TunnelAuth,
 } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -31,29 +27,6 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchSessions(): Promise<TmuxSession[]> {
   return request("/api/sessions");
-}
-
-// plans/subagent-activity-viewer.md — cwd is the window's own (possibly
-// "~"-shortened) cwd field; the server expands it before resolving Claude
-// Code's project directory.
-export function fetchSubagents(cwd: string): Promise<AgentSummary[]> {
-  return request(`/api/subagents?cwd=${encodeURIComponent(cwd)}`);
-}
-
-export function fetchPorts(): Promise<ListeningPort[]> {
-  return request("/api/ports");
-}
-
-export function fetchTunnelAuth(): Promise<TunnelAuth> {
-  return request("/api/tunnel-auth");
-}
-
-export function fetchProxyConfig(): Promise<ProxyConfig> {
-  return request("/api/proxy-config");
-}
-
-export function killPort(port: number): Promise<void> {
-  return request(`/api/ports/${port}/kill`, { method: "POST" });
 }
 
 export function createSession(name?: string, cwd?: string): Promise<TmuxSession> {
@@ -167,10 +140,8 @@ export function renameSession(name: string, newName: string): Promise<void> {
   });
 }
 
-export function listDir(dirPath: string, gitStatus = true): Promise<FsListing> {
-  // git=0 skips the server's porcelain status scan (the expensive part on
-  // large repos) while still resolving the branch for the pill.
-  return request(`/api/fs?path=${encodeURIComponent(dirPath)}${gitStatus ? "" : "&git=0"}`);
+export function listDir(dirPath: string): Promise<FsListing> {
+  return request(`/api/fs?path=${encodeURIComponent(dirPath)}`);
 }
 
 export function listFiles(dirPath: string): Promise<FsFilesListing> {

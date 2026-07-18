@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { getCounts as getSubagentCounts } from "./subagentWatcher.js";
 
 // Synthetic tmux sessions created for per-window tabs (see createWindowTab)
 // are grouped with a real session so they share its windows, but are never
@@ -22,10 +21,6 @@ export interface TmuxWindow {
   // on what's actually running there (see registerWindowAction) without a
   // second tmux query; this rides along on the same list-windows call below.
   command: string;
-  // Count of currently-running Claude Code subagents for this window's cwd
-  // (subagentWatcher.ts reading its on-disk JSONL sidecars) — only present
-  // (and only ever > 0) on claude windows; see plans/subagent-activity-viewer.md.
-  agents?: number;
 }
 
 export interface TmuxSession {
@@ -140,11 +135,6 @@ async function querySessions(): Promise<TmuxSession[]> {
       windows: [],
     });
   }
-  // Raw (un-shortened) cwd kept alongside each claude window so the agent
-  // count lookup below can resolve Claude Code's own project directory
-  // naming, which is keyed off the real absolute path — shortenHome's
-  // "~"-prefixed display form would resolve to the wrong directory.
-  const claudeWindows: { window: TmuxWindow; rawCwd: string }[] = [];
   for (const line of windowsOut.split("\n").filter(Boolean)) {
     const [sessionName, id, index, name, active, cwd, activity, command] = line.split("\t");
     const window: TmuxWindow = {
@@ -157,14 +147,6 @@ async function querySessions(): Promise<TmuxSession[]> {
       command: command ?? "",
     };
     sessions.get(sessionName)?.windows.push(window);
-    if (command === "claude") claudeWindows.push({ window, rawCwd: cwd });
-  }
-  if (claudeWindows.length > 0) {
-    const counts = await getSubagentCounts(claudeWindows.map((w) => w.rawCwd));
-    for (const { window, rawCwd } of claudeWindows) {
-      const count = counts.get(rawCwd);
-      if (count) window.agents = count;
-    }
   }
   return [...sessions.values()];
 }

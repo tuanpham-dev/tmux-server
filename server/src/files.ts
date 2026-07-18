@@ -1,7 +1,7 @@
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, cp, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { GitFileStatus } from "./git.js";
 
 // Thrown by renamePath/createEmptyFile when the destination already exists,
 // so callers can map it to a 409 instead of a generic 400.
@@ -23,7 +23,6 @@ export function expandHome(p: string): string {
 export interface FsEntry {
   name: string;
   dir: boolean;
-  gitStatus?: GitFileStatus;
 }
 
 export async function listDir(dirPath: string): Promise<FsEntry[]> {
@@ -199,4 +198,50 @@ export async function movePath(src: string, destDir: string): Promise<string | n
     await rm(src, { recursive: true });
   }
   return target;
+}
+
+// Lists every file under dirPath that isn't gitignored (tracked +
+// untracked), for the quick switcher's file search — a files-feature fast
+// path that shells out to git as an implementation detail (moved here from
+// the old server/src/git.ts when SCM decorations became the git-scm
+// extension's job). Returns null when dirPath isn't inside a git repo so
+// the caller can fall back to a plain directory walk. Run with cwd =
+// dirPath (not the repo root) so git scopes and returns paths relative to
+// dirPath itself, matching what the fallback walker would produce.
+export async function listRepoFiles(
+  dirPath: string,
+  cap: number,
+): Promise<{ files: string[]; truncated: boolean } | null> {
+  const git = (args: string[]): Promise<string> =>
+    new Promise((resolve, reject) => {
+      execFile("git", args, { cwd: dirPath, encoding: "utf8" }, (err, stdout, stderr) => {
+        if (err) reject(new Error(stderr.trim() || err.message));
+        else resolve(stdout);
+      });
+    });
+
+  try {
+    await git(["rev-parse", "--show-toplevel"]);
+  } catch {
+    return null;
+  }
+
+  let out: string;
+  try {
+    out = await git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
+  } catch {
+    return null;
+  }
+
+  const files: string[] = [];
+  let truncated = false;
+  for (const token of out.split("\0")) {
+    if (!token) continue;
+    if (files.length >= cap) {
+      truncated = true;
+      break;
+    }
+    files.push(token);
+  }
+  return { files, truncated };
 }

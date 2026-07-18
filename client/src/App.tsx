@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
-import AgentsPanel from "./components/AgentsPanel";
 import BottomPanel from "./components/BottomPanel";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
@@ -15,9 +14,9 @@ import TerminalView from "./components/TerminalView";
 import { EXPLORER_TAB_ID, EXTENSIONS_TAB_ID } from "./components/Sidebar";
 import { getContextGetter, setContextKey } from "./contextKeys";
 import {
-  focusPortsPanel,
   focusSessionsPanel,
   focusSidebarTab,
+  setExtensionSettingUpdater,
   setSidebarVisibleHandler,
   useExtensionRegistry,
 } from "./extensions";
@@ -99,9 +98,6 @@ export default function App() {
   const { sessions, refresh, sessionsLoadedRef } = useSessions(showError, onSessionsRefreshed);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
-  // plans/subagent-activity-viewer.md — the agents popover triggered from a
-  // session-list window row's badge; null when closed.
-  const [agentsPanel, setAgentsPanel] = useState<{ cwd: string; x: number; y: number } | null>(null);
   // Each editor group's own TabBar right-side actions container — an image
   // tab portals its zoom toolbar into its own group's bar while active (VS
   // Code/code-server editor-actions placement). State (not a plain ref)
@@ -311,6 +307,18 @@ export default function App() {
     extensionRegistries,
     setExtensionRegistries,
   } = useSettingsSync(extCommands);
+
+  // Backs ctx.settings.set — extensions write their own configuration
+  // values into the same server-synced store the Settings UI edits.
+  useEffect(() => {
+    setExtensionSettingUpdater((extId, key, value) => {
+      setExtensionSettings((prev) => ({
+        ...prev,
+        [extId]: { ...prev[extId], [key]: value },
+      }));
+    });
+    return () => setExtensionSettingUpdater(null);
+  }, [setExtensionSettings]);
 
   const { extensions, reloadExtensions, activeTerminalTheme, fontsVersion } =
     useThemeAssets(settings, extensionSettings, extensionSettingsRef);
@@ -626,10 +634,6 @@ export default function App() {
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
-  const showAgents = useCallback((cwd: string, x: number, y: number) => {
-    setAgentsPanel({ cwd, x, y });
-  }, []);
-
   // Opens a panel terminal, resolving which session its new tmux window goes
   // in: the active real tab's session when there is one, otherwise a picker at
   // `anchor` (the + button, or the panel's own top-left for the keyboard
@@ -742,7 +746,6 @@ export default function App() {
       "sidebar.focusExplorer": () => focusSidebarTab(EXPLORER_TAB_ID),
       "sidebar.focusExtensions": () => focusSidebarTab(EXTENSIONS_TAB_ID),
       "sidebar.focusSessions": () => focusSessionsPanel(),
-      "sidebar.focusPorts": () => focusPortsPanel(),
       "quickSwitcher.toggle": () => setSwitcherQuery((q) => (q === null ? "" : null)),
       "commandPalette.toggle": () => setSwitcherQuery((q) => (q === null ? ">" : null)),
       "tab.next": () => cycleTab(1),
@@ -1104,7 +1107,6 @@ export default function App() {
             onNewWindowInDir={newWindowInDir}
             onOpenLazygit={openLazygit}
             onShowMenu={showMenu}
-            onShowAgents={showAgents}
             sessionMenuItems={sessionMenuItems}
             windowMenuItems={windowMenuItems}
             pinnedSessions={pinnedSessions}
@@ -1112,7 +1114,6 @@ export default function App() {
             onOpenSettings={openSettingsTab}
             panelVisible={panel.visible}
             onTogglePanel={togglePanel}
-            showGitStatus={settings.fileTreeGitStatus}
             onCollapse={() => setSidebarVisible(false)}
             filesRootDir={filesRootDir}
             onDropFiles={handleFileTreeDrop}
@@ -1386,13 +1387,6 @@ export default function App() {
       </main>
       {menu && (
         <ContextMenu menu={menu} onClose={() => setMenu(null)} resolvedBindings={resolvedBindings} />
-      )}
-      {agentsPanel && (
-        <AgentsPanel
-          cwd={agentsPanel.cwd}
-          anchor={{ x: agentsPanel.x, y: agentsPanel.y }}
-          onClose={() => setAgentsPanel(null)}
-        />
       )}
       {dialog && <Dialog dialog={dialog} />}
       {switcherQuery !== null && (

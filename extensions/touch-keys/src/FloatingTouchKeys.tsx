@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import type { TouchKey } from "../touchKeys";
+import type { TouchKey } from "./touchKeys";
 import { TouchKeyButton, visibleKeys } from "./TouchKeyBar";
 
 interface Props {

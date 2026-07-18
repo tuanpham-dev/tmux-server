@@ -17,6 +17,7 @@ import type { IconResult } from "../../_shared/FileIcon";
 import type { MenuItem } from "../../_shared/types";
 import { useListNavigation } from "../../_shared/useListNavigation";
 import { useMarqueeSelection } from "../../_shared/useMarqueeSelection";
+import { statusForEntry, type GitFileStatus } from "../statusModel.mjs";
 
 // ---- Module-level host bridge ----
 
@@ -533,6 +534,9 @@ async function fetchStatus(cwd: string) {
 
 function refreshStatus() {
   if (pollCwd) fetchStatus(pollCwd);
+  // Manual refreshes are exactly the moments (post-op, refresh button)
+  // where tree badges must not lag a poll tick behind the panel.
+  refreshDecorationsNow();
 }
 
 function restartPolling() {
@@ -559,6 +563,139 @@ function setPollCwd(cwd: string | null) {
 
 function onSettingsChanged() {
   if (readPollInterval() !== lastPollMs) restartPolling();
+  // The gitScm.fileTreeDecorations toggle applies live: the provider reads
+  // it on every provide call, so a bare re-render nudge is enough.
+  decorHandle?.refresh();
+}
+
+// ---- FILES tree decorations (provider for core's file-decoration point) ----
+//
+// Ported from core's inline /api/fs enrichment: the server hook's
+// /decorations route returns the repo scan for a tree root; each visible
+// row resolves against it with statusModel's statusForEntry, exactly the
+// logic core api.ts ran per entry. Data is cached per FILES-tree root
+// (learned from provideRootDecoration, which the sidebar calls with its
+// current root every render) and refreshed on a 3s poll — the same beat
+// the tree's own listing poll runs on — plus immediately after this
+// panel's own mutating operations (see refreshStatus).
+
+interface DecorRepo {
+  root: string;
+  branch: string | null;
+  statuses: Map<string, GitFileStatus>;
+  dirStatuses: Map<string, GitFileStatus>;
+  trackedDirs: Set<string>;
+}
+
+interface DecorationsResponse {
+  root: string | null;
+  branch?: string | null;
+  statuses?: Record<string, GitFileStatus>;
+  dirStatuses?: Record<string, GitFileStatus>;
+  trackedDirs?: string[];
+}
+
+const DECOR_POLL_MS = 3000;
+// A tree root not rendered for this long (tab switched away, session
+// closed) drops out of the poll set and cache.
+const DECOR_SEEN_TTL_MS = 15_000;
+
+const decorCache = new Map<string, { repo: DecorRepo | null }>();
+const decorSeen = new Map<string, number>();
+const decorInFlight = new Set<string>();
+let decorHandle: { refresh(): void } | null = null;
+let decorTimer: number | null = null;
+
+const GIT_BADGE: Record<GitFileStatus, string> = {
+  modified: "M",
+  added: "A",
+  untracked: "U",
+  deleted: "D",
+  renamed: "R",
+  conflicted: "!",
+  ignored: "",
+};
+
+function decorationsEnabled(): boolean {
+  return extSettings?.get("gitScm.fileTreeDecorations") !== false;
+}
+
+async function fetchDecorations(treeRoot: string): Promise<void> {
+  if (decorInFlight.has(treeRoot)) return;
+  decorInFlight.add(treeRoot);
+  try {
+    const data = await apiGetJson<DecorationsResponse>(
+      `/decorations?cwd=${encodeURIComponent(treeRoot)}`,
+    );
+    const repo: DecorRepo | null = data.root
+      ? {
+          root: data.root,
+          branch: data.branch ?? null,
+          statuses: new Map(Object.entries(data.statuses ?? {})),
+          dirStatuses: new Map(Object.entries(data.dirStatuses ?? {})),
+          trackedDirs: new Set(data.trackedDirs ?? []),
+        }
+      : null;
+    decorCache.set(treeRoot, { repo });
+    decorHandle?.refresh();
+  } catch {
+    // Best-effort — keep the last answer; the next poll retries.
+  } finally {
+    decorInFlight.delete(treeRoot);
+  }
+}
+
+function noteTreeRoot(treeRoot: string): void {
+  decorSeen.set(treeRoot, Date.now());
+  if (!decorCache.has(treeRoot)) void fetchDecorations(treeRoot);
+}
+
+// Immediate refetch of every live root — called after this extension's own
+// mutating operations (stage/commit/discard/pull) so tree badges update on
+// the next render rather than the next poll tick.
+function refreshDecorationsNow(): void {
+  for (const root of decorSeen.keys()) void fetchDecorations(root);
+}
+
+function decorPollTick(): void {
+  const now = Date.now();
+  for (const [root, at] of decorSeen) {
+    if (now - at > DECOR_SEEN_TTL_MS) {
+      decorSeen.delete(root);
+      decorCache.delete(root);
+    }
+  }
+  for (const root of decorSeen.keys()) void fetchDecorations(root);
+}
+
+function provideDecoration(
+  path: string,
+  isDir: boolean,
+): { badge?: string; tooltip?: string; className?: string } | undefined {
+  if (!decorationsEnabled()) return undefined;
+  for (const { repo } of decorCache.values()) {
+    if (!repo || !(path === repo.root || path.startsWith(`${repo.root}/`))) continue;
+    if (path === repo.root) return undefined;
+    const rel = path.slice(repo.root.length + 1);
+    const status = statusForEntry(repo.statuses, repo.dirStatuses, repo.trackedDirs, rel, isDir);
+    if (!status) return undefined;
+    return {
+      // "ignored" is conveyed by the row-dimming class alone; a badge
+      // letter would be noise for something that's neither a change nor
+      // actionable.
+      badge: GIT_BADGE[status] || undefined,
+      tooltip: status,
+      className: `git-status-${status}`,
+    };
+  }
+  return undefined;
+}
+
+function provideRootDecoration(rootPath: string): { label: string; tooltip?: string } | undefined {
+  noteTreeRoot(rootPath);
+  const repo = decorCache.get(rootPath)?.repo;
+  if (!repo?.branch) return undefined;
+  return { label: repo.branch, tooltip: `Branch: ${repo.branch}` };
 }
 
 // ---- GitPanel (registerSidebarPanel component — no props) ----
@@ -2262,6 +2399,14 @@ export function activate(ctx: {
     component: typeof DiffView | typeof ConflictView;
   }) => void;
   registerCommand: (cmd: { id: string; label: string; defaultBinding?: string; run: () => void }) => void;
+  registerFileDecorationProvider: (provider: {
+    id: string;
+    provideDecoration: (
+      path: string,
+      isDir: boolean,
+    ) => { badge?: string; tooltip?: string; className?: string } | undefined;
+    provideRootDecoration?: (rootPath: string) => { label: string; tooltip?: string } | undefined;
+  }) => { refresh(): void };
   app: {
     getActiveContext: () => ActiveContext;
     onDidChangeContext: (cb: (ctx: ActiveContext) => void) => () => void;
@@ -2301,6 +2446,14 @@ export function activate(ctx: {
   // ctx.app.openViewerTab from GitPanel's row clicks (see openEntry above).
   ctx.registerFileViewer({ id: "diff", extensions: [], mode: "default", component: DiffView });
   ctx.registerFileViewer({ id: "conflict", extensions: [], mode: "default", component: ConflictView });
+  // FILES tree badges/row colors + the branch root decoration — replaces
+  // the status enrichment core /api/fs used to inline.
+  decorHandle = ctx.registerFileDecorationProvider({
+    id: "status",
+    provideDecoration,
+    provideRootDecoration,
+  });
+  decorTimer = window.setInterval(decorPollTick, DECOR_POLL_MS);
 
   // Start the badge poller immediately so it's correct on app startup,
   // rather than only after the user opens the Source Control tab.
@@ -2373,6 +2526,13 @@ export function deactivate() {
     window.clearInterval(pollTimer);
     pollTimer = null;
   }
+  if (decorTimer != null) {
+    window.clearInterval(decorTimer);
+    decorTimer = null;
+  }
+  decorHandle = null;
+  decorCache.clear();
+  decorSeen.clear();
   pollCwd = null;
   currentStatus = null;
   setSidebarBadge?.("git", null);

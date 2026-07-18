@@ -1,21 +1,84 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import * as api from "../api";
-import { copyText } from "../clipboard";
-import { useListNavigation } from "../hooks/useListNavigation";
-import type { ListeningPort, MenuItem, ProxyConfig, TunnelAuth } from "../types";
-import Icon from "./Icon";
+// ports: the PORTS explorer section, extracted from core (formerly
+// client/src/components/PortsPanel.tsx). Registers as an "explorer"-located
+// sidebar panel so it renders as an accordion section alongside
+// SESSIONS/FILES, exactly where the built-in panel lived. Host hooks
+// (serverFetch for this extension's own /list & /kill routes) arrive via
+// module-level bridge variables set once in activate() — same pattern as
+// the search and git-scm extensions.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import "./style.css";
+import { copyText } from "../../_shared/clipboard";
+import { injectStylesheet } from "../../_shared/injectStylesheet";
+import Icon from "../../_shared/Icon";
+import type { MenuItem } from "../../_shared/types";
+import { useListNavigation } from "../../_shared/useListNavigation";
 
-export interface PortsPanelHandle {
-  // Moves keyboard focus onto the focused-or-first row — called by
-  // sidebar.focusPorts (App.tsx), mirroring SessionListHandle.focusList.
-  focusList: () => void;
+// ---- Module-level host bridge ----
+
+let serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | null = null;
+let removeStylesheet: (() => void) | null = null;
+
+// ---- Types (mirror the server responses) ----
+
+interface ListeningPort {
+  port: number;
+  address: string;
+  process?: string;
+  pid?: number;
+  session: string;
 }
 
-interface Props {
-  refreshKey: number;
-  confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>;
-  onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
+interface TunnelAuth {
+  cookie: string | null;
+  authorization: string | null;
 }
+
+// First configured PROXY_DOMAIN (core /api/proxy-config), or null when
+// unset — decides whether a port's URL is "<port>.<domain>" or the
+// app-origin "/proxy/<port>/" fallback.
+interface ProxyConfig {
+  domain: string | null;
+}
+
+// ---- Fetch helpers ----
+
+async function readJson<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.error) message = body.error;
+    } catch {
+      // non-JSON error body; keep the status message
+    }
+    throw new Error(message);
+  }
+  const text = await res.text();
+  return text ? (JSON.parse(text) as T) : (undefined as T);
+}
+
+function fetchPorts(): Promise<ListeningPort[]> {
+  if (!serverFetch) return Promise.reject(new Error("extension not activated"));
+  return serverFetch("/list").then((res) => readJson<ListeningPort[]>(res));
+}
+
+function killPort(port: number): Promise<void> {
+  if (!serverFetch) return Promise.reject(new Error("extension not activated"));
+  return serverFetch(`/kill/${port}`, { method: "POST" }).then((res) => readJson<void>(res));
+}
+
+// Core routes — tunnel/proxy are core infrastructure; this panel only reads
+// their config to compose URLs and the tunnel command.
+function fetchTunnelAuth(): Promise<TunnelAuth> {
+  return fetch("/api/tunnel-auth").then((res) => readJson<TunnelAuth>(res));
+}
+
+function fetchProxyConfig(): Promise<ProxyConfig> {
+  return fetch("/api/proxy-config").then((res) => readJson<ProxyConfig>(res));
+}
+
+// ---- Panel ----
 
 const POLL_MS = 30_000;
 const NO_AUTH: TunnelAuth = { cookie: null, authorization: null };
@@ -54,7 +117,7 @@ function buildCommand(origin: string, ports: number[], auth: TunnelAuth, mask: b
 // code-server-style: a configured PROXY_DOMAIN routes "<port>.<domain>"
 // straight to that port (every app works unmodified); otherwise fall back to
 // the app-origin path proxy "/proxy/<port>/" (absolute-path assets need the
-// Referer fallback or a domain — see server/src/proxy.ts).
+// Referer fallback or a domain — see core server/src/proxy.ts).
 function proxyUrl(port: number, proxyConfig: ProxyConfig): string {
   if (proxyConfig.domain) {
     return `${window.location.protocol}//${port}.${proxyConfig.domain}/`;
@@ -62,10 +125,13 @@ function proxyUrl(port: number, proxyConfig: ProxyConfig): string {
   return `${window.location.origin}/proxy/${port}/`;
 }
 
-const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
-  { refreshKey, confirmDialog, onShowMenu },
-  ref,
-) {
+interface PanelProps {
+  actionsTarget?: HTMLDivElement | null;
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  confirmDialog?: (message: string, confirmLabel?: string) => Promise<boolean>;
+}
+
+function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
   const [ports, setPorts] = useState<ListeningPort[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -75,6 +141,10 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(NO_PROXY_CONFIG);
   const [revealed, setRevealed] = useState(false);
   const [killing, setKilling] = useState<Set<number>>(new Set());
+  // The header Refresh button (portaled into actionsTarget) bumps this to
+  // force a reload — the role Sidebar's own per-panel refresh key played
+  // before extraction.
+  const [refreshKey, setRefreshKey] = useState(0);
   // Guards state updates from a fetch started before unmount but resolving
   // after — mirrors the effect's own `cancelled` flag, needed here too since
   // loadPorts is also invoked directly (not just from the effect) after kill.
@@ -90,8 +160,7 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
   }, []);
 
   const loadPorts = useCallback(() => {
-    api
-      .fetchPorts()
+    fetchPorts()
       .then((next) => {
         if (!mountedRef.current) return;
         setPorts(next);
@@ -114,8 +183,7 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
       loadPorts();
       // A failed auth fetch shouldn't break the ports list — fall back to no
       // headers, same as an unauthenticated deployment.
-      api
-        .fetchTunnelAuth()
+      fetchTunnelAuth()
         .then((next) => {
           if (cancelled) return;
           setAuth((prev) => {
@@ -128,8 +196,7 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
         });
       // Likewise for proxy config — no configured domain is a valid state,
       // not an error, so falling back is correct here too.
-      api
-        .fetchProxyConfig()
+      fetchProxyConfig()
         .then((next) => {
           if (cancelled) return;
           setProxyConfig((prev) => (prev.domain === next.domain ? prev : next));
@@ -204,15 +271,13 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
   };
 
   const onKillPort = (p: ListeningPort) => {
-    confirmDialog(
-      `Kill ${p.process ?? "process"} (pid ${p.pid}) listening on port ${p.port}?`,
-      "Kill",
-    )
+    const confirm =
+      confirmDialog ?? ((message: string) => Promise.resolve(window.confirm(message)));
+    confirm(`Kill ${p.process ?? "process"} (pid ${p.pid}) listening on port ${p.port}?`, "Kill")
       .then((ok) => {
         if (!ok) return;
         setKilling((prev) => new Set(prev).add(p.port));
-        return api
-          .killPort(p.port)
+        return killPort(p.port)
           .then(() => loadPorts())
           .catch((err) => setError(err instanceof Error ? err.message : String(err)))
           .finally(() => {
@@ -249,36 +314,23 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
     },
     onContextMenuKey: (id, rect) => {
       const p = portsById.get(id);
-      if (p) onShowMenu(rect.left + 8, rect.bottom, portMenuItems(p));
+      if (p) showMenu?.(rect.left + 8, rect.bottom, portMenuItems(p));
     },
   });
 
-  // A "focus" request can arrive the instant this panel (re)mounts — the
-  // PORTS accordion section unmounts it while collapsed, so
-  // sidebar.focusPorts's expand-then-focus always mounts a fresh instance —
-  // before its own async loadPorts() has resolved, when rowIds is still
-  // empty. Deferred here to the first render where a row actually exists.
-  const pendingFocusRef = useRef(false);
-  useImperativeHandle(
-    ref,
-    () => ({
-      focusList: () => {
-        const target = nav.focusedId ?? rowIds[0];
-        if (target) nav.focusRow(target);
-        else pendingFocusRef.current = true;
-      },
-    }),
-    [nav, rowIds],
-  );
-  useEffect(() => {
-    if (pendingFocusRef.current && rowIds.length > 0) {
-      pendingFocusRef.current = false;
-      nav.focusRow(rowIds[0]);
-    }
-  }, [rowIds, nav]);
-
   return (
     <div className="ports-panel">
+      {actionsTarget &&
+        createPortal(
+          <button
+            className="icon-button"
+            title="Refresh"
+            onClick={() => setRefreshKey((k) => k + 1)}
+          >
+            <Icon name="refresh" />
+          </button>,
+          actionsTarget,
+        )}
       {error && <div className="ports-error">{error}</div>}
       <ul className="port-list" onKeyDown={nav.onKeyDown}>
         {ports.map((p) => {
@@ -292,7 +344,7 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
                 onContextMenu={(e) => {
                   e.preventDefault();
                   nav.focusRow(portRowId(p.port));
-                  onShowMenu(e.clientX, e.clientY, portMenuItems(p));
+                  showMenu?.(e.clientX, e.clientY, portMenuItems(p));
                 }}
                 tabIndex={rowProps.tabIndex}
                 ref={rowProps.ref}
@@ -358,6 +410,41 @@ const PortsPanel = forwardRef<PortsPanelHandle, Props>(function PortsPanel(
       )}
     </div>
   );
-});
+}
 
-export default PortsPanel;
+// ---- Activation ----
+
+interface ExtensionContext {
+  registerSidebarPanel(panel: {
+    id: string;
+    title: string;
+    icon?: string;
+    location?: "tab" | "explorer";
+    defaultCollapsed?: boolean;
+    focusBinding?: string;
+    component: (props: PanelProps) => ReturnType<typeof PortsPanel>;
+  }): void;
+  serverFetch(path: string, init?: RequestInit): Promise<Response>;
+  assetUrl(relPath: string): string;
+}
+
+export function activate(ctx: ExtensionContext): void {
+  serverFetch = ctx.serverFetch;
+  removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
+  ctx.registerSidebarPanel({
+    id: "ports",
+    title: "Ports",
+    icon: "plug",
+    location: "explorer",
+    // Matches the built-in panel's pre-extraction default (see the old
+    // DEFAULT_PANEL_STATE in Sidebar.tsx: ports started collapsed).
+    defaultCollapsed: true,
+    component: PortsPanel,
+  });
+}
+
+export function deactivate(): void {
+  removeStylesheet?.();
+  removeStylesheet = null;
+  serverFetch = null;
+}

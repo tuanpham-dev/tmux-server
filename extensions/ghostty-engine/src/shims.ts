@@ -18,7 +18,7 @@
 //    (renderCellBackground) has already painted by then, and the cell pool
 //    is refilled from WASM every frame, so the mutation can't leak.
 import type { CanvasRenderer, GhosttyCell } from "ghostty-web";
-import { ensureContrastRatio, type Rgb } from "./contrast";
+import { ensureContrastRatio, type Rgb } from "@tmux-server/engine-support";
 
 export interface RendererOverrides {
   // Multiplier on the measured cell height (1 = font-native).

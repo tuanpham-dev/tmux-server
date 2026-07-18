@@ -1,22 +1,21 @@
-// ghostty-web implementation of the TerminalEngine seam
-// (plans/terminal-engine-setting.md) — the current terminal behavior,
-// relocated out of TerminalView.tsx unchanged. Nothing outside this file
-// may import "ghostty-web" or ghosttyShims.ts.
+// ghostty-web implementation of the TerminalEngine seam — moved verbatim
+// from core client/src/engines/ghostty.ts when both engines became bundled
+// extensions. Nothing outside this extension may import "ghostty-web" or
+// its renderer shims.
 import { FitAddon, init as initGhostty, Terminal } from "ghostty-web";
 import {
   applyRendererOverrides,
   parseHexColor,
   type RendererShim,
-} from "../ghosttyShims";
-import { cellFromPoint } from "../mouseReports";
-import { buildLinkProvider, stitchLine } from "../terminalLinks";
-import {
-  markSyntheticSelectStart,
-  type CellPosition,
-  type TerminalEngineHandle,
-  type TerminalEngineOptions,
-  type TerminalEngineSettings,
-} from "./types";
+} from "./shims";
+import { cellFromPoint, markSyntheticSelectStart } from "@tmux-server/engine-support";
+import { buildLinkProvider, stitchLine } from "./links";
+import type {
+  CellPosition,
+  TerminalEngineHandle,
+  TerminalEngineOptions,
+  TerminalEngineSettings,
+} from "../../_shared/terminalEngineTypes";
 
 // ghostty-web's terminal core is WASM; init() compiles/instantiates the
 // (bundle-inlined) module once, shared by every Terminal instance.
@@ -326,6 +325,14 @@ export async function createGhosttyEngine(options: TerminalEngineOptions): Promi
     write: (data) => term.write(data),
     focus: () => term.focus(),
     focusInput: () => term.textarea?.focus(),
+    setSoftKeyboardSuppressed: (suppressed) => {
+      // inputmode="none" is the standard "focusable but no virtual
+      // keyboard" mechanism — hardware/app-drawn input still lands in the
+      // textarea's key events.
+      if (!term.textarea) return;
+      if (suppressed) term.textarea.setAttribute("inputmode", "none");
+      else term.textarea.removeAttribute("inputmode");
+    },
     getSelection: () => term.getSelection(),
     clearSelection: () => term.clearSelection(),
     clear: () => term.clear(),

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { extensionSettingsComponents, useExtensionRegistryVersion } from "../extensions";
 import { DEFAULT_SETTINGS, type AppSettings, type ExtensionSettingsValues } from "../settings";
 import type { ExtensionInfo } from "../types";
 import BehaviorSection from "./settings/BehaviorSection";
@@ -60,7 +61,15 @@ export default function SettingsView({
   // Only enabled extensions with at least one normalized property get a nav
   // entry — a disabled extension's settings aren't in effect (parallels its
   // client entry not activating), so editing them would be misleading.
-  const configurableExtensions = extensions.filter((ext) => ext.enabled && ext.configuration.length > 0);
+  // Re-render when an extension registers a custom settings component —
+  // that alone earns it a settings section, even with no scalar properties.
+  useExtensionRegistryVersion();
+  const configurableExtensions = extensions.filter(
+    (ext) =>
+      ext.enabled &&
+      (ext.configuration.length > 0 ||
+        extensionSettingsComponents.some((c) => c.extensionId === ext.id)),
+  );
 
   // If the active extension section's extension gets disabled/uninstalled
   // out from under it (in the Extensions tab, in another browser tab, or
@@ -133,6 +142,10 @@ export default function SettingsView({
           {section === "behavior" && <BehaviorSection />}
           {section === "ui" && <UiSection />}
           {activeExtension && <ExtensionConfigSection ext={activeExtension} />}
+          {activeExtension &&
+            extensionSettingsComponents
+              .filter((c) => c.extensionId === activeExtension.id)
+              .map((c) => <c.component key={c.id} />)}
 
           <div className="settings-footer">
             {activeExtension ? (

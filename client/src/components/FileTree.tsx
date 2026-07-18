@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "../api";
 import { getContextGetter } from "../contextKeys";
+import { getFileDecoration, useExtensionRegistryVersion, type FileDecoration } from "../extensions";
 import { bindingMatches, recorderState, serializeEvent, type Keybinding } from "../keybindings";
-import type { FsEntry, GitFileStatus, MenuItem } from "../types";
+import type { FsEntry, MenuItem } from "../types";
 import FileIcon from "./FileIcon";
 import Icon from "./Icon";
 import { getFileIconResult, getFolderIconResult, useIconThemeVersion } from "../utils/iconThemes";
@@ -12,9 +13,6 @@ import { subscribePollTick } from "../lib/pollTick";
 
 interface Props {
   rootDir: string | null;
-  // Off = request listings with git=0, skipping the server's status scan
-  // (badges and row colors disappear; the branch pill stays).
-  showGitStatus: boolean;
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
   refreshKey: number;
   onOpenFile: (path: string) => void;
@@ -23,7 +21,6 @@ interface Props {
   // true if some registered extension viewer claims this path in "preview"
   // mode (see extensions.ts's findFileViewerFor), gating the hover icon.
   isPreviewable: (path: string) => boolean;
-  onBranchChange: (branch: string | null) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
   fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
@@ -73,23 +70,11 @@ const INTERNAL_DRAG_TYPE = "application/x-tmux-files";
 const DRAG_SCROLL_EDGE_PX = 24;
 const DRAG_SCROLL_STEP_PX = 12;
 
-const GIT_STATUS_LABEL: Record<GitFileStatus, string> = {
-  modified: "M",
-  added: "A",
-  untracked: "U",
-  deleted: "D",
-  renamed: "R",
-  conflicted: "!",
-  ignored: "",
-};
-
-function GitStatusBadge({ status }: { status?: GitFileStatus }) {
-  // "ignored" is conveyed by dimming the row alone; a badge letter would be
-  // noise for something that's neither a change nor actionable.
-  if (!status || status === "ignored") return null;
+function DecorationBadge({ decoration }: { decoration?: FileDecoration }) {
+  if (!decoration?.badge) return null;
   return (
-    <span className="file-tree-git-badge" title={status}>
-      {GIT_STATUS_LABEL[status]}
+    <span className="file-tree-git-badge" title={decoration.tooltip ?? decoration.badge}>
+      {decoration.badge}
     </span>
   );
 }
@@ -106,7 +91,7 @@ interface DirState {
 function entriesEqual(a: FsEntry[], b: FsEntry[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].name !== b[i].name || a[i].dir !== b[i].dir || a[i].gitStatus !== b[i].gitStatus) {
+    if (a[i].name !== b[i].name || a[i].dir !== b[i].dir) {
       return false;
     }
   }
@@ -125,7 +110,6 @@ interface VisibleRow {
   name: string;
   isDir: boolean;
   depth: number;
-  gitStatus?: GitFileStatus;
 }
 
 // The spec says "dragover" should fire on a roughly-350ms timer for as long
@@ -142,13 +126,11 @@ const HOVER_EXPAND_MS = 1000;
 
 export default function FileTree({
   rootDir,
-  showGitStatus,
   onDropFiles,
   refreshKey,
   onOpenFile,
   onPreviewFile,
   isPreviewable,
-  onBranchChange,
   onShowMenu,
   fileMenuItems,
   fileTreeRootMenuItems,
@@ -173,6 +155,9 @@ export default function FileTree({
   // Unused value — subscribing is enough to re-render on icon-theme change,
   // since getFileIconResult/getFolderIconResult read module state directly.
   useIconThemeVersion();
+  // Same subscribe-only pattern for decoration providers: re-render when a
+  // provider registers/unregisters or refresh()es its cached answers.
+  useExtensionRegistryVersion();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Map<string, DirState>>(new Map());
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
@@ -198,8 +183,6 @@ export default function FileTree({
   const marqueeSnapshotRef = useRef<Set<string>>(new Set());
   const dragClearTimer = useRef<number | undefined>(undefined);
   const expandTimer = useRef<{ path: string; timer: number } | null>(null);
-  const onBranchChangeRef = useRef(onBranchChange);
-  onBranchChangeRef.current = onBranchChange;
   // Read at fetch-resolve time so a response that raced a root change (or
   // belongs to an expanded subfolder) can be told apart from the root's own.
   const rootDirRef = useRef(rootDir);
@@ -213,10 +196,6 @@ export default function FileTree({
   // refreshKey bump (a mutation action — see the effect below) doesn't
   // re-run the prune scan twice for the same prune.
   const lastPrunedRef = useRef<{ paths: string[] } | null>(null);
-  // Read at fetch time (fetchDir is mount-stable) so a toggle applies to
-  // every fetch from then on without rebuilding the callback.
-  const showGitStatusRef = useRef(showGitStatus);
-  showGitStatusRef.current = showGitStatus;
   // Dedupes the poll-tick background refetch against a fetch already in
   // flight for the same dir (foreground callers — toggle, root change,
   // mutation refresh — always proceed regardless, since those must never
@@ -238,7 +217,7 @@ export default function FileTree({
       });
     }
     api
-      .listDir(dirPath, showGitStatusRef.current)
+      .listDir(dirPath)
       .then((listing) => {
         inFlightDirsRef.current.delete(dirPath);
         setDirCache((prev) => {
@@ -251,11 +230,6 @@ export default function FileTree({
           }
           return new Map(prev).set(dirPath, { entries: listing.entries, loading: false, error: null });
         });
-        // Only the root's own listing may set the branch. Every "/api/fs"
-        // call reports a branch, but for an expanded subfolder that's *its*
-        // repo — a nested repo under a non-git root would otherwise light up
-        // the pill. It also drops stale responses from a just-replaced root.
-        if (dirPath === rootDirRef.current) onBranchChangeRef.current(listing.branch);
       })
       .catch((err) => {
         inFlightDirsRef.current.delete(dirPath);
@@ -275,7 +249,6 @@ export default function FileTree({
     setFocusedPath(null);
     setSelectedPaths(new Set());
     setAnchorPath(null);
-    onBranchChangeRef.current(null);
     if (rootDir) fetchDir(rootDir);
   }, [rootDir, fetchDir]);
 
@@ -309,22 +282,6 @@ export default function FileTree({
     // are already handled by their own effects above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey, prunePath]);
-
-  // Git-status setting flipped: refetch everything currently visible so
-  // badges/colors appear or clear immediately, not on the next refresh.
-  const gitToggleMounted = useRef(false);
-  useEffect(() => {
-    if (!gitToggleMounted.current) {
-      gitToggleMounted.current = true;
-      return;
-    }
-    if (!rootDir) return;
-    fetchDir(rootDir);
-    for (const dirPath of expanded) fetchDir(dirPath);
-    // Refetch only on the toggle itself — rootDir/expanded changes are
-    // handled by the effects above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showGitStatus]);
 
   // Piggybacks on the 3s sessions poll (see lib/pollTick.ts) to keep git
   // badges live without a second timer — mirrors what refreshKey used to do
@@ -427,7 +384,7 @@ export default function FileTree({
       if (!state || state.error) return;
       for (const entry of state.entries) {
         const entryPath = `${dirPath}/${entry.name}`;
-        out.push({ path: entryPath, name: entry.name, isDir: entry.dir, depth, gitStatus: entry.gitStatus });
+        out.push({ path: entryPath, name: entry.name, isDir: entry.dir, depth });
         if (entry.dir && expanded.has(entryPath)) walk(entryPath, depth + 1);
       }
     };
@@ -993,7 +950,10 @@ export default function FileTree({
     }
     return state.entries.map((entry) => {
       const entryPath = `${dirPath}/${entry.name}`;
-      const gitClass = entry.gitStatus ? ` git-status-${entry.gitStatus}` : "";
+      // Row decoration (git status badge/colors) comes entirely from
+      // extension providers — see extensions.ts's file-decoration point.
+      const decoration = getFileDecoration(entryPath, entry.dir);
+      const gitClass = decoration?.className ? ` ${decoration.className}` : "";
       const selectedClass = selectedPaths.has(entryPath) ? " selected" : "";
       const cutClass = cutPaths?.has(entryPath) ? " cut" : "";
       const draggingClass = draggingPaths?.has(entryPath) ? " dragging" : "";
@@ -1030,7 +990,7 @@ export default function FileTree({
               </span>
               <FileIcon className="file-tree-folder-icon" result={folderIcon} />
               <span className="file-tree-name">{entry.name}</span>
-              <GitStatusBadge status={entry.gitStatus} />
+              <DecorationBadge decoration={decoration} />
             </button>
             {isExpanded && renderEntries(entryPath, depth + 1)}
           </div>
@@ -1080,7 +1040,7 @@ export default function FileTree({
                 <Icon name="preview" />
               </button>
             )}
-            <GitStatusBadge status={entry.gitStatus} />
+            <DecorationBadge decoration={decoration} />
           </span>
         </div>
       );

@@ -9,24 +9,6 @@ export interface TmuxWindow {
   // The active pane's current foreground command (e.g. "bash", "claude") —
   // see the server-side TmuxWindow's matching field for why this exists.
   command: string;
-  // Count of currently-running Claude Code subagents for this window's cwd
-  // — only present (and only ever > 0) on claude windows. See
-  // plans/subagent-activity-viewer.md and the server-side TmuxWindow's
-  // matching field.
-  agents?: number;
-}
-
-// Mirrors the server's subagentWatcher.ts AgentSummary — one entry per
-// subagent found for a window's cwd (plans/subagent-activity-viewer.md).
-export interface AgentSummary {
-  agentId: string;
-  agentType: string;
-  description: string;
-  model: string | null;
-  status: "running" | "completed";
-  tokens: number;
-  toolCalls: number;
-  lastActivityAt: string | null;
 }
 
 export interface TmuxSession {
@@ -181,51 +163,20 @@ export interface MenuState {
   sourceId?: string;
 }
 
-export type GitFileStatus =
-  | "modified"
-  | "added"
-  | "deleted"
-  | "untracked"
-  | "renamed"
-  | "conflicted"
-  | "ignored";
-
 export interface FsEntry {
   name: string;
   dir: boolean;
-  gitStatus?: GitFileStatus;
 }
 
 export interface FsListing {
   path: string;
   entries: FsEntry[];
-  branch: string | null;
 }
 
 export interface FsFilesListing {
   path: string;
   files: string[];
   truncated: boolean;
-}
-
-export interface ListeningPort {
-  port: number;
-  address: string;
-  process?: string;
-  pid?: number;
-  session: string;
-}
-
-export interface TunnelAuth {
-  cookie: string | null;
-  authorization: string | null;
-}
-
-// First configured PROXY_DOMAIN (see server/src/security.ts), or null when
-// unset — the PORTS panel uses this to decide whether a port's URL is
-// "<port>.<domain>" or the app-origin "/proxy/<port>/" fallback.
-export interface ProxyConfig {
-  domain: string | null;
 }
 
 export interface ExtensionThemeContribution {
@@ -325,4 +276,7 @@ export interface ExtensionInfo {
   hasServer: boolean;
   // Shipped from the repo's extensions/ dir rather than user-installed.
   builtin: boolean;
+  // Bundled + manifest tmuxServer.required — cannot be disabled or
+  // uninstalled (the server enforces it; the UI hides those actions).
+  required: boolean;
 }

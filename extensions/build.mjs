@@ -15,7 +15,9 @@ const watch = process.argv.includes("--watch");
 const shims = {
   react: path.join(__dirname, "_shared/shims/react.mjs"),
   "react-dom": path.join(__dirname, "_shared/shims/react-dom.mjs"),
+  "react-dom/client": path.join(__dirname, "_shared/shims/react-dom-client.mjs"),
   "react/jsx-runtime": path.join(__dirname, "_shared/shims/react-jsx-runtime.mjs"),
+  "@tmux-server/engine-support": path.join(__dirname, "_shared/shims/engine-support.mjs"),
 };
 
 function findExtensionNames() {

@@ -2,16 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
 import { getContextGetter } from "../contextKeys";
-import { loadEngine, type TerminalEngineName } from "../engines";
+import { GHOSTTY_ENGINE_ID, loadEngine, XTERM_ENGINE_ID } from "../engines";
+import {
+  extensionTerminalAccessories,
+  useExtensionRegistryVersion,
+  type TerminalAccessoryContext,
+} from "../extensions";
 import { isSyntheticSelectStart, type TerminalEngineHandle, type TerminalTheme } from "../engines/types";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
 import { LocalEcho, wrapModeForCommand } from "../localEcho";
 import type { AppSettings } from "../settings";
-import { sendWithInkSafeEnters, whenMatches } from "../touchKeys";
+import { sendWithInkSafeEnters, whenMatches } from "../lib/terminalInput";
 import { rangeAt } from "../touchSelect";
-import FloatingTouchKeys from "./FloatingTouchKeys";
 import SearchBar from "./SearchBar";
-import TouchKeyBar from "./TouchKeyBar";
 import TouchSelection from "./TouchSelection";
 import {
   encodeSgrMouse,
@@ -275,19 +278,27 @@ export default function TerminalView({
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
-  const keyBarVisible =
-    focused &&
-    (settings.touchKeyBar === "always" ||
-      (settings.touchKeyBar === "auto" && mobilePointer));
   // "auto" reuses the same mobile predicate as the touch key bar — xterm on
   // real phones/tablets (mature native IME/soft-keyboard handling), ghostty
-  // everywhere else.
-  const resolvedEngine: TerminalEngineName =
+  // everywhere else. Any other value is a namespaced extension engine id
+  // (see engines/index.ts), resolved against the registry after extensions
+  // settle; unknown ids fall back to the required xterm engine there.
+  const resolvedEngine: string =
     settings.terminalEngine === "auto"
       ? mobilePointer
-        ? "xterm"
-        : "ghostty"
+        ? XTERM_ENGINE_ID
+        : GHOSTTY_ENGINE_ID
       : settings.terminalEngine;
+  // True when engine resolution came back empty (corrupt/incomplete
+  // install — xterm-engine is a required builtin, so this is never a
+  // reachable user configuration). Rendered as an explicit message rather
+  // than a silent blank terminal.
+  const [engineMissing, setEngineMissing] = useState(false);
+  // Latest soft-keyboard-suppression request from a terminal accessory
+  // (see TerminalAccessoryContext.setSoftKeyboardSuppressed) — held in a
+  // ref so it survives engine remounts (engine-setting change, reconnect)
+  // and is re-applied to each new engine instance below.
+  const softKeyboardSuppressedRef = useRef(false);
   const [stickyCtrl, setStickyCtrl] = useState(false);
   const stickyCtrlRef = useRef(false);
   stickyCtrlRef.current = stickyCtrl;
@@ -305,6 +316,9 @@ export default function TerminalView({
   // this attach's foreground program changes — drives touch keys' `when`
   // filter. "" until the first push arrives.
   const [currentCommand, setCurrentCommand] = useState("");
+  // Terminal accessories (the extracted touch-key bar & floating keys) —
+  // re-render when one registers/unregisters.
+  useExtensionRegistryVersion();
   // Read from inside the mount effect's long-lived forwardInput closure,
   // which only ever sees the values it mounted with — same ref-mirroring
   // pattern as bindingsRef/visibleRef above, gating zero-lag local echo.
@@ -341,12 +355,19 @@ export default function TerminalView({
       // terminal (and a WS) then would throw mid-setup and leak both.
       if (disposed) return;
 
-      // Dynamic import: the non-selected engine's package never loads.
-      // Re-checked after both awaits — a tab can close (or a fast re-render
-      // can re-run this whole effect on an engine change) while either is
-      // in flight.
+      // Registry resolution (extension engines load their own bundles) —
+      // waits on the extensions-settled gate internally. Re-checked after
+      // both awaits — a tab can close (or a fast re-render can re-run this
+      // whole effect on an engine change) while either is in flight.
       const create = await loadEngine(resolvedEngine);
       if (disposed) return;
+      if (!create) {
+        // No engine registered at all — only reachable with a corrupt or
+        // incomplete install, since xterm-engine is a required builtin.
+        setEngineMissing(true);
+        return;
+      }
+      setEngineMissing(false);
 
       // Mutable, not const: reconnect() replaces this on every attempt, and
       // every closure below reads it live rather than capturing one socket.
@@ -538,6 +559,10 @@ export default function TerminalView({
         return;
       }
       engineRef.current = engine;
+      // Re-apply an accessory's standing suppression request to this fresh
+      // engine instance (the attribute lives on the engine's own textarea,
+      // which was just recreated).
+      if (softKeyboardSuppressedRef.current) engine.setSoftKeyboardSuppressed?.(true);
       // engine structurally satisfies LocalEchoAdapter (same five T2a
       // methods) — no wrapping needed. Constructed unconditionally and
       // cheaply (one overlay div + one onRender subscription); forwardInput
@@ -1777,6 +1802,24 @@ export default function TerminalView({
     dismissTouchSelectionRef.current();
   };
 
+  // Fresh object per render (like the inline props it replaced) — accessory
+  // components re-render with this terminal, reading live values.
+  const accessoryContext: TerminalAccessoryContext = {
+    focused,
+    mobilePointer,
+    command: currentCommand,
+    stickyCtrl,
+    toggleStickyCtrl: () => setStickyCtrl((v) => !v),
+    sendInput: (data) => sendInputRef.current(data),
+    sendText: (text) => sendTextRef.current(text),
+    uploadImage: (file) => uploadImageRef.current(file),
+    setSoftKeyboardSuppressed: (suppressed) => {
+      softKeyboardSuppressedRef.current = suppressed;
+      engineRef.current?.setSoftKeyboardSuppressed?.(suppressed);
+    },
+    containerRef: terminalBodyRef,
+  };
+
   return (
     <div
       ref={containerRef}
@@ -1787,6 +1830,12 @@ export default function TerminalView({
           its last rows underneath; the overlays anchor to the body so
           they too stay clear of the bar. */}
       <div ref={terminalBodyRef} className="terminal-body">
+        {engineMissing && (
+          <div className="terminal-engine-missing">
+            Terminal engine unavailable — the bundled xterm-engine extension failed to load.
+            Reinstall or rebuild the app's bundled extensions, then reload.
+          </div>
+        )}
         <div ref={screenRef} className="terminal-screen" />
         {searchOpen && (
           <SearchBar
@@ -1814,32 +1863,17 @@ export default function TerminalView({
             onHandleDragMove={(x, y) => touchHandleMoveRef.current(x, y)}
           />
         )}
-        {settings.touchKeyBarStyle === "floating" && (
-          <FloatingTouchKeys
-            visible={keyBarVisible}
-            keys={settings.touchKeys}
-            currentCommand={currentCommand}
-            stickyCtrl={stickyCtrl}
-            onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
-            onSendInput={(data) => sendInputRef.current(data)}
-            onSendVoiceText={(text) => sendTextRef.current(text)}
-            onUploadImage={(file) => uploadImageRef.current(file)}
-            containerRef={terminalBodyRef}
-          />
-        )}
+        {extensionTerminalAccessories
+          .filter((a) => a.placement === "overlay")
+          .map((a) => (
+            <a.component key={a.id} context={accessoryContext} />
+          ))}
       </div>
-      {settings.touchKeyBarStyle !== "floating" && (
-        <TouchKeyBar
-          visible={keyBarVisible}
-          keys={settings.touchKeys}
-          currentCommand={currentCommand}
-          stickyCtrl={stickyCtrl}
-          onToggleStickyCtrl={() => setStickyCtrl((v) => !v)}
-          onSendInput={(data) => sendInputRef.current(data)}
-          onSendVoiceText={(text) => sendTextRef.current(text)}
-          onUploadImage={(file) => uploadImageRef.current(file)}
-        />
-      )}
+      {extensionTerminalAccessories
+        .filter((a) => a.placement === "bar")
+        .map((a) => (
+          <a.component key={a.id} context={accessoryContext} />
+        ))}
     </div>
   );
 }

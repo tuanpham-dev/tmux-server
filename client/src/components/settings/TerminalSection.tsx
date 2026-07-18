@@ -1,4 +1,5 @@
 import type { AppSettings } from "../../settings";
+import { extensionTerminalEngines, useExtensionRegistryVersion } from "../../extensions";
 import { useSettingsContext } from "./context";
 import { FontFamilyPicker, NumberField } from "./controls";
 
@@ -10,6 +11,9 @@ import { FontFamilyPicker, NumberField } from "./controls";
 // -webkit-text-stroke — see settings.ts).
 export default function TerminalSection() {
   const { settings, set, extensions } = useSettingsContext();
+  // Re-render when engine extensions register — the Engine select lists
+  // the registry's entries.
+  useExtensionRegistryVersion();
 
   return (
     <>
@@ -20,10 +24,13 @@ export default function TerminalSection() {
         <select
           className="dialog-input settings-select"
           value={settings.terminalEngine}
-          onChange={(e) => set("terminalEngine", e.target.value as AppSettings["terminalEngine"])}
+          onChange={(e) => set("terminalEngine", e.target.value)}
         >
-          <option value="ghostty">Ghostty</option>
-          <option value="xterm">xterm.js</option>
+          {extensionTerminalEngines.map((engine) => (
+            <option key={engine.id} value={engine.id}>
+              {engine.label}
+            </option>
+          ))}
           <option value="auto">Auto (xterm.js on mobile)</option>
         </select>
       </label>

@@ -712,3 +712,36 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* ---- FILES tree decoration row colors (applied via the file-decoration
+   provider's className; the badge element itself is core FileTree's
+   .file-tree-git-badge) ---- */
+
+.file-tree-row.git-status-modified {
+  color: var(--git-modified-fg);
+}
+
+.file-tree-row.git-status-added {
+  color: var(--git-added-fg);
+}
+
+.file-tree-row.git-status-untracked {
+  color: var(--git-untracked-fg);
+}
+
+.file-tree-row.git-status-deleted {
+  color: var(--error);
+}
+
+.file-tree-row.git-status-renamed {
+  color: var(--git-renamed-fg);
+}
+
+.file-tree-row.git-status-conflicted {
+  color: var(--button);
+}
+
+.file-tree-row.git-status-ignored {
+  color: var(--fg-inactive);
+  opacity: 0.6;
+}

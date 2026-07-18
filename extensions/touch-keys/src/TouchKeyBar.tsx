@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
-import { parseSend, sendWithInkSafeEnters, whenMatches, type TouchKey } from "../touchKeys";
-import { isVoiceInputSupported, VoiceInput } from "../voiceInput";
+import { sendWithInkSafeEnters, whenMatches } from "@tmux-server/engine-support";
+import { parseSend, type TouchKey } from "./touchKeys";
+import { isVoiceInputSupported, VoiceInput } from "./voiceInput";
 
 interface Props {
   visible: boolean;

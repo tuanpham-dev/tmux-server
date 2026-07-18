@@ -1,22 +1,22 @@
-// xterm.js implementation of the TerminalEngine seam
-// (plans/terminal-engine-setting.md) — a resurrection-and-forward-port of
-// the pre-swap TerminalView (git show 4505044^), re-verified against
-// @xterm/xterm 6.0.0 in the plan's T1 spike rather than trusted from the
-// old comments. Nothing outside this file may import "@xterm/xterm" or its
-// addons.
+// xterm.js implementation of the TerminalEngine seam — moved verbatim from
+// core client/src/engines/xterm.ts when both engines became bundled
+// extensions (this one a REQUIRED builtin: the app's rendering floor).
+// Originally a resurrection-and-forward-port of the pre-swap TerminalView
+// (git show 4505044^), re-verified against @xterm/xterm 6.0.0. Nothing
+// outside this extension may import "@xterm/xterm" or its addons.
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type FontWeight } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { cellFromPoint } from "../mouseReports";
-import { buildXtermLinkProvider, stitchXtermLine } from "../terminalLinks";
+import { cellFromPoint } from "@tmux-server/engine-support";
+import { buildXtermLinkProvider, stitchXtermLine } from "./links";
 import type {
   CellPosition,
   TerminalEngineHandle,
   TerminalEngineOptions,
   TerminalEngineSettings,
-} from "./types";
+} from "../../_shared/terminalEngineTypes";
 
 function toFontWeight(weight: TerminalEngineSettings["fontWeight"]): FontWeight {
   // "medium" maps to the numeric 500 weight — utils/fonts.ts registers the
@@ -239,6 +239,14 @@ export async function createXtermEngine(options: TerminalEngineOptions): Promise
     write: (data) => term.write(data),
     focus: () => term.focus(),
     focusInput: () => term.textarea?.focus(),
+    setSoftKeyboardSuppressed: (suppressed) => {
+      // inputmode="none" is the standard "focusable but no virtual
+      // keyboard" mechanism — hardware/app-drawn input still lands in the
+      // textarea's key events.
+      if (!term.textarea) return;
+      if (suppressed) term.textarea.setAttribute("inputmode", "none");
+      else term.textarea.removeAttribute("inputmode");
+    },
     getSelection: () => term.getSelection(),
     clearSelection: () => term.clearSelection(),
     clear: () => term.clear(),

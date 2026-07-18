@@ -3,7 +3,8 @@
 // foreground/background pair falls below the configured ratio, move the
 // foreground toward black or white — whichever direction can actually reach
 // the ratio — and return the adjusted color. Pure functions; the per-cell
-// caching lives in ghosttyShims.ts.
+// caching lives in the ghostty-engine extension's renderer shims, which
+// consume this via the @tmux-server/engine-support shim.
 
 export type Rgb = readonly [number, number, number];
 

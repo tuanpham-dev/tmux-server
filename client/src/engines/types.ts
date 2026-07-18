@@ -187,6 +187,14 @@ export interface TerminalEngineHandle {
   // Cell size in CSS pixels, respecting lineHeight/letterSpacing — the
   // same grid both cellFromPoint and the engine's own renderer use.
   getCellMetrics(): { width: number; height: number };
+  // Suppresses the mobile soft keyboard while keeping the engine's input
+  // element focusable (inputmode="none" on the hidden IME textarea):
+  // hardware keys and app-drawn keyboards (terminal accessories) keep
+  // working, but tapping the terminal no longer summons the OS keyboard.
+  // Optional — an engine without it simply can't suppress, and the host
+  // calls it defensively. Re-applied by the host after engine creation, so
+  // implementations only need to affect the live element.
+  setSoftKeyboardSuppressed?(suppressed: boolean): void;
   // Fires after each repaint completes; returns an unsubscribe. Multiple
   // subscribers are supported (unlike onKeyEvent/onWheelEvent, which each
   // set a single handler).

@@ -107,7 +107,6 @@ export const COMMANDS: Command[] = [
   { id: "sessions.newWindow", label: "Sessions: New Window in Focused Session", defaultBindings: [], scope: "sessions" },
   { id: "sessions.togglePin", label: "Sessions: Pin/Unpin Focused Session", defaultBindings: [], scope: "sessions" },
   { id: "sidebar.focusSessions", label: "Sidebar: Focus Sessions", defaultBindings: [], scope: "global" },
-  { id: "sidebar.focusPorts", label: "Sidebar: Focus Ports", defaultBindings: [], scope: "global" },
 ];
 
 // Overrides only (command id → its full replacement binding set, [] meaning
@@ -144,14 +143,22 @@ function isKeybinding(value: unknown): value is Keybinding {
 // Both localStorage and the server settings doc may still hold the old
 // shape from before this landed. Anything else malformed is dropped, same
 // as the old string-only loader's tolerant-parse behavior.
+// Command ids that moved when their feature was extracted into a bundled
+// extension — a user's stored override for the old id carries over to the
+// extension's namespaced command so their custom binding keeps working.
+const RENAMED_COMMAND_IDS: Record<string, string> = {
+  "sidebar.focusPorts": "ext.tmux-server.ports.ports.focus",
+};
+
 export function migrateKeybindingOverrides(raw: unknown): KeybindingOverrides {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
   const result: KeybindingOverrides = {};
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const targetId = RENAMED_COMMAND_IDS[id] ?? id;
     if (typeof value === "string") {
-      result[id] = value === "" ? [] : [{ key: value }];
+      result[targetId] = value === "" ? [] : [{ key: value }];
     } else if (Array.isArray(value) && value.every(isKeybinding)) {
-      result[id] = value;
+      result[targetId] = value;
     }
   }
   return result;

@@ -16,6 +16,7 @@ import {
   isDirectory,
   isFile,
   listDir,
+  listRepoFiles,
   movePath,
   renamePath,
   resolveDestination,
@@ -23,6 +24,7 @@ import {
   walkFiles,
 } from "./files.js";
 import {
+  emitApiMutation,
   extensionHookMiddleware,
   installFromTsixFile,
   listExtensions,
@@ -30,19 +32,10 @@ import {
   setExtensionEnabled,
   uninstallExtension,
 } from "./extensions.js";
-import {
-  getRepoBranch,
-  getRepoStatuses,
-  invalidateGitCache,
-  listRepoFiles,
-  statusForEntry,
-} from "./git.js";
-import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
 import { getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
 import { mergeSettingsDoc, readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
-import { getSubagentDetails } from "./subagentWatcher.js";
 import {
   createSession,
   createWindow,
@@ -67,20 +60,24 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Git status and the session listing are both cached for a beat (see git.ts /
-// tmux.ts) so N tabs polling for the same answer don't each pay to recompute
-// it. Any mutation we perform can invalidate those, so drop them once the
-// request that made it has finished — cheaper and harder to forget than tagging
-// each write/rename/delete/paste/transfer/upload route individually, and a
-// spurious drop (a session rename touches no files) only costs one recomputed
-// scan. On "finish", not before next(): invalidating up front would leave a
-// window where a concurrent listing re-populates the cache from the
-// pre-mutation tree, and that stale answer would then outlive the write.
+// The session listing is cached for a beat (see tmux.ts) so N tabs polling
+// for the same answer don't each pay to recompute it, and extensions keep
+// their own equivalent caches (git-scm's decoration scan). Any mutation we
+// perform can invalidate those, so drop/signal them once the request that
+// made it has finished — cheaper and harder to forget than tagging each
+// write/rename/delete/paste/transfer/upload route individually. On
+// "finish", not before next(): invalidating up front would leave a window
+// where a concurrent listing re-populates a cache from the pre-mutation
+// tree, and that stale answer would then outlive the write.
 api.use((req, res, next) => {
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.on("finish", () => {
-      invalidateGitCache();
       invalidateSessionsCache();
+      // Extension-facing "something on disk probably changed" signal —
+      // server hooks subscribed via host.events.onApiMutation invalidate
+      // their own caches on it (e.g. git-scm's decoration scan cache,
+      // which replaced the core git cache this middleware used to drop).
+      emitApiMutation();
     });
   }
   next();
@@ -98,23 +95,6 @@ function sendFsError(res: Response, err: unknown): void {
 api.get("/sessions", async (_req, res) => {
   try {
     res.json(await listSessions());
-  } catch (err) {
-    res.status(500).json({ error: errMessage(err) });
-  }
-});
-
-// Full subagent detail for one window's cwd (plans/subagent-activity-
-// viewer.md) — on-demand, only fetched while the agents panel is open;
-// the cheap running-count that rides the sessions poll above lives in
-// subagentWatcher.ts's getCounts, called from tmux.ts's querySessions.
-api.get("/subagents", async (req, res) => {
-  const rawCwd = typeof req.query.cwd === "string" ? req.query.cwd : "";
-  if (!rawCwd) {
-    res.status(400).json({ error: "cwd is required" });
-    return;
-  }
-  try {
-    res.json(await getSubagentDetails(expandHome(rawCwd)));
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
@@ -495,53 +475,13 @@ api.post("/sessions/:name/resolve-paths", async (req, res) => {
   }
 });
 
-api.get("/ports", async (_req, res) => {
-  try {
-    res.json(await listTmuxPorts());
-  } catch (err) {
-    res.status(500).json({ error: errMessage(err) });
-  }
-});
-
-// What the PORTS panel needs to build a proxy URL for a port — currently
+// What the ports extension needs to build a proxy URL for a port — currently
 // just the first configured PROXY_DOMAIN, if any (see security.ts). No
 // domain means the panel falls back to /proxy/<port>/ on the app's own
-// origin.
+// origin. Stays core (unlike the extracted /ports list/kill routes, now in
+// extensions/ports/server.js) because it fronts proxy/tunnel infrastructure.
 api.get("/proxy-config", (_req, res) => {
   res.json({ domain: primaryProxyDomain() });
-});
-
-const KILL_GRACE_MS = 5_000;
-
-api.post("/ports/:port/kill", async (req, res) => {
-  const port = Number(req.params.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    res.status(400).json({ error: "invalid port" });
-    return;
-  }
-  const entry = await findTmuxPort(port);
-  if (!entry || entry.pid === undefined) {
-    res.status(404).json({ error: "port not found in tmux sessions" });
-    return;
-  }
-  const pid = entry.pid;
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch (err) {
-    res.status(500).json({ error: errMessage(err) });
-    return;
-  }
-  res.status(204).end();
-  // Grace period for a clean shutdown; escalate to SIGKILL only if the same
-  // pid is still holding the port afterward (an already-exited or since-
-  // reused pid is left alone).
-  setTimeout(() => {
-    findTmuxPort(port)
-      .then((stillThere) => {
-        if (stillThere?.pid === pid) process.kill(pid, "SIGKILL");
-      })
-      .catch(() => {});
-  }, KILL_GRACE_MS).unref();
 });
 
 // Reflects the caller's own Cookie/Authorization headers back as JSON, so the
@@ -577,21 +517,10 @@ api.get("/fs", async (req, res) => {
       res.status(400).json({ error: "path is not a directory" });
       return;
     }
-    const entries = await listDir(dirPath);
-    // git=0 (the "show git status" setting turned off) skips the porcelain
-    // status scan — the expensive part on large repos — but still resolves
-    // the branch so the sidebar's branch pill keeps working.
-    const withGit = req.query.git !== "0";
-    const repo = withGit ? await getRepoStatuses(dirPath) : null;
-    const withStatus = repo
-      ? entries.map((entry) => {
-          const relPath = path.relative(repo.root, path.join(dirPath, entry.name));
-          const gitStatus = statusForEntry(repo.statuses, repo.dirStatuses, repo.trackedDirs, relPath, entry.dir);
-          return gitStatus ? { ...entry, gitStatus } : entry;
-        })
-      : entries;
-    const branch = repo ? repo.branch : withGit ? null : await getRepoBranch(dirPath);
-    res.json({ path: dirPath, entries: withStatus, branch });
+    // Plain listing only — git status badges and the branch pill are the
+    // git-scm extension's file-decoration provider's job now (see
+    // extensions/git-scm), not inlined here.
+    res.json({ path: dirPath, entries: await listDir(dirPath) });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

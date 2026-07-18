@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getContextGetter } from "../contextKeys";
+import { getWindowDecorations, useExtensionRegistryVersion } from "../extensions";
 import type { RegisteredWindowAction } from "../extensions";
 import { useListNavigation } from "../hooks/useListNavigation";
 import { bindingMatches, recorderState, serializeEvent, type Keybinding } from "../keybindings";
@@ -38,7 +39,6 @@ interface Props {
   onNewWindowInDir: (cwd: string) => void;
   onRestorePinned: (name: string, cwd: string) => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
-  onShowAgents: (cwd: string, x: number, y: number) => void;
   sessionMenuItems: (name: string, dead: boolean) => MenuItem[];
   windowMenuItems: (session: string, win: TmuxWindow) => MenuItem[];
   extensionWindowActions: RegisteredWindowAction[];
@@ -81,7 +81,6 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
     onNewWindowInDir,
     onRestorePinned,
     onShowMenu,
-    onShowAgents,
     sessionMenuItems,
     windowMenuItems,
     extensionWindowActions,
@@ -93,6 +92,9 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  // Re-render when a session-decoration provider registers or refresh()es —
+  // getWindowDecorations below reads the registry imperatively per row.
+  useExtensionRegistryVersion();
 
   const toggleWindowCollapsed = (key: string) => {
     setCollapsedWindows((prev) => {
@@ -345,18 +347,24 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
         {w.activity && <span className="activity-dot" />}
         <span className="window-label">{label}</span>
         {showCwd && <span className="item-cwd">{w.cwd}</span>}
-        {!!w.agents && (
-          <button
-            className="agents-badge"
-            title={`${w.agents} subagent${w.agents === 1 ? "" : "s"} running`}
-            tabIndex={-1}
-            onClick={(e) => {
-              e.stopPropagation();
-              onShowAgents(w.cwd, e.clientX, e.clientY);
-            }}
-          >
-            {w.agents}
-          </button>
+        {getWindowDecorations({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command }).map(
+          ({ provider, decoration }) => (
+            <button
+              key={provider.id}
+              className={`window-decoration-badge${decoration.className ? ` ${decoration.className}` : ""}`}
+              title={decoration.tooltip ?? decoration.badge}
+              tabIndex={-1}
+              onClick={(e) => {
+                e.stopPropagation();
+                provider.onClick?.(
+                  (e.currentTarget as HTMLElement).getBoundingClientRect(),
+                  { sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command },
+                );
+              }}
+            >
+              {decoration.badge}
+            </button>
+          ),
         )}
         {extensionWindowActions
           .filter((action) =>

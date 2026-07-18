@@ -185,7 +185,12 @@ export default function ExtensionPageView({
                       {installing ? "Updating…" : `Update to v${update.entry.version}`}
                     </button>
                   )}
-                  {installed && (
+                  {installed?.required && (
+                    <span className="extension-required-label" title="This extension is part of the app's core surface and cannot be disabled or uninstalled.">
+                      Required
+                    </span>
+                  )}
+                  {installed && !installed.required && (
                     <button
                       className="dialog-button secondary"
                       onClick={() => {
@@ -207,6 +212,7 @@ export default function ExtensionPageView({
                     </button>
                   )}
                   {installed &&
+                    !installed.required &&
                     (pendingUninstall ? (
                       <div className="extension-row-confirm">
                         <span>{installed.builtin ? "Uninstall built-in?" : "Uninstall?"}</span>

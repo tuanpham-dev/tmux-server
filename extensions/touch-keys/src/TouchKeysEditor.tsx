@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_TOUCH_KEYS, parseSend, type TouchKey } from "../../touchKeys";
-import { TouchKeyButton, visibleKeys } from "../TouchKeyBar";
-import { useSettingsContext } from "./context";
+import { DEFAULT_TOUCH_KEYS, parseSend, type TouchKey } from "./touchKeys";
+import { TouchKeyButton, visibleKeys } from "./TouchKeyBar";
+import { readKeys, useTouchKeySettingsTick, writeKeys } from "./client";
 
 // Drop position for an in-progress row drag: `id` is the target row's drop
 // indicator id (its index in settings.touchKeys), `edge` says above or below
@@ -15,12 +15,15 @@ interface DropIndicator {
 const MOVE_SLOP_PX = 5;
 
 // Drag & drop reordering plus a live, tag-filterable preview for the
-// Settings > UI touch-key editor. Extracted out of UiSection.tsx once the
-// editor grew a grip handle and a preview strip on top of the existing
-// label/send/when/remove row.
+// touch-key layout editor — rendered inside this extension's Settings
+// section via registerSettingsComponent (moved from core Settings > UI
+// when touch keys became this extension).
 export default function TouchKeysEditor() {
-  const { settings, set } = useSettingsContext();
-  const keys = settings.touchKeys;
+  // Layout persists as this extension's touchKeys.keys JSON setting —
+  // readKeys/writeKeys in client.tsx own the (de)serialization.
+  useTouchKeySettingsTick();
+  const keys = readKeys();
+  const set = (_key: "touchKeys", next: TouchKey[]) => writeKeys(next);
 
   const [previewTag, setPreviewTag] = useState("All");
   const [dragIndex, setDragIndex] = useState<number | null>(null);
