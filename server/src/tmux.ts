@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { getGitRoot } from "./files.js";
 
 // Synthetic tmux sessions created for per-window tabs (see createWindowTab)
 // are grouped with a real session so they share its windows, but are never
@@ -156,9 +157,11 @@ export async function createSession(name?: string, cwd?: string): Promise<TmuxSe
   // Without -c, tmux starts the session in this server process's own cwd
   // (the server/ folder) — same pitfall as createWindow below. A caller-
   // provided cwd (the client's "default new session dir" setting, validated
-  // in api.ts) wins over NEW_SESSION_CWD from server/.env.
+  // in api.ts) wins over NEW_SESSION_CWD from server/.env. Either way, start
+  // at the git repo root containing that dir (matching the FILES panel's
+  // rooting), falling back to the dir itself when it isn't inside a repo.
   const dir = cwd || process.env.NEW_SESSION_CWD;
-  if (dir) args.push("-c", dir);
+  if (dir) args.push("-c", (await getGitRoot(dir)) ?? dir);
   if (name) args.push("-s", name);
   const createdName = (await tmux(args)).trim();
   const sessions = await listSessions();
