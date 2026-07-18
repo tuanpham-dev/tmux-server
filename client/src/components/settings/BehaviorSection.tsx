@@ -88,6 +88,9 @@ export default function BehaviorSection() {
 
       <label className="settings-row">
         <span className="settings-label">Image paste/drop upload directory</span>
+        <div className="settings-hint">
+          {"{cwd} expands to the pane's directory, {gitroot} to its git repo root; empty means {cwd}/uploads"}
+        </div>
         <input
           className="dialog-input"
           placeholder="{cwd}/uploads"
@@ -95,9 +98,6 @@ export default function BehaviorSection() {
           onChange={(e) => set("pasteDropUploadDir", e.target.value)}
         />
       </label>
-      <div className="settings-hint">
-        {"{cwd} expands to the pane's directory, {gitroot} to its git repo root; empty means {cwd}/uploads"}
-      </div>
 
       <label className="settings-row checkbox-row">
         <input
