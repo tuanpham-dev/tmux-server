@@ -63,11 +63,6 @@ interface Entry {
   disabled?: boolean;
 }
 
-// Rendering unbounded fuzzy-matched results from a large repo would make
-// typing feel laggy, so file matches are capped well below what a human
-// scans through in a switcher anyway.
-const MAX_FILE_MATCHES = 50;
-
 // Subsequence match (VS Code Ctrl+P style): every query character must
 // appear in the text in order, not necessarily contiguous, so "twsh" matches
 // "tw-search:zsh".
@@ -113,18 +108,38 @@ export default function QuickSwitcher({
     inputRef.current?.focus();
   }, []);
 
-  // Fetched once when the switcher opens (the list is only as stale as that
-  // moment, which is fine for a picker) rather than on every keystroke.
-  // Skipped in command mode — the palette never lists files.
+  // Files are searched server-side per query (debounced): the server
+  // fuzzy-filters and returns only the top matches, so a big repo never ships
+  // its whole file list to the client. Skipped with no query (the switcher
+  // shows files only once a query narrows them) or in command mode (the
+  // palette never lists files). Previous results stay visible while the next
+  // query is in flight; a stale guard drops a response the query moved past.
   useEffect(() => {
-    if (!filesRootDir || isCommandMode) return;
+    if (!filesRootDir || isCommandMode || !query) {
+      setFiles([]);
+      setFilesLoading(false);
+      return;
+    }
     setFilesLoading(true);
-    api
-      .listFiles(filesRootDir)
-      .then((listing) => setFiles(listing.files))
-      .catch(() => setFiles([]))
-      .finally(() => setFilesLoading(false));
-  }, [filesRootDir, isCommandMode]);
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      api
+        .listFiles(filesRootDir, query)
+        .then((listing) => {
+          if (!stale) setFiles(listing.files);
+        })
+        .catch(() => {
+          if (!stale) setFiles([]);
+        })
+        .finally(() => {
+          if (!stale) setFilesLoading(false);
+        });
+    }, 150);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [filesRootDir, isCommandMode, query]);
 
   // Group precedence (open tabs, then windows, then whole sessions) doubles
   // as the ranking: entries are built in that order and the filter is
@@ -165,24 +180,18 @@ export default function QuickSwitcher({
     return list;
   }, [sessions, tabs, tabLabel, onActivateTab, onOpenWindow, onOpenSession]);
 
-  // Files only show up once a query narrows them down — an empty query
-  // would otherwise drown the tabs/windows/sessions list under thousands of
-  // rows. Ranked after those groups and capped so a big repo can't make
-  // rendering feel sluggish. None in command mode.
+  // Files arrive already fuzzy-filtered and capped by the server (see the
+  // search effect above), ranked after the tab/window/session groups — so
+  // this just maps them to rows. Still gated on a non-empty query and
+  // non-command mode so nothing shows before a query narrows the list.
   const fileEntries = useMemo<Entry[]>(() => {
     if (isCommandMode || !query || !filesRootDir) return [];
-    const matched: Entry[] = [];
-    for (const rel of files) {
-      if (matched.length >= MAX_FILE_MATCHES) break;
-      if (!fuzzyMatch(query, rel)) continue;
-      matched.push({
-        key: `file:${rel}`,
-        label: rel,
-        group: "file",
-        run: (secondary) => (secondary ? onOpenFileSecondary : onOpenFile)(`${filesRootDir}/${rel}`),
-      });
-    }
-    return matched;
+    return files.map((rel) => ({
+      key: `file:${rel}`,
+      label: rel,
+      group: "file",
+      run: (secondary) => (secondary ? onOpenFileSecondary : onOpenFile)(`${filesRootDir}/${rel}`),
+    }));
   }, [isCommandMode, files, query, filesRootDir, onOpenFile, onOpenFileSecondary]);
 
   // Extension provider results — non-command mode only (extensions reach

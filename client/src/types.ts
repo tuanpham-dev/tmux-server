@@ -179,6 +179,10 @@ export interface FsFilesListing {
   truncated: boolean;
 }
 
+export interface FsGitRoot {
+  root: string;
+}
+
 export interface ExtensionThemeContribution {
   label: string;
   path: string;

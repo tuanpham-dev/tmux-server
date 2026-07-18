@@ -1,6 +1,7 @@
 import type {
   ExtensionInfo,
   FsFilesListing,
+  FsGitRoot,
   FsListing,
   RegistrySourceResult,
   TmuxSession,
@@ -144,8 +145,17 @@ export function listDir(dirPath: string): Promise<FsListing> {
   return request(`/api/fs?path=${encodeURIComponent(dirPath)}`);
 }
 
-export function listFiles(dirPath: string): Promise<FsFilesListing> {
-  return request(`/api/fs/files?path=${encodeURIComponent(dirPath)}`);
+// With `query`, the server fuzzy-filters and returns only the top matches
+// (per-keystroke quick-switcher search); without it, the full capped listing.
+export function listFiles(dirPath: string, query?: string): Promise<FsFilesListing> {
+  const q = query ? `&q=${encodeURIComponent(query)}` : "";
+  return request(`/api/fs/files?path=${encodeURIComponent(dirPath)}${q}`);
+}
+
+// Resolves the git repo root containing dirPath, or dirPath itself when it
+// isn't inside a repo — roots the FILES panel / quick-switcher search.
+export function getGitRoot(dirPath: string): Promise<FsGitRoot> {
+  return request(`/api/fs/git-root?path=${encodeURIComponent(dirPath)}`);
 }
 
 export function openFile(

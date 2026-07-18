@@ -33,6 +33,7 @@ import { useSessions } from "./hooks/useSessions";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
+import { useGitRootDir } from "./hooks/useGitRootDir";
 import { useThemeAssets } from "./hooks/useThemeAssets";
 import type { MenuItem, MenuState, RegistrySourceResult } from "./types";
 import { groupKeyForTab, isRealTab } from "./lib/tabs";
@@ -442,6 +443,11 @@ export default function App() {
     extensions,
     registryCatalog,
   );
+
+  // The FILES tree and quick-switcher search root at the git repo containing
+  // the active window's cwd (falling back to the cwd when it isn't a repo),
+  // while lazygit and the extension active-context keep the raw cwd below.
+  const resolvedFilesRootDir = useGitRootDir(filesRootDir);
 
   // Extension window-action buttons for a group's own active tab, rendered
   // in that group's tab bar (see TabBar.tsx's extras slot) — the tab-bar
@@ -1117,7 +1123,7 @@ export default function App() {
             panelVisible={panel.visible}
             onTogglePanel={togglePanel}
             onCollapse={() => setSidebarVisible(false)}
-            filesRootDir={filesRootDir}
+            filesRootDir={resolvedFilesRootDir}
             onDropFiles={handleFileTreeDrop}
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
@@ -1398,7 +1404,7 @@ export default function App() {
           sessions={sessions}
           tabs={tabs}
           tabLabel={tabLabel}
-          filesRootDir={filesRootDir}
+          filesRootDir={resolvedFilesRootDir}
           initialQuery={switcherQuery}
           commands={paletteCommands}
           bindings={resolvedBindings}

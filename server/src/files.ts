@@ -20,6 +20,55 @@ export function expandHome(p: string): string {
   return p;
 }
 
+// Inverse of expandHome: collapses a leading $HOME to "~" so paths handed back
+// to the client match the home-shortened form window cwds already arrive in
+// (see the private shortenHome copy in tmux.ts).
+export function shortenHome(p: string): string {
+  if (HOME && (p === HOME || p.startsWith(HOME + path.sep))) {
+    return "~" + p.slice(HOME.length);
+  }
+  return p;
+}
+
+// Shells out to git in `cwd`, rejecting on non-zero exit with git's stderr.
+// Shared by getGitRoot and listRepoFiles (git as a files-feature
+// implementation detail — SCM decorations live in the git-scm extension).
+function git(args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { cwd, encoding: "utf8" }, (err, stdout, stderr) => {
+      if (err) reject(new Error(stderr.trim() || err.message));
+      else resolve(stdout);
+    });
+  });
+}
+
+// The git repository root containing dirPath, or null when dirPath isn't
+// inside a work tree (or git isn't available). Roots the FILES panel at the
+// repo rather than the pane's cwd. Returned unshortened; callers apply
+// shortenHome as needed.
+export async function getGitRoot(dirPath: string): Promise<string | null> {
+  try {
+    return (await git(["rev-parse", "--show-toplevel"], dirPath)).trim();
+  } catch {
+    return null;
+  }
+}
+
+// Subsequence match (VS Code Ctrl+P style): every query character must appear
+// in the text in order, not necessarily contiguous. Kept in sync with the
+// client copy in client/src/components/QuickSwitcher.tsx so server-filtered
+// file search ranks identically to the old client-side filtering.
+export function fuzzyMatch(query: string, text: string): boolean {
+  if (!query) return true;
+  let qi = 0;
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) qi++;
+  }
+  return qi === q.length;
+}
+
 export interface FsEntry {
   name: string;
   dir: boolean;
@@ -36,16 +85,26 @@ export async function listDir(dirPath: string): Promise<FsEntry[]> {
     });
 }
 
+// When filtering (match given), the number of files *scanned* is bounded so a
+// per-keystroke search over a giant non-git directory — where only a handful
+// of matches may live deep in the tree — can't stall the request. Unbounded
+// when listing everything (match omitted): the `cap` on collected files is the
+// only limit then, matching the original behavior.
+const MAX_WALK_VISITED = 50_000;
+
 // Recursive fallback for the quick switcher's file search when rootDir isn't
 // inside a git repo (so there's no .gitignore-aware `git ls-files` to lean
-// on). Walks depth-first, skipping ".git", and stops as soon as it hits cap
-// so a huge non-git directory can't stall the request.
+// on). Walks depth-first, skipping ".git", and stops as soon as it hits cap so
+// a huge non-git directory can't stall the request. With `match`, only paths
+// the predicate accepts are collected (server-side filtering), up to cap.
 export async function walkFiles(
   rootDir: string,
   cap: number,
+  match?: (rel: string) => boolean,
 ): Promise<{ files: string[]; truncated: boolean }> {
   const files: string[] = [];
   let truncated = false;
+  let visited = 0;
 
   async function walk(dirPath: string, relPrefix: string): Promise<void> {
     if (truncated) return;
@@ -62,6 +121,11 @@ export async function walkFiles(
       if (entry.isDirectory()) {
         await walk(path.join(dirPath, entry.name), rel);
       } else {
+        if (match && ++visited > MAX_WALK_VISITED) {
+          truncated = true;
+          return;
+        }
+        if (match && !match(rel)) continue;
         if (files.length >= cap) {
           truncated = true;
           return;
@@ -207,28 +271,22 @@ export async function movePath(src: string, destDir: string): Promise<string | n
 // extension's job). Returns null when dirPath isn't inside a git repo so
 // the caller can fall back to a plain directory walk. Run with cwd =
 // dirPath (not the repo root) so git scopes and returns paths relative to
-// dirPath itself, matching what the fallback walker would produce.
+// dirPath itself, matching what the fallback walker would produce. With
+// `match`, only paths the predicate accepts are collected, up to cap.
 export async function listRepoFiles(
   dirPath: string,
   cap: number,
+  match?: (rel: string) => boolean,
 ): Promise<{ files: string[]; truncated: boolean } | null> {
-  const git = (args: string[]): Promise<string> =>
-    new Promise((resolve, reject) => {
-      execFile("git", args, { cwd: dirPath, encoding: "utf8" }, (err, stdout, stderr) => {
-        if (err) reject(new Error(stderr.trim() || err.message));
-        else resolve(stdout);
-      });
-    });
-
   try {
-    await git(["rev-parse", "--show-toplevel"]);
+    await git(["rev-parse", "--show-toplevel"], dirPath);
   } catch {
     return null;
   }
 
   let out: string;
   try {
-    out = await git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
+    out = await git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], dirPath);
   } catch {
     return null;
   }
@@ -237,6 +295,7 @@ export async function listRepoFiles(
   let truncated = false;
   for (const token of out.split("\0")) {
     if (!token) continue;
+    if (match && !match(token)) continue;
     if (files.length >= cap) {
       truncated = true;
       break;

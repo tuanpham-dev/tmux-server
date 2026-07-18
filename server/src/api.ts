@@ -13,6 +13,8 @@ import {
   ensureDir,
   exists,
   expandHome,
+  fuzzyMatch,
+  getGitRoot,
   isDirectory,
   isFile,
   listDir,
@@ -20,6 +22,7 @@ import {
   movePath,
   renamePath,
   resolveDestination,
+  shortenHome,
   uniquePath,
   walkFiles,
 } from "./files.js";
@@ -526,12 +529,10 @@ api.get("/fs", async (req, res) => {
   }
 });
 
-// Backs the quick switcher's file search: recursively lists files under
-// `path`, gitignore-aware via `git ls-files` in a repo, falling back to a
-// capped directory walk otherwise.
-const FS_FILES_CAP = 10000;
-
-api.get("/fs/files", async (req, res) => {
+// Roots the FILES panel at the git repo containing `path`, falling back to
+// `path` itself when it isn't inside a repo. Resolved on demand (only when the
+// active window's cwd changes) rather than per-window in the sessions poll.
+api.get("/fs/git-root", async (req, res) => {
   const raw = typeof req.query.path === "string" ? req.query.path : "";
   if (!raw) {
     res.status(400).json({ error: "path is required" });
@@ -543,8 +544,38 @@ api.get("/fs/files", async (req, res) => {
       res.status(400).json({ error: "path is not a directory" });
       return;
     }
-    const repoFiles = await listRepoFiles(dirPath, FS_FILES_CAP);
-    const { files, truncated } = repoFiles ?? (await walkFiles(dirPath, FS_FILES_CAP));
+    const root = await getGitRoot(dirPath);
+    res.json({ root: shortenHome(root ?? dirPath) });
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// Backs the quick switcher's file search: recursively lists files under
+// `path`, gitignore-aware via `git ls-files` in a repo, falling back to a
+// capped directory walk otherwise. With `q`, the server fuzzy-filters and
+// returns only the top matches (per-keystroke search) instead of the whole
+// corpus; without it, the full capped listing (backward compatible).
+const FS_FILES_CAP = 10000;
+const FS_MATCH_CAP = 50;
+
+api.get("/fs/files", async (req, res) => {
+  const raw = typeof req.query.path === "string" ? req.query.path : "";
+  if (!raw) {
+    res.status(400).json({ error: "path is required" });
+    return;
+  }
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  const dirPath = expandHome(raw);
+  try {
+    if (!(await isDirectory(dirPath))) {
+      res.status(400).json({ error: "path is not a directory" });
+      return;
+    }
+    const cap = q ? FS_MATCH_CAP : FS_FILES_CAP;
+    const match = q ? (rel: string) => fuzzyMatch(q, rel) : undefined;
+    const repoFiles = await listRepoFiles(dirPath, cap, match);
+    const { files, truncated } = repoFiles ?? (await walkFiles(dirPath, cap, match));
     res.json({ path: dirPath, files, truncated });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
