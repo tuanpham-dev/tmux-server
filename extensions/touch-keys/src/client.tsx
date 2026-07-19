@@ -97,6 +97,7 @@ interface TerminalAccessoryContext {
   sendInput(data: string): void;
   sendText(text: string): void;
   uploadImage(file: File): void;
+  uploadImages(files: File[]): void;
   containerRef: React.RefObject<HTMLDivElement | null>;
 }
 
@@ -117,7 +118,7 @@ function BarAccessory({ context }: { context: TerminalAccessoryContext }) {
       onToggleStickyCtrl={context.toggleStickyCtrl}
       onSendInput={context.sendInput}
       onSendVoiceText={context.sendText}
-      onUploadImage={context.uploadImage}
+      onUploadImages={context.uploadImages}
     />
   );
 }
@@ -134,7 +135,7 @@ function OverlayAccessory({ context }: { context: TerminalAccessoryContext }) {
       onToggleStickyCtrl={context.toggleStickyCtrl}
       onSendInput={context.sendInput}
       onSendVoiceText={context.sendText}
-      onUploadImage={context.uploadImage}
+      onUploadImages={context.uploadImages}
       containerRef={context.containerRef}
     />
   );

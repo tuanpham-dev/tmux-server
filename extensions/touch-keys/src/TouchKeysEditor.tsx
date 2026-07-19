@@ -219,7 +219,7 @@ export default function TouchKeysEditor() {
                 onToggleStickyCtrl={() => {}}
                 onSendInput={() => {}}
                 onSendVoiceText={() => {}}
-                onUploadImage={() => {}}
+                onUploadImages={() => {}}
               />
             ))
           )}

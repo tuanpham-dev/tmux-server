@@ -10,7 +10,7 @@ interface Props {
   onToggleStickyCtrl: () => void;
   onSendInput: (data: string) => void;
   onSendVoiceText: (text: string) => void;
-  onUploadImage: (file: File) => void;
+  onUploadImages: (files: File[]) => void;
   // TerminalView's .terminal-body — the toggle's position is clamped within
   // its bounds and re-clamped on resize (rotation, sidebar toggle).
   containerRef: RefObject<HTMLElement | null>;
@@ -61,7 +61,7 @@ export default function FloatingTouchKeys({
   onToggleStickyCtrl,
   onSendInput,
   onSendVoiceText,
-  onUploadImage,
+  onUploadImages,
   containerRef,
 }: Props) {
   const [pos, setPos] = useState<FabPos>(loadPos);
@@ -152,7 +152,7 @@ export default function FloatingTouchKeys({
               onToggleStickyCtrl={onToggleStickyCtrl}
               onSendInput={onSendInput}
               onSendVoiceText={onSendVoiceText}
-              onUploadImage={onUploadImage}
+              onUploadImages={onUploadImages}
             />
           ))}
         </div>

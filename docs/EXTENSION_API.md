@@ -496,6 +496,7 @@ interface TerminalAccessoryContext {
   sendInput(data: string): void;   // raw bytes to the pty
   sendText(text: string): void;    // local-echo-aware text (voice, paste-like)
   uploadImage(file: File): void;   // the terminal's upload pipeline
+  uploadImages(files: File[]): void; // multi-image: uploads all, inserts paths as one no-submit block
   setSoftKeyboardSuppressed(suppressed: boolean): void; // see below
   containerRef: React.RefObject<HTMLDivElement | null>; // the terminal body,
                                    // for "overlay" positioning

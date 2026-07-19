@@ -73,9 +73,12 @@ function extensionForImageMime(mime: string): string {
 // short counter reused across photos, not actually unique — prefixing every
 // upload with a timestamp (source-named or not) avoids collisions instead of
 // relying solely on the server's conflict/rename handling.
-function uniqueUploadName(originalName: string | undefined, mime: string): string {
+function uniqueUploadName(originalName: string | undefined, mime: string, index?: number): string {
   const base = originalName || `image.${extensionForImageMime(mime)}`;
-  return `${Date.now()}-${base}`;
+  // A batch upload passes its item index so two files picked/dropped in the
+  // same millisecond (or sharing a name) still get distinct destinations.
+  const prefix = index === undefined ? `${Date.now()}` : `${Date.now()}-${index}`;
+  return `${prefix}-${base}`;
 }
 
 type SearchAction = "start" | "next" | "prev" | "cancel";
@@ -358,6 +361,10 @@ export default function TerminalView({
   // routes through this — set to the mount effect's uploadAndType, the same
   // upload pipeline desktop paste/drop already use.
   const uploadImageRef = useRef<(file: File) => void>(() => {});
+  // Multi-image counterpart (paste/drop of several images, and the 📷 key's
+  // multi-select) — uploads all and inserts their paths as one no-submit
+  // block. Set alongside uploadImageRef in the mount effect.
+  const uploadImagesRef = useRef<(files: File[]) => void>(() => {});
   // Pushed by the server's attach watcher (a "command" WS message) whenever
   // this attach's foreground program changes — drives touch keys' `when`
   // filter. "" until the first push arrives.
@@ -575,8 +582,45 @@ export default function TerminalView({
           onErrorRef.current(err);
         }
       };
+      // Multi-image: upload all in parallel (keeping order when collecting
+      // paths), then insert the resulting paths as one block the user submits
+      // with a single Enter. When the pane's program has bracketed-paste mode
+      // on (DEC 2004), send a real bracketed paste so a newline-joined block
+      // lands without auto-submitting each line; otherwise fall back to a
+      // space-separated single line (also no premature submit). A lone image
+      // keeps the plain inline path (identical to uploadAndType).
+      const uploadAndTypeMany = async (files: { blob: Blob; name: string }[]) => {
+        const destDir = cwdRef.current;
+        if (!destDir) return;
+        const conflict = uploadConflictRef.current;
+        const apiConflict = conflict === "ask" ? "fail" : conflict;
+        const uploadDir = await resolveUploadDir(pasteDropUploadDirRef.current, destDir);
+        const results = await Promise.all(
+          files.map((f) =>
+            api
+              .uploadFile(uploadDir, f.name, f.blob, apiConflict)
+              .then((r) => r.path)
+              .catch((err) => {
+                onErrorRef.current(err);
+                return null;
+              }),
+          ),
+        );
+        const paths = results.filter((p): p is string => p !== null);
+        if (paths.length === 0) return;
+        if (paths.length === 1) {
+          sendTextOrEcho(paths[0]);
+        } else if (engineRef.current?.getMode(2004)) {
+          sendInput(`\x1b[200~${paths.join("\n")}\x1b[201~`);
+        } else {
+          sendTextOrEcho(paths.join(" "));
+        }
+      };
+
       uploadImageRef.current = (file) =>
         uploadAndType(file, uniqueUploadName(file.name, file.type));
+      uploadImagesRef.current = (files) =>
+        uploadAndTypeMany(files.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })));
 
       const engine = await create({
         screen,
@@ -1604,13 +1648,18 @@ export default function TerminalView({
         if (!whenMatches(localEchoWhenRef.current, liveCommand)) return;
         const items = e.clipboardData?.items;
         if (!items) return;
-        const imageItem = Array.from(items).find((it) => it.type.startsWith("image/"));
-        if (!imageItem) return;
-        const blob = imageItem.getAsFile();
-        if (!blob) return;
+        const imageItems = Array.from(items).filter((it) => it.type.startsWith("image/"));
+        const blobs = imageItems
+          .map((it) => ({ blob: it.getAsFile(), type: it.type }))
+          .filter((b): b is { blob: File; type: string } => b.blob !== null);
+        if (blobs.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
-        uploadAndType(blob, uniqueUploadName(undefined, imageItem.type));
+        if (blobs.length === 1) {
+          uploadAndType(blobs[0].blob, uniqueUploadName(undefined, blobs[0].type));
+        } else {
+          uploadAndTypeMany(blobs.map((b, i) => ({ blob: b.blob, name: uniqueUploadName(undefined, b.type, i) })));
+        }
       };
       screen.addEventListener("paste", onPaste, true);
 
@@ -1626,10 +1675,14 @@ export default function TerminalView({
       const onDrop = (e: DragEvent) => {
         if (!whenMatches(localEchoWhenRef.current, liveCommand)) return;
         const files = Array.from(e.dataTransfer?.files ?? []);
-        const imageFile = files.find((f) => f.type.startsWith("image/"));
-        if (!imageFile) return;
+        const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+        if (imageFiles.length === 0) return;
         e.preventDefault();
-        uploadAndType(imageFile, uniqueUploadName(imageFile.name, imageFile.type));
+        if (imageFiles.length === 1) {
+          uploadAndType(imageFiles[0], uniqueUploadName(imageFiles[0].name, imageFiles[0].type));
+        } else {
+          uploadAndTypeMany(imageFiles.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })));
+        }
       };
       terminalBodyRef.current!.addEventListener("dragover", onDragOver);
       terminalBodyRef.current!.addEventListener("drop", onDrop);
@@ -1906,6 +1959,7 @@ export default function TerminalView({
     sendInput: (data) => sendInputRef.current(data),
     sendText: (text) => sendTextRef.current(text),
     uploadImage: (file) => uploadImageRef.current(file),
+    uploadImages: (files) => uploadImagesRef.current(files),
     setSoftKeyboardSuppressed: (suppressed) => {
       softKeyboardSuppressedRef.current = suppressed;
       engineRef.current?.setSoftKeyboardSuppressed?.(suppressed);

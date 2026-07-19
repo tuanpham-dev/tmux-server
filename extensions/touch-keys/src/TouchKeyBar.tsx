@@ -22,7 +22,7 @@ interface Props {
   // A file picked via the `{image}` key (plans/mobile-image-upload-key.md)
   // routes through this to TerminalView's uploadAndType — same upload
   // pipeline as desktop paste/drop.
-  onUploadImage: (file: File) => void;
+  onUploadImages: (files: File[]) => void;
 }
 
 // Filters `keys` down to the ones that should render right now: `when`
@@ -172,12 +172,12 @@ function MicKeyButton({ label, onTranscript }: { label: string; onTranscript: (t
 
 // An `{image}` key: opens the native file picker (photo library + camera on
 // iOS/Android via accept="image/*") on tap, then hands the picked file to
-// onUploadImage — TerminalView's uploadAndType, the same upload pipeline
+// onUploadImages — TerminalView's uploadAndType, the same upload pipeline
 // desktop paste/drop use. The <input> stays hidden and permanently
 // mounted; tap just proxies to its own click() (an <input type=file> can't
 // be opened programmatically outside a user gesture, so this must fire from
 // the same tap handler every other key uses).
-function ImageKeyButton({ label, onUploadImage }: { label: string; onUploadImage: (file: File) => void }) {
+function ImageKeyButton({ label, onUploadImages }: { label: string; onUploadImages: (files: File[]) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const tap = useTapHandlers(() => inputRef.current?.click());
 
@@ -187,11 +187,12 @@ function ImageKeyButton({ label, onUploadImage }: { label: string; onUploadImage
         ref={inputRef}
         type="file"
         accept="image/*"
+        multiple
         style={{ display: "none" }}
         onChange={(e) => {
-          const file = e.target.files?.[0];
+          const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          if (file) onUploadImage(file);
+          if (files.length > 0) onUploadImages(files);
         }}
       />
       <button className="touch-key touch-key-image" {...tap}>
@@ -215,7 +216,7 @@ export function TouchKeyButton({
   onToggleStickyCtrl,
   onSendInput,
   onSendVoiceText,
-  onUploadImage,
+  onUploadImages,
 }: {
   touchKey: TouchKey;
   data: string;
@@ -223,7 +224,7 @@ export function TouchKeyButton({
   onToggleStickyCtrl: () => void;
   onSendInput: (data: string) => void;
   onSendVoiceText: (text: string) => void;
-  onUploadImage: (file: File) => void;
+  onUploadImages: (files: File[]) => void;
 }) {
   const isCtrl = touchKey.send === "{ctrl}";
   const fire = () => {
@@ -238,7 +239,7 @@ export function TouchKeyButton({
     return <MicKeyButton label={touchKey.label} onTranscript={onSendVoiceText} />;
   }
   if (touchKey.send === "{image}") {
-    return <ImageKeyButton label={touchKey.label} onUploadImage={onUploadImage} />;
+    return <ImageKeyButton label={touchKey.label} onUploadImages={onUploadImages} />;
   }
   if (isCtrl) {
     return (
@@ -265,7 +266,7 @@ export default function TouchKeyBar({
   onToggleStickyCtrl,
   onSendInput,
   onSendVoiceText,
-  onUploadImage,
+  onUploadImages,
 }: Props) {
   if (!visible) return null;
   const shown = visibleKeys(keys, currentCommand);
@@ -282,7 +283,7 @@ export default function TouchKeyBar({
           onToggleStickyCtrl={onToggleStickyCtrl}
           onSendInput={onSendInput}
           onSendVoiceText={onSendVoiceText}
-          onUploadImage={onUploadImage}
+          onUploadImages={onUploadImages}
         />
       ))}
     </div>

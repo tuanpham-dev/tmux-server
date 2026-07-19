@@ -426,6 +426,10 @@ export interface TerminalAccessoryContext {
   sendText(text: string): void;
   // Routes a picked image through the terminal's upload pipeline.
   uploadImage(file: File): void;
+  // Multi-image counterpart — uploads all and inserts their paths as one
+  // no-submit block (bracketed paste when the pane's program supports it,
+  // else space-separated). Use for a multi-select picker or a multi-drop.
+  uploadImages(files: File[]): void;
   // Suppresses (or restores) the mobile soft keyboard for this terminal:
   // the engine's hidden input element gets inputmode="none", so it stays
   // focusable — hardware keys and accessory-drawn keyboards keep working —

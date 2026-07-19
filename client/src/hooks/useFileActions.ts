@@ -301,19 +301,6 @@ export function useFileActions(
     a.remove();
   }, []);
 
-  const fileTreeRootMenuItems = useCallback(
-    (rootDir: string): MenuItem[] => [
-      { label: "New File…", shortcutCommand: "files.newFile", onClick: () => createFileInDir(rootDir) },
-      { label: "New Folder…", shortcutCommand: "files.newFolder", onClick: () => createFolderInDir(rootDir) },
-      // Always offered rather than disabled when empty: knowing the server
-      // clipboard's emptiness synchronously would need a fetch per menu open
-      // (it may have been set from another browser). An empty paste just
-      // shows the "clipboard is empty" error toast.
-      { label: "Paste", shortcutCommand: "files.paste", onClick: () => pasteIntoDir(rootDir) },
-    ],
-    [createFileInDir, createFolderInDir, pasteIntoDir],
-  );
-
   const handleUpload = useCallback(
     async (items: DroppedItems, destDir: string) => {
       if (items.files.length === 0 && items.dirs.length === 0) return;
@@ -352,6 +339,41 @@ export function useFileActions(
     [handleUpload, showError],
   );
 
+  // Opens a native multi-file picker from a context-menu click (a user
+  // gesture, so <input>.click() is allowed) and uploads the picked files into
+  // destDir through the same pipeline as a drop — flat files only, no folder
+  // structure (a plain file picker can't carry directories).
+  const pickAndUpload = useCallback(
+    (destDir: string) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.onchange = () => {
+        const items: DroppedItems = {
+          files: Array.from(input.files ?? []).map((file) => ({ file, relativePath: file.name })),
+          dirs: [],
+        };
+        if (items.files.length > 0) void handleUpload(items, destDir);
+      };
+      input.click();
+    },
+    [handleUpload],
+  );
+
+  const fileTreeRootMenuItems = useCallback(
+    (rootDir: string): MenuItem[] => [
+      { label: "New File…", shortcutCommand: "files.newFile", onClick: () => createFileInDir(rootDir) },
+      { label: "New Folder…", shortcutCommand: "files.newFolder", onClick: () => createFolderInDir(rootDir) },
+      { label: "Upload…", onClick: () => pickAndUpload(rootDir) },
+      // Always offered rather than disabled when empty: knowing the server
+      // clipboard's emptiness synchronously would need a fetch per menu open
+      // (it may have been set from another browser). An empty paste just
+      // shows the "clipboard is empty" error toast.
+      { label: "Paste", shortcutCommand: "files.paste", onClick: () => pasteIntoDir(rootDir) },
+    ],
+    [createFileInDir, createFolderInDir, pickAndUpload, pasteIntoDir],
+  );
+
   const handleFilesRefresh = useCallback(() => {
     setFilesRefreshKey((k) => k + 1);
   }, [setFilesRefreshKey]);
@@ -383,6 +405,7 @@ export function useFileActions(
             shortcutCommand: "files.findInFolder",
             onClick: () => findInFolder(entryPath, rootDir),
           },
+          { label: "Upload…", onClick: () => pickAndUpload(entryPath) },
         );
       }
       items.push(
@@ -432,6 +455,7 @@ export function useFileActions(
       createFileInDir,
       createFolderInDir,
       findInFolder,
+      pickAndUpload,
       cutEntries,
       copyEntries,
       pasteIntoDir,
