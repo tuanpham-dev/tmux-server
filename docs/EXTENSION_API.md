@@ -45,8 +45,9 @@ places:
    from a `.tsix` installed through Settings → Extensions.
 
 A user-installed extension with the same id **always wins** over a bundled
-one — that's how you override a built-in preview, and how a `.tsix` install
-restores a tombstoned builtin.
+one — that's how you override a built-in preview, and one way to restore a
+tombstoned builtin (installing it from the Available section, below, is the
+other).
 
 **Extension id** = `<publisher>.<name>` from the manifest (falling back to
 the folder name if either is missing or unsafe). Ids are used as URL path
@@ -55,8 +56,13 @@ match `[a-zA-Z0-9][a-zA-Z0-9._-]*`.
 
 **State** lives in `~/.config/tmux-server/extensions-state.json`: `true` /
 `false` per id for enabled/disabled, or `"uninstalled"` to tombstone a
-builtin (its repo files are never deleted). A *required builtin* (see
-[`tmuxServer.required`](#tmuxserver)) ignores this file entirely.
+builtin (its repo files are never deleted). A tombstoned builtin stays
+inactive (`enabled: false`, `uninstalled: true` in its `ExtensionInfo`) but
+surfaces in the Extensions tab's **Available** section like a normal
+installable extension — its **Install** clears the tombstone back to enabled
+— rather than vanishing from the list. A *required builtin* (see
+[`tmuxServer.required`](#tmuxserver)) ignores this file entirely and can't be
+disabled or uninstalled.
 
 **Lifecycle timing:**
 

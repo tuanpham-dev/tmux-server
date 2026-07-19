@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import * as api from "../api";
 import { useListNavigation } from "../hooks/useListNavigation";
-import { parsePublisher } from "../lib/extensionId";
+import { isOfficialPublisher, parsePublisher } from "../lib/extensionId";
 import { compareVersions } from "../lib/version";
 import type { ExtensionInfo, RegistryCatalogEntry, RegistrySourceResult } from "../types";
 import Icon from "./Icon";
@@ -123,7 +123,13 @@ export default function ExtensionsPanel({
     searchInputRef.current?.focus();
   }, []);
 
-  const installedIds = new Set(extensions.map((e) => e.id));
+  // Uninstalled builtins live in `extensions` (so the client knows about
+  // them) but surface in the Available section, not Installed — they read as
+  // normal available extensions whose "Install" re-enables the bundled copy
+  // (see runReinstall). Everything else is genuinely installed.
+  const installedExtensions = extensions.filter((e) => !e.uninstalled);
+  const uninstalledBuiltins = extensions.filter((e) => e.uninstalled);
+  const installedIds = new Set(installedExtensions.map((e) => e.id));
   // User sources with the built-in default prepended (deduped) — the effective
   // source list this panel displays and filters the catalog by. The default is
   // never mutated through onRegistriesChange (see removeRegistry/addRegistry).
@@ -166,14 +172,30 @@ export default function ExtensionsPanel({
     description.toLowerCase().includes(searchLower) ||
     id.toLowerCase().includes(searchLower);
 
-  const visibleInstalled = extensions.filter((e) => matches(e.displayName, e.description, e.id));
+  const visibleInstalled = installedExtensions.filter((e) => matches(e.displayName, e.description, e.id));
   const visibleAvailable = availableEntries.filter((e) => matches(e.displayName, e.description, e.id));
+  const visibleAvailableBuiltins = uninstalledBuiltins.filter((e) => matches(e.displayName, e.description, e.id));
+  const totalAvailable = availableEntries.length + uninstalledBuiltins.length;
+  const visibleAvailableTotal = visibleAvailable.length + visibleAvailableBuiltins.length;
 
   const runInstall = (source: string, id: string) => {
     setInstallingId(id);
     setError(null);
     api
       .installFromRegistry(source, id)
+      .then(onReloadExtensions)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setInstallingId(null));
+  };
+
+  // "Install" for an uninstalled builtin — clears its tombstone back to
+  // enabled (the bundled files were never deleted). Same spinner/error path
+  // as a registry install, keyed on the extension id.
+  const runReinstall = (id: string) => {
+    setInstallingId(id);
+    setError(null);
+    api
+      .setExtensionEnabled(id, true)
       .then(onReloadExtensions)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setInstallingId(null));
@@ -202,6 +224,7 @@ export default function ExtensionsPanel({
   type NavRow =
     | { kind: "header"; id: string; section: "installed" | "available" }
     | { kind: "installed"; id: string; ext: ExtensionInfo }
+    | { kind: "builtin-available"; id: string; ext: ExtensionInfo }
     | { kind: "available"; id: string; entry: RegistryCatalogEntry & { source: string } };
 
   const navRows = useMemo<NavRow[]>(() => {
@@ -211,12 +234,17 @@ export default function ExtensionsPanel({
     }
     out.push({ kind: "header", id: "header:available", section: "available" });
     if (!availableCollapsed) {
+      // Uninstalled builtins first, then registry entries — matches the JSX
+      // render order below so the roving tabindex tracks it.
+      for (const ext of visibleAvailableBuiltins) {
+        out.push({ kind: "builtin-available", id: `builtin-available:${ext.id}`, ext });
+      }
       for (const entry of visibleAvailable) {
         out.push({ kind: "available", id: `available:${entry.source}:${entry.id}`, entry });
       }
     }
     return out;
-  }, [installedCollapsed, availableCollapsed, visibleInstalled, visibleAvailable]);
+  }, [installedCollapsed, availableCollapsed, visibleInstalled, visibleAvailableBuiltins, visibleAvailable]);
   const navRowsById = useMemo(() => new Map(navRows.map((r) => [r.id, r])), [navRows]);
   const navRowIds = useMemo(() => navRows.map((r) => r.id), [navRows]);
 
@@ -230,7 +258,7 @@ export default function ExtensionsPanel({
         else setAvailableCollapsed((v) => !v);
         return;
       }
-      if (row.kind === "installed") onOpenExtensionPage(row.ext.id);
+      if (row.kind === "installed" || row.kind === "builtin-available") onOpenExtensionPage(row.ext.id);
       else onOpenExtensionPage(row.entry.id, row.entry.source);
     },
     onExpand: (id) => {
@@ -368,14 +396,14 @@ export default function ExtensionsPanel({
                 className="extensions-panel-section-chevron"
               />
               <span className="extensions-panel-section-title">Installed</span>
-              <span className="extensions-panel-section-badge">{extensions.length}</span>
+              <span className="extensions-panel-section-badge">{installedExtensions.length}</span>
             </div>
           );
         })()}
         {!installedCollapsed && (
           <div className="extension-list">
-            {extensions.length === 0 && <div className="keybinding-empty">No extensions installed</div>}
-            {extensions.length > 0 && visibleInstalled.length === 0 && (
+            {installedExtensions.length === 0 && <div className="keybinding-empty">No extensions installed</div>}
+            {installedExtensions.length > 0 && visibleInstalled.length === 0 && (
               <div className="keybinding-empty">No extensions match your search</div>
             )}
             {visibleInstalled.map((ext) => {
@@ -391,23 +419,19 @@ export default function ExtensionsPanel({
                   tabIndex={rowProps.tabIndex}
                   rowRef={rowProps.ref}
                   onRowFocus={rowProps.onFocus}
-                  verified={ext.builtin}
+                  verified={isOfficialPublisher(parsePublisher(ext.id))}
                   disabled={!ext.enabled}
                   onOpen={() => onOpenExtensionPage(ext.id)}
                 >
-                  {ext.uninstalled ? (
-                    <span className="extension-uninstalled-tag">Uninstalled</span>
-                  ) : (
-                    update && (
-                      <button
-                        className="dialog-button secondary"
-                        disabled={installingId === ext.id}
-                        title={`Update to v${update.version}`}
-                        onClick={() => runInstall(update.source, ext.id)}
-                      >
-                        {installingId === ext.id ? "Updating…" : `Update to v${update.version}`}
-                      </button>
-                    )
+                  {update && (
+                    <button
+                      className="dialog-button secondary"
+                      disabled={installingId === ext.id}
+                      title={`Update to v${update.version}`}
+                      onClick={() => runInstall(update.source, ext.id)}
+                    >
+                      {installingId === ext.id ? "Updating…" : `Update to v${update.version}`}
+                    </button>
                   )}
                 </ExtensionRow>
               );
@@ -433,24 +457,49 @@ export default function ExtensionsPanel({
               {registryLoading ? (
                 <span className="extensions-panel-section-loading">Loading…</span>
               ) : (
-                <span className="extensions-panel-section-badge">{availableEntries.length}</span>
+                <span className="extensions-panel-section-badge">{totalAvailable}</span>
               )}
             </div>
           );
         })()}
         {!availableCollapsed && (
           <div className="extension-list">
-            {effectiveRegistries.length === 0 && (
+            {effectiveRegistries.length === 0 && uninstalledBuiltins.length === 0 && (
               <div className="keybinding-empty">
                 No registries configured — click the gear above to add one.
               </div>
             )}
-            {effectiveRegistries.length > 0 && availableEntries.length === 0 && !registryLoading && (
+            {effectiveRegistries.length > 0 && totalAvailable === 0 && !registryLoading && (
               <div className="keybinding-empty">No available extensions</div>
             )}
-            {effectiveRegistries.length > 0 && availableEntries.length > 0 && visibleAvailable.length === 0 && (
+            {totalAvailable > 0 && visibleAvailableTotal === 0 && (
               <div className="keybinding-empty">No extensions match your search</div>
             )}
+            {visibleAvailableBuiltins.map((ext) => {
+              const rowProps = nav.getRowProps(`builtin-available:${ext.id}`);
+              return (
+                <ExtensionRow
+                  key={`builtin:${ext.id}`}
+                  iconSrc={ext.icon ? api.extensionFileUrl(ext.id, ext.icon) : null}
+                  displayName={ext.displayName}
+                  description={ext.description}
+                  publisher={parsePublisher(ext.id)}
+                  verified={isOfficialPublisher(parsePublisher(ext.id))}
+                  onOpen={() => onOpenExtensionPage(ext.id)}
+                  tabIndex={rowProps.tabIndex}
+                  rowRef={rowProps.ref}
+                  onRowFocus={rowProps.onFocus}
+                >
+                  <button
+                    className="dialog-button primary"
+                    disabled={installingId === ext.id}
+                    onClick={() => runReinstall(ext.id)}
+                  >
+                    {installingId === ext.id ? "Installing…" : "Install"}
+                  </button>
+                </ExtensionRow>
+              );
+            })}
             {visibleAvailable.map((entry) => {
               const rowProps = nav.getRowProps(`available:${entry.source}:${entry.id}`);
               return (
@@ -460,6 +509,7 @@ export default function ExtensionsPanel({
                 displayName={entry.displayName}
                 description={entry.description}
                 publisher={entry.publisher ?? parsePublisher(entry.id)}
+                verified={isOfficialPublisher(entry.publisher ?? parsePublisher(entry.id))}
                 onOpen={() => onOpenExtensionPage(entry.id, entry.source)}
                 tabIndex={rowProps.tabIndex}
                 rowRef={rowProps.ref}

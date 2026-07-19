@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import * as api from "../api";
-import { parsePublisher } from "../lib/extensionId";
+import { isOfficialPublisher, parsePublisher } from "../lib/extensionId";
 import { compareVersions } from "../lib/version";
 import type { ExtensionInfo, RegistrySourceResult } from "../types";
 import Icon from "./Icon";
@@ -154,12 +154,11 @@ export default function ExtensionPageView({
                 <div className="extension-page-title">
                   {displayName}
                   {installed?.builtin && <span className="extension-row-builtin">Built-in</span>}
-                  {installed?.uninstalled && <span className="extension-row-uninstalled">Uninstalled</span>}
                 </div>
                 <div className="extension-page-meta">
                   {publisher && (
                     <span className="extension-publisher">
-                      {installed?.builtin && <Icon name="verified-filled" className="extension-verified-icon" />}
+                      {isOfficialPublisher(publisher) && <Icon name="verified-filled" className="extension-verified-icon" />}
                       {publisher}
                     </span>
                   )}
@@ -195,16 +194,16 @@ export default function ExtensionPageView({
                     <button
                       className="dialog-button primary"
                       onClick={() => {
-                        // Reinstall restores the tombstoned builtin by clearing
-                        // its "uninstalled" state back to enabled (see the
-                        // server's setExtensionEnabled).
+                        // An uninstalled builtin installs by clearing its
+                        // tombstone back to enabled (its bundled files were
+                        // never deleted — see the server's setExtensionEnabled).
                         api
                           .setExtensionEnabled(installed.id, true)
                           .then(onReloadExtensions)
                           .catch((err) => setError(err instanceof Error ? err.message : String(err)));
                       }}
                     >
-                      Reinstall
+                      Install
                     </button>
                   )}
                   {installed && !installed.required && !installed.uninstalled && (
