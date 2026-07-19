@@ -1004,6 +1004,24 @@ body.resizing-row {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Positioning context for .app-overlay-layer (registerAppOverlay). The
+     per-tab content hosts are position:fixed (viewport-relative), so they're
+     unaffected by this. */
+  position: relative;
+}
+
+/* App-global overlay layer: extensions' registerAppOverlay components render
+   here, once, over whatever tab is active (right of the sidebar, the editor
+   area). pointer-events:none so it never blocks tab content — each overlay
+   opts its own interactive surfaces back into pointer-events. z-index 40 sits
+   above the content hosts (z-index 0, including any per-terminal accessory
+   like the floating touch-keys toggle) but below menus/dialogs/quick-switcher
+   (z-index 1000+). */
+.app-overlay-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
 }
 
 .tab-bar {

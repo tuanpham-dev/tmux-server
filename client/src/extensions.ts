@@ -230,6 +230,16 @@ export interface ExtensionContext {
     placement: TerminalAccessoryPlacement;
     component: ReactNS.ComponentType<TerminalAccessoryHostProps>;
   }): void;
+  // Renders a component once over the editor area (the .main region), on top
+  // of whatever tab is active — a terminal, Settings, a viewer. Unlike a
+  // terminal accessory (which only mounts inside a focused TerminalView),
+  // this is app-global. The host draws it into a pointer-events:none overlay
+  // layer, so the component must opt its own interactive surfaces back into
+  // pointer-events. See AppOverlayContext/AppOverlayHostProps.
+  registerAppOverlay(overlay: {
+    id: string;
+    component: ReactNS.ComponentType<AppOverlayHostProps>;
+  }): void;
   // Renders a custom component inside this extension's Settings section,
   // below its scalar configuration controls.
   registerSettingsComponent(component: { id: string; component: ReactNS.ComponentType }): void;
@@ -275,6 +285,16 @@ export interface ExtensionContext {
     // loading or changes in Settings — call getFileIcon/getFolderIcon again
     // to get the fresh result, same shape as settings.onDidChange below.
     onDidChangeIconTheme(cb: () => void): () => void;
+    // Runs a command by id — a built-in command (e.g. "tab.next",
+    // "quickSwitcher.toggle") or an extension command by its namespaced id
+    // (ext.<extensionId>.<id>). No-ops on an unknown id, or one whose scope
+    // can't be dispatched globally (terminal/files/sessions-scoped commands
+    // aren't runnable this way — see getCommands, which omits them).
+    executeCommand(commandId: string): void;
+    // Lists the commands executeCommand can actually run right now — every
+    // global built-in command plus every registered extension command, as
+    // {id,label}. Snapshot, not live; call again after the registry changes.
+    getCommands(): { id: string; label: string }[];
   };
   // fetch() scoped to this extension's own server hook, mounted at
   // /api/ext/<extensionId> — 404s if the extension has no server entry or
@@ -436,6 +456,30 @@ export interface RegisteredTerminalAccessory {
   component: ReactNS.ComponentType<TerminalAccessoryHostProps>;
 }
 
+// The context handed to an app-global overlay (registerAppOverlay) — kept
+// minimal, sized to what a bottom swipe/gesture strip needs. No per-terminal
+// "focused" here: the overlay is drawn once over the editor area regardless
+// of which tab is active.
+export interface AppOverlayContext {
+  // matchMedia("(pointer: coarse) and (hover: none)") — a real phone or
+  // tablet, not a touch-screen laptop.
+  mobilePointer: boolean;
+  // The overlay layer element (a bottom-anchored positioning context inside
+  // .main) — for an overlay that clamps/positions against the editor bounds.
+  containerRef: ReactNS.RefObject<HTMLDivElement | null>;
+}
+
+export interface AppOverlayHostProps {
+  context: AppOverlayContext;
+}
+
+export interface RegisteredAppOverlay {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  component: ReactNS.ComponentType<AppOverlayHostProps>;
+}
+
 // A custom component rendered inside the extension's own Settings section,
 // below its scalar configuration controls — for config that outgrows the
 // scalar property renderer (the touch-keys drag-and-drop layout editor).
@@ -473,6 +517,7 @@ export const extensionSessionDecorationProviders: RegisteredSessionDecorationPro
 export const extensionTerminalEngines: RegisteredTerminalEngine[] = [];
 export const extensionQuickSwitcherProviders: RegisteredQuickSwitcherProvider[] = [];
 export const extensionTerminalAccessories: RegisteredTerminalAccessory[] = [];
+export const extensionAppOverlays: RegisteredAppOverlay[] = [];
 export const extensionSettingsComponents: RegisteredSettingsComponent[] = [];
 
 type Listener = () => void;
@@ -573,6 +618,7 @@ export function useExtensionRegistry(): {
   fileViewers: RegisteredFileViewer[];
   sidebarPanels: RegisteredSidebarPanel[];
   windowActions: RegisteredWindowAction[];
+  appOverlays: RegisteredAppOverlay[];
 } {
   const [tick, setTick] = ReactNS.useState(0);
   ReactNS.useEffect(() => subscribeExtensionRegistry(() => setTick((t) => t + 1)), []);
@@ -587,6 +633,7 @@ export function useExtensionRegistry(): {
       fileViewers: [...extensionFileViewers],
       sidebarPanels: [...extensionSidebarPanels],
       windowActions: [...extensionWindowActions],
+      appOverlays: [...extensionAppOverlays],
     }),
     [tick],
   );
@@ -627,6 +674,20 @@ let refreshFilesHandler: (() => void) | null = null;
 // Wired once from App.tsx to bump filesRefreshKey — see ExtensionContext.app.refreshFiles.
 export function setRefreshFilesHandler(handler: () => void): void {
   refreshFilesHandler = handler;
+}
+
+// Wired from App.tsx to the same globalHandlers + extension-command map the
+// keyboard dispatcher (useGlobalKeybindings) runs — backs
+// ExtensionContext.app.executeCommand/getCommands. Nulled on unmount.
+let executeCommandHandler: ((commandId: string) => void) | null = null;
+let getCommandsHandler: (() => { id: string; label: string }[]) | null = null;
+
+export function setExecuteCommandHandler(handler: ((commandId: string) => void) | null): void {
+  executeCommandHandler = handler;
+}
+
+export function setGetCommandsHandler(handler: (() => { id: string; label: string }[]) | null): void {
+  getCommandsHandler = handler;
 }
 
 interface SidebarTabsBridge {
@@ -969,6 +1030,14 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       });
       notify();
     },
+    registerAppOverlay(overlay) {
+      extensionAppOverlays.push({
+        id: `ext.${ext.id}.${overlay.id}`,
+        extensionId: ext.id,
+        component: overlay.component,
+      });
+      notify();
+    },
     registerSettingsComponent(component) {
       extensionSettingsComponents.push({
         id: `ext.${ext.id}.${component.id}`,
@@ -1022,6 +1091,8 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
           unsubscribe();
         };
       },
+      executeCommand: (commandId) => executeCommandHandler?.(commandId),
+      getCommands: () => getCommandsHandler?.() ?? [],
     },
     serverFetch(path, init) {
       return fetch(`${extensionApiBase(ext.id)}${path}`, init);
@@ -1156,6 +1227,9 @@ function deactivateClientExtension(extId: string): void {
   }
   for (let i = extensionTerminalAccessories.length - 1; i >= 0; i--) {
     if (extensionTerminalAccessories[i].extensionId === extId) extensionTerminalAccessories.splice(i, 1);
+  }
+  for (let i = extensionAppOverlays.length - 1; i >= 0; i--) {
+    if (extensionAppOverlays[i].extensionId === extId) extensionAppOverlays.splice(i, 1);
   }
   for (let i = extensionSettingsComponents.length - 1; i >= 0; i--) {
     if (extensionSettingsComponents[i].extensionId === extId) extensionSettingsComponents.splice(i, 1);

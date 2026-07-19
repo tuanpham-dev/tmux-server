@@ -16,7 +16,9 @@ import { getContextGetter, setContextKey } from "./contextKeys";
 import {
   focusSessionsPanel,
   focusSidebarTab,
+  setExecuteCommandHandler,
   setExtensionSettingUpdater,
+  setGetCommandsHandler,
   setSidebarVisibleHandler,
   useExtensionRegistry,
 } from "./extensions";
@@ -287,7 +289,28 @@ export default function App() {
     fileViewers: extFileViewers,
     sidebarPanels: extSidebarPanels,
     windowActions: extWindowActions,
+    appOverlays: extAppOverlays,
   } = useExtensionRegistry();
+
+  // Real phone/tablet detection for app-global overlays (registerAppOverlay),
+  // the same MQ TerminalView uses for its per-terminal accessories — an
+  // overlay's "auto" visibility means touch devices only.
+  const [mobilePointer, setMobilePointer] = useState(
+    () => window.matchMedia("(pointer: coarse) and (hover: none)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(pointer: coarse) and (hover: none)");
+    const onChange = () => setMobilePointer(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  // The bottom-anchored positioning context app overlays render into (see the
+  // .app-overlay-layer in the editor area below).
+  const overlayLayerRef = useRef<HTMLDivElement | null>(null);
+  const appOverlayContext = useMemo(
+    () => ({ mobilePointer, containerRef: overlayLayerRef }),
+    [mobilePointer],
+  );
 
   const {
     settings,
@@ -920,6 +943,29 @@ export default function App() {
 
   useGlobalKeybindings(bindingsRef, overridesRef, globalHandlers, extCommands);
 
+  // Bridges ctx.app.executeCommand/getCommands (extensions.ts) to the same
+  // globalHandlers + extension-command map the keyboard dispatcher runs, so an
+  // extension can invoke or list commands. Only ids present in globalHandlers
+  // (the runnable global subset) plus extension commands are exposed —
+  // terminal/files/sessions-scoped ids aren't dispatchable this way.
+  useEffect(() => {
+    setExecuteCommandHandler((id) => {
+      const fn = globalHandlers[id] ?? extCommands.find((c) => c.id === id)?.run;
+      fn?.();
+    });
+    setGetCommandsHandler(() => {
+      const labels = new Map(COMMANDS.map((c) => [c.id, c.label]));
+      return [
+        ...Object.keys(globalHandlers).map((id) => ({ id, label: labels.get(id) ?? id })),
+        ...extCommands.map((c) => ({ id: c.id, label: c.label })),
+      ];
+    });
+    return () => {
+      setExecuteCommandHandler(null);
+      setGetCommandsHandler(null);
+    };
+  }, [globalHandlers, extCommands]);
+
   // Formatted "sidebar.toggle" binding for the collapsed sidebar's reopen
   // strip's tooltip (below) — Sidebar.tsx formats its own copy of this same
   // binding for the button shown while expanded.
@@ -1396,6 +1442,13 @@ export default function App() {
             onWindowSwitch={(session, windowIndex) => openWindowTab(session, windowIndex)}
             onSessionSwitch={openSwitchedSession}
           />
+        )}
+        {extAppOverlays.length > 0 && (
+          <div className="app-overlay-layer" ref={overlayLayerRef}>
+            {extAppOverlays.map((o) => (
+              <o.component key={o.id} context={appOverlayContext} />
+            ))}
+          </div>
         )}
       </main>
       {menu && (
