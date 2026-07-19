@@ -1,4 +1,4 @@
-import type { ITheme } from "ghostty-web";
+import type { TerminalTheme } from "./engines/types";
 import { extensionFileUrl } from "./api";
 import type { ExtensionInfo } from "./types";
 
@@ -6,7 +6,7 @@ import type { ExtensionInfo } from "./types";
 // user's code-server instance. Terminal background/cursor/selection use VS
 // Code's fallback chain since the theme doesn't define them. This stays the
 // built-in default and the ultimate fallback for every workbench key below.
-export const terminalTheme: ITheme = {
+export const terminalTheme: TerminalTheme = {
   background: "#21252B",
   foreground: "#A9B2C3",
   cursor: "#A9B2C3",
@@ -33,9 +33,10 @@ export const terminalTheme: ITheme = {
 // terminal.* / terminalCursor.* keys, each with VS Code's own documented
 // fallback chain — ANSI colors have no workbench-level fallback, so a theme
 // missing them keeps the built-in Plastic Legacy ANSI palette. Keyed by
-// string rather than `keyof ITheme`: ITheme has several fields (extendedAnsi,
-// selectionForeground, …) this app never sets, and typing this object
-// against the full interface would force populating those too.
+// string rather than `keyof TerminalTheme`: this object only fills the
+// terminal.* chains, not every TerminalTheme field (cursorAccent,
+// selectionForeground, …), so typing it against the full interface would
+// force populating those too.
 const TERMINAL_KEY_CHAINS: Record<string, string[]> = {
   background: ["terminal.background", "editor.background"],
   foreground: ["terminal.foreground", "editor.foreground"],
@@ -67,13 +68,13 @@ function pick(colors: Record<string, string>, keys: string[]): string | undefine
   return undefined;
 }
 
-function buildTerminalTheme(colors: Record<string, string>): ITheme {
+function buildTerminalTheme(colors: Record<string, string>): TerminalTheme {
   const builtIn = terminalTheme as unknown as Record<string, string>;
   const result: Record<string, string> = {};
   for (const [field, chain] of Object.entries(TERMINAL_KEY_CHAINS)) {
     result[field] = pick(colors, chain) ?? builtIn[field];
   }
-  return result as unknown as ITheme;
+  return result as unknown as TerminalTheme;
 }
 
 // Workbench key chains for the UI CSS vars in styles.css. Each entry is
@@ -244,7 +245,7 @@ async function fetchThemeFile(extensionId: string, relPath: string): Promise<{ c
 }
 
 export interface ResolvedColorTheme {
-  terminalTheme: ITheme;
+  terminalTheme: TerminalTheme;
   cssVars: Record<string, string>;
 }
 
