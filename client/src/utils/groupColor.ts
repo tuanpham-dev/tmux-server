@@ -8,17 +8,18 @@ export interface GroupColorDef {
   hex: string;
 }
 
-// Values are Chrome's own tab-group palette — recognizable, evenly spaced in
-// hue, and each already legible as a solid fill with dark text.
+// Lighter, pastel variants of Chrome's tab-group palette — recognizable and
+// evenly spaced in hue, but softer so the group chips and tab accents read as
+// gentle tints rather than heavy saturated fills.
 export const GROUP_COLORS: GroupColorDef[] = [
-  { key: "grey", label: "Grey", hex: "#5f6368" },
-  { key: "blue", label: "Blue", hex: "#1a73e8" },
-  { key: "red", label: "Red", hex: "#d93025" },
-  { key: "yellow", label: "Yellow", hex: "#f9ab00" },
-  { key: "green", label: "Green", hex: "#1e8e3e" },
-  { key: "pink", label: "Pink", hex: "#d01884" },
-  { key: "purple", label: "Purple", hex: "#8430ce" },
-  { key: "cyan", label: "Cyan", hex: "#12b5cb" },
+  { key: "grey", label: "Grey", hex: "#9aa0a6" },
+  { key: "blue", label: "Blue", hex: "#669df6" },
+  { key: "red", label: "Red", hex: "#ee675c" },
+  { key: "yellow", label: "Yellow", hex: "#fcc934" },
+  { key: "green", label: "Green", hex: "#5bb974" },
+  { key: "pink", label: "Pink", hex: "#ff8bcb" },
+  { key: "purple", label: "Purple", hex: "#af5cf7" },
+  { key: "cyan", label: "Cyan", hex: "#4ecde6" },
 ];
 
 export function groupColorHex(key: string): string {
