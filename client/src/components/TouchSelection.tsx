@@ -21,6 +21,7 @@ interface Props {
   // (Copy always shows).
   openLabel: string | null;
   onCopy: () => void;
+  onPaste: () => void;
   onOpen: () => void;
   // Drag-handle gestures — TerminalView owns the actual engine.selectCells
   // call and selection-range math; this component only forwards raw pointer
@@ -47,6 +48,7 @@ export default function TouchSelection({
   containerRef,
   openLabel,
   onCopy,
+  onPaste,
   onOpen,
   onHandleDragStart,
   onHandleDragMove,
@@ -56,7 +58,7 @@ export default function TouchSelection({
   const container = containerRef.current?.getBoundingClientRect();
   const containerWidth = container?.width ?? 0;
   const containerHeight = container?.height ?? 0;
-  const estimatedWidth = openLabel ? 132 : 76;
+  const estimatedWidth = openLabel ? 188 : 132;
 
   const openAbove = rect.top - ESTIMATED_HEIGHT - TOOLBAR_GAP >= 0;
   const top = openAbove
@@ -102,6 +104,9 @@ export default function TouchSelection({
         >
           <button type="button" onClick={onCopy}>
             Copy
+          </button>
+          <button type="button" onClick={onPaste}>
+            Paste
           </button>
           {openLabel && (
             <button type="button" onClick={onOpen}>

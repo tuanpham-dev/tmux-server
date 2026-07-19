@@ -352,6 +352,10 @@ export default function TerminalView({
   const stickyCtrlRef = useRef(false);
   stickyCtrlRef.current = stickyCtrl;
   const sendInputRef = useRef<(data: string) => void>(() => {});
+  // Backs the long-press "Paste" menu — set below to pasteFromClipboard so the
+  // touch handler (created once in the mount effect) always calls the current
+  // one.
+  const pasteFromClipboardRef = useRef<() => void>(() => {});
   // Voice transcripts (Phase 5) route through this instead — set to the
   // mount effect's sendTextOrEcho, the same local-echo-or-direct fork image
   // paste/drop already uses (Phase 3), so spoken text lands in the buffered
@@ -1534,7 +1538,15 @@ export default function TerminalView({
           longPressFiredThisGesture = true;
           lastLongPressPtRef.current = { x: startX, y: startY };
           linkMenuOpenedRef.current = false;
-          if (beginTouchSelection(startX, startY)) selectionArmedThisGesture = true;
+          if (beginTouchSelection(startX, startY)) {
+            selectionArmedThisGesture = true;
+          } else {
+            // No word/link under the press (empty area) — offer Paste, the
+            // classic mobile long-press-to-paste gesture on the prompt.
+            showMenuRef.current?.(startX, startY, [
+              { label: "Paste", onClick: () => pasteFromClipboardRef.current() },
+            ]);
+          }
         }, LONG_PRESS_MS);
       };
       const onTouchMove = (e: TouchEvent) => {
@@ -1889,10 +1901,32 @@ export default function TerminalView({
     }
   }
 
+  // Reads the clipboard and pastes it into the terminal — as a bracketed paste
+  // when the pane's program has DEC mode 2004 on (so a multi-line clipboard
+  // inserts as one block instead of running each line), else raw. Backs the
+  // long-press "Paste" menu items. readText() is allowed here because every
+  // caller runs from a tap (menu click / toolbar button).
+  const pasteFromClipboard = () => {
+    navigator.clipboard
+      .readText()
+      .then((text) => {
+        if (!text) return;
+        const seq = engineRef.current?.getMode(2004) ? `\x1b[200~${text}\x1b[201~` : text;
+        sendInputRef.current(seq);
+      })
+      .catch((err) => onErrorRef.current(err));
+  };
+  pasteFromClipboardRef.current = pasteFromClipboard;
+
   const handleTouchSelCopy = () => {
     if (!touchSel) return;
     const text = engineRef.current?.getSelection();
     if (text) copyText(text).catch((err) => onErrorRef.current(err));
+    dismissTouchSelectionRef.current();
+  };
+
+  const handleTouchSelPaste = () => {
+    pasteFromClipboard();
     dismissTouchSelectionRef.current();
   };
 
@@ -1942,6 +1976,13 @@ export default function TerminalView({
       label: "Copy",
       onClick: () => {
         copyText(open.target).catch((err) => onErrorRef.current(err));
+        dismissTouchSelectionRef.current();
+      },
+    });
+    items.push({
+      label: "Paste",
+      onClick: () => {
+        pasteFromClipboard();
         dismissTouchSelectionRef.current();
       },
     });
@@ -2008,6 +2049,7 @@ export default function TerminalView({
             containerRef={terminalBodyRef}
             openLabel={null}
             onCopy={handleTouchSelCopy}
+            onPaste={handleTouchSelPaste}
             onOpen={handleTouchSelOpen}
             onHandleDragStart={(which) => touchHandleBeginRef.current(which)}
             onHandleDragMove={(x, y) => touchHandleMoveRef.current(x, y)}
