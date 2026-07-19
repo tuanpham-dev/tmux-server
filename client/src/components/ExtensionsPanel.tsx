@@ -395,15 +395,19 @@ export default function ExtensionsPanel({
                   disabled={!ext.enabled}
                   onOpen={() => onOpenExtensionPage(ext.id)}
                 >
-                  {update && (
-                    <button
-                      className="dialog-button secondary"
-                      disabled={installingId === ext.id}
-                      title={`Update to v${update.version}`}
-                      onClick={() => runInstall(update.source, ext.id)}
-                    >
-                      {installingId === ext.id ? "Updating…" : `Update to v${update.version}`}
-                    </button>
+                  {ext.uninstalled ? (
+                    <span className="extension-uninstalled-tag">Uninstalled</span>
+                  ) : (
+                    update && (
+                      <button
+                        className="dialog-button secondary"
+                        disabled={installingId === ext.id}
+                        title={`Update to v${update.version}`}
+                        onClick={() => runInstall(update.source, ext.id)}
+                      >
+                        {installingId === ext.id ? "Updating…" : `Update to v${update.version}`}
+                      </button>
+                    )
                   )}
                 </ExtensionRow>
               );

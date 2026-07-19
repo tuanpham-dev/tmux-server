@@ -290,4 +290,7 @@ export interface ExtensionInfo {
   // Bundled + manifest tmuxServer.required — cannot be disabled or
   // uninstalled (the server enforces it; the UI hides those actions).
   required: boolean;
+  // A builtin that's been uninstalled: still listed and inactive
+  // (enabled=false), the UI offers Reinstall instead of Disable/Uninstall.
+  uninstalled: boolean;
 }

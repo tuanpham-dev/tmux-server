@@ -154,6 +154,7 @@ export default function ExtensionPageView({
                 <div className="extension-page-title">
                   {displayName}
                   {installed?.builtin && <span className="extension-row-builtin">Built-in</span>}
+                  {installed?.uninstalled && <span className="extension-row-uninstalled">Uninstalled</span>}
                 </div>
                 <div className="extension-page-meta">
                   {publisher && (
@@ -190,7 +191,23 @@ export default function ExtensionPageView({
                       Required
                     </span>
                   )}
-                  {installed && !installed.required && (
+                  {installed && !installed.required && installed.uninstalled && (
+                    <button
+                      className="dialog-button primary"
+                      onClick={() => {
+                        // Reinstall restores the tombstoned builtin by clearing
+                        // its "uninstalled" state back to enabled (see the
+                        // server's setExtensionEnabled).
+                        api
+                          .setExtensionEnabled(installed.id, true)
+                          .then(onReloadExtensions)
+                          .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+                      }}
+                    >
+                      Reinstall
+                    </button>
+                  )}
+                  {installed && !installed.required && !installed.uninstalled && (
                     <button
                       className="dialog-button secondary"
                       onClick={() => {
@@ -213,6 +230,7 @@ export default function ExtensionPageView({
                   )}
                   {installed &&
                     !installed.required &&
+                    !installed.uninstalled &&
                     (pendingUninstall ? (
                       <div className="extension-row-confirm">
                         <span>{installed.builtin ? "Uninstall built-in?" : "Uninstall?"}</span>

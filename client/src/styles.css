@@ -2378,6 +2378,23 @@ body.scrollbar-dragging {
   margin-left: 4px;
 }
 
+/* "Uninstalled" marker on a tombstoned builtin — the detail-page title badge
+   and the sidebar list tag share one muted, warning-tinted look. */
+.extension-row-uninstalled {
+  font-weight: normal;
+  color: var(--warning, var(--fg-inactive));
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border: 1px solid var(--warning, var(--border));
+  border-radius: 3px;
+  margin-left: 4px;
+}
+
+.extension-uninstalled-tag {
+  font-size: 11px;
+  color: var(--fg-inactive);
+}
+
 .extension-row-description {
   margin-top: 2px;
   font-size: 12px;

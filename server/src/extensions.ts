@@ -236,6 +236,10 @@ export interface ExtensionInfo {
   // refuses disable/uninstall and ignores stale state-file entries, and
   // the Extensions UI shows "Required" instead of those actions.
   required: boolean;
+  // A builtin whose state entry is "uninstalled" — still listed (so it can
+  // be reinstalled), but inactive: enabled is false, so nothing loads it.
+  // Only ever true for builtins; a user extension is deleted outright.
+  uninstalled: boolean;
 }
 
 function resolveId(manifest: ExtensionManifest, folder: string): string {
@@ -246,10 +250,10 @@ function resolveId(manifest: ExtensionManifest, folder: string): string {
   return folder;
 }
 
-// A builtin's state entry is "uninstalled" (tombstoned — hidden from the
-// list, repo files untouched) rather than deleted like a user extension's
-// state key. true/false is the ordinary enabled/disabled toggle for either
-// kind.
+// A builtin's state entry is "uninstalled" (tombstoned — repo files
+// untouched, still listed but inactive/reinstallable) rather than deleted
+// like a user extension's state key. true/false is the ordinary
+// enabled/disabled toggle for either kind.
 type ExtensionState = boolean | "uninstalled";
 
 async function readState(): Promise<Record<string, ExtensionState>> {
@@ -320,7 +324,13 @@ function isRequired(manifest: ExtensionManifest, builtin: boolean): boolean {
   return builtin && manifest.tmuxServer?.required === true;
 }
 
-function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, builtin: boolean): ExtensionInfo {
+function toInfo(
+  manifest: ExtensionManifest,
+  id: string,
+  enabled: boolean,
+  builtin: boolean,
+  uninstalled = false,
+): ExtensionInfo {
   return {
     id,
     displayName: manifest.displayName || manifest.name || id,
@@ -358,6 +368,7 @@ function toInfo(manifest: ExtensionManifest, id: string, enabled: boolean, built
     hasServer: Boolean(manifest.tmuxServer?.server),
     builtin,
     required: isRequired(manifest, builtin),
+    uninstalled,
   };
 }
 
@@ -372,9 +383,14 @@ export async function listExtensions(): Promise<ExtensionInfo[]> {
       results.push(toInfo(manifest, id, true, builtin));
       continue;
     }
-    // A tombstoned builtin is hidden entirely rather than listed disabled —
-    // uninstalling it should look identical to it never having existed.
-    if (builtin && state[id] === "uninstalled") continue;
+    // A tombstoned builtin stays in the list (so it can be reinstalled) but
+    // inactive: enabled=false keeps everything that keys off `enabled`
+    // (client activation, server hooks, theme/font loading) from touching it,
+    // while `uninstalled` drives the UI's Reinstall action.
+    if (builtin && state[id] === "uninstalled") {
+      results.push(toInfo(manifest, id, false, builtin, true));
+      continue;
+    }
     // A freshly dropped-in or installed extension is active by default;
     // only an explicit `false` in the state file turns it off.
     results.push(toInfo(manifest, id, state[id] !== false, builtin));
