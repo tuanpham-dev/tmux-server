@@ -105,7 +105,7 @@ The installer checks for Node 20+, `tmux`, `git`, and a C/C++ toolchain up front
 | `tmux-server update` | Pull the latest code, reinstall, rebuild, and restart |
 | `tmux-server doctor` | Check dependencies and install health, and troubleshoot problems |
 
-Config (`PORT`, `AUTH_TOKEN`, `ALLOWED_HOSTS`, `NEW_SESSION_CWD`, `APP_NAME`, `PROXY_DOMAIN`) goes in `~/.local/share/tmux-server/server/.env` — see [Production](#production) below for what each does. Without systemd (e.g. on macOS), `start`/`stop`/`restart` fall back to running the server in the background directly instead of managing a service.
+Config (`PORT`, `AUTH_TOKEN`, `ALLOWED_HOSTS`, `NEW_SESSION_CWD`, `APP_NAME`, `PROXY_DOMAIN`, `EXTENSION_REGISTRY`) goes in `~/.local/share/tmux-server/server/.env` — see [Production](#production) below for what each does. Without systemd (e.g. on macOS), `start`/`stop`/`restart` fall back to running the server in the background directly instead of managing a service.
 
 #### Flags instead of env vars
 
@@ -150,6 +150,8 @@ npm start          # listens on 127.0.0.1:3001 by default
 Override the port with `PORT=<port> npm start`. The server always binds to `127.0.0.1` and has no authentication by default, so it's meant to be used locally, fronted by a reverse-proxy auth layer, or gated with `AUTH_TOKEN` (see [Authentication](#authentication) below). Set `NEW_SESSION_CWD` to change the working directory new sessions start in — without it, tmux falls back to the server process's own cwd. (The client's own "default new session directory" setting, if set, wins over both.)
 
 Set `APP_NAME` to rebrand the browser tab title and PWA name away from the "tmux" default — e.g. `APP_NAME="My Server" npm start`. It's applied dynamically as the server templates `index.html` and `manifest.webmanifest` per request, so (like the other config above) a restart is all it takes — no rebuild needed. `APP_NAME=... npm run dev` retitles the dev server's tab too, but the PWA manifest is only active in the production build (Vite's PWA plugin doesn't run in dev by default).
+
+The app ships with a built-in **default extension registry** so extensions are installable out of the box from the **Extensions** tab (`Ctrl+Shift+X`) — no manual setup. It appears there as a non-removable source tagged "default". Override it with `EXTENSION_REGISTRY` (a registry URL serving an `index.json`, or a local directory path); set `EXTENSION_REGISTRY=` (empty) to disable it entirely and ship no default. Users can still add their own registries alongside it. Read at request time, so a restart applies changes with no rebuild.
 
 ### Behind nginx
 

@@ -12,6 +12,10 @@ interface Props {
   onReloadExtensions: () => void;
   registries: string[];
   onRegistriesChange: (registries: string[]) => void;
+  // The app's built-in default registry (or null if disabled). Merged ahead of
+  // `registries` for display/filtering but never mutated through
+  // onRegistriesChange — it's server/env-owned, so its row can't be removed.
+  defaultRegistry: string | null;
   registryCatalog: RegistrySourceResult[];
   registryLoading: boolean;
   onEnsureRegistryLoaded: () => void;
@@ -88,6 +92,7 @@ export default function ExtensionsPanel({
   onReloadExtensions,
   registries,
   onRegistriesChange,
+  defaultRegistry,
   registryCatalog,
   registryLoading,
   onEnsureRegistryLoaded,
@@ -119,11 +124,18 @@ export default function ExtensionsPanel({
   }, []);
 
   const installedIds = new Set(extensions.map((e) => e.id));
+  // User sources with the built-in default prepended (deduped) — the effective
+  // source list this panel displays and filters the catalog by. The default is
+  // never mutated through onRegistriesChange (see removeRegistry/addRegistry).
+  const effectiveRegistries =
+    defaultRegistry && !registries.includes(defaultRegistry)
+      ? [defaultRegistry, ...registries]
+      : registries;
   // A just-removed source's fetched entries linger in registryCatalog until
   // the next refresh — filtered out here so removal reads as immediate
   // rather than waiting on a refetch (see addRegistry's sourcesOverride for
   // the mirror-image add case).
-  const liveRegistryCatalog = registryCatalog.filter((src) => registries.includes(src.source));
+  const liveRegistryCatalog = registryCatalog.filter((src) => effectiveRegistries.includes(src.source));
 
   // {id -> {source, version}} for the highest-version registry entry that
   // beats the installed version — drives the per-row "Update" action.
@@ -169,7 +181,7 @@ export default function ExtensionsPanel({
 
   const addRegistry = () => {
     const value = newRegistry.trim();
-    if (!value || registries.includes(value)) return;
+    if (!value || registries.includes(value) || value === defaultRegistry) return;
     // Passed explicitly (not left to the next render's registries prop) so
     // the refresh doesn't race the settings doc's debounced write-back —
     // see api.fetchRegistry's doc comment.
@@ -295,22 +307,29 @@ export default function ExtensionsPanel({
 
       {showRegistries && (
         <div className="extensions-registries">
-          {registries.length === 0 && (
+          {effectiveRegistries.length === 0 && (
             <div className="settings-hint">
               No registries configured. Add a URL serving an index.json, or a local directory path.
             </div>
           )}
-          {registries.map((source) => {
+          {effectiveRegistries.map((source) => {
             const result = registryCatalog.find((r) => r.source === source);
+            const isDefault = source === defaultRegistry;
             return (
               <div key={source} className="extensions-registry-row">
                 <span className="extensions-registry-source" title={source}>
                   {source}
                 </span>
                 {result?.error && <span className="extension-error extensions-registry-error">{result.error}</span>}
-                <button className="icon-button" title="Remove" onClick={() => removeRegistry(source)}>
-                  <Icon name="trash" />
-                </button>
+                {isDefault ? (
+                  <span className="extensions-registry-default" title="Built-in default registry (set EXTENSION_REGISTRY to override)">
+                    default
+                  </span>
+                ) : (
+                  <button className="icon-button" title="Remove" onClick={() => removeRegistry(source)}>
+                    <Icon name="trash" />
+                  </button>
+                )}
               </div>
             );
           })}
@@ -417,15 +436,15 @@ export default function ExtensionsPanel({
         })()}
         {!availableCollapsed && (
           <div className="extension-list">
-            {registries.length === 0 && (
+            {effectiveRegistries.length === 0 && (
               <div className="keybinding-empty">
                 No registries configured — click the gear above to add one.
               </div>
             )}
-            {registries.length > 0 && availableEntries.length === 0 && !registryLoading && (
+            {effectiveRegistries.length > 0 && availableEntries.length === 0 && !registryLoading && (
               <div className="keybinding-empty">No available extensions</div>
             )}
-            {registries.length > 0 && availableEntries.length > 0 && visibleAvailable.length === 0 && (
+            {effectiveRegistries.length > 0 && availableEntries.length > 0 && visibleAvailable.length === 0 && (
               <div className="keybinding-empty">No extensions match your search</div>
             )}
             {visibleAvailable.map((entry) => {

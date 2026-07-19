@@ -359,6 +359,27 @@ export default function App() {
   const [registryLoading, setRegistryLoading] = useState(false);
   const registryFetchedRef = useRef(false);
 
+  // The app's built-in default registry (server EXTENSION_REGISTRY env, else
+  // the shipped GitHub Pages catalog), fetched once. It's never persisted into
+  // extensionRegistries — merged ahead of the user's own sources below — so an
+  // env change always takes effect and "Reset Settings" can't strip it.
+  const [defaultRegistry, setDefaultRegistry] = useState<string | null>(null);
+  useEffect(() => {
+    api.fetchDefaultRegistry().then(setDefaultRegistry).catch(() => {});
+  }, []);
+
+  // The user's configured registries with the default prepended (deduped) —
+  // the effective source list the catalog is fetched against and filtered by.
+  // setExtensionRegistries still persists only the user list, never the
+  // default (the server adds the default back on its own, see registry.ts).
+  const effectiveRegistries = useMemo(
+    () =>
+      defaultRegistry && !extensionRegistries.includes(defaultRegistry)
+        ? [defaultRegistry, ...extensionRegistries]
+        : extensionRegistries,
+    [defaultRegistry, extensionRegistries],
+  );
+
   // `sourcesOverride` lets a just-added/removed registry source refresh
   // immediately against the list being persisted, not extensionRegistries'
   // current (pre-edit) closure value — see ExtensionsPanel's addRegistry and
@@ -366,14 +387,14 @@ export default function App() {
   const refreshRegistry = useCallback((refresh: boolean, sourcesOverride?: string[]) => {
     setRegistryLoading(true);
     api
-      .fetchRegistry(refresh, sourcesOverride ?? extensionRegistries)
+      .fetchRegistry(refresh, sourcesOverride ?? effectiveRegistries)
       .then((sources) => {
         setRegistryCatalog(sources);
         registryFetchedRef.current = true;
       })
       .catch(() => {})
       .finally(() => setRegistryLoading(false));
-  }, [extensionRegistries]);
+  }, [effectiveRegistries]);
 
   const ensureRegistryLoaded = useCallback(() => {
     if (registryFetchedRef.current) return;
@@ -389,14 +410,14 @@ export default function App() {
   const extensionUpdatesCount = useMemo(() => {
     let count = 0;
     for (const src of registryCatalog) {
-      if (!extensionRegistries.includes(src.source)) continue;
+      if (!effectiveRegistries.includes(src.source)) continue;
       for (const entry of src.entries) {
         const installed = extensions.find((e) => e.id === entry.id);
         if (installed && compareVersions(entry.version, installed.version) > 0) count++;
       }
     }
     return count;
-  }, [registryCatalog, extensions, extensionRegistries]);
+  }, [registryCatalog, extensions, effectiveRegistries]);
 
   // The extension detail page's "Extension Settings" shortcut — see
   // SettingsView's pendingFocusExtensionId prop doc.
@@ -1200,6 +1221,7 @@ export default function App() {
             onReloadExtensions={reloadExtensions}
             extensionRegistries={extensionRegistries}
             onExtensionRegistriesChange={setExtensionRegistries}
+            defaultRegistry={defaultRegistry}
             syncedTabsOrder={sidebarTabsOrder}
             onTabsOrderChange={setSidebarTabsOrder}
             registryCatalog={registryCatalog}

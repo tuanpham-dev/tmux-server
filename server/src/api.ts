@@ -36,7 +36,7 @@ import {
   uninstallExtension,
 } from "./extensions.js";
 import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
-import { getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
+import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
 import { mergeSettingsDoc, readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
 import {
@@ -260,6 +260,14 @@ api.get("/registry", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
+});
+
+// The app's built-in default registry (EXTENSION_REGISTRY env, else the
+// shipped GitHub Pages catalog), or null when disabled. The client merges this
+// ahead of the user's own sources for display — a static SPA can't read
+// process.env, so it learns the value here.
+api.get("/registry/default", (_req, res) => {
+  res.json({ registry: getDefaultRegistry() });
 });
 
 api.post("/registry/install", async (req, res) => {

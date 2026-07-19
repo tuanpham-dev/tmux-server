@@ -219,6 +219,9 @@ interface Props {
   onReloadExtensions: () => void;
   extensionRegistries: string[];
   onExtensionRegistriesChange: (registries: string[]) => void;
+  // The app's built-in default registry (or null if disabled) — shown as a
+  // non-removable source in the Extensions panel; see ExtensionsPanel.
+  defaultRegistry: string | null;
   // Server-synced tab order (useSettingsSync's sidebarTabsOrder) — empty
   // until the user has dragged a tab on some device (see loadTabsState in
   // settings.ts). Applied once, the first time it arrives non-empty; every
@@ -296,6 +299,7 @@ export default function Sidebar({
   onReloadExtensions,
   extensionRegistries,
   onExtensionRegistriesChange,
+  defaultRegistry,
   syncedTabsOrder,
   onTabsOrderChange,
   registryCatalog,
@@ -950,6 +954,7 @@ export default function Sidebar({
           onReloadExtensions={onReloadExtensions}
           registries={extensionRegistries}
           onRegistriesChange={onExtensionRegistriesChange}
+          defaultRegistry={defaultRegistry}
           registryCatalog={registryCatalog}
           registryLoading={registryLoading}
           onEnsureRegistryLoaded={onEnsureRegistryLoaded}

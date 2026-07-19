@@ -53,10 +53,40 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// The built-in registry the app ships with — served from GitHub Pages (see
+// the tmux-server-extensions repo's Pages workflow) so extensions are
+// discoverable out of the box without the user adding a source. Overridable
+// via the EXTENSION_REGISTRY env var, read at call time (same pattern as
+// ALLOWED_HOSTS/APP_NAME elsewhere).
+const GITHUB_PAGES_REGISTRY = "https://tuanpham-dev.github.io/tmux-server-extensions/";
+
+// null = no default (env var explicitly set to empty, i.e. disabled). Unset
+// env falls back to the shipped GitHub Pages catalog; a non-empty value
+// overrides it (a different URL, or a local directory path).
+export function getDefaultRegistry(): string | null {
+  const env = process.env.EXTENSION_REGISTRY;
+  if (env === undefined) return GITHUB_PAGES_REGISTRY;
+  const trimmed = env.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+// Prepends the default registry (if any) to a source list unless it's already
+// present — so the built-in catalog is always active for every consumer
+// (assertConfiguredSource, catalog fetch, install/readme/icon), whether the
+// sources come from the persisted doc or a client-supplied override.
+function withDefault(sources: string[]): string[] {
+  const def = getDefaultRegistry();
+  if (!def || sources.includes(def)) return sources;
+  return [def, ...sources];
+}
+
 async function getConfiguredSources(): Promise<string[]> {
   const doc = await readSettingsDoc();
   const raw = (doc as { extensionRegistries?: unknown }).extensionRegistries;
-  return Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string" && s.length > 0) : [];
+  const configured = Array.isArray(raw)
+    ? raw.filter((s): s is string => typeof s === "string" && s.length > 0)
+    : [];
+  return withDefault(configured);
 }
 
 async function assertConfiguredSource(source: string): Promise<void> {
@@ -215,7 +245,7 @@ function toPublic(catalog: SourceCatalog): RegistrySourceResult {
 // and silently see the pre-edit list. Falls back to the persisted doc for
 // every other case (page load, the plain refresh button).
 export async function getRegistryCatalog(refresh: boolean, sourcesOverride?: string[]): Promise<RegistrySourceResult[]> {
-  const sources = sourcesOverride ?? (await getConfiguredSources());
+  const sources = sourcesOverride ? withDefault(sourcesOverride) : await getConfiguredSources();
   const results: RegistrySourceResult[] = [];
   for (const source of sources) {
     results.push(toPublic(await loadSource(source, refresh)));

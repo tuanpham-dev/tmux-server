@@ -381,6 +381,15 @@ export function fetchRegistry(refresh?: boolean, sources?: string[]): Promise<Re
   );
 }
 
+// The app's built-in default registry (EXTENSION_REGISTRY env on the server,
+// else the shipped GitHub Pages catalog), or null if disabled. Merged ahead of
+// the user's own sources for display/fetch — see App.tsx.
+export function fetchDefaultRegistry(): Promise<string | null> {
+  return request("/api/registry/default").then(
+    (body) => (body as { registry: string | null }).registry,
+  );
+}
+
 export function installFromRegistry(source: string, id: string): Promise<ExtensionInfo> {
   return request("/api/registry/install", {
     method: "POST",

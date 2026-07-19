@@ -2496,6 +2496,17 @@ body.scrollbar-dragging {
   flex-shrink: 0;
 }
 
+.extensions-registry-default {
+  flex-shrink: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
 .extensions-registry-add {
   display: flex;
   gap: 6px;
