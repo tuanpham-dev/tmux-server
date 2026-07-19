@@ -468,7 +468,8 @@ soft-keyboard suppression, and the host calls it defensively plus
 re-applies the standing value after engine creation.
 
 Resolution: the `terminalEngine` setting stores a namespaced engine id (or
-`"auto"`, which picks xterm on mobile pointers and ghostty elsewhere).
+`"auto"`, which picks xterm on mobile pointers and ghostty elsewhere when
+that optional engine is installed, else xterm).
 TerminalView resolves it against the registry **after the
 extensions-settled gate**; an unknown/stale id falls back to the required
 `xterm-engine`, and an empty registry renders an explicit error surface.

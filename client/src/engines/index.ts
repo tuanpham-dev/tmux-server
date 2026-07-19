@@ -1,8 +1,9 @@
 // Engine resolution over the extension registry (plans/minimal-core-
-// extension-extraction.md): both engines live in bundled extensions
-// (xterm-engine — a required builtin, the guaranteed floor — and
-// ghostty-engine), registered via ctx.registerTerminalEngine. Core keeps
-// only this resolution plus the seam types (./types).
+// extension-extraction.md): engines live in extensions registered via
+// ctx.registerTerminalEngine — xterm-engine is a bundled required builtin
+// (the guaranteed floor and default), and ghostty-engine is an optional
+// install from the tmux-server-extensions registry. Core keeps only this
+// resolution plus the seam types (./types).
 import {
   activateExtensionById,
   extensionTerminalEngines,

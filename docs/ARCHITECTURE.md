@@ -34,8 +34,7 @@ Everything else. The bundled set (all under `extensions/`):
 - **search** — the SEARCH panel
 - **ports** — the PORTS explorer section (list/kill via the server `host.ports` API)
 - **subagent-viewer** — Claude Code subagent count badges on session windows + the details popover (session-decoration provider; its server hook reads Claude Code's on-disk transcripts)
-- **xterm-engine** — the xterm.js terminal engine. **Required builtin** (`tmuxServer.required: true`): it is the app's rendering floor, so the platform refuses to disable or uninstall it, and ignores stale state-file entries for it. The engine registry falls back to it whenever the selected engine is missing.
-- **ghostty-engine** — the ghostty-web (WASM) engine, the default desktop engine
+- **xterm-engine** — the xterm.js terminal engine and the default. **Required builtin** (`tmuxServer.required: true`): it is the app's rendering floor, so the platform refuses to disable or uninstall it, and ignores stale state-file entries for it. The engine registry falls back to it whenever the selected engine is missing. (The alternative `ghostty-engine`, the ghostty-web WASM engine, is no longer bundled — it lives in the `tmux-server-extensions` registry as an optional install.)
 - **touch-keys** — the mobile touch-key bar / floating toggle / voice input / image-upload key, with its drag-and-drop layout editor rendered via a custom settings component
 - **Assets** — `plastic-legacy-theme`, `seti-icons`, `ibm-plex-mono` / `mono-fonts` (default look; hard fallbacks in core cover the gap when disabled)
 

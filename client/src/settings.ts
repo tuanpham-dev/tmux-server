@@ -104,7 +104,10 @@ export interface AppSettings {
 // exists) — so an unavailable bundled font still lands on something native
 // to the machine before falling through to the browser's generic mapping.
 export const DEFAULT_SETTINGS: AppSettings = {
-  terminalEngine: "ext.tmux-server.ghostty-engine.ghostty",
+  // xterm.js is the bundled, required engine (extensions/xterm-engine) — the
+  // safe default. Ghostty moved to the optional registry, so it's no longer
+  // shipped; install it from the Extensions tab to select it here.
+  terminalEngine: "ext.tmux-server.xterm-engine.xterm",
   fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
   fontWeight: "normal",
