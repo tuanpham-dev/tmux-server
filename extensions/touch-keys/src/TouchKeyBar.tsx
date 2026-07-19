@@ -84,6 +84,60 @@ function useTapHandlers(onTap: () => void) {
   };
 }
 
+// Arrow-key autorepeat timing.
+const REPEAT_DELAY_MS = 400;
+const REPEAT_INTERVAL_MS = 40;
+
+// The arrow keys, by their brace-token `send` — the keys that get hold-to-repeat.
+function isArrowSend(send: string): boolean {
+  const s = send.trim().toLowerCase();
+  return s === "{up}" || s === "{down}" || s === "{left}" || s === "{right}";
+}
+
+// Like useTapHandlers but with hold-to-repeat, for arrow keys: a quick still
+// tap fires once on release (preserving the anti-swipe behavior of the
+// scrollable bar); holding past REPEAT_DELAY_MS starts firing every
+// REPEAT_INTERVAL_MS until release. A horizontal swipe (finger moves before the
+// hold begins) cancels without firing, so panning the bar never sends an arrow.
+function useRepeatHandlers(onFire: () => void) {
+  const state = useRef<{ x: number; y: number; fired: boolean } | null>(null);
+  const timers = useRef<{ delay?: number; interval?: number }>({});
+  const clearTimers = () => {
+    window.clearTimeout(timers.current.delay);
+    window.clearInterval(timers.current.interval);
+    timers.current = {};
+  };
+  useEffect(() => clearTimers, []);
+  const stop = () => {
+    state.current = null;
+    clearTimers();
+  };
+  return {
+    onPointerDown: (e: PointerEvent) => {
+      e.preventDefault();
+      state.current = { x: e.clientX, y: e.clientY, fired: false };
+      timers.current.delay = window.setTimeout(() => {
+        if (state.current) state.current.fired = true;
+        onFire();
+        timers.current.interval = window.setInterval(onFire, REPEAT_INTERVAL_MS);
+      }, REPEAT_DELAY_MS);
+    },
+    onPointerMove: (e: PointerEvent) => {
+      const s = state.current;
+      if (!s || s.fired) return;
+      if (Math.hypot(e.clientX - s.x, e.clientY - s.y) >= 10) stop(); // swipe: cancel, no send
+    },
+    onPointerUp: (e: PointerEvent) => {
+      const s = state.current;
+      stop();
+      // Quick still tap (repeat never started) fires once on release.
+      if (s && !s.fired && Math.hypot(e.clientX - s.x, e.clientY - s.y) < 10) onFire();
+    },
+    onPointerCancel: stop,
+    onPointerLeave: stop,
+  };
+}
+
 // A `{mic}` key: toggles a VoiceInput session on tap, sending each final
 // transcript through onTranscript. Its own component (unlike the stateless
 // {ctrl} branch below) since it owns a VoiceInput instance's lifecycle —
@@ -172,10 +226,14 @@ export function TouchKeyButton({
   onUploadImage: (file: File) => void;
 }) {
   const isCtrl = touchKey.send === "{ctrl}";
-  const tap = useTapHandlers(() => {
+  const fire = () => {
     if (isCtrl) onToggleStickyCtrl();
     else sendWithInkSafeEnters(data, onSendInput);
-  });
+  };
+  // Arrow keys hold-to-repeat; every other key is a single tap. Both hooks run
+  // unconditionally (hook rules); the plain button below picks which to spread.
+  const tap = useTapHandlers(fire);
+  const repeat = useRepeatHandlers(fire);
   if (touchKey.send === "{mic}") {
     return <MicKeyButton label={touchKey.label} onTranscript={onSendVoiceText} />;
   }
@@ -190,7 +248,7 @@ export function TouchKeyButton({
     );
   }
   return (
-    <button className="touch-key" {...tap}>
+    <button className="touch-key" {...(isArrowSend(touchKey.send) ? repeat : tap)}>
       {touchKey.label}
     </button>
   );
