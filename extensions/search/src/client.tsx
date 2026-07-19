@@ -13,6 +13,7 @@ import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
 import type { MenuItem } from "../../_shared/types";
 import { useListNavigation } from "../../_shared/useListNavigation";
+import { useLongPressMenu } from "../../_shared/useLongPressMenu";
 
 // ---- Module-level host bridge ----
 
@@ -198,6 +199,8 @@ interface PanelProps {
 }
 
 function SearchPanel({ actionsTarget, showMenu }: PanelProps) {
+  // Touch/pen long-press → the same menu right-click opens.
+  const bindMenu = useLongPressMenu();
   const [activeContext, setActiveContext] = useState<ActiveContext>(
     () => getActiveContext?.() ?? { sessionName: null, windowIndex: null, cwd: null },
   );
@@ -830,6 +833,10 @@ function SearchPanel({ actionsTarget, showMenu }: PanelProps) {
                       resultNav.focusRow(headerId);
                       showMenu?.(e.clientX, e.clientY, headerMenuItems(fileResult.file));
                     }}
+                    {...bindMenu((x, y) => {
+                      resultNav.focusRow(headerId);
+                      showMenu?.(x, y, headerMenuItems(fileResult.file));
+                    })}
                     tabIndex={headerRowProps.tabIndex}
                     ref={headerRowProps.ref}
                     onFocus={headerRowProps.onFocus}
@@ -874,6 +881,10 @@ function SearchPanel({ actionsTarget, showMenu }: PanelProps) {
                             resultNav.focusRow(matchId);
                             showMenu?.(e.clientX, e.clientY, matchMenuItems(fileResult.file, match));
                           }}
+                          {...bindMenu((x, y) => {
+                            resultNav.focusRow(matchId);
+                            showMenu?.(x, y, matchMenuItems(fileResult.file, match));
+                          })}
                           tabIndex={matchRowProps.tabIndex}
                           ref={matchRowProps.ref}
                           onFocus={matchRowProps.onFocus}

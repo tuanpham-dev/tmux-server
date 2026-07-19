@@ -23,6 +23,7 @@ import {
   WheelLineAccumulator,
 } from "../mouseReports";
 import { isOpenGesture, openUrl } from "../terminalLinks";
+import type { MenuItem } from "../types";
 
 // Expands the pasteDropUploadDir setting for one upload: {cwd} is the pane's
 // working directory, {gitroot} the git repo root containing it (the repo-less
@@ -119,6 +120,13 @@ interface Props {
   // Enter/Shift+Enter.
   onOpenFile?: (path: string, line?: number) => void;
   onOpenFileSecondary?: (path: string, line?: number) => void;
+  // Opens the app's shared context menu at a screen position — used for the
+  // touch long-press menu on a terminal file/URL link (Open / Preview / Copy).
+  showMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  // Opens a file in its "preview" viewer (markdown/json/yaml/csv) — the menu's
+  // "Preview" item. Only offered when isPreviewable(path) is true.
+  onPreviewFile?: (path: string) => void;
+  isPreviewable?: (path: string) => boolean;
   // The pane's current working directory (App.tsx's sessions data), the basis
   // for image paste/drop upload destinations (plans/codeman-mobile-
   // features.md Phase 3): it backs the {cwd}/{gitroot} variables in
@@ -142,6 +150,9 @@ export default function TerminalView({
   onSessionSwitch,
   onOpenFile,
   onOpenFileSecondary,
+  showMenu,
+  onPreviewFile,
+  isPreviewable,
   cwd,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -184,6 +195,12 @@ export default function TerminalView({
   onOpenFileRef.current = onOpenFile;
   const onOpenFileSecondaryRef = useRef(onOpenFileSecondary);
   onOpenFileSecondaryRef.current = onOpenFileSecondary;
+  const showMenuRef = useRef(showMenu);
+  showMenuRef.current = showMenu;
+  const onPreviewFileRef = useRef(onPreviewFile);
+  onPreviewFileRef.current = onPreviewFile;
+  const isPreviewableRef = useRef(isPreviewable);
+  isPreviewableRef.current = isPreviewable;
   // Set (by the link provider's onLinkHoverChange, wired in the mount
   // effect below) to the currently-hovered link's own activation call, or
   // null when nothing's hovered. Read from onCapture's mouse-mode
@@ -227,6 +244,13 @@ export default function TerminalView({
   // candidate detection) it was never limited to one stitched line.
   const touchHandleBeginRef = useRef<(which: "start" | "end") => void>(() => {});
   const touchHandleMoveRef = useRef<(clientX: number, clientY: number) => void>(() => {});
+  // Viewport coordinates of the last long-press point — anchors the link
+  // context menu (below), which positions via App's showMenu in screen space,
+  // not the .terminal-body-relative rects the selection toolbar uses.
+  const lastLongPressPtRef = useRef<{ x: number; y: number } | null>(null);
+  // True once the link context menu has been opened for the current settled
+  // selection, so the effect below fires it exactly once (reset on dismiss).
+  const linkMenuOpenedRef = useRef(false);
   // The WS attaches to the name the tab was opened with; a later rename only
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
@@ -1464,6 +1488,8 @@ export default function TerminalView({
         longPressTouchTimer = window.setTimeout(() => {
           longPressTouchTimer = undefined;
           longPressFiredThisGesture = true;
+          lastLongPressPtRef.current = { x: startX, y: startY };
+          linkMenuOpenedRef.current = false;
           if (beginTouchSelection(startX, startY)) selectionArmedThisGesture = true;
         }, LONG_PRESS_MS);
       };
@@ -1827,6 +1853,48 @@ export default function TerminalView({
     dismissTouchSelectionRef.current();
   };
 
+  // A touch long-press that lands on a file/URL link opens the app's shared
+  // context menu (Open / Preview? / Copy) at the press point, in place of the
+  // inline Copy/Open selection toolbar (which still handles plain-text
+  // selections below). Reacts to touchSel.open resolving: a URL is set
+  // synchronously by beginTouchSelection, a path only after its async
+  // resolvePaths returns — so this fires on that transition, once per gesture
+  // (linkMenuOpenedRef is reset when each long-press begins).
+  useEffect(() => {
+    if (!touchSel || touchSel.interacting || !touchSel.open) return;
+    if (linkMenuOpenedRef.current) return;
+    linkMenuOpenedRef.current = true;
+    const open = touchSel.open;
+    const pt = lastLongPressPtRef.current ?? { x: 0, y: 0 };
+    const items: MenuItem[] = [
+      {
+        label: open.kind === "url" ? "Open Link" : "Open File",
+        onClick: () => {
+          if (open.kind === "url") openUrl(open.target);
+          else onOpenFileRef.current?.(open.target, open.line);
+          dismissTouchSelectionRef.current();
+        },
+      },
+    ];
+    if (open.kind === "path" && isPreviewableRef.current?.(open.target)) {
+      items.push({
+        label: "Preview",
+        onClick: () => {
+          onPreviewFileRef.current?.(open.target);
+          dismissTouchSelectionRef.current();
+        },
+      });
+    }
+    items.push({
+      label: "Copy",
+      onClick: () => {
+        copyText(open.target).catch((err) => onErrorRef.current(err));
+        dismissTouchSelectionRef.current();
+      },
+    });
+    showMenuRef.current?.(pt.x, pt.y, items);
+  }, [touchSel]);
+
   // Fresh object per render (like the inline props it replaced) — accessory
   // components re-render with this terminal, reading live values.
   const accessoryContext: TerminalAccessoryContext = {
@@ -1875,13 +1943,16 @@ export default function TerminalView({
           <div className="tmux-scrollbar-thumb" />
         </div>
         <div className="reconnect-overlay">Reconnecting…</div>
-        {touchSelRect && touchSelStartRect && touchSelEndRect && (
+        {/* Plain-text selections keep the inline Copy/Open toolbar; a link
+            selection (touchSel.open set) is handled by the context menu the
+            effect above opens instead, so the toolbar is suppressed for it. */}
+        {touchSelRect && touchSelStartRect && touchSelEndRect && !touchSel?.open && (
           <TouchSelection
             rect={touchSelRect}
             startRect={touchSelStartRect}
             endRect={touchSelEndRect}
             containerRef={terminalBodyRef}
-            openLabel={touchSel?.open ? "Open" : null}
+            openLabel={null}
             onCopy={handleTouchSelCopy}
             onOpen={handleTouchSelOpen}
             onHandleDragStart={(which) => touchHandleBeginRef.current(which)}

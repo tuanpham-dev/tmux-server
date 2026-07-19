@@ -8,6 +8,7 @@ import FileIcon from "./FileIcon";
 import Icon from "./Icon";
 import { getFileIconResult, getFolderIconResult, useIconThemeVersion } from "../utils/iconThemes";
 import { useMarqueeSelection } from "../hooks/useMarqueeSelection";
+import { useLongPressMenu } from "../hooks/useLongPressMenu";
 import { subscribePollTick } from "../lib/pollTick";
 
 
@@ -158,6 +159,8 @@ export default function FileTree({
   // Same subscribe-only pattern for decoration providers: re-render when a
   // provider registers/unregisters or refresh()es its cached answers.
   useExtensionRegistryVersion();
+  // Touch/pen long-press → the same context menu right-click opens.
+  const bindMenu = useLongPressMenu();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [dirCache, setDirCache] = useState<Map<string, DirState>>(new Map());
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
@@ -528,20 +531,23 @@ export default function FileTree({
   // the bulk menu for the whole selection; right-clicking anything else
   // (an unselected row, or a lone selected row) collapses selection to just
   // that row first, matching VS Code Explorer's right-click behavior.
-  const handleRowContextMenu = (e: React.MouseEvent, path: string, isDir: boolean) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const openRowMenu = (x: number, y: number, path: string, isDir: boolean) => {
     if (selectedPaths.has(path) && selectedPaths.size > 1) {
       const entries = visibleRows
         .filter((r) => selectedPaths.has(r.path))
         .map((r) => ({ path: r.path, isDir: r.isDir }));
-      onShowMenu(e.clientX, e.clientY, fileMultiMenuItems(entries));
+      onShowMenu(x, y, fileMultiMenuItems(entries));
       return;
     }
     setSelectedPaths(new Set([path]));
     setAnchorPath(path);
     focusRow(path);
-    onShowMenu(e.clientX, e.clientY, fileMenuItems(path, isDir, rootDir!));
+    onShowMenu(x, y, fileMenuItems(path, isDir, rootDir!));
+  };
+  const handleRowContextMenu = (e: React.MouseEvent, path: string, isDir: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openRowMenu(e.clientX, e.clientY, path, isDir);
   };
 
   // Shared by files.paste/newFile/newFolder dispatch below and by
@@ -982,6 +988,7 @@ export default function FileTree({
               title={entryPath}
               onClick={(e) => handleRowClick(e, entryPath, true, entry.name)}
               onContextMenu={(e) => handleRowContextMenu(e, entryPath, true)}
+              {...bindMenu((x, y) => openRowMenu(x, y, entryPath, true))}
               onDragStart={(e) => handleRowDragStart(e, entryPath)}
               onDragEnd={endDrag}
             >
@@ -1016,6 +1023,7 @@ export default function FileTree({
           title={entry.name}
           onClick={(e) => handleRowClick(e, entryPath, false, entry.name)}
           onContextMenu={(e) => handleRowContextMenu(e, entryPath, false)}
+          {...bindMenu((x, y) => openRowMenu(x, y, entryPath, false))}
           onDragStart={(e) => handleRowDragStart(e, entryPath)}
           onDragEnd={endDrag}
         >
@@ -1053,6 +1061,13 @@ export default function FileTree({
 
   const rootState = dirCache.get(rootDir);
 
+  // Touch long-press on empty tree space opens the root menu. Guarded to the
+  // container itself (target === currentTarget) so a press that lands on a row
+  // — whose own bindMenu handler already fires — doesn't bubble up and open a
+  // second menu. Marquee selection is mouse-only, so pointer events don't
+  // collide with it.
+  const rootMenu = bindMenu((x, y) => onShowMenu(x, y, fileTreeRootMenuItems(rootDir)));
+
   return (
     <div
       ref={treeContainerRef}
@@ -1067,6 +1082,12 @@ export default function FileTree({
         e.preventDefault();
         onShowMenu(e.clientX, e.clientY, fileTreeRootMenuItems(rootDir));
       }}
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) rootMenu.onPointerDown(e);
+      }}
+      onPointerMove={rootMenu.onPointerMove}
+      onPointerUp={rootMenu.onPointerUp}
+      onPointerCancel={rootMenu.onPointerCancel}
       onKeyDown={handleTreeKeyDown}
       onPaste={handleTreePaste}
       // A paste event is only delivered to whatever holds DOM focus. Rows are

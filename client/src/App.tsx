@@ -1321,6 +1321,9 @@ export default function App() {
                 onSessionSwitch={openSwitchedSession}
                 onOpenFile={openFileOrViewer}
                 onOpenFileSecondary={openFileOrViewerSecondary}
+                showMenu={showMenu}
+                onPreviewFile={openPreviewViewerTab}
+                isPreviewable={isPreviewable}
                 cwd={paneWindow?.cwd}
               />
             );

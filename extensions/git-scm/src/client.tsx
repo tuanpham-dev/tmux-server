@@ -16,6 +16,7 @@ import FileIcon from "../../_shared/FileIcon";
 import type { IconResult } from "../../_shared/FileIcon";
 import type { MenuItem } from "../../_shared/types";
 import { useListNavigation } from "../../_shared/useListNavigation";
+import { useLongPressMenu } from "../../_shared/useLongPressMenu";
 import { useMarqueeSelection } from "../../_shared/useMarqueeSelection";
 import { statusForEntry, type GitFileStatus } from "../statusModel.mjs";
 
@@ -330,6 +331,7 @@ function FileRow({
   selected,
   onRowClick,
   onRowContextMenu,
+  longPress,
   actions,
   clickHint,
   depth,
@@ -352,6 +354,10 @@ function FileRow({
   // same split as FileTree.tsx's handleRowClick.
   onRowClick: (e: ReactMouseEvent) => void;
   onRowContextMenu: (e: ReactMouseEvent) => void;
+  // Touch/pen long-press → the same context menu onRowContextMenu opens
+  // (useLongPressMenu handlers, spread onto the row div). Optional so a caller
+  // that doesn't wire it just gets no long-press.
+  longPress?: ReturnType<ReturnType<typeof useLongPressMenu>>;
   actions: RowAction[];
   // Discoverability for the Shift-click escape hatch — there's no visual
   // affordance for it otherwise, so it rides along in the row's own native
@@ -384,6 +390,7 @@ function FileRow({
       data-path={entry.path}
       onClick={onRowClick}
       onContextMenu={onRowContextMenu}
+      {...longPress}
       style={depth ? { paddingLeft: 8 + depth * 16 } : undefined}
       tabIndex={tabIndex}
       ref={rowRef}
@@ -1247,20 +1254,25 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
   // the bulk menu for the whole selection; right-clicking anything else
   // (an unselected row, or a lone selected row) collapses selection to just
   // that row first, matching FileTree.tsx's handleRowContextMenu.
-  const handleRowContextMenu = (groupKey: GroupKey, entry: FileEntry, staged: boolean, e: ReactMouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const openRowMenu = (groupKey: GroupKey, entry: FileEntry, staged: boolean, x: number, y: number) => {
     const inGroup = selectedGroup === groupKey;
     if (inGroup && selectedPaths.has(entry.path) && selectedPaths.size > 1) {
       const entries = visibleFileEntries(groupKey).filter((en) => selectedPaths.has(en.path));
-      showMenu?.(e.clientX, e.clientY, buildBulkMenuItems(groupKey, entries));
+      showMenu?.(x, y, buildBulkMenuItems(groupKey, entries));
       return;
     }
     setSelectedGroup(groupKey);
     setSelectedPaths(new Set([entry.path]));
     setAnchorPath(entry.path);
-    showMenu?.(e.clientX, e.clientY, buildFileMenuItems(groupKey, entry, staged));
+    showMenu?.(x, y, buildFileMenuItems(groupKey, entry, staged));
   };
+  const handleRowContextMenu = (groupKey: GroupKey, entry: FileEntry, staged: boolean, e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openRowMenu(groupKey, entry, staged, e.clientX, e.clientY);
+  };
+  // Touch/pen long-press → the same menu right-click opens.
+  const bindMenu = useLongPressMenu();
 
   // ---- Tree mode (hoisted above the early returns below — useListNavigation
   // needs these, and hooks can't follow a conditional return) ----
@@ -1439,6 +1451,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
             selected={selectedGroup === groupKey && selectedPaths.has(node.entry.path)}
             onRowClick={(e) => handleRowClick(groupKey, node.entry, staged, e)}
             onRowContextMenu={(e) => handleRowContextMenu(groupKey, node.entry, staged, e)}
+            longPress={bindMenu((x, y) => openRowMenu(groupKey, node.entry, staged, x, y))}
             actions={actions}
             clickHint={rowHint}
             depth={depth}
@@ -1729,6 +1742,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                       selected={selectedGroup === "conflicted" && selectedPaths.has(entry.path)}
                       onRowClick={(e) => handleRowClick("conflicted", entry, false, e)}
                       onRowContextMenu={(e) => handleRowContextMenu("conflicted", entry, false, e)}
+                      longPress={bindMenu((x, y) => openRowMenu("conflicted", entry, false, x, y))}
                       clickHint={conflictClickHint}
                       actions={[
                         {
@@ -1799,6 +1813,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                       selected={selectedGroup === "staged" && selectedPaths.has(entry.path)}
                       onRowClick={(e) => handleRowClick("staged", entry, true, e)}
                       onRowContextMenu={(e) => handleRowContextMenu("staged", entry, true, e)}
+                      longPress={bindMenu((x, y) => openRowMenu("staged", entry, true, x, y))}
                       clickHint={clickHint}
                       actions={[
                         {
@@ -1892,6 +1907,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
                       selected={selectedGroup === "unstaged" && selectedPaths.has(entry.path)}
                       onRowClick={(e) => handleRowClick("unstaged", entry, false, e)}
                       onRowContextMenu={(e) => handleRowContextMenu("unstaged", entry, false, e)}
+                      longPress={bindMenu((x, y) => openRowMenu("unstaged", entry, false, x, y))}
                       clickHint={clickHint}
                       actions={[
                         {

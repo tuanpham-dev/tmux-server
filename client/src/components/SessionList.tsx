@@ -5,6 +5,7 @@ import { getWindowDecorations, useExtensionRegistryVersion } from "../extensions
 import type { RegisteredWindowAction } from "../extensions";
 import { useGitRootDirs } from "../hooks/useGitRootDir";
 import { useListNavigation } from "../hooks/useListNavigation";
+import { useLongPressMenu } from "../hooks/useLongPressMenu";
 import { bindingMatches, recorderState, serializeEvent, type Keybinding } from "../keybindings";
 import { sessionRowsWithPins } from "../lib/sessions";
 import type { MenuItem, PinnedSession, SidebarMode, TmuxSession, TmuxWindow } from "../types";
@@ -93,6 +94,8 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  // Touch/pen long-press → the same context menu right-click opens.
+  const bindMenu = useLongPressMenu();
   // Re-render when a session-decoration provider registers or refresh()es —
   // getWindowDecorations below reads the registry imperatively per row.
   useExtensionRegistryVersion();
@@ -350,6 +353,10 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
           nav.focusRow(row.id);
           onShowMenu(e.clientX, e.clientY, windowMenuItems(s.name, w));
         }}
+        {...bindMenu((x, y) => {
+          nav.focusRow(row.id);
+          onShowMenu(x, y, windowMenuItems(s.name, w));
+        })}
         tabIndex={rowProps.tabIndex}
         ref={rowProps.ref}
         onFocus={rowProps.onFocus}
@@ -427,6 +434,10 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
                     nav.focusRow(id);
                     onShowMenu(e.clientX, e.clientY, sessionMenuItems(row.name, true));
                   }}
+                  {...bindMenu((x, y) => {
+                    nav.focusRow(id);
+                    onShowMenu(x, y, sessionMenuItems(row.name, true));
+                  })}
                   tabIndex={rowProps.tabIndex}
                   ref={rowProps.ref}
                   onFocus={rowProps.onFocus}
@@ -463,6 +474,10 @@ const SessionList = forwardRef<SessionListHandle, Props>(function SessionList(
                   nav.focusRow(id);
                   onShowMenu(e.clientX, e.clientY, sessionMenuItems(s.name, false));
                 }}
+                {...bindMenu((x, y) => {
+                  nav.focusRow(id);
+                  onShowMenu(x, y, sessionMenuItems(s.name, false));
+                })}
                 tabIndex={rowProps.tabIndex}
                 ref={rowProps.ref}
                 onFocus={rowProps.onFocus}

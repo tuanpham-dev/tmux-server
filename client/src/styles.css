@@ -551,6 +551,9 @@ body.resizing-row {
   font-size: 14px;
   text-align: left;
   cursor: pointer;
+  /* Long-press opens the app context menu (useLongPressMenu); suppress the
+     mobile native text-callout so it doesn't pop up alongside it. */
+  -webkit-touch-callout: none;
 }
 
 .row-add-button {
@@ -613,6 +616,9 @@ body.resizing-row {
   font-size: 13.5px;
   text-align: left;
   cursor: pointer;
+  /* Long-press opens the app context menu (useLongPressMenu); suppress the
+     mobile native text-callout so it doesn't pop up alongside it. */
+  -webkit-touch-callout: none;
 }
 
 .window-item:hover {
@@ -838,6 +844,9 @@ body.resizing-row {
      triggers the browser's native "extend text selection to here" gesture
      instead of just our click handler. */
   user-select: none;
+  /* Long-press opens the app context menu (useLongPressMenu); suppress the
+     mobile native text-callout so it doesn't pop up alongside it. */
+  -webkit-touch-callout: none;
 }
 
 .file-tree-dir:hover,

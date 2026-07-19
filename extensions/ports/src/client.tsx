@@ -13,6 +13,7 @@ import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
 import type { MenuItem } from "../../_shared/types";
 import { useListNavigation } from "../../_shared/useListNavigation";
+import { useLongPressMenu } from "../../_shared/useLongPressMenu";
 
 // ---- Module-level host bridge ----
 
@@ -132,6 +133,8 @@ interface PanelProps {
 }
 
 function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
+  // Touch/pen long-press → the same menu right-click opens.
+  const bindMenu = useLongPressMenu();
   const [ports, setPorts] = useState<ListeningPort[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -346,6 +349,10 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
                   nav.focusRow(portRowId(p.port));
                   showMenu?.(e.clientX, e.clientY, portMenuItems(p));
                 }}
+                {...bindMenu((x, y) => {
+                  nav.focusRow(portRowId(p.port));
+                  showMenu?.(x, y, portMenuItems(p));
+                })}
                 tabIndex={rowProps.tabIndex}
                 ref={rowProps.ref}
                 onFocus={rowProps.onFocus}
