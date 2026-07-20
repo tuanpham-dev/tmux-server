@@ -5,6 +5,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
 import { loadEnabledServerHooks } from "./extensions.js";
+import { getTunnelablePorts } from "./ports.js";
 import {
   handleProxyRequest,
   handleProxyUpgrade,
@@ -118,7 +119,12 @@ app.use((req, res, next) => {
 });
 // Reverse proxy to a locally-listening port, code-server style — mounted
 // ahead of express.json() so proxied request bodies stream through
-// untouched rather than being buffered/parsed here.
+// untouched rather than being buffered/parsed here. Restricted to ports a
+// tmux pane actually owns (getTunnelablePorts, same allowlist the WS tunnel
+// CLI uses) — otherwise any page open in a browser on this machine could
+// reach arbitrary localhost services (a database, another user's daemon)
+// merely by knowing its port number, bypassing whatever access control that
+// service itself relies on.
 app.use((req, res, next) => {
   const subdomainPort = portFromProxyHost(req.headers.host);
   if (subdomainPort !== null) {
@@ -126,7 +132,15 @@ app.use((req, res, next) => {
       res.status(400).json({ error: "cannot proxy the server's own port" });
       return;
     }
-    handleProxyRequest(req, res, subdomainPort, req.url ?? "/", null);
+    getTunnelablePorts()
+      .then((allowed) => {
+        if (!allowed.has(subdomainPort)) {
+          res.status(403).json({ error: `port ${subdomainPort} is not open to a tmux session` });
+          return;
+        }
+        handleProxyRequest(req, res, subdomainPort, req.url ?? "/", null);
+      })
+      .catch(next);
     return;
   }
   const parsed = parseProxyPath(req.path);
@@ -135,9 +149,17 @@ app.use((req, res, next) => {
       res.status(400).json({ error: "cannot proxy the server's own port" });
       return;
     }
-    const search = req.url && req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-    const prefix = parsed.absolute ? null : `/proxy/${parsed.port}`;
-    handleProxyRequest(req, res, parsed.port, parsed.rest + search, prefix);
+    getTunnelablePorts()
+      .then((allowed) => {
+        if (!allowed.has(parsed.port)) {
+          res.status(403).json({ error: `port ${parsed.port} is not open to a tmux session` });
+          return;
+        }
+        const search = req.url && req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+        const prefix = parsed.absolute ? null : `/proxy/${parsed.port}`;
+        handleProxyRequest(req, res, parsed.port, parsed.rest + search, prefix);
+      })
+      .catch(next);
     return;
   }
   next();
@@ -179,6 +201,8 @@ if (existsSync(clientDist)) {
   // just missed above, so route it to the port named in the Referer instead
   // of falling through to the SPA shell. Same-origin Referer only (see
   // portFromReferer) and HTTP only (WebSocket upgrades rarely carry one).
+  // A soft fallback, unlike the proxy middleware above: an untunnelable
+  // inferred port just falls through to the SPA shell rather than erroring.
   app.use((req, res, next) => {
     if (
       req.path.startsWith("/api/") ||
@@ -190,11 +214,19 @@ if (existsSync(clientDist)) {
       return;
     }
     const refererPort = portFromReferer(req.headers.referer, req.headers.host);
-    if (refererPort !== null && refererPort !== PORT) {
-      handleProxyRequest(req, res, refererPort, req.url ?? "/", null);
+    if (refererPort === null || refererPort === PORT) {
+      next();
       return;
     }
-    next();
+    getTunnelablePorts()
+      .then((allowed) => {
+        if (!allowed.has(refererPort)) {
+          next();
+          return;
+        }
+        handleProxyRequest(req, res, refererPort, req.url ?? "/", null);
+      })
+      .catch(next);
   });
   app.get(/^\/(?!api|ws).*/, (_req, res) => {
     const appName = process.env.APP_NAME;
@@ -247,13 +279,29 @@ server.on("upgrade", (req, socket, head) => {
       socket.destroy();
       return;
     }
-    handleProxyUpgrade(req, socket, head, subdomainPort, req.url ?? "/");
+    getTunnelablePorts()
+      .then((allowed) => {
+        if (!allowed.has(subdomainPort)) {
+          socket.destroy();
+          return;
+        }
+        handleProxyUpgrade(req, socket, head, subdomainPort, req.url ?? "/");
+      })
+      .catch(() => socket.destroy());
   } else if (parsedProxy) {
     if (parsedProxy.port === PORT) {
       socket.destroy();
       return;
     }
-    handleProxyUpgrade(req, socket, head, parsedProxy.port, parsedProxy.rest);
+    getTunnelablePorts()
+      .then((allowed) => {
+        if (!allowed.has(parsedProxy.port)) {
+          socket.destroy();
+          return;
+        }
+        handleProxyUpgrade(req, socket, head, parsedProxy.port, parsedProxy.rest);
+      })
+      .catch(() => socket.destroy());
   } else {
     socket.destroy();
   }
