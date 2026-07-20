@@ -81,7 +81,7 @@ function fetchProxyConfig(): Promise<ProxyConfig> {
 
 // ---- Panel ----
 
-const POLL_MS = 30_000;
+const POLL_MS = 5_000;
 const NO_AUTH: TunnelAuth = { cookie: null, authorization: null };
 const NO_PROXY_CONFIG: ProxyConfig = { domain: null };
 const MASK = "••••";
@@ -211,11 +211,14 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
 
     load();
     // The initial load above and any refreshKey-triggered reload (a user
-    // action, so the tab is visible) always run; only the background 30s
-    // ticks skip while hidden — resuming immediately on regaining
-    // visibility instead of waiting out the rest of the interval.
+    // action, so the tab is visible) always run; only the background ticks
+    // skip while hidden — resuming immediately on regaining visibility
+    // instead of waiting out the rest of the interval. Ticks refresh just
+    // the ports list: auth/proxy config are effectively static, so they
+    // re-fetch only on the full loads above (initial, Refresh, visibility)
+    // rather than every few seconds.
     const timer = window.setInterval(() => {
-      if (!document.hidden) load();
+      if (!document.hidden) loadPorts();
     }, POLL_MS);
     const onVisibility = () => {
       if (!document.hidden) load();

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { buildProcessMap, listAllPanePids, type ProcInfo } from "./tmux.js";
+import { readFile } from "node:fs/promises";
+import { buildProcessMap, listAllPanePids, type PaneMaps, type ProcInfo } from "./tmux.js";
 
 export interface ListeningPort {
   port: number;
@@ -76,97 +77,136 @@ async function listPorts(): Promise<RawPort[]> {
 
 const MAX_ANCESTRY_HOPS = 64;
 
-// Ancestors of this server process, up to (but excluding) the tmux pane it's
-// running in, if any. A port whose owning process's chain passes through one
-// of these pids before reaching a pane belongs to tmux-server itself (or a
-// sibling dev-server process spawned by the same `npm run dev`/concurrently
-// tree, e.g. Vite) rather than to something the user launched in a tmux
-// session — it's excluded the same way an unattributable port is.
+// Interactive shells mark the boundary between the server's own npm/dev tree
+// and whoever launched it — a user's pane shell, or an agent's per-command
+// wrapper shell. npm runs package scripts with plain `sh`, deliberately
+// absent here so it stays inside the tree.
+const BOUNDARY_SHELLS = new Set(["zsh", "bash", "fish", "csh", "tcsh", "ksh"]);
+
+// Ancestors of this server process, up to the tmux pane it's running in, the
+// first interactive shell, or the process-tree root — whichever comes first
+// (all excluded). A port whose owning process's chain passes through one of
+// these pids belongs to tmux-server itself or a sibling dev-server process
+// spawned by the same `npm run dev`/concurrently tree (e.g. Vite), rather
+// than to something the user launched in a tmux session. Stopping at the
+// shell keeps the set to exactly that tree: collecting all the way to the
+// pane would also sweep in the launching shell/agent, wrongly excluding any
+// *other* dev server the same agent spawns later.
 function computeOwnAncestors(procMap: Map<number, ProcInfo>, panePids: Map<number, string>): Set<number> {
   const ancestors = new Set<number>();
   let pid = process.pid;
   for (let hop = 0; hop < MAX_ANCESTRY_HOPS; hop++) {
-    if (panePids.has(pid)) break;
-    ancestors.add(pid);
-    if (pid <= 1) break;
+    if (pid <= 1 || panePids.has(pid)) break;
     const info = procMap.get(pid);
+    if (info && BOUNDARY_SHELLS.has(info.comm)) break;
+    ancestors.add(pid);
     if (!info) break;
     pid = info.ppid;
   }
   return ancestors;
 }
 
+// "own": the chain hit tmux-server's own ancestry — hard-excluded, no
+// fallback. "unknown": the chain dead-ended (reparented orphan, exited
+// parent) — eligible for the TMUX_PANE environ fallback below.
+type Attribution = { session: string } | "own" | "unknown";
+
 // Walks a port's owning pid up its parent chain looking for a tmux pane.
-// Returns the owning session name, or null if the chain hits tmux-server's own
-// ancestry, the process tree root, or a dead end first.
 function attributeToSession(
   pid: number,
   procMap: Map<number, ProcInfo>,
   panePids: Map<number, string>,
   ownAncestors: Set<number>,
-): string | null {
+): Attribution {
   let cur = pid;
   for (let hop = 0; hop < MAX_ANCESTRY_HOPS; hop++) {
-    if (ownAncestors.has(cur)) return null;
+    if (ownAncestors.has(cur)) return "own";
     const session = panePids.get(cur);
-    if (session) return session;
-    if (cur <= 1) return null;
+    if (session) return { session };
+    if (cur <= 1) return "unknown";
     const info = procMap.get(cur);
-    if (!info) return null;
+    if (!info) return "unknown";
     cur = info.ppid;
+  }
+  return "unknown";
+}
+
+// TMUX_PANE survives reparenting: when the shell/agent that spawned a process
+// exits, the process is reparented to pid 1 and the ppid walk above dead-ends,
+// but the pane id it was spawned in stays in its (immutable) /proc environ.
+// Same-user readable only — the same constraint ss's process column already
+// imposes, so this can never attribute a port ss couldn't name.
+async function readTmuxPaneFromEnviron(pid: number): Promise<string | null> {
+  try {
+    const raw = await readFile(`/proc/${pid}/environ`, "utf8");
+    for (const entry of raw.split("\0")) {
+      if (entry.startsWith("TMUX_PANE=")) return entry.slice("TMUX_PANE=".length);
+    }
+  } catch {
+    // Exited, foreign-user, or no /proc (macOS) — unattributable.
   }
   return null;
 }
 
 // Listening ports whose owning process lives inside a tmux pane's process
-// tree — everything else (system services, daemonized/detached processes,
-// tmux-server's own server and dev tooling) is excluded.
-export async function listTmuxPorts(): Promise<ListeningPort[]> {
-  const [ports, panePids, procMap] = await Promise.all([
+// tree, by ppid walk or — for orphaned trees — by TMUX_PANE environ.
+// Everything else (system services, tmux-server's own server and dev
+// tooling, processes from panes since closed) is excluded.
+async function scanTmuxPorts(): Promise<ListeningPort[]> {
+  const [ports, panes, procMap] = await Promise.all([
     listPorts(),
     listAllPanePids(),
     buildProcessMap(),
   ]);
-  const ownAncestors = computeOwnAncestors(procMap, panePids);
+  const ownAncestors = computeOwnAncestors(procMap, panes.byPid);
 
-  const attributed: ListeningPort[] = [];
-  for (const port of ports) {
-    if (port.pid === undefined) continue;
-    const session = attributeToSession(port.pid, procMap, panePids, ownAncestors);
-    if (session) attributed.push({ ...port, session });
+  const attributed = await Promise.all(
+    ports.map(async (port): Promise<ListeningPort | null> => {
+      if (port.pid === undefined) return null;
+      const result = attributeToSession(port.pid, procMap, panes.byPid, ownAncestors);
+      if (result === "own") return null;
+      if (result !== "unknown") return { ...port, session: result.session };
+      const paneId = await readTmuxPaneFromEnviron(port.pid);
+      const session = paneId ? panes.byPaneId.get(paneId) : undefined;
+      return session ? { ...port, session } : null;
+    }),
+  );
+  return attributed.filter((p): p is ListeningPort => p !== null);
+}
+
+const SCAN_CACHE_TTL_MS = 2_000;
+let scanCache: { expiresAt: number; ports: ListeningPort[] } | null = null;
+let scanPromise: Promise<ListeningPort[]> | null = null;
+
+// Cached briefly so the panel's 5s poll (one per connected client) and the
+// tunnel gate — which can open many channels back to back on a single page
+// load — share one tmux exec + /proc sweep + ss run.
+export function listTmuxPorts(): Promise<ListeningPort[]> {
+  if (scanCache && scanCache.expiresAt > Date.now()) {
+    return Promise.resolve(scanCache.ports);
   }
-  return attributed;
+  if (scanPromise) return scanPromise;
+
+  scanPromise = scanTmuxPorts()
+    .then((ports) => {
+      scanCache = { expiresAt: Date.now() + SCAN_CACHE_TTL_MS, ports };
+      return ports;
+    })
+    .finally(() => {
+      scanPromise = null;
+    });
+  return scanPromise;
 }
 
 // Looks up a single port's tmux attribution on demand (kill confirmation and
 // the 5s SIGKILL-escalation recheck both want a fresh, uncached read, unlike
 // getTunnelablePorts below).
 export async function findTmuxPort(port: number): Promise<ListeningPort | null> {
-  const ports = await listTmuxPorts();
+  const ports = await scanTmuxPorts();
   return ports.find((p) => p.port === port) ?? null;
 }
 
-const TUNNEL_CACHE_TTL_MS = 3_000;
-let tunnelCache: { expiresAt: number; ports: Set<number> } | null = null;
-let tunnelCachePromise: Promise<Set<number>> | null = null;
-
-// The set of ports currently tunnelable, cached briefly so a single page
-// load — which can open many tunnel channels back to back — doesn't trigger
-// a fresh tmux exec + /proc sweep + ss run per channel.
+// The set of ports currently tunnelable — a view over the shared cached scan.
 export function getTunnelablePorts(): Promise<Set<number>> {
-  if (tunnelCache && tunnelCache.expiresAt > Date.now()) {
-    return Promise.resolve(tunnelCache.ports);
-  }
-  if (tunnelCachePromise) return tunnelCachePromise;
-
-  tunnelCachePromise = listTmuxPorts()
-    .then((ports) => {
-      const set = new Set(ports.map((p) => p.port));
-      tunnelCache = { expiresAt: Date.now() + TUNNEL_CACHE_TTL_MS, ports: set };
-      return set;
-    })
-    .finally(() => {
-      tunnelCachePromise = null;
-    });
-  return tunnelCachePromise;
+  return listTmuxPorts().then((ports) => new Set(ports.map((p) => p.port)));
 }

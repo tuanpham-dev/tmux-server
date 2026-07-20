@@ -717,22 +717,35 @@ async function listSessionPanes(session: string): Promise<SessionPane[]> {
     });
 }
 
+export interface PaneMaps {
+  // pane_pid → owning session, for walking a port owner's ppid chain.
+  byPid: Map<number, string>;
+  // pane_id ("%21") → owning session, for the TMUX_PANE environ fallback
+  // (see ports.ts) — pane ids are what tmux puts in a pane's environment.
+  byPaneId: Map<string, string>;
+}
+
 // Every pane across every session on the host, for attributing listening
 // ports to the tmux session that owns them (see ports.ts). Synthetic
 // window-tab sessions are grouped with a real session and share its
-// windows/panes, so they're filtered out to avoid a duplicate/odd session
-// label on the attributed port.
-export async function listAllPanePids(): Promise<Map<number, string>> {
-  const out = await tmux(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"]).catch(
-    emptyIfNoServer,
-  );
-  const map = new Map<number, string>();
+// windows/panes — list-panes emits a shared pane once per linked session,
+// so skipping the synthetic line still leaves the real session's entry.
+export async function listAllPanePids(): Promise<PaneMaps> {
+  const out = await tmux([
+    "list-panes",
+    "-a",
+    "-F",
+    "#{session_name}\t#{pane_id}\t#{pane_pid}",
+  ]).catch(emptyIfNoServer);
+  const byPid = new Map<number, string>();
+  const byPaneId = new Map<string, string>();
   for (const line of out.split("\n").filter(Boolean)) {
-    const [sessionName, pid] = line.split("\t");
+    const [sessionName, paneId, pid] = line.split("\t");
     if (sessionName.startsWith(WINDOW_TAB_PREFIX)) continue;
-    map.set(Number(pid), sessionName);
+    byPid.set(Number(pid), sessionName);
+    byPaneId.set(paneId, sessionName);
   }
-  return map;
+  return { byPid, byPaneId };
 }
 
 export interface ProcInfo {
