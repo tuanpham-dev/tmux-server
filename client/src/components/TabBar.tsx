@@ -63,6 +63,10 @@ interface Props {
   // doesn't also activate the tab — same justDraggedRef pattern this file
   // already uses for its own (still-local) chip drag below.
   tabJustDraggedRef: React.MutableRefObject<boolean>;
+  // Chrome-style "+" rendered right after the last tab, inside the scrolling
+  // strip — creates a new tmux window in this bar's last-active session and
+  // opens it as a tab. Null hides the button (e.g. no sessions exist yet).
+  onNewWindow: (() => void) | null;
 }
 
 // Long-press delay (touch/pen) before a hold starts a chip drag instead of
@@ -100,6 +104,7 @@ export default function TabBar({
   dropIndicator,
   onTabPointerDown,
   tabJustDraggedRef,
+  onNewWindow,
 }: Props) {
   // Re-renders the strip when the active icon theme changes — getFileIconResult
   // reads module-level state directly, same subscribe-to-force-render shape
@@ -475,6 +480,11 @@ export default function TabBar({
         onTouchMove={handleBarTouchMove}
       >
         {nodes}
+        {onNewWindow && (
+          <button className="tab-new-btn" title="New Window" onClick={onNewWindow}>
+            <Icon name="add" />
+          </button>
+        )}
       </div>
       {extras && <div className="tab-bar-extras">{extras}</div>}
       <div className="tab-bar-actions" ref={actionsRef} />

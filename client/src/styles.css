@@ -1092,6 +1092,34 @@ body.resizing-row {
   color: var(--fg-bright);
 }
 
+/* Chrome-style "+" right after the last tab, inside the scrolling strip
+   (not the fixed .tab-bar-actions area) so it scrolls with the tabs. */
+.tab-new-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  align-self: center;
+  margin: 0 6px;
+  background: none;
+  border: none;
+  color: var(--fg-inactive);
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tab-new-btn .codicon {
+  font-size: 15px;
+}
+
+.tab-new-btn:hover {
+  background: var(--list-hover-bg);
+  color: var(--fg-bright);
+}
+
 .tab {
   display: flex;
   align-items: center;

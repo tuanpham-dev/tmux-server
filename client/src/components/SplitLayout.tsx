@@ -49,6 +49,11 @@ interface SharedProps {
   // clicked, but which ones are open as tabs is scoped per pane.
   windowMenuItems: (editorGroupId: string, sessionName: string) => MenuItem[];
   onReorderGroup: (editorGroupId: string, groupKey: string, toIndex: number) => void;
+  // Chrome-style "+" in the tab strip — takes the editor group id, like
+  // groupMenuItems/windowMenuItems above, so each pane's button creates a
+  // window in that pane's own last-active session. Null hides the button
+  // (App.tsx passes null when no tmux sessions exist).
+  onNewWindow: ((editorGroupId: string) => void) | null;
   onFocusGroup: (groupId: string) => void;
   actionsRefFor: (groupId: string) => (el: HTMLDivElement | null) => void;
   // Extension window-action buttons for this group's own active tab (e.g. a
@@ -125,6 +130,7 @@ function Leaf({
   groupMenuItems,
   windowMenuItems,
   onReorderGroup,
+  onNewWindow,
   onFocusGroup,
   actionsRefFor,
   tabExtrasFor,
@@ -174,6 +180,7 @@ function Leaf({
         groupMenuItems={(sessionName) => groupMenuItems(groupId, sessionName)}
         windowMenuItems={(sessionName) => windowMenuItems(groupId, sessionName)}
         onReorderGroup={(sessionKey, toIndex) => onReorderGroup(groupId, sessionKey, toIndex)}
+        onNewWindow={onNewWindow ? () => onNewWindow(groupId) : null}
         dragTabId={dragTabId}
         dropIndicator={dropIndicator}
         onTabPointerDown={(e, tabId) => onTabPointerDown(e, tabId, groupId)}

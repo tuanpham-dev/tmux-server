@@ -785,6 +785,24 @@ export default function App() {
     [sessions, tabs, groupActive, openWindowTab, createWindow],
   );
 
+  // Chrome-style "+" in a tab bar (TabBar.tsx's tab-new-btn) — creates a new
+  // window in the clicked pane's own last-active session, falling back to
+  // the app-global last-active session (activeSession, tracked via
+  // lastRealTabIdRef) when the pane's active tab isn't a real session tab
+  // (e.g. a settings/viewer tab), same resolution the FILES sidebar uses.
+  const newWindowInGroup = useCallback(
+    (editorGroupId: string) => {
+      const activeGroupTabId = groupActive[editorGroupId];
+      const activeGroupTab = tabs.find((t) => t.id === activeGroupTabId);
+      const sessionName =
+        (activeGroupTab && isRealTab(activeGroupTab) ? activeGroupTab.sessionName : undefined) ??
+        activeSession?.name ??
+        sessions[0]?.name;
+      if (sessionName) createWindow(sessionName);
+    },
+    [groupActive, tabs, activeSession, sessions, createWindow],
+  );
+
   // Session/window commands need an active real tab (a session/window, not a
   // settings/viewer tab) to act on; window.* additionally needs the derived
   // active window (see useTabs' activeWindow — falls back to the session's
@@ -1267,6 +1285,7 @@ export default function App() {
           groupMenuItems={groupMenuItems}
           windowMenuItems={chipWindowMenuItems}
           onReorderGroup={moveGroup}
+          onNewWindow={sessions.length > 0 ? newWindowInGroup : null}
           onFocusGroup={focusGroup}
           onResizeBranch={resizeBranch}
           actionsRefFor={getGroupActionsRef}
