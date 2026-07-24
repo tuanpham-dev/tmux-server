@@ -237,10 +237,24 @@ export default function App() {
   useEffect(() => {
     const MIN_DX_PX = 60;
     const MIN_VELOCITY_PX_PER_MS = 1;
+    // Walk up from the touched node: if any ancestor can scroll horizontally
+    // (tab bars, the sidebar tab strip, a terminal's hscroll), the flick
+    // belongs to that element, not to the sidebar toggle.
+    const startsInHorizontalScroller = (target: EventTarget | null): boolean => {
+      let el = target instanceof Element ? target : null;
+      while (el && el !== document.body) {
+        if (el.scrollWidth > el.clientWidth) {
+          const overflowX = getComputedStyle(el).overflowX;
+          if (overflowX === "auto" || overflowX === "scroll") return true;
+        }
+        el = el.parentElement;
+      }
+      return false;
+    };
     let start: { x: number; y: number; t: number } | null = null;
     const onTouchStart = (e: TouchEvent) => {
       start =
-        e.touches.length === 1
+        e.touches.length === 1 && !startsInHorizontalScroller(e.target)
           ? { x: e.touches[0].clientX, y: e.touches[0].clientY, t: performance.now() }
           : null;
     };
