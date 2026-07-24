@@ -466,20 +466,18 @@ export default function TerminalView({
       // (Enter submits it, Ctrl+C discards it, a program switch replaces it).
       let echoSuspended = false;
 
-      // Buffered-until-Enter local echo (plans/codeman-mobile-features.md),
-      // with a word-boundary flush on top: a completed word (space-
-      // terminated) is sent to the PTY for real the moment it's typed,
-      // rather than waiting for Enter, so Claude's own input box gets to
-      // redraw/resize roughly once per word instead of staying static —
-      // still far short of the per-keystroke round trip buffering was built
-      // to avoid. Enter sends only whatever's left unsent (echo.unsentText)
-      // through the same Ink-safe delayed-\r path touch keys use (T1) —
-      // never the full pendingText, which would resend an already-flushed
-      // word. Backspace edits the pending text locally until it crosses
-      // back into an already-flushed word, then cascades a real \x7f (see
-      // LocalEcho.removeChar's "flushed" case); any other control byte
-      // (Ctrl+C, Esc, Tab, arrows) flushes the unsent remainder immediately
-      // alongside it — only Enter has the Ink text+\r race this delays for.
+      // Buffered-until-Enter local echo (plans/codeman-mobile-features.md):
+      // nothing reaches the PTY while typing — Enter sends the whole
+      // pending buffer through the same Ink-safe delayed-\r path touch
+      // keys use (T1). Backspace edits the pending text locally, only
+      // producing a real \x7f once the buffer is empty (erasing text the
+      // buffer never covered); any other control byte (Ctrl+C, Esc, Tab,
+      // arrows) flushes the pending text immediately alongside it — only
+      // Enter has the Ink text+\r race this delays for. An earlier
+      // iteration also flushed completed words to the PTY as they were
+      // typed — dropped (see LocalEcho's `composing` comment): its
+      // backspace reconciliation kept corrupting the input on real
+      // mobile IMEs.
       const routeLocalEcho = (data: string, echo: LocalEcho) => {
         if (echoSuspended) {
           if (data === "\r" || data === "\x03") {
@@ -493,9 +491,9 @@ export default function TerminalView({
           return;
         }
         if (data === "\r") {
-          const remainder = echo.unsentText;
+          const pending = echo.pendingText;
           echo.clear();
-          sendWithInkSafeEnters(remainder + "\r", sendInput);
+          sendWithInkSafeEnters(pending + "\r", sendInput);
           return;
         }
         if (data === "\x7f") {
@@ -508,17 +506,16 @@ export default function TerminalView({
             sendInput(data);
             return;
           }
-          if (echo.removeChar() === "flushed") sendInput(data);
+          echo.removeChar();
           return;
         }
         if (isPrintableBurst(data)) {
-          const completedWord = echo.appendText(data);
-          if (completedWord) sendInput(completedWord);
+          echo.appendText(data);
           return;
         }
-        const remainder = echo.unsentText;
+        const pending = echo.pendingText;
         echo.clear();
-        sendInput(remainder + data);
+        sendInput(pending + data);
         if (CURSOR_MOVEMENT_KEY.test(data)) echoSuspended = true;
       };
 
@@ -527,8 +524,8 @@ export default function TerminalView({
 
       // The local-echo fork every raw-byte input path shares. Touch keys
       // route through here too (not sendInput directly): a bar arrow that
-      // bypassed the router left the buffer appending — overlay and word
-      // flushes alike — while the real cursor sat mid-line.
+      // bypassed the router left the buffer's overlay appending while the
+      // real cursor sat mid-line.
       const sendKeyOrEcho = (data: string) => {
         if (localEchoActive()) routeLocalEcho(data, localEcho!);
         else sendInput(data);
@@ -563,8 +560,7 @@ export default function TerminalView({
           sendInput(text);
           return;
         }
-        const completedWord = localEcho!.appendText(text);
-        if (completedWord) sendInput(completedWord);
+        localEcho!.appendText(text);
       };
       sendTextRef.current = sendTextOrEcho;
 
@@ -677,18 +673,14 @@ export default function TerminalView({
       // by the same localEchoActive() check every other input path already
       // uses, so a composition on a non-matching pane (or desktop) never
       // shows a preview local echo itself wouldn't otherwise be active for.
-      // Both calls can hand back bytes that must reach the PTY now: the
-      // composition's newly completed words (Samsung's keyboard composes
-      // whole messages across spaces and only commits on Enter, so words
-      // must flush from the composition itself — see LocalEcho's
-      // flushComposition), or backspaces reconciling a revised/cancelled
-      // composition whose leading words were already flushed.
+      // Display-only: the committed text arrives through onData like any
+      // other typed burst.
       engine.onComposingChange((text) => {
         // No composition preview while suspended either — its commit will
         // arrive through onData and pass straight through to the PTY.
         if (!localEchoActive() || echoSuspended) return;
-        const out = text === null ? localEcho?.clearComposing() : localEcho?.setComposing(text);
-        if (out) sendInput(out);
+        if (text === null) localEcho?.clearComposing();
+        else localEcho?.setComposing(text);
       });
 
       const refit = () => {
