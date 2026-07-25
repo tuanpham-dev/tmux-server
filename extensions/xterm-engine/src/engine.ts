@@ -217,6 +217,56 @@ export async function createXtermEngine(
   term.textarea?.addEventListener("compositionupdate", onCompositionUpdate);
   term.textarea?.addEventListener("compositionend", onCompositionEndForPreview);
 
+  // Android IME bridge (mirrors the ghostty engine's, which was debugged
+  // live on-device). xterm's CompositionHelper reads each commit out of
+  // textarea.value in a 0ms timer and never clears the value afterwards.
+  // Left in place, that stale text corrupts the NEXT word twice over:
+  // (a) Gboard reads it as surrounding text and silently recomposes over
+  // the previous word (type "abc def", backspace to "abc", type "xyz" —
+  // the composition becomes "abcxyz", re-committing "abc"), and (b) the
+  // keydown-229 diff in xterm's _handleAnyTextareaChanges computes
+  // newValue.replace(oldValue, "") — garbage on every deletion (no match
+  // → diff = the whole new value), which lands in _dataAlreadySent and
+  // offsets the next commit's substring, eating its leading chars
+  // (observed live 2026-07-25: that repro committed "yz", losing the x).
+  // Clearing the value AFTER xterm's own reader timer (ours is scheduled
+  // behind it in FIFO order) fixes both while leaving xterm's commit
+  // delivery untouched.
+  const onCompositionEndCleanup = () => {
+    setTimeout(() => {
+      if (term.textarea) term.textarea.value = "";
+    }, 0);
+  };
+  term.textarea?.addEventListener("compositionend", onCompositionEndCleanup);
+
+  // With the textarea kept empty, xterm's value-diff can no longer see
+  // Android backspaces (keydown is 229; the delete arrives only as a
+  // beforeinput on an already-empty value), so forward deletes directly.
+  // preventDefault keeps the value untouched, which also silences the
+  // diff path while text IS present — this bridge owns deletes entirely,
+  // never doubling them. Desktop backspace is a real keydown 8, handled
+  // and preventDefault()ed by xterm before any beforeinput can fire.
+  // Insertions are deliberately NOT bridged here (unlike ghostty): with a
+  // clean empty value, xterm's own diff/composition machinery delivers
+  // them correctly, and bridging both paths would double-send.
+  const onBeforeInput = (e: InputEvent) => {
+    if (e.isComposing) return;
+    let out: string;
+    switch (e.inputType) {
+      case "deleteContentBackward":
+        out = "\x7f";
+        break;
+      case "deleteContentForward":
+        out = "\x1b[3~";
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    onData(out);
+  };
+  term.textarea?.addEventListener("beforeinput", onBeforeInput as EventListener);
+
   const cellFromPointOnEngine = (clientX: number, clientY: number): CellPosition => {
     const rect = screen.getBoundingClientRect();
     const width = rect.width / term.cols;
@@ -421,6 +471,8 @@ export async function createXtermEngine(
       screen.removeEventListener("mousemove", onTooltipMouseMove);
       term.textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
       term.textarea?.removeEventListener("compositionend", onCompositionEndForPreview);
+      term.textarea?.removeEventListener("compositionend", onCompositionEndCleanup);
+      term.textarea?.removeEventListener("beforeinput", onBeforeInput as EventListener);
       dataSub.dispose();
       renderSub.dispose();
       renderListeners.clear();
