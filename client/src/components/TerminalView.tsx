@@ -11,9 +11,10 @@ import {
 import { isSyntheticSelectStart, type TerminalEngineHandle, type TerminalTheme } from "../engines/types";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
 import { resolveGitRootDir } from "../hooks/useGitRootDir";
-import { LocalEcho, wrapModeForCommand } from "../localEcho";
+import { LocalEcho, normalizeSpaces, wrapModeForCommand } from "../localEcho";
+import { inputDebug } from "../inputDebug";
 import type { AppSettings } from "../settings";
-import { sendWithInkSafeEnters, whenMatches } from "../lib/terminalInput";
+import { whenMatches } from "../lib/terminalInput";
 import { rangeAt } from "../touchSelect";
 import SearchBar from "./SearchBar";
 import TouchSelection from "./TouchSelection";
@@ -466,23 +467,31 @@ export default function TerminalView({
       // (Enter submits it, Ctrl+C discards it, a program switch replaces it).
       let echoSuspended = false;
 
-      // Buffered-until-Enter local echo (plans/codeman-mobile-features.md):
-      // nothing reaches the PTY while typing — Enter sends the whole
-      // pending buffer through the same Ink-safe delayed-\r path touch
-      // keys use (T1). Backspace edits the pending text locally, only
-      // producing a real \x7f once the buffer is empty (erasing text the
-      // buffer never covered); any other control byte (Ctrl+C, Esc, Tab,
-      // arrows) flushes the pending text immediately alongside it — only
-      // Enter has the Ink text+\r race this delays for. An earlier
-      // iteration also flushed completed words to the PTY as they were
-      // typed — dropped (see LocalEcho's `composing` comment): its
-      // backspace reconciliation kept corrupting the input on real
-      // mobile IMEs.
+      // Type-ahead local echo (plans/codeman-mobile-features.md, reworked
+      // along VS Code's terminal type-ahead — see localEcho.ts's header):
+      // every byte is forwarded to the PTY immediately, and LocalEcho only
+      // mirrors what was sent so the overlay can cover the round trip.
+      // Enter is the one delayed byte: a \r landing within ~80ms of typed
+      // text hits Ink's text+Enter same-instant mishandling (T1), so it
+      // waits out the remainder of that window — text itself was already
+      // sent, so unlike the old buffered model there's nothing else to
+      // flush. Backspace forwards the \x7f AND trims the overlay; when
+      // the overlay has nothing left to trim it's eating real pre-capture
+      // text, so the capture drops and the next keystroke re-reads the
+      // cursor. Cursor-movement keys suspend the overlay (its append-at-
+      // end model is wrong mid-line) until a fresh line exists — but
+      // everything still sends immediately, suspension is display-only.
+      let lastPrintableSentAt = 0;
+      const sendPrintable = (text: string) => {
+        sendInput(text);
+        lastPrintableSentAt = performance.now();
+      };
       const routeLocalEcho = (data: string, echo: LocalEcho) => {
+        inputDebug("data", data);
         if (echoSuspended) {
           if (data === "\r" || data === "\x03") {
             echoSuspended = false;
-            // Nothing is buffered while suspended, but the captured start
+            // Nothing is tracked while suspended, but the captured start
             // position (LocalEcho.startCol) survives emptying and would
             // otherwise carry a stale column onto the fresh line.
             echo.clear();
@@ -491,31 +500,33 @@ export default function TerminalView({
           return;
         }
         if (data === "\r") {
-          const pending = echo.pendingText;
           echo.clear();
-          sendWithInkSafeEnters(pending + "\r", sendInput);
+          const sinceText = performance.now() - lastPrintableSentAt;
+          if (sinceText >= 80) sendInput("\r");
+          else setTimeout(() => sendInput("\r"), 80 - sinceText);
           return;
         }
         if (data === "\x7f") {
-          if (!echo.hasPending) {
-            // Erasing real text the buffer never covered: the cursor moves
-            // left of the captured start (LocalEcho.startCol), which would
-            // otherwise pin the next burst's overlay to the stale cell —
-            // drop it so the next keystroke re-reads the cursor.
-            echo.clear();
-            sendInput(data);
-            return;
-          }
-          echo.removeChar();
+          if (!echo.removeChar()) echo.clear();
+          sendInput(data);
           return;
         }
         if (isPrintableBurst(data)) {
-          echo.appendText(data);
+          // A burst arriving while a composition preview is live is that
+          // composition's commit — strip the prefix that re-commits the
+          // already-sent word tail (Gboard recomposition, see
+          // LocalEcho.compositionOverlap) before sending.
+          const text = echo.consumeCommitOverlap(normalizeSpaces(data));
+          if (text !== normalizeSpaces(data)) inputDebug("strip", `${normalizeSpaces(data)} -> ${text}`);
+          if (text) {
+            echo.appendText(text);
+            sendPrintable(text);
+            inputDebug("send", text);
+          }
           return;
         }
-        const pending = echo.pendingText;
         echo.clear();
-        sendInput(pending + data);
+        sendInput(data);
         if (CURSOR_MOVEMENT_KEY.test(data)) echoSuspended = true;
       };
 
@@ -560,7 +571,9 @@ export default function TerminalView({
           sendInput(text);
           return;
         }
-        localEcho!.appendText(text);
+        const normalized = normalizeSpaces(text);
+        localEcho!.appendText(normalized);
+        sendPrintable(normalized);
       };
       sendTextRef.current = sendTextOrEcho;
 
@@ -662,6 +675,12 @@ export default function TerminalView({
       // decides per-call whether to actually route through it, so gating
       // (mobile pointer, currentCommand) can change live without a remount.
       localEcho = new LocalEcho(terminalBodyRef.current!, engine);
+      // Deletion covers (see LocalEcho.maxCells) must blank stale cells
+      // with the terminal theme's own background — the UI --bg fallback
+      // can differ from the pane background under extension themes.
+      if (theme.background) {
+        terminalBodyRef.current!.style.setProperty("--local-echo-cover-bg", theme.background);
+      }
       // The "command" handler above keeps this current from here on, but a
       // command message can land before the engine finished loading.
       localEcho.wrapMode = wrapModeForCommand(liveCommand);
@@ -676,6 +695,7 @@ export default function TerminalView({
       // Display-only: the committed text arrives through onData like any
       // other typed burst.
       engine.onComposingChange((text) => {
+        inputDebug("comp", text ?? "<end>");
         // No composition preview while suspended either — its commit will
         // arrive through onData and pass straight through to the PTY.
         if (!localEchoActive() || echoSuspended) return;
