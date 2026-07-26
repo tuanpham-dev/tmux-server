@@ -1,7 +1,9 @@
-// ports: the PORTS explorer section, extracted from core (formerly
-// client/src/components/PortsPanel.tsx). Registers as an "explorer"-located
-// sidebar panel so it renders as an accordion section alongside
-// SESSIONS/FILES, exactly where the built-in panel lived. Host hooks
+// ports: the PORTS accordion section, extracted from core (formerly
+// client/src/components/PortsPanel.tsx). Registers as a "run"-located
+// sidebar panel so it renders as an accordion section in the Run tab,
+// alongside TASKS (it lived in the Explorer accordion before that tab
+// existed; the panel id is unchanged, so stored order/collapse/size for it
+// carries over). Host hooks
 // (serverFetch for this extension's own /list & /kill routes) arrive via
 // module-level bridge variables set once in activate() — same pattern as
 // the search and git-scm extensions.
@@ -429,8 +431,11 @@ interface ExtensionContext {
     id: string;
     title: string;
     icon?: string;
-    location?: "tab" | "explorer";
+    location?: "tab" | "explorer" | "run";
     defaultCollapsed?: boolean;
+    // Default placement weight among this location's sections — lower
+    // renders higher; see core RegisteredSidebarPanel.order.
+    order?: number;
     focusBinding?: string;
     component: (props: PanelProps) => ReturnType<typeof PortsPanel>;
   }): void;
@@ -445,10 +450,14 @@ export function activate(ctx: ExtensionContext): void {
     id: "ports",
     title: "Ports",
     icon: "plug",
-    location: "explorer",
-    // Matches the built-in panel's pre-extraction default (see the old
-    // DEFAULT_PANEL_STATE in Sidebar.tsx: ports started collapsed).
-    defaultCollapsed: true,
+    location: "run",
+    order: 20,
+    // Expanded by default now that it shares the Run tab with TASKS instead
+    // of competing with SESSIONS/FILES for Explorer height (where it started
+    // collapsed, matching the built-in panel's pre-extraction default).
+    // Users with stored accordion state keep whatever they had — the id is
+    // unchanged, and panelState is shared across both accordions.
+    defaultCollapsed: false,
     component: PortsPanel,
   });
 }

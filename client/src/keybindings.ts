@@ -35,6 +35,9 @@ export interface Command {
 export const COMMANDS: Command[] = [
   { id: "sidebar.toggle", label: "Toggle Sidebar", defaultBindings: [{ key: "ctrl+shift+KeyB" }], scope: "global" },
   { id: "sidebar.focusExplorer", label: "Sidebar: Focus Explorer", defaultBindings: [{ key: "ctrl+shift+KeyE" }], scope: "global" },
+  // Unbound by default: the Run tab is optional (it only exists while an
+  // extension contributes a section), so it doesn't claim a chord.
+  { id: "sidebar.focusRun", label: "Sidebar: Focus Run", defaultBindings: [], scope: "global" },
   { id: "sidebar.focusExtensions", label: "Sidebar: Focus Extensions", defaultBindings: [{ key: "ctrl+shift+KeyX" }], scope: "global" },
   { id: "quickSwitcher.toggle", label: "Toggle Quick Switcher", defaultBindings: [{ key: "ctrl+KeyP" }], scope: "global" },
   { id: "commandPalette.toggle", label: "Show Command Palette", defaultBindings: [{ key: "ctrl+shift+KeyP" }], scope: "global" },

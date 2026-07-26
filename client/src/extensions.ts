@@ -91,10 +91,12 @@ export interface SidebarPanelHostProps {
 
 // "tab": the panel is its own sidebar tab (SCM, Search). "explorer": the
 // panel is an accordion section inside the Explorer tab, alongside the
-// built-in SESSIONS/FILES sections (the extracted PORTS panel) — it takes
-// part in the accordion's ordering/collapse/resize persistence under its
-// namespaced id.
-export type SidebarPanelLocation = "tab" | "explorer";
+// built-in SESSIONS/FILES sections — it takes part in the accordion's
+// ordering/collapse/resize persistence under its namespaced id. "run": the
+// same accordion treatment inside the Run tab (TASKS/PORTS), which has no
+// built-in sections and therefore only appears in the tab strip while at
+// least one non-hidden run panel is registered.
+export type SidebarPanelLocation = "tab" | "explorer" | "run";
 
 export interface RegisteredSidebarPanel {
   // Namespaced ext.<extensionId>.<id> — used as the sidebar's PanelId.
@@ -109,9 +111,22 @@ export interface RegisteredSidebarPanel {
   // depends on data fetched after activate() runs.
   badge?: number | null;
   location: SidebarPanelLocation;
-  // Whether an "explorer" accordion section starts collapsed for users with
-  // no stored state for it (the tab location ignores this).
+  // Whether an accordion section ("explorer"/"run") starts collapsed for
+  // users with no stored state for it (the tab location ignores this).
   defaultCollapsed?: boolean;
+  // Accordion sections only: hides this section (and, for the Run tab, lets
+  // the tab itself disappear once none of its sections are visible) — for a
+  // panel that has nothing to show in the current context, e.g. the tasks
+  // panel with no active cwd. Set via ctx.app.setSidebarPanelVisible, not at
+  // registration time, same as badge above.
+  hidden?: boolean;
+  // Accordion sections only: default placement weight. Consulted the one
+  // time a panel's id first joins the stored accordion order (Sidebar.tsx's
+  // reconciliation) — an ordered panel is inserted before same-location
+  // panels with a greater (or no) declared order, instead of landing
+  // wherever async extension activation happened to append it. Never moves
+  // an id the user already has stored, so drags always win.
+  order?: number;
   component: ReactNS.ComponentType<SidebarPanelHostProps>;
 }
 
@@ -166,19 +181,23 @@ export interface ExtensionContext {
     // "extensions" when omitted.
     icon?: string;
     // Where the panel renders — its own sidebar tab (default) or an
-    // accordion section inside the Explorer tab. See SidebarPanelLocation.
+    // accordion section inside the Explorer or Run tab. See
+    // SidebarPanelLocation.
     location?: SidebarPanelLocation;
-    // Explorer-location only: collapsed by default for users with no stored
-    // accordion state for this panel.
+    // Accordion locations only: collapsed by default for users with no
+    // stored accordion state for this panel.
     defaultCollapsed?: boolean;
+    // Accordion locations only: default placement weight — see
+    // RegisteredSidebarPanel.order.
+    order?: number;
     // Default keybinding (keybindings.ts combo syntax, e.g. "ctrl+shift+KeyG")
     // for the auto-registered "Sidebar: Focus <title>" command that reveals
     // the sidebar (if hidden) and switches to this tab / expands this
-    // section — see focusSidebarTab/focusExplorerPanel. For "tab" panels,
+    // section — see focusSidebarTab/focusAccordionPanel. For "tab" panels,
     // omitting it omits the command entirely (most panels don't need a
-    // dedicated shortcut cluttering the palette); "explorer" panels always
-    // get the command (unbound when omitted), matching the built-in
-    // sections' own always-present focus commands.
+    // dedicated shortcut cluttering the palette); accordion panels
+    // ("explorer"/"run") always get the command (unbound when omitted),
+    // matching the built-in sections' own always-present focus commands.
     focusBinding?: string;
     component: ReactNS.ComponentType<SidebarPanelHostProps>;
   }): void;
@@ -269,6 +288,12 @@ export interface ExtensionContext {
     // unnamespaced id passed to registerSidebarPanel). No-ops if that
     // panel was never registered.
     setSidebarBadge(panelId: string, badge: number | null): void;
+    // Shows/hides one of this extension's own accordion sections (same
+    // unnamespaced panelId as setSidebarBadge) — for a panel with nothing to
+    // show in the current context. A hidden section isn't rendered in its
+    // accordion, and the Run tab drops out of the tab strip once none of its
+    // sections are visible. No-ops if that panel was never registered.
+    setSidebarPanelVisible(panelId: string, visible: boolean): void;
     // One-shot: returns (and clears) a pending "files to include" glob
     // pushed by the FILES-tree "Find in Folder…" menu item, or null if
     // none is pending. Only the search extension's activate() is expected
@@ -774,9 +799,10 @@ export function setSessionsFocusBridge(bridge: SessionsFocusBridge | null): void
 }
 
 // Same literal-id-not-import approach as SEARCH_PANEL_ID above — Sidebar.tsx
-// already imports from this module, so importing its EXPLORER_TAB_ID export
-// back would be circular.
+// already imports from this module, so importing its EXPLORER_TAB_ID /
+// RUN_TAB_ID exports back would be circular.
 const EXPLORER_TAB_ID = "explorer";
+const RUN_TAB_ID = "run-view";
 
 // Drives the "Sidebar: Focus Sessions" command: reveal the sidebar and
 // switch to the Explorer tab if needed (reusing focusSidebarTab's own
@@ -796,8 +822,11 @@ export function focusSessionsPanel(): void {
 
 interface ExplorerPanelFocusBridge {
   // Expands the given accordion section if collapsed, then moves keyboard
-  // focus into its content — the generic counterpart of the SESSIONS
-  // bridge above, for extension panels registered with location "explorer".
+  // focus into its content — the generic counterpart of the SESSIONS bridge
+  // above, for extension panels registered with an accordion location
+  // ("explorer"/"run"). One bridge serves both accordions: panel ids are
+  // namespaced and unique, and Sidebar.tsx's collapse state/panel refs are
+  // shared across them.
   focus(panelId: string): void;
 }
 
@@ -809,18 +838,23 @@ export function setExplorerPanelFocusBridge(bridge: ExplorerPanelFocusBridge | n
   explorerPanelFocusBridge = bridge;
 }
 
-// Drives every explorer-located extension panel's "Sidebar: Focus <title>"
-// command — see focusSessionsPanel's doc comment for the reveal/switch
-// logic this mirrors.
-export function focusExplorerPanel(panelId: string): void {
+// Drives every accordion-located extension panel's "Sidebar: Focus <title>"
+// command: switch to the accordion's own tab (Explorer or Run), then hand
+// off to the section — see focusSessionsPanel's doc comment for the
+// reveal/switch logic this mirrors.
+export function focusAccordionPanel(tabId: string, panelId: string): void {
   if (!sidebarVisibility) return;
   if (!sidebarVisibility.isVisible()) {
     sidebarVisibility.setVisible(true);
-    selectSidebarTab(EXPLORER_TAB_ID);
-  } else if (sidebarTabsBridge?.getActive() !== EXPLORER_TAB_ID) {
-    selectSidebarTab(EXPLORER_TAB_ID);
+    selectSidebarTab(tabId);
+  } else if (sidebarTabsBridge?.getActive() !== tabId) {
+    selectSidebarTab(tabId);
   }
   explorerPanelFocusBridge?.focus(panelId);
+}
+
+export function focusExplorerPanel(panelId: string): void {
+  focusAccordionPanel(EXPLORER_TAB_ID, panelId);
 }
 
 // "Find in Folder…" (FILES-tree folder context menu, useFileActions.ts) —
@@ -954,19 +988,23 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         icon: panel.icon,
         location,
         defaultCollapsed: panel.defaultCollapsed,
+        order: panel.order,
         component: panel.component,
       });
       // Tab panels: opt-in only — most don't warrant a dedicated shortcut
-      // cluttering the palette/keybinding list. Explorer sections: always
+      // cluttering the palette/keybinding list. Accordion sections: always
       // registered (unbound when no focusBinding), matching the built-in
       // SESSIONS/FILES sections' always-present focus commands.
-      if (panel.focusBinding || location === "explorer") {
+      if (panel.focusBinding || location !== "tab") {
         extensionCommands.push({
           id: `${namespacedId}.focus`,
           label: `Sidebar: Focus ${panel.title}`,
           defaultBinding: panel.focusBinding,
-          run: () =>
-            location === "explorer" ? focusExplorerPanel(namespacedId) : focusSidebarTab(namespacedId),
+          run: () => {
+            if (location === "explorer") focusExplorerPanel(namespacedId);
+            else if (location === "run") focusAccordionPanel(RUN_TAB_ID, namespacedId);
+            else focusSidebarTab(namespacedId);
+          },
         });
       }
       notify();
@@ -1077,6 +1115,13 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         const panel = extensionSidebarPanels.find((p) => p.id === namespaced);
         if (!panel) return;
         panel.badge = badge;
+        notify();
+      },
+      setSidebarPanelVisible(panelId, visible) {
+        const namespaced = `ext.${ext.id}.${panelId}`;
+        const panel = extensionSidebarPanels.find((p) => p.id === namespaced);
+        if (!panel) return;
+        panel.hidden = !visible;
         notify();
       },
       consumeFindInFolderGlob: () => consumePendingFindInFolderGlob(),

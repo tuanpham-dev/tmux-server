@@ -50,6 +50,31 @@ const PANELS_KEY = "sidebarPanels";
 // extension's namespaced panel id.
 const LEGACY_PORTS_PANEL_ID = "ports";
 const PORTS_EXT_PANEL_ID = "ext.tmux-server.ports.ports";
+const TASKS_EXT_PANEL_ID = "ext.tmux-server.tasks.tasks";
+
+// One-shot stored-state migrations that must NOT re-run (unlike the
+// idempotent legacy-ports id rewrite below): re-applying an ordering
+// migration would fight a user who deliberately dragged the sections back.
+// Kept as a separate key so the ordinary panelState save can't drop the
+// applied-set.
+const PANEL_MIGRATIONS_KEY = "sidebarPanelMigrations";
+
+function appliedPanelMigrations(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PANEL_MIGRATIONS_KEY) ?? "null");
+    return Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// loadPanelState runs as a useState initializer, which StrictMode's dev
+// double-invoke calls twice: without this memo the first call consumes the
+// migration flag and the second (whose result React keeps) sees "already
+// applied" and skips the move. True only while the current page load has
+// itself applied the migration, so re-running it stays idempotent; a real
+// reload re-evaluates the module and the persisted flag alone decides.
+let tasksOrderMigratedThisLoad = false;
 
 const DEFAULT_PANEL_STATE: PanelState = {
   order: ["sessions", "files"],
@@ -87,6 +112,29 @@ function loadPanelState(): PanelState {
     }
     delete collapsed[LEGACY_PORTS_PANEL_ID];
     delete sizes[LEGACY_PORTS_PANEL_ID];
+    // One-time reorder: builds that predate declared panel order (see
+    // RegisteredSidebarPanel.order) appended TASKS after PORTS in plain
+    // registration order. Guarded by PANEL_MIGRATIONS_KEY — rerunning would
+    // fight a user who has since dragged PORTS back above TASKS. Marked
+    // applied even when there's nothing to move: for state without both ids
+    // the ordered insertion in the reconciliation effect places TASKS
+    // correctly on its own.
+    const migrations = appliedPanelMigrations();
+    if (!migrations.includes("tasks-above-ports") || tasksOrderMigratedThisLoad) {
+      const tasksIdx = order.indexOf(TASKS_EXT_PANEL_ID);
+      const portsIdx = order.indexOf(PORTS_EXT_PANEL_ID);
+      if (portsIdx !== -1 && tasksIdx > portsIdx) {
+        order.splice(tasksIdx, 1);
+        order.splice(portsIdx, 0, TASKS_EXT_PANEL_ID);
+      }
+      if (!migrations.includes("tasks-above-ports")) {
+        localStorage.setItem(
+          PANEL_MIGRATIONS_KEY,
+          JSON.stringify([...migrations, "tasks-above-ports"]),
+        );
+      }
+      tasksOrderMigratedThisLoad = true;
+    }
     return { order: order.filter((id) => id !== LEGACY_PORTS_PANEL_ID), collapsed, sizes };
   } catch {
     return { ...DEFAULT_PANEL_STATE };
@@ -95,19 +143,25 @@ function loadPanelState(): PanelState {
 
 // The sidebar's activity-bar-style tab strip (plans/sidebar-tabs.md): a
 // fixed "explorer" tab holds the accordion below (sessions/files + any
-// extension panel registered with location "explorer", e.g. ports),
-// a fixed "extensions-view" tab holds the Extensions browser/manager, and
+// extension panel registered with location "explorer"), a fixed "run-view"
+// tab holds a second accordion of location "run" panels (ports, tasks), a
+// fixed "extensions-view" tab holds the Extensions browser/manager, and
 // every registered extension sidebar panel — e.g. git-scm's Source Control —
-// gets its own full-height tab instead of joining the accordion.
+// gets its own full-height tab instead of joining an accordion.
 export const EXPLORER_TAB_ID = "explorer";
 // Deliberately not "extensions" — that could collide with a future
 // extension-registered panel id (which are namespaced ext.<id>.<panelId>,
 // but a bare "extensions" is still worth avoiding for clarity).
 export const EXTENSIONS_TAB_ID = "extensions-view";
-// Both fixed tabs share every special-case below with EXPLORER_TAB_ID, which
-// stays exported/used directly at each site since it's also the fallback
-// "always exists" tab.
-const CORE_TAB_IDS: readonly string[] = [EXPLORER_TAB_ID, EXTENSIONS_TAB_ID];
+// Unlike Explorer, this tab has no built-in sections: it only appears in the
+// strip while some extension contributes a visible run panel (see
+// visibleTabOrder). The literal must stay in sync with extensions.ts's own
+// copy (importing it back would be circular).
+export const RUN_TAB_ID = "run-view";
+// All three fixed tabs share every special-case below with EXPLORER_TAB_ID,
+// which stays exported/used directly at each site since it's also the
+// fallback "always exists" tab.
+const CORE_TAB_IDS: readonly string[] = [EXPLORER_TAB_ID, RUN_TAB_ID, EXTENSIONS_TAB_ID];
 const TABS_KEY = "sidebarTabs";
 
 interface TabsState {
@@ -116,19 +170,24 @@ interface TabsState {
 }
 
 const DEFAULT_TABS_STATE: TabsState = {
-  order: [EXPLORER_TAB_ID, EXTENSIONS_TAB_ID],
+  order: [EXPLORER_TAB_ID, RUN_TAB_ID, EXTENSIONS_TAB_ID],
   active: EXPLORER_TAB_ID,
 };
 
-// Guarantees both core tabs are present (Explorer first) — shared by
-// loadTabsState below and the synced-order-from-server apply effect, since
-// neither localStorage nor the settings doc is guaranteed to have been
-// written by a build that already knew about both core ids.
+// Guarantees all three core tabs are present (Explorer → Run → Extensions)
+// — shared by loadTabsState below and the synced-order-from-server apply
+// effect, since neither localStorage nor the settings doc is guaranteed to
+// have been written by a build that already knew about every core id.
 function sanitizeTabsOrder(order: string[]): string[] {
   const next = [...order];
   if (!next.includes(EXPLORER_TAB_ID)) next.unshift(EXPLORER_TAB_ID);
   if (!next.includes(EXTENSIONS_TAB_ID)) {
     next.splice(next.indexOf(EXPLORER_TAB_ID) + 1, 0, EXTENSIONS_TAB_ID);
+  }
+  // Inserted after Extensions' own insert so an order stored before the Run
+  // tab existed ends up on the default Explorer → Run → Extensions layout.
+  if (!next.includes(RUN_TAB_ID)) {
+    next.splice(next.indexOf(EXPLORER_TAB_ID) + 1, 0, RUN_TAB_ID);
   }
   return next;
 }
@@ -376,21 +435,48 @@ export default function Sidebar({
   // can't race.
   const tabPanels = extensionPanels.filter((p) => p.location === "tab");
   const explorerPanels = extensionPanels.filter((p) => p.location === "explorer");
+  const runPanels = extensionPanels.filter((p) => p.location === "run");
+  // Both accordions share one panelState (order/collapse/sizes keyed by the
+  // panel's namespaced id) and one set of panel refs — each tab renders the
+  // subset of that order belonging to its own location. Lookups that don't
+  // care which accordion a section lives in (title, default collapse,
+  // content) go through this combined list.
+  const accordionPanels = [...explorerPanels, ...runPanels];
   useEffect(() => {
     setTabsState((prev) => {
       const order = [...prev.order];
       for (const panel of tabPanels) if (!order.includes(panel.id)) order.push(panel.id);
       return { ...prev, order };
     });
-    // Same never-prune reconciliation for explorer-located panels joining
-    // the accordion order — see the tab effect's comment above for why
-    // pruning here is a reload-race hazard.
+    // Same never-prune reconciliation for accordion-located panels (both
+    // tabs' sections) joining the shared order — see the tab effect's
+    // comment above for why pruning here is a reload-race hazard. A panel
+    // declaring `order` is inserted before same-location panels with a
+    // greater (or no) declared order (undeclared sorts last), so the default
+    // section ordering doesn't depend on async activation timing; ids
+    // already stored never move — user drags win.
     setPanelState((prev) => {
       const order = [...prev.order];
-      for (const panel of explorerPanels) if (!order.includes(panel.id)) order.push(panel.id);
+      const panelsById = new Map(accordionPanels.map((p) => [p.id, p]));
+      for (const panel of accordionPanels) {
+        if (order.includes(panel.id)) continue;
+        let at = order.length;
+        if (panel.order !== undefined) {
+          const idx = order.findIndex((id) => {
+            const other = panelsById.get(id);
+            return (
+              other !== undefined &&
+              other.location === panel.location &&
+              (other.order === undefined || other.order > panel.order!)
+            );
+          });
+          if (idx !== -1) at = idx;
+        }
+        order.splice(at, 0, panel.id);
+      }
       return order.length === prev.order.length ? prev : { ...prev, order };
     });
-    // tabPanels/explorerPanels are fresh arrays each render; extensionPanels
+    // tabPanels/accordionPanels are fresh arrays each render; extensionPanels
     // is the registry-tick-memoized source they derive from.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extensionPanels]);
@@ -435,11 +521,15 @@ export default function Sidebar({
   }, [tabsState]);
 
   const extPanelIds = new Set(tabPanels.map((p) => p.id));
+  // The Run tab carries no built-in sections, so an empty one would be a
+  // dead strip icon: it shows only while some extension contributes a
+  // section that isn't hidden (ctx.app.setSidebarPanelVisible).
+  const hasVisibleRunPanel = runPanels.some((p) => !p.hidden);
   // Filters out a stale tab id (its extension disabled/uninstalled, or one
   // still activating on this render) — same "don't mutate storage, just
   // don't render it" approach as the accordion's visibleOrder.
-  const visibleTabOrder = tabsState.order.filter(
-    (id) => CORE_TAB_IDS.includes(id) || extPanelIds.has(id),
+  const visibleTabOrder = tabsState.order.filter((id) =>
+    id === RUN_TAB_ID ? hasVisibleRunPanel : CORE_TAB_IDS.includes(id) || extPanelIds.has(id),
   );
   const activeTabId = visibleTabOrder.includes(tabsState.active) ? tabsState.active : EXPLORER_TAB_ID;
 
@@ -460,11 +550,17 @@ export default function Sidebar({
 
   const reorderTabs = (draggedId: string, toIndex: number) => {
     setTabsState((prev) => {
-      // Stale ids (currently unregistered) ride along, appended after the
-      // reordered visible tabs, so a reorder can never look like a prune.
-      const stale = prev.order.filter((id) => !CORE_TAB_IDS.includes(id) && !extPanelIds.has(id));
       const nextVisible = moveId(visibleTabOrder, draggedId, toIndex);
-      const nextOrder = [...nextVisible, ...stale];
+      // Ids absent from the strip right now — a stale one (its extension
+      // disabled/uninstalled) or the Run tab while it has no visible
+      // sections — ride along at their stored index, so a reorder can
+      // neither prune them nor silently relocate a Run tab that's about to
+      // come back.
+      const nextOrder = [...nextVisible];
+      for (const id of prev.order) {
+        if (nextOrder.includes(id)) continue;
+        nextOrder.splice(Math.min(prev.order.indexOf(id), nextOrder.length), 0, id);
+      }
       // Only an actual drag pushes to the synced store — not the
       // reconciliation effect below (a newly-enabled extension appending its
       // panel id shouldn't itself trigger a sync write on every load).
@@ -485,6 +581,9 @@ export default function Sidebar({
   const tabInfos: SidebarTabInfo[] = visibleTabOrder.map((id) => {
     if (id === EXPLORER_TAB_ID) {
       return { id, title: `Explorer${shortcutSuffix("sidebar.focusExplorer")}`, icon: "files" };
+    }
+    if (id === RUN_TAB_ID) {
+      return { id, title: `Run${shortcutSuffix("sidebar.focusRun")}`, icon: "run-all" };
     }
     if (id === EXTENSIONS_TAB_ID) {
       return {
@@ -507,7 +606,7 @@ export default function Sidebar({
   // extension panel's declared defaultCollapsed (the built-ins always have a
   // stored/default entry via DEFAULT_PANEL_STATE).
   const isPanelCollapsed = (id: PanelId): boolean =>
-    panelState.collapsed[id] ?? explorerPanels.find((p) => p.id === id)?.defaultCollapsed ?? false;
+    panelState.collapsed[id] ?? accordionPanels.find((p) => p.id === id)?.defaultCollapsed ?? false;
 
   const togglePanelCollapsed = (id: PanelId) => {
     const next = !isPanelCollapsed(id);
@@ -563,8 +662,9 @@ export default function Sidebar({
     return () => setSessionsFocusBridge(null);
   }, []);
 
-  // Generic bridge for explorer-located extension panels' focus commands
-  // (the extracted PORTS panel): expand the section if collapsed, then move
+  // Generic bridge for accordion-located extension panels' focus commands,
+  // in either tab (panel ids are unique, and collapse state/panel refs are
+  // shared): expand the section if collapsed, then move
   // focus onto the first focusable row inside its content. An extension
   // component can't expose an imperative focusList handle through the
   // generic render, so "first roving-tabindex stop" is the contract — the
@@ -602,7 +702,7 @@ export default function Sidebar({
   const panelTitle = (id: PanelId): string => {
     if (id === "sessions") return mode === "sessions" ? "Sessions" : "Directories";
     if (id === "files") return filesRootDir ?? "Files";
-    return explorerPanels.find((p) => p.id === id)?.title ?? id;
+    return accordionPanels.find((p) => p.id === id)?.title ?? id;
   };
 
   const panelActions = (id: PanelId) => {
@@ -636,7 +736,7 @@ export default function Sidebar({
         </button>
       );
     }
-    // Extension explorer sections put their own header buttons into the
+    // Extension accordion sections put their own header buttons into the
     // actions container via the actionsTarget portal instead.
     return null;
   };
@@ -702,7 +802,7 @@ export default function Sidebar({
         />
       );
     }
-    const extPanel = explorerPanels.find((p) => p.id === id);
+    const extPanel = accordionPanels.find((p) => p.id === id);
     if (extPanel) {
       const PanelComponent = extPanel.component;
       return (
@@ -869,14 +969,18 @@ export default function Sidebar({
     );
   };
 
-  // panelState.order may contain stale ids (a disabled extension's section,
-  // or an id from before extension panels moved into their own tab) —
-  // filtering here (rather than mutating storage) makes them inert without
-  // a prune, same rationale as visibleTabOrder.
-  const explorerPanelIds = new Set(explorerPanels.map((p) => p.id));
+  // panelState.order is shared by both accordions and may contain stale ids
+  // (a disabled extension's section, an id from before extension panels moved
+  // into their own tab, or a section belonging to the other tab) — filtering
+  // here (rather than mutating storage) makes them inert without a prune,
+  // same rationale as visibleTabOrder. A `hidden` section is filtered the
+  // same way: the extension asked for it to be absent, not forgotten.
+  const explorerPanelIds = new Set(explorerPanels.filter((p) => !p.hidden).map((p) => p.id));
   const visibleOrder = panelState.order.filter(
     (id) => PANEL_IDS.includes(id) || explorerPanelIds.has(id),
   );
+  const runPanelIds = new Set(runPanels.filter((p) => !p.hidden).map((p) => p.id));
+  const visibleRunOrder = panelState.order.filter((id) => runPanelIds.has(id));
 
   const renderExtensionTab = (panel: RegisteredSidebarPanel) => {
     const PanelComponent = panel.component;
@@ -947,6 +1051,10 @@ export default function Sidebar({
       {activeTabId === EXPLORER_TAB_ID ? (
         <div className="sidebar-panels">
           {visibleOrder.map((id, idx) => renderPanel(id, visibleOrder[idx + 1] ?? null))}
+        </div>
+      ) : activeTabId === RUN_TAB_ID ? (
+        <div className="sidebar-panels">
+          {visibleRunOrder.map((id, idx) => renderPanel(id, visibleRunOrder[idx + 1] ?? null))}
         </div>
       ) : activeTabId === EXTENSIONS_TAB_ID ? (
         <ExtensionsPanel

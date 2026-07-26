@@ -1,0 +1,16 @@
+{
+  "name": "tasks",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "Tasks",
+  "description": "Built-in TASKS run section: package.json scripts from every workspace package, run in reusable named tmux windows with running indicators (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
+  "tmuxServer": {
+    "client": "./dist/client.js",
+    "server": "./server.js"
+  },
+  "dependencies": {
+    "fast-glob": "^3"
+  }
+}
