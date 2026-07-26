@@ -529,6 +529,20 @@ accessory is the only on-screen text input, so users lose OS
 autocomplete/dictation/IME — and call `setSoftKeyboardSuppressed(false)`
 in `deactivate()` so disabling your extension restores normal behavior.
 
+#### Opting out of the sidebar swipe — `data-no-sidebar-swipe`
+
+On touch devices a fast horizontal flick anywhere toggles the sidebar
+(left→right opens, right→left closes). The host already skips flicks that
+start inside a horizontally scrollable element, so tab strips and terminal
+hscroll keep their gestures. UI whose own gesture is a *free* horizontal
+drag rather than a scroll — a draggable floating control, a slider, a
+swipeable card — is not detectable that way: put `data-no-sidebar-swipe` on
+it (or on any ancestor) and touches starting inside are ignored by the
+gesture. The host listens on `document` in the capture phase, so an
+extension cannot preempt it from its own handlers; this attribute is the
+seam. The bundled touch-keys extension uses it on its floating one-handed
+toggle and key cluster.
+
 ### Quick-switcher providers — `registerQuickSwitcherProvider`
 
 ```ts

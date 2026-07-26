@@ -132,6 +132,9 @@ export default function FloatingTouchKeys({
       {expanded && shown.length > 0 && (
         <div
           className="touch-key-fab-cluster"
+          // Keeps a flick across the keys from reaching the host's
+          // swipe-to-toggle-sidebar gesture — same reason as the toggle below.
+          data-no-sidebar-swipe=""
           style={{
             position: "absolute",
             ...(openLeft
@@ -159,6 +162,10 @@ export default function FloatingTouchKeys({
       )}
       <button
         className={`touch-key-fab${expanded ? " active" : ""}`}
+        // Dragging the toggle is a free horizontal motion the host's
+        // flick-to-toggle-sidebar gesture would otherwise also read as a
+        // sidebar swipe (it only skips horizontal *scrollers*).
+        data-no-sidebar-swipe=""
         style={{ left: `${centerX - half}px`, top: `${centerY - half}px` }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}

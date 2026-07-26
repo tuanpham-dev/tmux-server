@@ -251,10 +251,19 @@ export default function App() {
       }
       return false;
     };
+    // Explicit opt-out for UI whose own gesture is a free horizontal drag
+    // rather than a scroll, so the scroller walk above can't detect it —
+    // notably the touch-keys extension's floating one-handed toggle, which
+    // is dragged anywhere on screen with exactly the motion this gesture
+    // watches for. Any element (core or extension) can carry the attribute;
+    // extensions render their own DOM, and a document-level capture listener
+    // can't be preempted from inside it.
+    const optsOutOfSwipe = (target: EventTarget | null): boolean =>
+      target instanceof Element && target.closest("[data-no-sidebar-swipe]") !== null;
     let start: { x: number; y: number; t: number } | null = null;
     const onTouchStart = (e: TouchEvent) => {
       start =
-        e.touches.length === 1 && !startsInHorizontalScroller(e.target)
+        e.touches.length === 1 && !startsInHorizontalScroller(e.target) && !optsOutOfSwipe(e.target)
           ? { x: e.touches[0].clientX, y: e.touches[0].clientY, t: performance.now() }
           : null;
     };
