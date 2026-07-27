@@ -7,9 +7,13 @@ import { findCandidates, isOpenGesture, MAX_STITCH_LINES } from "@tmux-server/en
 // xterm.js counterpart to stitchLine above — same wrapped-row-stitching
 // logic, but against xterm's IBuffer/IBufferLine shapes (getLine/
 // translateToString match ghostty-web's signatures exactly; only the
-// Terminal type differs).
+// Terminal type differs). `y` is a 0-based scrollback-ABSOLUTE buffer row
+// (IBuffer.getLine's own index space), and the returned startLine is in
+// that same space — callers holding a screen-relative row must offset by
+// buffer.baseY themselves (see the engine's readStitchedLine).
 export function stitchXtermLine(term: XtermTerminal, y: number): { text: string; startLine: number } | null {
   const buffer = term.buffer.active;
+  if (y < 0 || y >= buffer.length) return null;
   let startLine = y;
   for (let i = 0; i < MAX_STITCH_LINES && buffer.getLine(startLine)?.isWrapped; i++) {
     startLine--;
@@ -32,14 +36,14 @@ export function stitchXtermLine(term: XtermTerminal, y: number): { text: string;
 // 0-based buffer-index -> xterm's IBufferCellPosition, which (unlike
 // ghostty-web's 0-based, raw-compared range) is documented 1-based on both
 // axes — verified against @xterm/xterm 6.0.0's typings (IBufferCellPosition:
-// "The x/y position within the buffer (1-based)").
+// "The x/y position within the buffer (1-based)"). startLine is the 0-based
+// absolute row stitchXtermLine returned, so +1 converts row space too.
 function indexToXtermPosition(
   startLine: number,
   cols: number,
   idx: number,
-  rowOffset: number,
 ): { x: number; y: number } {
-  return { y: rowOffset + startLine + Math.floor(idx / cols) + 1, x: (idx % cols) + 1 };
+  return { y: startLine + Math.floor(idx / cols) + 1, x: (idx % cols) + 1 };
 }
 
 export interface XtermTerminalLinksHandlers {
@@ -59,18 +63,17 @@ export function buildXtermLinkProvider(
 ): XtermILinkProvider {
   return {
     provideLinks(y, callback) {
-      // xterm's buffer indexes scrollback rows from 0 too, with the visible
-      // screen starting at buffer.baseY (ghostty-web's getScrollbackLength()
-      // equivalent) — tmux owns real scrollback, so the local buffer never
-      // meaningfully scrolls, but reading baseY rather than assuming 0 stays
-      // correct if it ever does.
-      const rowOffset = term.buffer.active.baseY;
-      const screenY = y - rowOffset;
-      if (screenY < 0 || screenY >= term.rows) {
-        callback(undefined);
-        return;
-      }
-      const stitched = stitchXtermLine(term, screenY);
+      // Linkifier passes a 1-BASED buffer line: getCoords' Math.ceil'd
+      // viewport row plus buffer.ydisp (verified against @xterm/xterm
+      // 6.0.0's Linkifier._positionFromMouseEvent / input/Mouse.getCoords).
+      // Converting to the 0-based absolute row stitchXtermLine/getLine use
+      // is a plain -1 — no baseY juggling, and it stays correct however
+      // much local scrollback has accumulated. (The old code subtracted
+      // baseY from an assumed-0-based y, which put every link range one
+      // row below the pointer and, once output scrolled, scanned lines
+      // from the top of scrollback instead of the viewport.)
+      const absRow = y - 1;
+      const stitched = stitchXtermLine(term, absRow);
       if (!stitched) {
         callback(undefined);
         return;
@@ -100,8 +103,8 @@ export function buildXtermLinkProvider(
               if (!openTarget) continue;
             }
             const range: IBufferRange = {
-              start: indexToXtermPosition(startLine, term.cols, c.startIdx, rowOffset),
-              end: indexToXtermPosition(startLine, term.cols, c.endIdx - 1, rowOffset),
+              start: indexToXtermPosition(startLine, term.cols, c.startIdx),
+              end: indexToXtermPosition(startLine, term.cols, c.endIdx - 1),
             };
             const kind = c.kind;
             const target = openTarget;

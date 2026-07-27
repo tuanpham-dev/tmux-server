@@ -267,10 +267,31 @@ export async function createXtermEngine(
   };
   term.textarea?.addEventListener("beforeinput", onBeforeInput as EventListener);
 
-  const cellFromPointOnEngine = (clientX: number, clientY: number): CellPosition => {
+  // Real cell box from xterm's render service — the same value its renderer
+  // draws glyphs with (private path; see getCellMetrics' comment below for
+  // why the rect/cols container-math fallback is a last resort: the
+  // container keeps up to one cell of leftover space past the fitted grid,
+  // so dividing by cols/rows overestimates the cell size).
+  const cssCellDims = (): { width: number; height: number } => {
+    const cell = (
+      term as unknown as {
+        _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } };
+      }
+    )._core?._renderService?.dimensions?.css?.cell;
+    if (cell && cell.width > 0 && cell.height > 0) return { width: cell.width, height: cell.height };
     const rect = screen.getBoundingClientRect();
-    const width = rect.width / term.cols;
-    const height = rect.height / term.rows;
+    return { width: rect.width / term.cols, height: rect.height / term.rows };
+  };
+
+  const cellFromPointOnEngine = (clientX: number, clientY: number): CellPosition => {
+    // Measure from xterm's own grid element and its real cell box — the
+    // exact math xterm's getCoords hit-testing uses. The old container-rect
+    // ÷ rows math overestimated the cell height (leftover space below the
+    // fitted grid), an error that accumulates downward: clicks on low rows
+    // of a tall terminal mapped to the row above.
+    const gridEl = term.element?.querySelector(".xterm-screen") ?? screen;
+    const rect = gridEl.getBoundingClientRect();
+    const { width, height } = cssCellDims();
     return cellFromPoint(clientX, clientY, rect, width, height, term.cols, term.rows);
   };
 
@@ -350,9 +371,16 @@ export async function createXtermEngine(
     selectCells: (col, row, length) => {
       term.select(col, term.buffer.active.baseY + row, length);
     },
-    readStitchedLine: (row) => stitchXtermLine(term, row),
+    // Seam contract is screen-relative (0 = top of the visible viewport);
+    // stitchXtermLine works in absolute buffer rows, so offset by baseY
+    // both ways — same conversion readLine below already does.
+    readStitchedLine: (row) => {
+      const baseY = term.buffer.active.baseY;
+      const stitched = stitchXtermLine(term, baseY + row);
+      return stitched ? { text: stitched.text, startLine: stitched.startLine - baseY } : null;
+    },
     cellFromPoint: cellFromPointOnEngine,
-    getCharHeight: () => screen.getBoundingClientRect().height / term.rows,
+    getCharHeight: () => cssCellDims().height,
     getMode: (mode) => {
       const modes = term.modes;
       switch (mode) {
@@ -451,16 +479,7 @@ export async function createXtermEngine(
     // not yet the real fitted column count), which the old code had no way
     // to detect or recover from since LocalEcho only re-reads metrics on an
     // explicit refreshFont() call, not on every resize.
-    getCellMetrics: () => {
-      const cell = (
-        term as unknown as {
-          _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } };
-        }
-      )._core?._renderService?.dimensions?.css?.cell;
-      if (cell) return { width: cell.width, height: cell.height };
-      const rect = screen.getBoundingClientRect();
-      return { width: rect.width / term.cols, height: rect.height / term.rows };
-    },
+    getCellMetrics: () => cssCellDims(),
     onRender: (cb) => {
       renderListeners.add(cb);
       return () => renderListeners.delete(cb);
