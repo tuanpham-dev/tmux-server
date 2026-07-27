@@ -41,6 +41,7 @@ import type { MenuItem, MenuState, RegistrySourceResult } from "./types";
 import { groupKeyForTab, isRealTab } from "./lib/tabs";
 import { leaves } from "./lib/splits";
 import { emitPollTick } from "./lib/pollTick";
+import { rewriteLocalUrl } from "./lib/openUrlRewrite";
 import { compareVersions } from "./lib/version";
 
 const SIDEBAR_MIN = 180;
@@ -75,6 +76,46 @@ export default function App() {
     const t = setTimeout(() => setError(null), 6000);
     return () => clearTimeout(t);
   }, [error]);
+
+  // Browser-opener bridge (plans/browser-opener-bridge.md): the server
+  // relays a pane's "open a URL" attempt (the $BROWSER shim) over SSE; the
+  // app tab that currently has focus opens it — riding the transient user
+  // activation left by the keypress that triggered the open. When the popup
+  // is blocked anyway, a clickable banner is the fallback. Unfocused tabs
+  // ignore the event, so N open tabs never produce N popups.
+  const [openUrlBanner, setOpenUrlBanner] = useState<string | null>(null);
+  useEffect(() => {
+    if (!openUrlBanner) return;
+    const t = setTimeout(() => setOpenUrlBanner(null), 15000);
+    return () => clearTimeout(t);
+  }, [openUrlBanner]);
+  useEffect(() => {
+    // Prefetched (not per-event) so the open itself never awaits a fetch —
+    // transient activation only lasts a few seconds.
+    let proxyDomain: string | null = null;
+    fetch("/api/proxy-config")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((cfg: { domain?: string | null } | null) => {
+        proxyDomain = cfg?.domain ?? null;
+      })
+      .catch(() => {});
+    const es = new EventSource("/api/open-url/events");
+    es.onmessage = (e: MessageEvent<string>) => {
+      if (!document.hasFocus()) return;
+      let payload: { url?: unknown; serverPort?: unknown };
+      try {
+        payload = JSON.parse(e.data) as { url?: unknown; serverPort?: unknown };
+      } catch {
+        return;
+      }
+      if (typeof payload.url !== "string" || typeof payload.serverPort !== "number") return;
+      const target = rewriteLocalUrl(payload.url, window.location.origin, proxyDomain, payload.serverPort);
+      if (!target) return;
+      const opened = window.open(target, "_blank", "noopener,noreferrer");
+      if (!opened) setOpenUrlBanner(target);
+    };
+    return () => es.close();
+  }, []);
 
   const [filesRefreshKey, setFilesRefreshKey] = useState(0);
   // refreshClipboardMirror itself comes from useFileActions, called much
@@ -1559,6 +1600,25 @@ export default function App() {
       {error && (
         <div className="error-banner" onClick={() => setError(null)}>
           {error}
+        </div>
+      )}
+      {openUrlBanner && (
+        <div className="open-url-banner">
+          <a
+            href={openUrlBanner}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setOpenUrlBanner(null)}
+          >
+            Open {openUrlBanner}
+          </a>
+          <button
+            className="open-url-banner-dismiss"
+            aria-label="Dismiss"
+            onClick={() => setOpenUrlBanner(null)}
+          >
+            ✕
+          </button>
         </div>
       )}
     </div>

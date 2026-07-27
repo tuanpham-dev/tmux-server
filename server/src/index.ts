@@ -5,6 +5,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
 import { loadEnabledServerHooks } from "./extensions.js";
+import { ensureOpenShim } from "./openUrl.js";
 import { getTunnelablePorts } from "./ports.js";
 import {
   handleProxyRequest,
@@ -323,4 +324,9 @@ server.listen(PORT, HOST, () => {
 startViewSweeper();
 loadEnabledServerHooks().catch((err) => {
   console.error("failed to load extension server hooks:", err);
+});
+// Browser-opener bridge shim ($BROWSER target for tmux panes — see
+// server/src/openUrl.ts). Failure just disables the bridge, never the server.
+ensureOpenShim(PORT).catch((err) => {
+  console.error("failed to write browser-opener shim:", err);
 });

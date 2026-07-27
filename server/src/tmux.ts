@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { getGitRoot } from "./files.js";
+import { openShimPath } from "./openUrl.js";
 
 // Synthetic tmux sessions created for per-window tabs (see createWindowTab)
 // are grouped with a real session so they share its windows, but are never
@@ -163,6 +164,10 @@ export async function createSession(name?: string, cwd?: string): Promise<TmuxSe
   const dir = cwd || process.env.NEW_SESSION_CWD;
   if (dir) args.push("-c", (await getGitRoot(dir)) ?? dir);
   if (name) args.push("-s", name);
+  // Browser-opener bridge: the session's very first pane spawns during this
+  // call, before any attach has run applyTmuxOptions' set-environment — -e
+  // (tmux ≥3.2, older than features this file already relies on) covers it.
+  args.push("-e", `BROWSER=${openShimPath}`);
   const createdName = (await tmux(args)).trim();
   const sessions = await listSessions();
   const created = sessions.find((s) => s.name === createdName);
@@ -1085,5 +1090,13 @@ export async function applyTmuxOptions(port: number, serverPid: number): Promise
     "alert-bell",
     `run-shell "curl -s -m 2 -XPOST http://127.0.0.1:${port}/api/push/bell?pane=#{session_name}:#{window_index}"`,
   ]).catch(() => {});
+  // BROWSER: every pane spawned after this points server-side browser opens
+  // at the opener-bridge shim (server/src/openUrl.ts) — on a headless box
+  // xdg-open falls back to $BROWSER, so CLI hotkeys like shopify theme dev's
+  // "p" land in the app's browser tab instead of dying on the server.
+  // Global tmux env (not the attaching terminal's) so panes inherit it no
+  // matter who attached or when — the hole VS Code's terminal-scoped
+  // injection falls into under tmux.
+  await tmux(["set-environment", "-g", "BROWSER", openShimPath]).catch(() => {});
   lastOptionsAppliedPid = serverPid;
 }

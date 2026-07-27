@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Router, type Response } from "express";
+import { Router, urlencoded, type Response } from "express";
 import {
   ConflictError,
   copyPath,
@@ -35,6 +35,7 @@ import {
   setExtensionEnabled,
   uninstallExtension,
 } from "./extensions.js";
+import { broadcastOpenUrl, subscribeOpenUrl } from "./openUrl.js";
 import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
@@ -921,4 +922,50 @@ api.post("/push/bell", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
+});
+
+// Browser-opener bridge (plans/browser-opener-bridge.md). Like /push/bell,
+// POST /open-url is reached by a local curl (the $BROWSER shim, see
+// server/src/openUrl.ts) — auth-exempt (isAuthExemptPath) with its own
+// loopback check, plus a required custom header: cross-origin browser
+// requests carrying it need a CORS preflight this server never approves, so
+// a malicious page can't use the endpoint to pop windows. The SSE /events
+// stream stays behind the normal auth gate.
+
+const MAX_OPEN_URL_LENGTH = 2048;
+
+api.post("/open-url", urlencoded({ extended: false }), (req, res) => {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  if (req.headers["x-tmux-server-open"] === undefined) {
+    res.status(403).json({ error: "missing header" });
+    return;
+  }
+  const url = (req.body as Record<string, unknown> | undefined)?.url;
+  if (typeof url !== "string" || !url || url.length > MAX_OPEN_URL_LENGTH) {
+    res.status(400).json({ error: "url is required" });
+    return;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    res.status(400).json({ error: "invalid url" });
+    return;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    res.status(400).json({ error: "only http(s) urls are supported" });
+    return;
+  }
+  // localPort rather than a threaded-through config value: it's exactly the
+  // port this instance is serving on, which is what the client compares
+  // loopback URLs against to decide app-origin vs port-proxy rewriting.
+  broadcastOpenUrl(parsed.href, req.socket.localPort ?? 0);
+  res.status(204).end();
+});
+
+api.get("/open-url/events", (_req, res) => {
+  subscribeOpenUrl(res);
 });

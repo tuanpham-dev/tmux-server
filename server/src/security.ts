@@ -199,7 +199,10 @@ export function tokenFromRequest(
 // check instead (isLoopbackAddress below) — this exemption alone would
 // otherwise open it to anyone who can reach the port.
 export function isAuthExemptPath(path: string): boolean {
-  return isOriginExemptPath(path) || path === "/api/push/bell";
+  // /api/open-url follows the bell pattern exactly (local curl from the
+  // $BROWSER shim, loopback + custom-header checks in its handler); its
+  // /events SSE sibling is deliberately NOT exempt — exact match only.
+  return isOriginExemptPath(path) || path === "/api/push/bell" || path === "/api/open-url";
 }
 
 // Bell-hook endpoint gate: the hook always calls http://127.0.0.1:<port>,
