@@ -7,6 +7,7 @@ import {
   extensionTerminalAccessories,
   useExtensionRegistryVersion,
   type TerminalAccessoryContext,
+  type TerminalCommandEvent,
 } from "../extensions";
 import { isSyntheticSelectStart, type TerminalEngineHandle, type TerminalTheme } from "../engines/types";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
@@ -374,6 +375,10 @@ export default function TerminalView({
   // this attach's foreground program changes — drives touch keys' `when`
   // filter. "" until the first push arrives.
   const [currentCommand, setCurrentCommand] = useState("");
+  // The latest shell-integration lifecycle event for this session (a
+  // "commandEvent" WS frame, plans/warp-features.md) — null until one
+  // arrives, i.e. forever when shell integration isn't sourced.
+  const [lastCommandEvent, setLastCommandEvent] = useState<TerminalCommandEvent | null>(null);
   // Terminal accessories (the extracted touch-key bar & floating keys) —
   // re-render when one registers/unregisters.
   useExtensionRegistryVersion();
@@ -859,6 +864,25 @@ export default function TerminalView({
             liveCommand = msg.command;
             if (localEcho) localEcho.wrapMode = wrapModeForCommand(msg.command);
             setCurrentCommand(msg.command);
+          } else if (
+            msg.type === "commandEvent" &&
+            typeof msg.pane === "string" &&
+            typeof msg.command === "string" &&
+            (msg.event === "start" || msg.event === "end")
+          ) {
+            const event: TerminalCommandEvent = {
+              pane: msg.pane,
+              sessionName: typeof msg.sessionName === "string" ? msg.sessionName : "",
+              event: msg.event,
+              command: msg.command,
+              cwd: typeof msg.cwd === "string" ? msg.cwd : "",
+              exitCode: Number.isFinite(msg.exitCode) ? msg.exitCode : undefined,
+              durationMs: Number.isFinite(msg.durationMs) ? msg.durationMs : undefined,
+            };
+            setLastCommandEvent(event);
+            // App-wide relay for non-accessory consumers (see
+            // TerminalCommandEvent in extensions.ts).
+            window.dispatchEvent(new CustomEvent("tmux-server:command-event", { detail: event }));
           } else if (msg.type === "exit") {
             receivedExit = true;
             ws.close();
@@ -1036,6 +1060,24 @@ export default function TerminalView({
           // "cancel" the search overlay already uses on close is what
           // actually returns the pane to its live tail.
           sendSearchRef.current("cancel");
+          return true;
+        }
+        // Prompt jumps (plans/warp-features.md): tmux moves between OSC 133
+        // prompt marks server-side; the reply is a "scroll" frame, so the
+        // scrollbar thumb tracks the jump like scrollTo/search do. Without
+        // shell integration sourced there are no marks and nothing moves.
+        if (bindingMatches(b["terminal.previousCommand"], combo, get)) {
+          e.preventDefault();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "promptJump", dir: "prev" }));
+          }
+          return true;
+        }
+        if (bindingMatches(b["terminal.nextCommand"], combo, get)) {
+          e.preventDefault();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "promptJump", dir: "next" }));
+          }
           return true;
         }
         return false;
@@ -2007,6 +2049,7 @@ export default function TerminalView({
     focused,
     mobilePointer,
     command: currentCommand,
+    lastCommandEvent,
     stickyCtrl,
     toggleStickyCtrl: () => setStickyCtrl((v) => !v),
     sendInput: (data) => sendInputRef.current(data),

@@ -202,7 +202,15 @@ export function isAuthExemptPath(path: string): boolean {
   // /api/open-url follows the bell pattern exactly (local curl from the
   // $BROWSER shim, loopback + custom-header checks in its handler); its
   // /events SSE sibling is deliberately NOT exempt — exact match only.
-  return isOriginExemptPath(path) || path === "/api/push/bell" || path === "/api/open-url";
+  // /api/command-events/report likewise (local curl from the
+  // shell-integration snippet); the GET /api/command-events browser
+  // endpoint stays gated, which is why report has its own subpath.
+  return (
+    isOriginExemptPath(path) ||
+    path === "/api/push/bell" ||
+    path === "/api/open-url" ||
+    path === "/api/command-events/report"
+  );
 }
 
 // Bell-hook endpoint gate: the hook always calls http://127.0.0.1:<port>,

@@ -158,10 +158,14 @@ export const EXTENSIONS_TAB_ID = "extensions-view";
 // visibleTabOrder). The literal must stay in sync with extensions.ts's own
 // copy (importing it back would be circular).
 export const RUN_TAB_ID = "run-view";
-// All three fixed tabs share every special-case below with EXPLORER_TAB_ID,
+// Same contract as the Run tab: no built-in sections, appears only while an
+// extension contributes a visible "commands" panel (command-history,
+// snippets). The literal must stay in sync with extensions.ts's own copy.
+export const COMMANDS_TAB_ID = "commands-view";
+// All fixed tabs share every special-case below with EXPLORER_TAB_ID,
 // which stays exported/used directly at each site since it's also the
 // fallback "always exists" tab.
-const CORE_TAB_IDS: readonly string[] = [EXPLORER_TAB_ID, RUN_TAB_ID, EXTENSIONS_TAB_ID];
+const CORE_TAB_IDS: readonly string[] = [EXPLORER_TAB_ID, RUN_TAB_ID, COMMANDS_TAB_ID, EXTENSIONS_TAB_ID];
 const TABS_KEY = "sidebarTabs";
 
 interface TabsState {
@@ -170,22 +174,27 @@ interface TabsState {
 }
 
 const DEFAULT_TABS_STATE: TabsState = {
-  order: [EXPLORER_TAB_ID, RUN_TAB_ID, EXTENSIONS_TAB_ID],
+  order: [EXPLORER_TAB_ID, RUN_TAB_ID, COMMANDS_TAB_ID, EXTENSIONS_TAB_ID],
   active: EXPLORER_TAB_ID,
 };
 
-// Guarantees all three core tabs are present (Explorer → Run → Extensions)
-// — shared by loadTabsState below and the synced-order-from-server apply
-// effect, since neither localStorage nor the settings doc is guaranteed to
-// have been written by a build that already knew about every core id.
+// Guarantees all core tabs are present (Explorer → Run → Commands →
+// Extensions) — shared by loadTabsState below and the synced-order-from-
+// server apply effect, since neither localStorage nor the settings doc is
+// guaranteed to have been written by a build that already knew about every
+// core id.
 function sanitizeTabsOrder(order: string[]): string[] {
   const next = [...order];
   if (!next.includes(EXPLORER_TAB_ID)) next.unshift(EXPLORER_TAB_ID);
   if (!next.includes(EXTENSIONS_TAB_ID)) {
     next.splice(next.indexOf(EXPLORER_TAB_ID) + 1, 0, EXTENSIONS_TAB_ID);
   }
-  // Inserted after Extensions' own insert so an order stored before the Run
-  // tab existed ends up on the default Explorer → Run → Extensions layout.
+  // Insertion order is the reverse of the target layout: each missing id
+  // lands right after Explorer, so an order stored before these tabs
+  // existed ends up on the default Explorer → Run → Commands → Extensions.
+  if (!next.includes(COMMANDS_TAB_ID)) {
+    next.splice(next.indexOf(EXPLORER_TAB_ID) + 1, 0, COMMANDS_TAB_ID);
+  }
   if (!next.includes(RUN_TAB_ID)) {
     next.splice(next.indexOf(EXPLORER_TAB_ID) + 1, 0, RUN_TAB_ID);
   }
@@ -436,12 +445,13 @@ export default function Sidebar({
   const tabPanels = extensionPanels.filter((p) => p.location === "tab");
   const explorerPanels = extensionPanels.filter((p) => p.location === "explorer");
   const runPanels = extensionPanels.filter((p) => p.location === "run");
-  // Both accordions share one panelState (order/collapse/sizes keyed by the
+  const commandsPanels = extensionPanels.filter((p) => p.location === "commands");
+  // All accordions share one panelState (order/collapse/sizes keyed by the
   // panel's namespaced id) and one set of panel refs — each tab renders the
   // subset of that order belonging to its own location. Lookups that don't
   // care which accordion a section lives in (title, default collapse,
   // content) go through this combined list.
-  const accordionPanels = [...explorerPanels, ...runPanels];
+  const accordionPanels = [...explorerPanels, ...runPanels, ...commandsPanels];
   useEffect(() => {
     setTabsState((prev) => {
       const order = [...prev.order];
@@ -521,15 +531,20 @@ export default function Sidebar({
   }, [tabsState]);
 
   const extPanelIds = new Set(tabPanels.map((p) => p.id));
-  // The Run tab carries no built-in sections, so an empty one would be a
-  // dead strip icon: it shows only while some extension contributes a
-  // section that isn't hidden (ctx.app.setSidebarPanelVisible).
+  // The Run and Commands tabs carry no built-in sections, so an empty one
+  // would be a dead strip icon: each shows only while some extension
+  // contributes a section that isn't hidden (ctx.app.setSidebarPanelVisible).
   const hasVisibleRunPanel = runPanels.some((p) => !p.hidden);
+  const hasVisibleCommandsPanel = commandsPanels.some((p) => !p.hidden);
   // Filters out a stale tab id (its extension disabled/uninstalled, or one
   // still activating on this render) — same "don't mutate storage, just
   // don't render it" approach as the accordion's visibleOrder.
   const visibleTabOrder = tabsState.order.filter((id) =>
-    id === RUN_TAB_ID ? hasVisibleRunPanel : CORE_TAB_IDS.includes(id) || extPanelIds.has(id),
+    id === RUN_TAB_ID
+      ? hasVisibleRunPanel
+      : id === COMMANDS_TAB_ID
+        ? hasVisibleCommandsPanel
+        : CORE_TAB_IDS.includes(id) || extPanelIds.has(id),
   );
   const activeTabId = visibleTabOrder.includes(tabsState.active) ? tabsState.active : EXPLORER_TAB_ID;
 
@@ -584,6 +599,9 @@ export default function Sidebar({
     }
     if (id === RUN_TAB_ID) {
       return { id, title: `Run${shortcutSuffix("sidebar.focusRun")}`, icon: "run-all" };
+    }
+    if (id === COMMANDS_TAB_ID) {
+      return { id, title: `Commands${shortcutSuffix("sidebar.focusCommands")}`, icon: "terminal" };
     }
     if (id === EXTENSIONS_TAB_ID) {
       return {
@@ -981,6 +999,8 @@ export default function Sidebar({
   );
   const runPanelIds = new Set(runPanels.filter((p) => !p.hidden).map((p) => p.id));
   const visibleRunOrder = panelState.order.filter((id) => runPanelIds.has(id));
+  const commandsPanelIds = new Set(commandsPanels.filter((p) => !p.hidden).map((p) => p.id));
+  const visibleCommandsOrder = panelState.order.filter((id) => commandsPanelIds.has(id));
 
   const renderExtensionTab = (panel: RegisteredSidebarPanel) => {
     const PanelComponent = panel.component;
@@ -1055,6 +1075,10 @@ export default function Sidebar({
       ) : activeTabId === RUN_TAB_ID ? (
         <div className="sidebar-panels">
           {visibleRunOrder.map((id, idx) => renderPanel(id, visibleRunOrder[idx + 1] ?? null))}
+        </div>
+      ) : activeTabId === COMMANDS_TAB_ID ? (
+        <div className="sidebar-panels">
+          {visibleCommandsOrder.map((id, idx) => renderPanel(id, visibleCommandsOrder[idx + 1] ?? null))}
         </div>
       ) : activeTabId === EXTENSIONS_TAB_ID ? (
         <ExtensionsPanel

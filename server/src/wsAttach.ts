@@ -2,20 +2,23 @@ import type { IncomingMessage } from "node:http";
 import * as pty from "node-pty";
 import { WebSocket } from "ws";
 import { registerAttach, type AttachCallbacks } from "./attachWatcher.js";
+import { subscribeCommandEvents } from "./commandEvents.js";
 import {
   applyTmuxOptions,
   getAttachIdentity,
   getScrollState,
   invalidateScrollState,
   isWindowTabSession,
+  promptJump,
   scrollHorizontal,
   scrollTo,
   searchScrollback,
+  sessionGroupKey,
   type SearchAction,
 } from "./tmux.js";
 
 interface ClientMsg {
-  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll" | "search";
+  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll" | "search" | "promptJump";
   data?: string;
   cols?: number;
   rows?: number;
@@ -25,6 +28,7 @@ interface ClientMsg {
   row?: number;
   action?: SearchAction;
   query?: string;
+  dir?: "prev" | "next";
 }
 
 const SEARCH_ACTIONS = new Set<SearchAction>(["start", "next", "prev", "cancel"]);
@@ -131,11 +135,31 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     })
     .catch(() => {});
 
+  // Live command lifecycle frames (plans/warp-features.md): shell-integration
+  // reports for panes in this attach's session, matched on the
+  // group-or-name key (sessionGroupKey) rather than the session name —
+  // this attach's target is usually a grouped tmuxserver-view-* session
+  // whose name never equals the base session the pane lives in, but whose
+  // group does. Key resolves async after attach; the frames race it only
+  // for commands finishing within the first few ms.
+  let attachKey: string | null = null;
+  sessionGroupKey(session)
+    .then((key) => {
+      attachKey = key;
+    })
+    .catch(() => {});
+  const unsubscribeEvents = subscribeCommandEvents((frame) => {
+    if (attachKey !== null && frame.sessionKey === attachKey) {
+      send({ type: "commandEvent", ...frame });
+    }
+  });
+
   term.onExit(() => {
     exited = true;
     stopResumePoll();
     unregister?.();
     unregister = null;
+    unsubscribeEvents();
     send({ type: "exit" });
     if (ws.readyState === WebSocket.OPEN) ws.close();
   });
@@ -192,6 +216,18 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
           }
         })
         .catch(() => {});
+    } else if (msg.type === "promptJump" && (msg.dir === "prev" || msg.dir === "next")) {
+      promptJump(session, msg.dir)
+        // Same as scrollTo/search above: the jump moved the pane, so the
+        // cached scroll state is stale and the thumb must track the jump.
+        .then(() => invalidateScrollState(session))
+        .then(() => getScrollState(session))
+        .then((state) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "scroll", ...state }));
+          }
+        })
+        .catch(() => {});
     } else if (
       msg.type === "hscroll" &&
       Number.isFinite(msg.amount) &&
@@ -212,6 +248,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
 
   ws.on("close", () => {
     stopResumePoll();
+    unsubscribeEvents();
     term.kill();
   });
 }

@@ -90,6 +90,11 @@ export interface AppSettings {
   // paletteCommands memo and commandUsage below. The single most-recently-run
   // command always pins to row 1 regardless of this setting.
   paletteSortByUsage: boolean;
+  // Web-push a notification when a command reported by shell integration
+  // (plans/warp-features.md) finishes after running at least this many
+  // seconds. 0 disables. Read server-side (push.ts) from the synced doc —
+  // the shell reports and the push fan-out never touch the client.
+  notifyCommandMinDuration: number;
 }
 
 // Defaults mirror the user's code-server settings.json (editor.fontFamily,
@@ -129,6 +134,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   colorTheme: "tmux-server.plastic-legacy-theme:Plastic Legacy",
   iconTheme: "tmux-server.seti-icons:seti",
   paletteSortByUsage: false,
+  notifyCommandMinDuration: 0,
 };
 
 // A stored value from before the built-in theme/icon theme/font were

@@ -320,6 +320,40 @@ export async function paneCurrentPath(session: string): Promise<string> {
   ).trim();
 }
 
+// Resolves a pane id ("%5", what $TMUX_PANE holds) to its session — how a
+// shell-integration report (plans/warp-features.md) gets routed to the right
+// /ws/attach connections. Two subtleties, both from this app's window tabs
+// being grouped tmuxserver-view-* sessions (createWindowTab):
+//  - `key` is the session group when grouped, else the name — an attach's
+//    view-session NAME never matches the base session, but its group does.
+//  - display-message -t %pane picks an ARBITRARY session containing the
+//    pane, which can be a view session; `name` must be the canonical base
+//    session (what the client's active context calls the session), so a
+//    view-session hit is re-resolved to its group's non-view member. Note
+//    the group value itself can be an opaque id (e.g. "55"), not a name.
+// Throws if the pane is gone; callers drop the event.
+export async function paneSessionInfo(paneId: string): Promise<{ name: string; key: string }> {
+  const out = await tmux(["display-message", "-t", paneId, "-p", "#{session_name}\t#{session_group}"]);
+  const [name, group] = out.replace(/\n$/, "").split("\t");
+  if (!isWindowTabSession(name)) return { name, key: group || name };
+  const sessions = await tmux(["list-sessions", "-F", "#{session_name}\t#{session_group}"]);
+  const base = sessions
+    .trim()
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .find(([n, g]) => g === group && !isWindowTabSession(n));
+  return { name: base ? base[0] : name, key: group || name };
+}
+
+// The same group-or-name key for an attach target (a session name, possibly
+// a tmuxserver-view-* one) — what wsAttach matches command-event frames
+// against.
+export async function sessionGroupKey(session: string): Promise<string> {
+  const out = await tmux(["display-message", "-t", `=${session}:`, "-p", "#{session_name}\t#{session_group}"]);
+  const [name, group] = out.replace(/\n$/, "").split("\t");
+  return group || name;
+}
+
 // Returns the created window's index — the bottom terminal panel
 // (plans/bottom-terminal-panel.md) needs it to attach the window it just
 // created, via createWindowTab below.
@@ -513,6 +547,27 @@ export async function scrollTo(session: string, line: number): Promise<void> {
   ]);
 }
 
+// Jump the viewport to the previous/next OSC 133 prompt mark
+// (plans/warp-features.md Phase 3) — marks exist only where the
+// shell-integration snippet (shellIntegration.ts) is sourced; without them
+// tmux leaves the cursor where it is and this is a harmless no-op. Same
+// copy-mode enter-then-command shape as scrollTo above; "next" past the
+// last prompt likewise just stays, and the existing scroll-to-bottom
+// command returns to the live tail.
+export async function promptJump(session: string, dir: "prev" | "next"): Promise<void> {
+  await tmux([
+    "copy-mode",
+    "-t",
+    `=${session}:`,
+    ";",
+    "send-keys",
+    "-X",
+    "-t",
+    `=${session}:`,
+    dir === "prev" ? "previous-prompt" : "next-prompt",
+  ]);
+}
+
 export type SearchAction = "start" | "next" | "prev" | "cancel";
 
 // Drives copy-mode search for the scrollback search overlay. "start" uses
@@ -690,37 +745,46 @@ async function getActivePane(session: string): Promise<PaneInfo> {
   return { command, pid: Number(pid), cwd, windowIndex: Number(windowIndex) };
 }
 
-interface SessionPane {
+export interface SessionPane {
   windowIndex: number;
+  paneIndex: number;
   paneActive: boolean;
+  // Both window-active AND pane-active — the pane you'd land in attaching to
+  // the session right now, the command-history UI's default target.
+  active: boolean;
   id: string;
   command: string;
   pid: number;
+  title: string;
 }
 
 // Every pane across every window in the session — used to find a running
-// nvim outside the currently-viewed window (see openFileInWindow below).
-async function listSessionPanes(session: string): Promise<SessionPane[]> {
+// nvim outside the currently-viewed window (see openFileInWindow below) and
+// to group command history by pane (GET /api/command-events in api.ts).
+export async function listSessionPanes(session: string): Promise<SessionPane[]> {
   const out = await tmux([
     "list-panes",
     "-s",
     "-t",
     `=${session}:`,
     "-F",
-    "#{window_index}\t#{pane_active}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}",
+    "#{window_index}\t#{pane_index}\t#{pane_active}\t#{?#{&&:#{pane_active},#{window_active}},1,0}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}\t#{pane_title}",
   ]);
   return out
     .trim()
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [windowIndex, paneActive, id, command, pid] = line.split("\t");
+      const [windowIndex, paneIndex, paneActive, active, id, command, pid, title] = line.split("\t");
       return {
         windowIndex: Number(windowIndex),
+        paneIndex: Number(paneIndex),
         paneActive: paneActive === "1",
+        active: active === "1",
         id,
         command,
         pid: Number(pid),
+        title,
       };
     });
 }

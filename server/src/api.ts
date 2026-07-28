@@ -35,9 +35,11 @@ import {
   setExtensionEnabled,
   uninstallExtension,
 } from "./extensions.js";
+import { hasReceivedEvents, paneHistory, recordEnd, recordStart } from "./commandEvents.js";
 import { broadcastOpenUrl, subscribeOpenUrl } from "./openUrl.js";
 import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
+import { shellIntegrationPath, shellIntegrationSourceLine } from "./shellIntegration.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
 import { mergeSettingsDoc, readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
 import {
@@ -48,8 +50,10 @@ import {
   killSession,
   killWindow,
   killWindowTab,
+  listSessionPanes,
   listSessions,
   openFileInPaneWithKeys,
+  paneSessionInfo,
   openLazygitWindow,
   openFileInWindow,
   paneCurrentPath,
@@ -968,4 +972,102 @@ api.post("/open-url", urlencoded({ extended: false }), (req, res) => {
 
 api.get("/open-url/events", (_req, res) => {
   subscribeOpenUrl(res);
+});
+
+// Command events (plans/warp-features.md Phase 1). /report follows the
+// /push/bell + /open-url pattern exactly: reached by a local curl (the
+// shell-integration snippet, see server/src/shellIntegration.ts) rather than
+// the browser, so it's auth-exempt (isAuthExemptPath) with its own
+// loopback-only check plus the custom-header CSRF guard. The GET sibling is
+// a normal authenticated browser endpoint — that's why report lives on its
+// own subpath: the auth exemption is path-based and must not cover the GET.
+
+const MAX_COMMAND_LENGTH = 4096;
+const MAX_CWD_LENGTH = 1024;
+
+api.post("/command-events/report", urlencoded({ extended: false }), async (req, res) => {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  if (req.headers["x-tmux-server-events"] === undefined) {
+    res.status(403).json({ error: "missing header" });
+    return;
+  }
+  const body = req.body as Record<string, unknown> | undefined;
+  const pane = typeof body?.pane === "string" ? body.pane : "";
+  const event = body?.event;
+  const shellPid = Number.parseInt(typeof body?.shell === "string" ? body.shell : "", 10);
+  const seq = Number.parseInt(typeof body?.seq === "string" ? body.seq : "", 10);
+  if (
+    !/^%\d{1,10}$/.test(pane) ||
+    (event !== "start" && event !== "end") ||
+    !Number.isFinite(shellPid) ||
+    !Number.isFinite(seq)
+  ) {
+    res.status(400).json({ error: "invalid report" });
+    return;
+  }
+  const command = (typeof body?.command === "string" ? body.command : "").slice(0, MAX_COMMAND_LENGTH);
+  const cwd = (typeof body?.cwd === "string" ? body.cwd : "").slice(0, MAX_CWD_LENGTH);
+  const exitCode = Number.parseInt(typeof body?.exit === "string" ? body.exit : "", 10);
+  let session: { name: string; key: string };
+  try {
+    // One fork per report, but it's what routes the event to the right
+    // attach sockets — and it doubles as validation that the pane exists.
+    session = await paneSessionInfo(pane);
+  } catch {
+    // Pane already gone (e.g. the command was `exit`) — nothing to record
+    // against, and nobody attached to receive it.
+    res.status(204).end();
+    return;
+  }
+  if (event === "start") {
+    recordStart(pane, session.name, session.key, shellPid, seq, command, cwd);
+  } else {
+    recordEnd(pane, session.name, session.key, shellPid, seq, command, Number.isFinite(exitCode) ? exitCode : 0, cwd);
+  }
+  res.status(204).end();
+});
+
+// The Settings card's install/status view: the canonical source line plus
+// whether any report has ever arrived this server lifetime.
+api.get("/command-events/status", (_req, res) => {
+  res.json({
+    receivedAny: hasReceivedEvents(),
+    path: shellIntegrationPath,
+    sourceLine: shellIntegrationSourceLine,
+  });
+});
+
+api.get("/command-events", async (req, res) => {
+  const session = typeof req.query.session === "string" ? req.query.session : "";
+  if (!session) {
+    res.status(400).json({ error: "session is required" });
+    return;
+  }
+  const paneFilter = typeof req.query.pane === "string" ? req.query.pane : "";
+  try {
+    const sessionPanes = await listSessionPanes(session);
+    const panes = sessionPanes
+      .filter((p) => !paneFilter || p.id === paneFilter)
+      .map((p) => {
+        const { running, history } = paneHistory(p.id);
+        return {
+          pane: p.id,
+          windowIndex: p.windowIndex,
+          paneIndex: p.paneIndex,
+          active: p.active,
+          currentCommand: p.command,
+          title: p.title,
+          running,
+          // Newest first — the order every consumer (history switcher,
+          // sidebar) wants; slice so the reverse doesn't mutate the store.
+          history: history.slice().reverse(),
+        };
+      });
+    res.json({ receivedAny: hasReceivedEvents(), panes });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
 });

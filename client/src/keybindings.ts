@@ -38,6 +38,7 @@ export const COMMANDS: Command[] = [
   // Unbound by default: the Run tab is optional (it only exists while an
   // extension contributes a section), so it doesn't claim a chord.
   { id: "sidebar.focusRun", label: "Sidebar: Focus Run", defaultBindings: [], scope: "global" },
+  { id: "sidebar.focusCommands", label: "Sidebar: Focus Commands", defaultBindings: [], scope: "global" },
   { id: "sidebar.focusExtensions", label: "Sidebar: Focus Extensions", defaultBindings: [{ key: "ctrl+shift+KeyX" }], scope: "global" },
   { id: "quickSwitcher.toggle", label: "Toggle Quick Switcher", defaultBindings: [{ key: "ctrl+KeyP" }], scope: "global" },
   { id: "commandPalette.toggle", label: "Show Command Palette", defaultBindings: [{ key: "ctrl+shift+KeyP" }], scope: "global" },
@@ -95,6 +96,10 @@ export const COMMANDS: Command[] = [
   { id: "terminal.fontSizeReset", label: "Terminal: Reset Font Size", defaultBindings: [{ key: "ctrl+Digit0" }], scope: "global" },
   { id: "terminal.clear", label: "Terminal: Clear Scrollback", defaultBindings: [], scope: "terminal" },
   { id: "terminal.scrollToBottom", label: "Terminal: Scroll to Bottom", defaultBindings: [], scope: "terminal" },
+  // Prompt jumps ride tmux's OSC 133 prompt marks (plans/warp-features.md) —
+  // no-ops until the shell-integration snippet is sourced.
+  { id: "terminal.previousCommand", label: "Terminal: Jump to Previous Command", defaultBindings: [{ key: "ctrl+alt+ArrowUp", when: "terminalFocus" }], scope: "terminal" },
+  { id: "terminal.nextCommand", label: "Terminal: Jump to Next Command", defaultBindings: [{ key: "ctrl+alt+ArrowDown", when: "terminalFocus" }], scope: "terminal" },
   { id: "files.copy", label: "Files: Copy", defaultBindings: [{ key: "ctrl+KeyC", when: "filesTreeFocus" }], scope: "files" },
   { id: "files.cut", label: "Files: Cut", defaultBindings: [{ key: "ctrl+KeyX", when: "filesTreeFocus" }], scope: "files" },
   { id: "files.paste", label: "Files: Paste", defaultBindings: [{ key: "ctrl+KeyV", when: "filesTreeFocus" }], scope: "files" },

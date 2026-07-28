@@ -98,11 +98,49 @@ export async function notifyBell(pane: string): Promise<void> {
   const last = lastNotifiedAt.get(pane) ?? 0;
   if (now - last < RATE_LIMIT_MS) return;
   lastNotifiedAt.set(pane, now);
+  await sendToAll(JSON.stringify({ title: "tmux-server", body: `${pane} is waiting for input`, pane }));
+}
 
+// Finished-command notifications (plans/warp-features.md Phase 2), fed by
+// commandEvents end events (wired in index.ts). Its own cooldown map — a
+// bell and a completed command are different signals, and one suppressing
+// the other would hide real information.
+const COMMAND_DONE_RATE_LIMIT_MS = 10_000;
+const lastCommandDoneAt = new Map<string, number>();
+
+function humanDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s - m * 60}s`;
+}
+
+export async function notifyCommandDone(
+  pane: string,
+  sessionName: string,
+  command: string,
+  exitCode: number,
+  durationMs: number,
+): Promise<void> {
+  const now = Date.now();
+  const last = lastCommandDoneAt.get(pane) ?? 0;
+  if (now - last < COMMAND_DONE_RATE_LIMIT_MS) return;
+  lastCommandDoneAt.set(pane, now);
+  const shortCommand = command.length > 60 ? `${command.slice(0, 59)}…` : command;
+  const status = exitCode === 0 ? "finished" : `failed (exit ${exitCode})`;
+  await sendToAll(
+    JSON.stringify({
+      title: "tmux-server",
+      body: `${shortCommand} ${status} after ${humanDuration(durationMs)} in ${sessionName}`,
+      pane,
+    }),
+  );
+}
+
+async function sendToAll(payload: string): Promise<void> {
   const doc = await loadOrInit();
   if (doc.subscriptions.length === 0) return;
   webpush.setVapidDetails("mailto:tmux-server@localhost", doc.vapidPublicKey, doc.vapidPrivateKey);
-  const payload = JSON.stringify({ title: "tmux-server", body: `${pane} is waiting for input`, pane });
 
   const stale: string[] = [];
   await Promise.all(
@@ -112,7 +150,7 @@ export async function notifyBell(pane: string): Promise<void> {
       } catch (err) {
         // 404/410: the push service says this subscription is gone
         // (unsubscribed elsewhere, expired) — drop it rather than retrying
-        // it forever on every future bell.
+        // it forever on every future notification.
         const statusCode = (err as { statusCode?: number }).statusCode;
         if (statusCode === 404 || statusCode === 410) stale.push(sub.endpoint);
       }

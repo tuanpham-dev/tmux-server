@@ -11,7 +11,7 @@ import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SplitLayout from "./components/SplitLayout";
 import TerminalView from "./components/TerminalView";
-import { EXPLORER_TAB_ID, EXTENSIONS_TAB_ID, RUN_TAB_ID } from "./components/Sidebar";
+import { COMMANDS_TAB_ID, EXPLORER_TAB_ID, EXTENSIONS_TAB_ID, RUN_TAB_ID } from "./components/Sidebar";
 import { getContextGetter, setContextKey } from "./contextKeys";
 import {
   focusSessionsPanel,
@@ -879,6 +879,7 @@ export default function App() {
       "sidebar.toggle": () => setSidebarVisible((v) => !v),
       "sidebar.focusExplorer": () => focusSidebarTab(EXPLORER_TAB_ID),
       "sidebar.focusRun": () => focusSidebarTab(RUN_TAB_ID),
+      "sidebar.focusCommands": () => focusSidebarTab(COMMANDS_TAB_ID),
       "sidebar.focusExtensions": () => focusSidebarTab(EXTENSIONS_TAB_ID),
       "sidebar.focusSessions": () => focusSessionsPanel(),
       "quickSwitcher.toggle": () => setSwitcherQuery((q) => (q === null ? "" : null)),

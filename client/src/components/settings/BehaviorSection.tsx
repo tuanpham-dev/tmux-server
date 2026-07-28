@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { fetchShellIntegrationStatus } from "../../api";
+import { copyText } from "../../clipboard";
 import {
   disablePush,
   enablePush,
@@ -63,6 +65,55 @@ function PushNotificationToggle() {
       </label>
       {state.kind === "error" && <div className="settings-hint">{state.message}</div>}
     </>
+  );
+}
+
+// Install card for the shell-integration snippet (plans/warp-features.md):
+// shows the rc line to copy and whether the server has ever received a
+// report — the cheapest honest "is it working" signal, since the server
+// can't see inside the user's rc files.
+function ShellIntegrationCard() {
+  const [status, setStatus] = useState<{ receivedAny: boolean; sourceLine: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    fetchShellIntegrationStatus().then(setStatus).catch(() => {});
+  }, []);
+
+  if (!status) return null;
+
+  const copy = () => {
+    copyText(status.sourceLine)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch(() => {});
+  };
+
+  return (
+    <div className="settings-row">
+      <span className="settings-label">
+        Shell integration{" "}
+        {status.receivedAny ? (
+          <span className="settings-hint">— active</span>
+        ) : (
+          <span className="settings-hint">— no command reports received yet</span>
+        )}
+      </span>
+      <div className="settings-hint">
+        Enables jump-to-previous-command, command history, and finished-command notifications.
+        Add this line to your ~/.zshrc or ~/.bashrc, then open a new shell:
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap", userSelect: "all" }}>
+          {status.sourceLine}
+        </code>
+        <button type="button" className="dialog-button" onClick={copy}>
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -165,6 +216,27 @@ export default function BehaviorSection() {
       </label>
 
       <PushNotificationToggle />
+
+      <label className="settings-row">
+        <span className="settings-label">Notify when a command finishes (seconds)</span>
+        <div className="settings-hint">
+          Push a notification when a command runs at least this long before finishing. 0 disables.
+          Requires shell integration (below) and push notifications enabled on at least one device.
+        </div>
+        <input
+          className="dialog-input"
+          type="number"
+          min={0}
+          step={1}
+          value={settings.notifyCommandMinDuration}
+          onChange={(e) => {
+            const value = Number(e.target.value);
+            set("notifyCommandMinDuration", Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
+          }}
+        />
+      </label>
+
+      <ShellIntegrationCard />
     </>
   );
 }

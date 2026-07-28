@@ -96,7 +96,7 @@ export interface SidebarPanelHostProps {
 // same accordion treatment inside the Run tab (TASKS/PORTS), which has no
 // built-in sections and therefore only appears in the tab strip while at
 // least one non-hidden run panel is registered.
-export type SidebarPanelLocation = "tab" | "explorer" | "run";
+export type SidebarPanelLocation = "tab" | "explorer" | "run" | "commands";
 
 export interface RegisteredSidebarPanel {
   // Namespaced ext.<extensionId>.<id> — used as the sidebar's PanelId.
@@ -426,6 +426,21 @@ export interface RegisteredQuickSwitcherProvider {
   provideResults(query: string): QuickSwitcherItem[];
 }
 
+// A shell-integration command lifecycle event (plans/warp-features.md),
+// relayed from the server's "commandEvent" WS frame. Also dispatched
+// app-wide as a `tmux-server:command-event` CustomEvent on window (detail =
+// this shape) so non-accessory consumers (e.g. a command-history switcher
+// provider) can react without new host API surface.
+export interface TerminalCommandEvent {
+  pane: string;
+  sessionName: string;
+  event: "start" | "end";
+  command: string;
+  cwd: string;
+  exitCode?: number;
+  durationMs?: number;
+}
+
 // The per-terminal context handed to a terminal accessory's component —
 // shaped from exactly what the extracted touch-key bar consumed (see
 // extensions/touch-keys), no speculative surface.
@@ -438,6 +453,10 @@ export interface TerminalAccessoryContext {
   mobilePointer: boolean;
   // The pane's current foreground command (for when-clause gating).
   command: string;
+  // The most recent shell-integration command event for this terminal's
+  // session, or null before the first one (including when shell integration
+  // isn't sourced at all).
+  lastCommandEvent: TerminalCommandEvent | null;
   // The app's sticky-Ctrl state for this terminal (applied to typed input
   // by TerminalView's own input pipeline) — accessories may display and
   // toggle it.
@@ -803,6 +822,7 @@ export function setSessionsFocusBridge(bridge: SessionsFocusBridge | null): void
 // RUN_TAB_ID exports back would be circular.
 const EXPLORER_TAB_ID = "explorer";
 const RUN_TAB_ID = "run-view";
+const COMMANDS_TAB_ID = "commands-view";
 
 // Drives the "Sidebar: Focus Sessions" command: reveal the sidebar and
 // switch to the Explorer tab if needed (reusing focusSidebarTab's own
@@ -1003,6 +1023,7 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
           run: () => {
             if (location === "explorer") focusExplorerPanel(namespacedId);
             else if (location === "run") focusAccordionPanel(RUN_TAB_ID, namespacedId);
+            else if (location === "commands") focusAccordionPanel(COMMANDS_TAB_ID, namespacedId);
             else focusSidebarTab(namespacedId);
           },
         });

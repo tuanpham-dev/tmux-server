@@ -310,26 +310,35 @@ ctx.registerSidebarPanel({
   id: string,
   title: string,
   icon?: string,                    // codicon name; default "extensions"
-  location?: "tab" | "explorer",    // default "tab"
-  defaultCollapsed?: boolean,       // "explorer" only
+  location?: "tab" | "explorer" | "run" | "commands",  // default "tab"
+  defaultCollapsed?: boolean,       // accordion locations only
+  order?: number,                   // accordion locations only: default placement weight
   focusBinding?: string,            // default binding for the focus command
   component: React.ComponentType<SidebarPanelHostProps>,
 });
 ```
 
-Two locations:
+Locations:
 
 - **`"tab"`** — its own full-height sidebar tab in the icon strip (SOURCE
   CONTROL, SEARCH). The auto-registered "Sidebar: Focus *title*" command
   reveals/switches to the tab, or hides the sidebar if it's already active
   (VS Code's toggle). The command only exists if `focusBinding` is given.
 - **`"explorer"`** — an accordion section inside the Explorer tab, beside
-  the built-in SESSIONS/FILES sections (how the bundled `ports` extension
-  renders PORTS). It participates fully in the accordion's drag-reorder,
-  collapse, and splitter-resize persistence under its namespaced id;
-  `defaultCollapsed` sets the state for users with no stored entry. The
-  focus command is **always** registered (unbound unless `focusBinding` is
-  given) and expands the section, then focuses its first focusable row.
+  the built-in SESSIONS/FILES sections. It participates fully in the
+  accordion's drag-reorder, collapse, and splitter-resize persistence under
+  its namespaced id; `defaultCollapsed` sets the state for users with no
+  stored entry. The focus command is **always** registered (unbound unless
+  `focusBinding` is given) and expands the section, then focuses its first
+  focusable row.
+- **`"run"`** — an accordion section inside the Run tab (TASKS, PORTS).
+  Same accordion semantics as `"explorer"`. The Run tab has no built-in
+  sections: it appears in the strip only while some extension contributes a
+  visible run panel.
+- **`"commands"`** — an accordion section inside the Commands tab (the
+  bundled command-history HISTORY and snippets SNIPPETS sections). Same
+  contract as `"run"`: accordion semantics, tab visible only while a
+  non-hidden panel exists.
 
 ```ts
 interface SidebarPanelHostProps {

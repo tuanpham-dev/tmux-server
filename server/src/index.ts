@@ -4,8 +4,12 @@ import path from "node:path";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { api } from "./api.js";
+import { subscribeCommandEvents } from "./commandEvents.js";
 import { loadEnabledServerHooks } from "./extensions.js";
 import { ensureOpenShim } from "./openUrl.js";
+import { notifyCommandDone } from "./push.js";
+import { readSettingsDoc } from "./settingsStore.js";
+import { ensureShellIntegration } from "./shellIntegration.js";
 import { getTunnelablePorts } from "./ports.js";
 import {
   handleProxyRequest,
@@ -329,4 +333,35 @@ loadEnabledServerHooks().catch((err) => {
 // server/src/openUrl.ts). Failure just disables the bridge, never the server.
 ensureOpenShim(PORT).catch((err) => {
   console.error("failed to write browser-opener shim:", err);
+});
+// Shell-integration snippet (OSC 133 marks + command reports — see
+// server/src/shellIntegration.ts). Same contract: failure only disables the
+// feature.
+ensureShellIntegration(PORT).catch((err) => {
+  console.error("failed to write shell integration:", err);
+});
+// Finished-command notifications (plans/warp-features.md Phase 2): every
+// shell-integration end event checks the user's threshold. The 1s floor
+// skips the settings-file read for the torrent of instant commands —
+// sub-second thresholds aren't offered by the UI anyway.
+subscribeCommandEvents((frame) => {
+  if (frame.event !== "end" || frame.durationMs === undefined || frame.durationMs < 1000) return;
+  readSettingsDoc()
+    .then((doc) => {
+      // The synced doc nests the AppSettings fields under a "settings" key
+      // (client/src/settings.ts's document shape), alongside keybindings,
+      // extensionSettings, etc.
+      const settings = doc.settings as Record<string, unknown> | undefined;
+      const threshold = Number(settings?.notifyCommandMinDuration);
+      if (!Number.isFinite(threshold) || threshold <= 0) return;
+      if (frame.durationMs! < threshold * 1000) return;
+      return notifyCommandDone(
+        frame.pane,
+        frame.sessionName,
+        frame.command,
+        frame.exitCode ?? 0,
+        frame.durationMs!,
+      );
+    })
+    .catch(() => {});
 });

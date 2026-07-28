@@ -428,6 +428,16 @@ export function extensionApiBase(id: string): string {
   return `/api/ext/${encodeURIComponent(id)}`;
 }
 
+// Shell integration status (plans/warp-features.md) — the Settings card's
+// "is it sourced anywhere" signal plus the canonical rc snippet.
+export function fetchShellIntegrationStatus(): Promise<{
+  receivedAny: boolean;
+  path: string;
+  sourceLine: string;
+}> {
+  return request("/api/command-events/status");
+}
+
 // Web-push notifications (plans/codeman-mobile-features.md Phase 4).
 export function fetchPushVapidKey(): Promise<{ publicKey: string }> {
   return request("/api/push/vapid-key");
