@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { sendWithInkSafeEnters, whenMatches } from "@tmux-server/engine-support";
-import { parseSend, type TouchKey } from "./touchKeys";
+import { parseSend, snippetIdOf, type TouchKey } from "./touchKeys";
 import { isVoiceInputSupported, VoiceInput } from "./voiceInput";
 
 interface Props {
@@ -49,6 +49,14 @@ export function visibleKeys(
       continue;
     }
     if (key.send === "{image}") {
+      result.push({ key, data: "" });
+      continue;
+    }
+    // Snippet keys resolve at tap time (see TouchKeyButton) — nothing to
+    // pre-parse, and a dangling reference still renders (the snippets
+    // extension explains the miss on tap rather than the key silently
+    // vanishing and reshuffling the layout).
+    if (snippetIdOf(key.send)) {
       result.push({ key, data: "" });
       continue;
     }
@@ -227,9 +235,27 @@ export function TouchKeyButton({
   onUploadImages: (files: File[]) => void;
 }) {
   const isCtrl = touchKey.send === "{ctrl}";
+  const snippetId = snippetIdOf(touchKey.send);
   const fire = () => {
-    if (isCtrl) onToggleStickyCtrl();
-    else sendWithInkSafeEnters(data, onSendInput);
+    if (isCtrl) {
+      onToggleStickyCtrl();
+    } else if (snippetId) {
+      // Handled by the snippets extension (see snippetIdOf's comment in
+      // touchKeys.ts). The send callback keeps the text targeted at THIS
+      // terminal — the snippets extension's own fallback types into the
+      // active session's pane, which isn't necessarily the tapped one.
+      window.dispatchEvent(
+        new CustomEvent("tmux-server:run-snippet", {
+          detail: {
+            id: snippetId,
+            send: (text: string, submit: boolean) =>
+              sendWithInkSafeEnters(text + (submit ? "\r" : ""), onSendInput),
+          },
+        }),
+      );
+    } else {
+      sendWithInkSafeEnters(data, onSendInput);
+    }
   };
   // Arrow keys hold-to-repeat; every other key is a single tap. Both hooks run
   // unconditionally (hook rules); the plain button below picks which to spread.

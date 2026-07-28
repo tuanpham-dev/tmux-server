@@ -37,6 +37,20 @@ export const DEFAULT_TOUCH_KEYS: TouchKey[] = [
   { label: "📷", send: "{image}", when: "claude" },
 ];
 
+// A "{snippet:<id>}" send runs a saved snippet from the bundled snippets
+// extension instead of sending bytes: the tap dispatches a
+// "tmux-server:run-snippet" CustomEvent (detail: { id, send }) that the
+// snippets extension listens for and answers with its full run flow —
+// {param} prompt dialogs, insert-only flag — replying through the provided
+// send callback so the text lands in the tapped terminal. Referencing by id
+// (never inlining the snippet text) is what keeps this notation and the
+// snippets' own {param} placeholder syntax from ever colliding.
+const SNIPPET_SEND_RE = /^\{snippet:([A-Za-z0-9._-]+)\}$/;
+
+export function snippetIdOf(send: string): string | null {
+  return SNIPPET_SEND_RE.exec(send.trim())?.[1] ?? null;
+}
+
 const SIMPLE_TOKENS: Record<string, string> = {
   esc: "\x1b",
   tab: "\t",

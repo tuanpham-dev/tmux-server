@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_TOUCH_KEYS, parseSend, type TouchKey } from "./touchKeys";
+import { DEFAULT_TOUCH_KEYS, parseSend, snippetIdOf, type TouchKey } from "./touchKeys";
 import { TouchKeyButton, visibleKeys } from "./TouchKeyBar";
 import { readKeys, useTouchKeySettingsTick, writeKeys } from "./client";
 
@@ -26,6 +26,32 @@ export default function TouchKeysEditor() {
   const set = (_key: "touchKeys", next: TouchKey[]) => writeKeys(next);
 
   const [previewTag, setPreviewTag] = useState("All");
+  // Saved snippets from the bundled snippets extension, for the "Add
+  // snippet key" picker. Read from the synced settings doc rather than a
+  // cross-extension API (extensions only see their own ctx) — the same
+  // first-party coupling category as core knowing git-scm's diff viewer.
+  // Empty (extension absent, no snippets, or fetch failure) just hides the
+  // picker; existing {snippet:…} keys keep working regardless.
+  const [snippetChoices, setSnippetChoices] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((doc) => {
+        const raw = doc?.extensionSettings?.["tmux-server.snippets"]?.["snippets.items"];
+        if (typeof raw !== "string" || !raw.trim()) return;
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return;
+        setSnippetChoices(
+          parsed
+            .filter((s): s is { id: string; name: string } =>
+              typeof s === "object" && s !== null &&
+              typeof (s as { id?: unknown }).id === "string" &&
+              typeof (s as { name?: unknown }).name === "string")
+            .map((s) => ({ id: s.id, name: s.name })),
+        );
+      })
+      .catch(() => {});
+  }, []);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -183,7 +209,8 @@ export default function TouchKeysEditor() {
         send: literal text, or tokens {"{esc} {tab} {enter} {up} {down} {left} {right} {home} {end} {pgup} {pgdn} {space} {^x}"}{" "}
         (Ctrl+x, e.g. {"{^c}"}), {"{{"} for a literal {"{"}, {"{ctrl}"} for sticky-Ctrl, {"{mic}"} for voice input (hidden if
         unsupported), {"{image}"} for an image picker (uploads to the Behavior settings' upload
-        directory and types the path). when: comma-separated program names (e.g. "nvim"); empty = always.
+        directory and types the path), {"{snippet:id}"} to run a saved snippet with its {"{param}"} prompts
+        (use "Add snippet key" below). when: comma-separated program names (e.g. "nvim"); empty = always.
       </div>
 
       <div className="touch-key-preview">
@@ -229,7 +256,8 @@ export default function TouchKeysEditor() {
       <div className="touch-key-editor">
         {keys.map((key, i) => {
           const parsed =
-            key.send === "{ctrl}" || key.send === "{mic}" || key.send === "{image}" || key.send === ""
+            key.send === "{ctrl}" || key.send === "{mic}" || key.send === "{image}" || key.send === "" ||
+            snippetIdOf(key.send) !== null
               ? null
               : parseSend(key.send);
           const error = parsed && "error" in parsed ? parsed.error : null;
@@ -283,6 +311,26 @@ export default function TouchKeysEditor() {
         <button type="button" className="dialog-button secondary" onClick={addKey}>
           Add key
         </button>
+        {snippetChoices.length > 0 && (
+          <select
+            className="dialog-input touch-key-editor-snippet-add"
+            value=""
+            onChange={(e) => {
+              const chosen = snippetChoices.find((s) => s.id === e.target.value);
+              if (chosen) {
+                set("touchKeys", [...keys, { label: chosen.name, send: `{snippet:${chosen.id}}`, when: "" }]);
+              }
+              e.target.value = "";
+            }}
+          >
+            <option value="">Add snippet key…</option>
+            {snippetChoices.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        )}
         <button type="button" className="dialog-button secondary" onClick={restoreDefaultKeys}>
           Restore default keys
         </button>
