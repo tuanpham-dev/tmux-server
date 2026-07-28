@@ -320,6 +320,12 @@ export interface ExtensionContext {
     // global built-in command plus every registered extension command, as
     // {id,label}. Snapshot, not live; call again after the registry changes.
     getCommands(): { id: string; label: string }[];
+    // Returns keyboard focus to the active terminal — for an extension UI
+    // (a dialog, an overlay) that stole focus and whose close should let
+    // the user keep typing at the prompt (e.g. press Enter on a command
+    // the extension just typed there). No-op when no terminal tab is
+    // focused.
+    focusActiveTerminal(): void;
   };
   // fetch() scoped to this extension's own server hook, mounted at
   // /api/ext/<extensionId> — 404s if the extension has no server entry or
@@ -696,6 +702,20 @@ const contextListeners = new Set<(ctx: ActiveContext) => void>();
 export function setActiveContext(ctx: ActiveContext): void {
   activeContextValue = ctx;
   for (const l of contextListeners) l(ctx);
+}
+
+let focusActiveTerminalHandler: (() => void) | null = null;
+
+// Registered by whichever TerminalView is currently focused (cleared on
+// unfocus). clear is identity-compared: React doesn't order one view's
+// effect cleanup against another view's effect across components, so an
+// unconditional null-out could drop the handler the newly-focused view
+// just registered.
+export function setFocusActiveTerminalHandler(handler: () => void): void {
+  focusActiveTerminalHandler = handler;
+}
+export function clearFocusActiveTerminalHandler(handler: () => void): void {
+  if (focusActiveTerminalHandler === handler) focusActiveTerminalHandler = null;
 }
 
 let openFileTabHandler: ((path: string, line?: number) => void) | null = null;
@@ -1163,6 +1183,7 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       },
       executeCommand: (commandId) => executeCommandHandler?.(commandId),
       getCommands: () => getCommandsHandler?.() ?? [],
+      focusActiveTerminal: () => focusActiveTerminalHandler?.(),
     },
     serverFetch(path, init) {
       return fetch(`${extensionApiBase(ext.id)}${path}`, init);

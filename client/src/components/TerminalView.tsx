@@ -4,7 +4,9 @@ import { copyText } from "../clipboard";
 import { getContextGetter } from "../contextKeys";
 import { GHOSTTY_ENGINE_ID, loadEngine, XTERM_ENGINE_ID } from "../engines";
 import {
+  clearFocusActiveTerminalHandler,
   extensionTerminalAccessories,
+  setFocusActiveTerminalHandler,
   useExtensionRegistryVersion,
   type TerminalAccessoryContext,
   type TerminalCommandEvent,
@@ -1917,6 +1919,17 @@ export default function TerminalView({
     if (!focused) return;
     if (window.matchMedia("(pointer: coarse)").matches) return;
     requestAnimationFrame(() => engineRef.current?.focus());
+  }, [focused]);
+
+  // While focused, this view answers ExtensionContext.app.focusActiveTerminal
+  // (an extension dialog closing and handing keys back to the prompt). The
+  // rAF matches the focused-effect above: the caller's own UI teardown must
+  // land first or its unmounting focus target steals the focus right back.
+  useEffect(() => {
+    if (!focused) return;
+    const handler = () => requestAnimationFrame(() => engineRef.current?.focus());
+    setFocusActiveTerminalHandler(handler);
+    return () => clearFocusActiveTerminalHandler(handler);
   }, [focused]);
 
   // Pixel rects (relative to .terminal-body) of the touch selection's first
