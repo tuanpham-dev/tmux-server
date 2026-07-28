@@ -153,6 +153,15 @@ export default function TerminalSection() {
         <span>Cursor blink</span>
       </label>
 
+      <label className="settings-row checkbox-row">
+        <input
+          type="checkbox"
+          checked={settings.copyJoinWrappedLines}
+          onChange={(e) => set("copyJoinWrappedLines", e.target.checked)}
+        />
+        <span>Join soft-wrapped lines when copying</span>
+      </label>
+
       <label className="settings-row">
         <span className="settings-label">Local echo when</span>
         <input

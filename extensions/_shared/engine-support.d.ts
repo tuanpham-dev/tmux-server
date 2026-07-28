@@ -38,4 +38,29 @@ declare module "@tmux-server/engine-support" {
   // with the touch-keys extension.
   export function whenMatches(when: string, command: string): boolean;
   export function sendWithInkSafeEnters(data: string, send: (chunk: string) => void): void;
+
+  // Copy-time wrapped-line joining (client/src/selectionText.ts). Range is
+  // 0-based, buffer-absolute, end column EXCLUSIVE — engines normalize
+  // their own getSelectionPosition() semantics before calling (xterm 6:
+  // already exclusive; ghostty-web 0.4: inclusive, pass end.x + 1).
+  export interface SelectionRangeExclusive {
+    startX: number;
+    startY: number;
+    endX: number;
+    endY: number;
+  }
+  export interface SelectionBufferCell {
+    getChars(): string;
+    getWidth(): number;
+  }
+  export interface SelectionBufferLine {
+    readonly isWrapped: boolean;
+    translateToString(trimRight?: boolean, startColumn?: number, endColumn?: number): string;
+    getCell?(x: number): SelectionBufferCell | undefined;
+  }
+  export interface SelectionTextTerminal {
+    readonly cols: number;
+    buffer: { active: { getLine(y: number): SelectionBufferLine | null | undefined } };
+  }
+  export function joinedSelectionText(term: SelectionTextTerminal, range: SelectionRangeExclusive): string;
 }

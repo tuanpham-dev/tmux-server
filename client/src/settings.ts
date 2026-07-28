@@ -43,6 +43,11 @@ export interface AppSettings {
   // colors on the blue selection background and becomes unreadable.
   // ghostty engine: shim (its extension's renderer shims). xterm engine: native option.
   minimumContrastRatio: number;
+  // Join soft-wrapped rows into one logical line when copying. tmux redraws
+  // destroy the engines' wrap flags, so without this a wrapped line copies
+  // with a "\n" at every wrap column (selectionText.ts). Off restores the
+  // engines' raw per-row selection text.
+  copyJoinWrappedLines: boolean;
   uploadConflict: "rename" | "overwrite" | "ask";
   // Destination directory for image paste/drop and the {image} touch key
   // (plans/mobile-image-upload-key.md) — an absolute path used as-is for
@@ -123,6 +128,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lineHeight: 1,
   letterSpacing: 0,
   minimumContrastRatio: 4.5,
+  copyJoinWrappedLines: true,
   uploadConflict: "rename",
   pasteDropUploadDir: "/tmp",
   localEchoWhen: "claude",

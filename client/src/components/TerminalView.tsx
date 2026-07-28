@@ -653,6 +653,7 @@ export default function TerminalView({
           letterSpacing: initialSettings.current.letterSpacing,
           minimumContrastRatio: initialSettings.current.minimumContrastRatio,
           textThickness: initialSettings.current.textThickness,
+          copyJoinWrappedLines: initialSettings.current.copyJoinWrappedLines,
         },
         theme,
         isVisible: () => visibleRef.current,
@@ -1873,6 +1874,7 @@ export default function TerminalView({
       letterSpacing: settings.letterSpacing,
       minimumContrastRatio: settings.minimumContrastRatio,
       textThickness: settings.textThickness,
+      copyJoinWrappedLines: settings.copyJoinWrappedLines,
     });
     refitRef.current?.();
   }, [settings]);

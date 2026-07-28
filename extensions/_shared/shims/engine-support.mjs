@@ -15,5 +15,6 @@ export const {
   ensureContrastRatio,
   whenMatches,
   sendWithInkSafeEnters,
+  joinedSelectionText,
 } = ES;
 export default ES;

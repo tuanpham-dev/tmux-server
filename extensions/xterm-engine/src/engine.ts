@@ -9,7 +9,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type FontWeight } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { cellFromPoint } from "@tmux-server/engine-support";
+import { cellFromPoint, joinedSelectionText } from "@tmux-server/engine-support";
 import { buildXtermLinkProvider, stitchXtermLine } from "./links";
 import type {
   CellPosition,
@@ -51,6 +51,9 @@ export async function createXtermEngine(
   } = options;
 
   let disposed = false;
+  // Live settings copy for the ones consulted at event time rather than
+  // applied to term.options (copyJoinWrappedLines) — updated in setSettings.
+  let currentSettings = initialSettings;
 
   const term = new Terminal({
     // Required by @xterm/addon-unicode11's terminal.unicode API below.
@@ -307,6 +310,39 @@ export async function createXtermEngine(
   // or dispose() can clean it up.
   let endLocalSelectionDrag: (() => void) | null = null;
 
+  // Selection text with soft-wrap joining. term.getSelection() only joins
+  // rows flagged isWrapped, and tmux's cursor-positioned redraws leave that
+  // flag unset — joinedSelectionText additionally joins rows filled to the
+  // last column. getSelectionPosition() here returns the selection model's
+  // raw 0-based coords with an EXCLUSIVE end column (verified against
+  // @xterm/xterm 6.0.0's CoreBrowserTerminal.getSelectionPosition), despite
+  // the 1-based IBufferRange typing — exactly the shape the helper takes.
+  const selectionForCopy = (): string => {
+    if (!currentSettings.copyJoinWrappedLines) return term.getSelection();
+    const pos = term.getSelectionPosition();
+    if (!pos) return term.getSelection();
+    return joinedSelectionText(term, {
+      startX: pos.start.x,
+      startY: pos.start.y,
+      endX: pos.end.x,
+      endY: pos.end.y,
+    });
+  };
+
+  // Browser-native copy (right-click → Copy, or a copy keydown no app
+  // keybinding claimed) fires on xterm's hidden textarea and is answered by
+  // xterm's own 'copy' handler on term.element with the raw un-joined text.
+  // Capture on `screen` (an ancestor) runs first and overrides it with the
+  // same joined text the app's copy paths produce.
+  const onCopyEvent = (e: ClipboardEvent) => {
+    if (!currentSettings.copyJoinWrappedLines) return;
+    if (!term.hasSelection() || !e.clipboardData) return;
+    e.clipboardData.setData("text/plain", selectionForCopy());
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  screen.addEventListener("copy", onCopyEvent, true);
+
   const handle: TerminalEngineHandle = {
     get cols() {
       return term.cols;
@@ -325,7 +361,7 @@ export async function createXtermEngine(
       if (suppressed) term.textarea.setAttribute("inputmode", "none");
       else term.textarea.removeAttribute("inputmode");
     },
-    getSelection: () => term.getSelection(),
+    getSelection: () => selectionForCopy(),
     clearSelection: () => term.clearSelection(),
     clear: () => term.clear(),
     // T1 finding: xterm's own mousedown/shift-force replay path only
@@ -420,6 +456,7 @@ export async function createXtermEngine(
       term.options.letterSpacing = s.letterSpacing;
       term.options.minimumContrastRatio = s.minimumContrastRatio;
       applyTextThickness(s.textThickness);
+      currentSettings = s;
     },
     // Spike finding: the DOM renderer re-measures on the next reflow once
     // document.fonts reflects the newly-loaded face — CSS font-family
@@ -487,6 +524,7 @@ export async function createXtermEngine(
     dispose: () => {
       disposed = true;
       endLocalSelectionDrag?.();
+      screen.removeEventListener("copy", onCopyEvent, true);
       screen.removeEventListener("mousemove", onTooltipMouseMove);
       term.textarea?.removeEventListener("compositionupdate", onCompositionUpdate);
       term.textarea?.removeEventListener("compositionend", onCompositionEndForPreview);
