@@ -169,7 +169,10 @@ export async function createSession(name?: string, cwd?: string): Promise<TmuxSe
   // (tmux ≥3.2, older than features this file already relies on) covers it.
   args.push("-e", `BROWSER=${openShimPath}`);
   const createdName = (await tmux(args)).trim();
-  const sessions = await listSessions();
+  // Not listSessions(): its ≤500ms-old cache (or an in-flight query started
+  // before the create) can predate this session — the invalidation middleware
+  // only fires on response finish, after this read. Query fresh.
+  const sessions = await querySessions();
   const created = sessions.find((s) => s.name === createdName);
   if (!created) throw new Error(`session "${createdName}" not found after create`);
   return created;
