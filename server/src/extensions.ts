@@ -465,6 +465,16 @@ export async function installFromTsixFile(tsixPath: string): Promise<ExtensionIn
     state[id] = true;
     await writeState(state);
 
+    // Install enables the extension (state[id] = true above), so its server
+    // hook must mount now too — before this, an installed extension's
+    // routes 404'd until a disable/enable round trip or a server restart
+    // (unnoticed until ai-command, the first .tsix with a server entry).
+    // Re-installing over an already-mounted version keeps the OLD hook (the
+    // imported module can't be re-imported anyway — see unmountServerHook's
+    // module comment) — a restart picks up the new server.js, same as any
+    // server-side code change.
+    await mountServerHookIfNeeded(id, dest, manifest);
+
     const info = (await listExtensions()).find((e) => e.id === id);
     if (!info) throw new Error("extension installed but could not be read back");
     return info;
