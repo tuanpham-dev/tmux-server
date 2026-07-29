@@ -177,6 +177,10 @@ export default function App() {
   // tab's edit resetting on its very first split, not by inspection.
   const [groupContentRects, setGroupContentRects] = useState<Record<string, DOMRect | null>>({});
   const groupContentObservers = useRef<Record<string, ResizeObserver>>({});
+  // Live measure closures, keyed like the observers — so the scroll-settle
+  // effect below can re-run them: a scroll-only correction moves the spacers
+  // without resizing them, which no ResizeObserver ever reports.
+  const groupContentMeasures = useRef<Record<string, () => void>>({});
   // Cached per groupId, same as getGroupActionsRef above — a fresh inline
   // ref closure every render makes React detach+reattach the ref (identity
   // changed) on every render, which re-triggers the ResizeObserver
@@ -189,13 +193,22 @@ export default function App() {
       cb = (el) => {
         groupContentObservers.current[groupId]?.disconnect();
         delete groupContentObservers.current[groupId];
+        delete groupContentMeasures.current[groupId];
         if (!el) {
           setGroupContentRects((prev) => (prev[groupId] == null ? prev : { ...prev, [groupId]: null }));
           return;
         }
         const measure = () => {
+          // Never cache a rect measured against a scrolled page: the content
+          // hosts consuming it are position:fixed (scroll-immune), so a
+          // scroll-shifted rect strands them off their spacer. The app is
+          // pinned to 0,0 (visualViewport effect below); during the
+          // transient scrolls of the on-screen-keyboard transition, keep the
+          // last good rect and let the scroll-settle effect re-measure.
+          if (window.scrollX !== 0 || window.scrollY !== 0) return;
           setGroupContentRects((prev) => ({ ...prev, [groupId]: el.getBoundingClientRect() }));
         };
+        groupContentMeasures.current[groupId] = measure;
         const observer = new ResizeObserver(measure);
         observer.observe(el);
         groupContentObservers.current[groupId] = observer;
@@ -260,11 +273,37 @@ export default function App() {
     // Some browsers move the keyboard/orientation resize through window
     // resize without a matching visualViewport event — listen to both.
     window.addEventListener("resize", apply);
+    // Android's keyboard-open focus-reveal scrolls the page through a plain
+    // window scroll, sometimes with no visualViewport event at all — pin
+    // straight back. Non-capture: element scrolls (terminal scrollback, the
+    // sidebar) don't bubble to window, only real page scrolls land here.
+    window.addEventListener("scroll", apply);
     return () => {
       vv.removeEventListener("resize", apply);
       vv.removeEventListener("scroll", apply);
       window.removeEventListener("resize", apply);
+      window.removeEventListener("scroll", apply);
       document.documentElement.style.removeProperty("--app-height");
+    };
+  }, []);
+
+  // Re-measure the split spacers when a page scroll settles: the corrective
+  // scrollTo(0,0) above is a scroll-only change — it moves every spacer
+  // without resizing anything, so the ResizeObservers in
+  // getGroupContentSlotRef stay silent and the position:fixed content hosts
+  // would keep coordinates cached against the scrolled page.
+  useEffect(() => {
+    let raf = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        for (const measure of Object.values(groupContentMeasures.current)) measure();
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll);
     };
   }, []);
 
