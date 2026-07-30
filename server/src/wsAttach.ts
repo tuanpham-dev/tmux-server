@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import * as pty from "node-pty";
 import { WebSocket } from "ws";
 import { registerAttach, type AttachCallbacks } from "./attachWatcher.js";
+import { spawnEnv } from "./spawnEnv.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import {
   applyTmuxOptions,
@@ -56,7 +57,9 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     cols: 80,
     rows: 24,
     cwd: process.env.HOME,
-    env: { ...process.env, TERM: "xterm-256color" } as Record<string, string>,
+    // spawnEnv: don't hand the server's own config (PORT, AUTH_TOKEN, ...)
+    // to the attach client — see spawnEnv.ts.
+    env: { ...spawnEnv(), TERM: "xterm-256color" } as Record<string, string>,
     // Skips node-pty's own utf8-decode-then-JSON-escape round trip for
     // every output chunk — onData below gets the PTY's raw bytes and ships
     // them as a binary WS frame instead. IPty.onData is typed string

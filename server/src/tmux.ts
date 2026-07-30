@@ -3,6 +3,7 @@ import { readdir, readFile, readlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { getGitRoot } from "./files.js";
 import { openShimPath } from "./openUrl.js";
+import { isServerOnlyVar, spawnEnv } from "./spawnEnv.js";
 
 // Synthetic tmux sessions created for per-window tabs (see createWindowTab)
 // are grouped with a real session so they share its windows, but are never
@@ -38,7 +39,10 @@ export interface TmuxSession {
 
 function tmux(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("tmux", args, { encoding: "utf8" }, (err, stdout, stderr) => {
+    // spawnEnv, not the default inherited env: any of these calls can be the
+    // one that starts the tmux server, which then keeps the spawner's env
+    // for life and leaks it into every pane (see spawnEnv.ts).
+    execFile("tmux", args, { encoding: "utf8", env: spawnEnv() }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(stderr.trim() || err.message));
       } else {
@@ -1165,5 +1169,24 @@ export async function applyTmuxOptions(port: number, serverPid: number): Promise
   // matter who attached or when — the hole VS Code's terminal-scoped
   // injection falls into under tmux.
   await tmux(["set-environment", "-g", "BROWSER", openShimPath]).catch(() => {});
+  // Scrub server-only vars (PORT, AUTH_TOKEN, npm_*, ...) that a tmux server
+  // spawned by an earlier build of this process inherited into its global
+  // environment — spawnEnv() stops new leaks, but a long-lived tmux server
+  // keeps its spawn-time env until told otherwise, and every new pane
+  // inherits it. Shells already running keep their copies; only a fresh
+  // pane/restart picks up the cleaned env.
+  try {
+    const leaked = (await tmux(["show-environment", "-g"]))
+      .split("\n")
+      // "NAME=value" for set vars; "-NAME" marks ones already unset — skip.
+      .map((line) => line.split("=", 1)[0])
+      .filter((name) => name && !name.startsWith("-") && isServerOnlyVar(name));
+    await Promise.all(
+      leaked.map((name) => tmux(["set-environment", "-gu", name]).catch(() => {})),
+    );
+  } catch {
+    // tmux hiccup — next fresh attach retries via lastOptionsAppliedPid.
+    return;
+  }
   lastOptionsAppliedPid = serverPid;
 }
