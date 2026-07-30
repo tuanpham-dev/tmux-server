@@ -11,6 +11,13 @@ export interface AppSettings {
   terminalEngine: string;
   fontFamily: string;
   fontSize: number;
+  // Terminal font size used instead of fontSize on real phones/tablets
+  // (the "(pointer: coarse) and (hover: none)" predicate App.tsx tracks).
+  // 0 (or anything below 8, the smallest real size) means "follow
+  // fontSize" — same 0-disables convention as notifyCommandMinDuration.
+  // Applied where fontSize is consumed for rendering (App.tsx's
+  // effectiveSettings), never written back into the stored blob.
+  fontSizeMobile: number;
   // Weight used for ordinary (non-bold) text: "medium" renders everything
   // in the font's 500 face when the extension ships one (IBM Plex Mono
   // does), falling back to regular per style otherwise. Implemented by
@@ -120,6 +127,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalEngine: "ext.tmux-server.xterm-engine.xterm",
   fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
+  fontSizeMobile: 0,
   fontWeight: "normal",
   textThickness: 0,
   fontWeightBold: "normal",

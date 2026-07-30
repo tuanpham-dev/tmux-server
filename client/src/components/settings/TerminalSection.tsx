@@ -61,6 +61,21 @@ export default function TerminalSection() {
       </label>
 
       <label className="settings-row">
+        <span className="settings-label">Font size (mobile)</span>
+        <NumberField
+          value={settings.fontSizeMobile}
+          min={0}
+          max={32}
+          step={1}
+          onCommit={(v) => set("fontSizeMobile", Math.round(v))}
+        />
+      </label>
+      <div className="settings-hint">
+        On phones and tablets, overrides Font size. 0 uses the desktop font
+        size.
+      </div>
+
+      <label className="settings-row">
         <span className="settings-label">Line height</span>
         <NumberField
           value={settings.lineHeight}

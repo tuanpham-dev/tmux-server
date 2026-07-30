@@ -437,6 +437,20 @@ export default function App() {
     setSidebarTabsOrder,
   } = useSettingsSync(extCommands);
 
+  // What rendering consumers see (TerminalView, useThemeAssets, extension
+  // viewers): on a real phone/tablet with fontSizeMobile set (≥ 8, the
+  // smallest real size — 0 means "follow fontSize"), fontSize is swapped
+  // for it. The raw `settings` keeps flowing to SettingsView and
+  // useSettingsSync — persistence and the Settings UI must see the stored
+  // values, or saving would clobber fontSize with the mobile value.
+  const effectiveSettings = useMemo(
+    () =>
+      mobilePointer && settings.fontSizeMobile >= 8
+        ? { ...settings, fontSize: settings.fontSizeMobile }
+        : settings,
+    [settings, mobilePointer],
+  );
+
   // Backs ctx.settings.set — extensions write their own configuration
   // values into the same server-synced store the Settings UI edits.
   useEffect(() => {
@@ -450,7 +464,7 @@ export default function App() {
   }, [setExtensionSettings]);
 
   const { extensions, reloadExtensions, activeTerminalTheme, fontsVersion } =
-    useThemeAssets(settings, extensionSettings, extensionSettingsRef);
+    useThemeAssets(effectiveSettings, extensionSettings, extensionSettingsRef);
 
   // Extension registry catalog (server/src/registry.ts) — fetched lazily on
   // the Extensions sidebar tab's first activation (see ensureRegistryLoaded)
@@ -975,14 +989,33 @@ export default function App() {
         if (idx !== -1 && idx < activeGroupTabs.length - 1) moveTab(activeTabId, idx + 1);
       },
       "tab.reopenClosed": reopenClosedTab,
+      // On a real phone/tablet with the mobile override active, these adjust
+      // fontSizeMobile — the size actually on screen there (effectiveSettings
+      // above) — instead of invisibly changing the desktop value. The MQ is
+      // evaluated inline rather than closing over mobilePointer so a
+      // memoized handler map can't hold a stale device class.
       "terminal.fontSizeIncrease": () => {
-        setSettings((prev) => ({ ...prev, fontSize: Math.min(32, prev.fontSize + 1) }));
+        setSettings((prev) =>
+          window.matchMedia("(pointer: coarse) and (hover: none)").matches && prev.fontSizeMobile >= 8
+            ? { ...prev, fontSizeMobile: Math.min(32, prev.fontSizeMobile + 1) }
+            : { ...prev, fontSize: Math.min(32, prev.fontSize + 1) },
+        );
       },
       "terminal.fontSizeDecrease": () => {
-        setSettings((prev) => ({ ...prev, fontSize: Math.max(8, prev.fontSize - 1) }));
+        setSettings((prev) =>
+          window.matchMedia("(pointer: coarse) and (hover: none)").matches && prev.fontSizeMobile >= 8
+            ? { ...prev, fontSizeMobile: Math.max(8, prev.fontSizeMobile - 1) }
+            : { ...prev, fontSize: Math.max(8, prev.fontSize - 1) },
+        );
       },
       "terminal.fontSizeReset": () => {
-        setSettings((prev) => ({ ...prev, fontSize: DEFAULT_SETTINGS.fontSize }));
+        // Reset on mobile clears the override (back to following fontSize)
+        // rather than resetting the desktop value.
+        setSettings((prev) =>
+          window.matchMedia("(pointer: coarse) and (hover: none)").matches && prev.fontSizeMobile >= 8
+            ? { ...prev, fontSizeMobile: 0 }
+            : { ...prev, fontSize: DEFAULT_SETTINGS.fontSize },
+        );
       },
       "split.right": () => splitGroup("right"),
       "split.down": () => splitGroup("down"),
@@ -1469,7 +1502,7 @@ export default function App() {
                   toolbarTarget={groupActionsEls[groupId] ?? null}
                   openInEditor={openFileInSession}
                   showMenu={showMenu}
-                  fontSize={settings.fontSize}
+                  fontSize={effectiveSettings.fontSize}
                   setDirty={(dirty) => {
                     if (dirty) dirtyTabsRef.current.add(tab.id);
                     else dirtyTabsRef.current.delete(tab.id);
@@ -1503,7 +1536,7 @@ export default function App() {
                 attachName={tab.attachName}
                 visible={visible}
                 focused={focused}
-                settings={settings}
+                settings={effectiveSettings}
                 theme={activeTerminalTheme}
                 fontsVersion={fontsVersion}
                 bindings={resolvedBindings}
@@ -1567,7 +1600,7 @@ export default function App() {
             panel={panel}
             panelFocused={panelFocused}
             sessions={sessions}
-            settings={settings}
+            settings={effectiveSettings}
             theme={activeTerminalTheme}
             fontsVersion={fontsVersion}
             bindings={resolvedBindings}
