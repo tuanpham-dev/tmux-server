@@ -123,6 +123,64 @@
   margin: 12px 0;
 }
 
+/* Copy-button wrapper around each fenced code block — the pre keeps its own
+   margins/scrolling; the wrapper only anchors the overlay button. */
+.markdown-codeblock {
+  position: relative;
+}
+
+.markdown-copy-button {
+  position: absolute;
+  top: 18px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  color: var(--fg-inactive);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.markdown-codeblock:hover .markdown-copy-button,
+.markdown-copy-button:focus-visible {
+  opacity: 1;
+}
+
+.markdown-copy-button:hover {
+  color: var(--fg-bright);
+}
+
+/* No hover on touch — keep the button always reachable. */
+@media (pointer: coarse) {
+  .markdown-copy-button {
+    opacity: 1;
+  }
+}
+
+/* Transient notice for a clicked link whose target doesn't exist. */
+.markdown-link-notice {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  max-width: 80%;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  color: var(--warning);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .markdown-body pre code {
   background: none;
   padding: 0;

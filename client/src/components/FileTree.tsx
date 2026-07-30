@@ -18,10 +18,18 @@ interface Props {
   refreshKey: number;
   onOpenFile: (path: string) => void;
   onPreviewFile: (path: string) => void;
+  // Opens the path in nvim directly — the hover icon's action for rows whose
+  // plain click opens a viewer (see fileHoverAction below).
+  onEditFile: (path: string) => void;
   // Registry-driven replacement for the old fileKinds.ts extension tables —
-  // true if some registered extension viewer claims this path in "preview"
-  // mode (see extensions.ts's findFileViewerFor), gating the hover icon.
+  // true if some preview-capable extension viewer claims this path (see
+  // extensions.ts's findPreviewCapableViewerFor), gating the secondary
+  // (Ctrl/Cmd+Shift-click / bare Shift-click) action.
   isPreviewable: (path: string) => boolean;
+  // Which hover icon a file row gets: the opposite of what a plain click
+  // does — "preview" (click opens nvim, icon opens the rendered preview),
+  // "edit" (click opens a viewer, icon opens nvim), or null for no icon.
+  fileHoverAction: (path: string) => "preview" | "edit" | null;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
   fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
@@ -131,7 +139,9 @@ export default function FileTree({
   refreshKey,
   onOpenFile,
   onPreviewFile,
+  onEditFile,
   isPreviewable,
+  fileHoverAction,
   onShowMenu,
   fileMenuItems,
   fileTreeRootMenuItems,
@@ -1036,18 +1046,26 @@ export default function FileTree({
               would split the leftover space between them instead of
               pinning the button flush against the badge. */}
           <span className="file-tree-row-trailer">
-            {isPreviewable(entry.name) && (
-              <button
-                className="file-tree-preview-button"
-                title="Preview"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onPreviewFile(entryPath);
-                }}
-              >
-                <Icon name="preview" />
-              </button>
-            )}
+            {(() => {
+              // The icon surfaces the opposite of a plain click: "preview"
+              // rows click into nvim, "edit" rows click into a viewer.
+              const hoverAction = fileHoverAction(entry.name);
+              if (!hoverAction) return null;
+              const isPreview = hoverAction === "preview";
+              return (
+                <button
+                  className="file-tree-preview-button"
+                  title={isPreview ? "Preview" : "Open in Editor"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (isPreview) onPreviewFile(entryPath);
+                    else onEditFile(entryPath);
+                  }}
+                >
+                  <Icon name={isPreview ? "preview" : "file-code"} />
+                </button>
+              );
+            })()}
             <DecorationBadge decoration={decoration} />
           </span>
         </div>

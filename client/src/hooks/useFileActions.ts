@@ -1,7 +1,12 @@
 import { useCallback, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
-import { findFileViewerFor, requestFindInFolder, type RegisteredFileViewer } from "../extensions";
+import {
+  findFileViewerFor,
+  findPreviewCapableViewerFor,
+  requestFindInFolder,
+  type RegisteredFileViewer,
+} from "../extensions";
 import type { AppSettings } from "../settings";
 import type { MenuItem } from "../types";
 import { collectDropped, uploadAll, type DroppedItems } from "../upload";
@@ -437,10 +442,11 @@ export function useFileActions(
       if (defaultViewer?.editorFallback) {
         items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
       }
-      // Markdown/JSON/YAML/CSV open in nvim by default (unchanged) — Preview
-      // is the opt-in path to the rendered view, mirroring the hover icon in
-      // FileTree.
-      if (!isDir && findFileViewerFor(entryPath, extFileViewers, "preview")) {
+      // Markdown/JSON/YAML/CSV get an explicit path to the rendered view.
+      // Preview-capable (not resolved-"preview"-mode) so the item survives
+      // markdown.clickAction: "preview", where a plain click already opens
+      // the preview but the menu should still name the action.
+      if (!isDir && findPreviewCapableViewerFor(entryPath, extFileViewers)) {
         items.push({ label: "Preview", onClick: () => openPreviewViewerTab(entryPath) });
       }
       items.push({

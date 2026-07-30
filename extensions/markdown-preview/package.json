@@ -16,6 +16,19 @@
           "minimum": 10,
           "maximum": 24,
           "description": "Font size (px) for the rendered Markdown preview body."
+        },
+        "markdown.clickAction": {
+          "type": "string",
+          "default": "edit",
+          "enum": [
+            "edit",
+            "preview"
+          ],
+          "enumDescriptions": [
+            "Clicking a Markdown file opens it in the editor; the preview is behind the hover icon and context menu.",
+            "Clicking a Markdown file opens the rendered preview; the editor is behind the hover icon and context menu."
+          ],
+          "description": "What a FILES-tree click on a Markdown file opens."
         }
       }
     }

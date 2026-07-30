@@ -1,7 +1,9 @@
 import { useCallback, useEffect } from "react";
 import * as api from "../api";
 import {
+  extensionFileOpenInterceptors,
   findFileViewerFor,
+  findPreviewCapableViewerFor,
   setOpenFileTabHandler,
   setOpenViewerTabHandler,
   setRefreshFilesHandler,
@@ -25,22 +27,41 @@ export function useFileOpeners(
   openExtViewerTab: (viewerId: string, filePath: string, title?: string) => void,
   setFilesRefreshKey: (updater: (k: number) => number) => void,
 ) {
-  // The "Preview" escape hatch (hover icon / context-menu item / Shift+Enter)
-  // for a path some "preview"-mode viewer claims — markdown/json/yaml/csv
-  // today. A no-op if no such viewer is registered (extension disabled, or
+  // The "Preview" escape hatch (context-menu item / Shift+Enter / hover icon
+  // when applicable) for a path some preview-capable viewer claims —
+  // markdown/json/yaml/csv today. Preview-capable rather than resolved-
+  // "preview"-mode so markdown's preview stays reachable here while
+  // markdown.clickAction: "preview" has its plain click opening the preview
+  // too. A no-op if no such viewer is registered (extension disabled, or
   // called before activation finishes).
   const openPreviewViewerTab = useCallback(
     (filePath: string) => {
-      const viewer = findFileViewerFor(filePath, extFileViewers, "preview");
+      const viewer = findPreviewCapableViewerFor(filePath, extFileViewers);
       if (viewer) openExtViewerTab(viewer.id, filePath);
     },
     [extFileViewers, openExtViewerTab],
   );
 
-  // Gates FileTree's hover preview icon — registry-driven replacement for
-  // the old fileKinds.ts isPreviewablePath.
+  // Gates the context menu's "Preview" item and the secondary-click paths —
+  // registry-driven replacement for the old fileKinds.ts isPreviewablePath.
   const isPreviewable = useCallback(
-    (filePath: string) => findFileViewerFor(filePath, extFileViewers, "preview") !== null,
+    (filePath: string) => findPreviewCapableViewerFor(filePath, extFileViewers) !== null,
+    [extFileViewers],
+  );
+
+  // FileTree's hover-icon action, by *resolved* mode (unlike isPreviewable):
+  // "preview" for a path whose click opens nvim but that has a rendered
+  // preview (markdown in "edit" clickAction, json/yaml/csv), "edit" for a
+  // path whose click opens a viewer directly but that's still editable
+  // (markdown in "preview" clickAction, images) — the icon always surfaces
+  // the opposite of what a plain click does. null: no icon (plain files,
+  // and media/PDF where nvim on the bytes is useless).
+  const fileHoverAction = useCallback(
+    (filePath: string): "preview" | "edit" | null => {
+      if (findFileViewerFor(filePath, extFileViewers, "preview")) return "preview";
+      if (findFileViewerFor(filePath, extFileViewers, "default")?.editorFallback) return "edit";
+      return null;
+    },
     [extFileViewers],
   );
 
@@ -91,11 +112,21 @@ export function useFileOpeners(
   // (terminal ctrl+click on a "file:line" link) is ignored by the viewer-tab
   // branch — it has no line-jump concept.
   const openFileOrViewer = useCallback(
-    (filePath: string, line?: number) => {
+    async (filePath: string, line?: number) => {
       const viewer = findFileViewerFor(filePath, extFileViewers, "default");
       if (viewer) {
         openExtViewerTab(viewer.id, filePath);
         return;
+      }
+      // Interceptors (file-guard's binary/large detection) get the path
+      // before it lands in nvim. Fail-open on purpose: a broken or disabled
+      // interceptor must never make files unopenable.
+      for (const { intercept } of [...extensionFileOpenInterceptors]) {
+        try {
+          if (await intercept(filePath)) return;
+        } catch {
+          // fall through to the next interceptor / the editor
+        }
       }
       openFileInSession(filePath, line);
     },
@@ -137,6 +168,7 @@ export function useFileOpeners(
   return {
     openPreviewViewerTab,
     isPreviewable,
+    fileHoverAction,
     openFileInSession,
     openFileOrViewer,
     openFileOrViewerSecondary,

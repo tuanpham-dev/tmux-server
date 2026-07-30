@@ -258,7 +258,9 @@ interface Props {
   onFilesRefresh: () => void;
   onOpenFile: (path: string) => void;
   onPreviewFile: (path: string) => void;
+  onEditFile: (path: string) => void;
   isPreviewable: (path: string) => boolean;
+  fileHoverAction: (path: string) => "preview" | "edit" | null;
   fileMenuItems: (path: string, isDir: boolean, rootDir: string) => MenuItem[];
   fileTreeRootMenuItems: (rootDir: string) => MenuItem[];
   fileMultiMenuItems: (entries: { path: string; isDir: boolean }[]) => MenuItem[];
@@ -342,7 +344,9 @@ export default function Sidebar({
   onFilesRefresh,
   onOpenFile,
   onPreviewFile,
+  onEditFile,
   isPreviewable,
+  fileHoverAction,
   fileMenuItems,
   fileTreeRootMenuItems,
   fileMultiMenuItems,
@@ -796,7 +800,9 @@ export default function Sidebar({
           refreshKey={filesRefreshKey}
           onOpenFile={onOpenFile}
           onPreviewFile={onPreviewFile}
+          onEditFile={onEditFile}
           isPreviewable={isPreviewable}
+          fileHoverAction={fileHoverAction}
           onShowMenu={onShowMenu}
           fileMenuItems={fileMenuItems}
           fileTreeRootMenuItems={fileTreeRootMenuItems}

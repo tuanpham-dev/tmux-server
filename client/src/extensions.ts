@@ -54,6 +54,12 @@ export interface FileViewerHostProps {
 
 export type FileViewerMode = "default" | "preview";
 
+// A viewer's registered mode: a fixed value, or a thunk re-read on every
+// lookup — for a viewer whose click action is user-configurable (markdown's
+// markdown.clickAction setting), so flipping the setting applies live
+// without re-registering the viewer. See resolveViewerMode.
+export type FileViewerModeSource = FileViewerMode | (() => FileViewerMode);
+
 export interface RegisteredFileViewer {
   id: string;
   extensionId: string;
@@ -63,7 +69,7 @@ export interface RegisteredFileViewer {
   // directly. "preview" (markdown/json/yaml/csv): a click still opens nvim;
   // this viewer is reached via the hover icon / "Preview" menu item /
   // Shift+Enter instead. See findFileViewerFor.
-  mode: FileViewerMode;
+  mode: FileViewerModeSource;
   // Whether the FILES-tree context menu offers "Open in Editor" (nvim) as an
   // escape hatch from this "default"-mode viewer — true for image (editing
   // e.g. an SVG's source) and any third-party binary viewer, false for
@@ -168,12 +174,18 @@ export interface ExtensionContext {
     id: string;
     extensions: string[];
     // Defaults to "default" when omitted, matching v1 extensions (like
-    // hello-extension) that predate the preview/default distinction.
-    mode?: FileViewerMode;
+    // hello-extension) that predate the preview/default distinction. A
+    // thunk is re-read on every lookup — see FileViewerModeSource.
+    mode?: FileViewerModeSource;
     // See RegisteredFileViewer.editorFallback. Defaults to true.
     editorFallback?: boolean;
     component: ReactNS.ComponentType<FileViewerHostProps>;
   }): void;
+  // Asynchronously claims a file open that would otherwise land in nvim —
+  // see RegisteredFileOpenInterceptor. Runs after "default"-mode viewer
+  // matching (so image/media/pdf viewers keep their paths) and must fail
+  // open: any thrown error falls through to the editor.
+  registerFileOpenInterceptor(intercept: (path: string) => Promise<boolean>): void;
   registerSidebarPanel(panel: {
     id: string;
     title: string;
@@ -562,8 +574,21 @@ export interface RegisteredTerminalEngine {
   create: CreateTerminalEngine;
 }
 
+// A file-open interceptor gets a shot at every path that would otherwise
+// fall through to nvim (after "default"-mode viewer matching, before
+// openFileInSession — see useFileOpeners.openFileOrViewer). Returning true
+// means "handled — open nothing else"; false/throwing falls through to the
+// next interceptor and ultimately nvim. Backs file-guard's binary/large
+// detection, which content-sniffs server-side and can't be expressed as an
+// extension-list viewer match.
+export interface RegisteredFileOpenInterceptor {
+  extensionId: string;
+  intercept: (path: string) => Promise<boolean>;
+}
+
 export const extensionCommands: RegisteredCommand[] = [];
 export const extensionFileViewers: RegisteredFileViewer[] = [];
+export const extensionFileOpenInterceptors: RegisteredFileOpenInterceptor[] = [];
 export const extensionSidebarPanels: RegisteredSidebarPanel[] = [];
 export const extensionWindowActions: RegisteredWindowAction[] = [];
 export const extensionFileDecorationProviders: RegisteredFileDecorationProvider[] = [];
@@ -653,6 +678,10 @@ export function getWindowDecorations(
 // FileViewerMode). Among ties, a non-builtin (user-installed) viewer wins
 // over a bundled one, so a third-party extension can override e.g. the
 // built-in CSV preview; otherwise first-registered wins.
+export function resolveViewerMode(viewer: RegisteredFileViewer): FileViewerMode {
+  return typeof viewer.mode === "function" ? viewer.mode() : viewer.mode;
+}
+
 export function findFileViewerFor(
   filePath: string,
   viewers: RegisteredFileViewer[],
@@ -660,11 +689,30 @@ export function findFileViewerFor(
 ): RegisteredFileViewer | null {
   const ext = getFileExtension(filePath);
   if (!ext) return null;
-  const matches = viewers.filter((v) => v.mode === mode && v.extensions.includes(ext));
+  const matches = viewers.filter((v) => resolveViewerMode(v) === mode && v.extensions.includes(ext));
   if (matches.length <= 1) return matches[0] ?? null;
   const isBuiltin = (extensionId: string) =>
     installedExtensions.find((e) => e.id === extensionId)?.builtin ?? false;
   return matches.find((v) => !isBuiltin(v.extensionId)) ?? matches[0];
+}
+
+// A viewer that can show a preview surface for this path in *some* state:
+// its resolved mode is "preview" right now, or its mode is a thunk (a thunk
+// marks a click-action-configurable viewer — its preview must stay reachable
+// from the "Preview" menu item / Shift+Enter even while a click opens it
+// directly). Same tie-breaking as findFileViewerFor via the mode filter.
+export function findPreviewCapableViewerFor(
+  filePath: string,
+  viewers: RegisteredFileViewer[],
+): RegisteredFileViewer | null {
+  return (
+    findFileViewerFor(filePath, viewers, "preview") ??
+    findFileViewerFor(
+      filePath,
+      viewers.filter((v) => typeof v.mode === "function"),
+      "default",
+    )
+  );
 }
 
 export function useExtensionRegistry(): {
@@ -1019,6 +1067,10 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       });
       notify();
     },
+    registerFileOpenInterceptor(intercept) {
+      extensionFileOpenInterceptors.push({ extensionId: ext.id, intercept });
+      notify();
+    },
     registerSidebarPanel(panel) {
       const namespacedId = `ext.${ext.id}.${panel.id}`;
       const location = panel.location ?? "tab";
@@ -1297,6 +1349,9 @@ function deactivateClientExtension(extId: string): void {
   }
   for (let i = extensionFileViewers.length - 1; i >= 0; i--) {
     if (extensionFileViewers[i].extensionId === extId) extensionFileViewers.splice(i, 1);
+  }
+  for (let i = extensionFileOpenInterceptors.length - 1; i >= 0; i--) {
+    if (extensionFileOpenInterceptors[i].extensionId === extId) extensionFileOpenInterceptors.splice(i, 1);
   }
   for (let i = extensionSidebarPanels.length - 1; i >= 0; i--) {
     if (extensionSidebarPanels[i].id.startsWith(prefix)) extensionSidebarPanels.splice(i, 1);

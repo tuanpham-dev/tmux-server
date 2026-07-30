@@ -675,6 +675,7 @@ export default function App() {
   const {
     openPreviewViewerTab,
     isPreviewable,
+    fileHoverAction,
     openFileInSession,
     openFileOrViewer,
     openFileOrViewerSecondary,
@@ -1319,7 +1320,9 @@ export default function App() {
             onFilesRefresh={handleFilesRefresh}
             onOpenFile={openFileOrViewer}
             onPreviewFile={openPreviewViewerTab}
+            onEditFile={openFileInSession}
             isPreviewable={isPreviewable}
+            fileHoverAction={fileHoverAction}
             fileMenuItems={fileMenuItems}
             fileTreeRootMenuItems={fileTreeRootMenuItems}
             fileMultiMenuItems={fileMultiMenuItems}
