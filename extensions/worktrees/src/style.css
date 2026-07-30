@@ -1,0 +1,182 @@
+/* ---- Worktrees panel ---- */
+
+.worktrees-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.worktrees-error {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--error);
+  word-break: break-word;
+}
+
+.worktrees-empty {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.worktrees-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+
+.worktrees-action:hover:not(:disabled) {
+  background: var(--list-hover-bg);
+}
+
+.worktrees-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- Create form ---- */
+
+.worktrees-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.worktrees-form-modes {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.worktrees-form-modes label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.worktrees-input {
+  background: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  padding: 3px 6px;
+  font-size: 13px;
+  font-family: inherit;
+  min-width: 0;
+}
+
+.worktrees-input:focus {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
+.worktrees-form-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.worktrees-form-buttons button {
+  flex: 1;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 2px;
+  border: 1px solid var(--button-border, transparent);
+  background: var(--button-bg);
+  color: var(--button-fg);
+  cursor: pointer;
+}
+
+.worktrees-form-buttons button[type="button"] {
+  background: var(--button-secondary-bg, var(--list-hover-bg));
+  color: var(--button-secondary-fg, var(--fg));
+}
+
+.worktrees-form-buttons button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- Rows ---- */
+
+.worktree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.worktree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 12px;
+  font-size: 13px;
+  color: var(--fg-bright);
+  cursor: pointer;
+  user-select: none;
+}
+
+.worktree-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.worktree-row:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
+.worktree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-dirty {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning, #cca700);
+}
+
+.worktree-tag {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--list-active-bg);
+  color: var(--fg-dim);
+}
+
+.worktree-tag-warn {
+  color: var(--error);
+}
+
+.worktree-session {
+  flex: none;
+  margin-left: auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--badge-bg, var(--list-active-bg));
+  color: var(--badge-fg, var(--fg));
+}

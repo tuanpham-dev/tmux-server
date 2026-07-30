@@ -631,6 +631,37 @@ Sets/clears the count badge on one of this extension's own `"tab"` sidebar
 panels (short id, un-namespaced). No-ops if the panel isn't registered.
 
 ```ts
+ctx.app.revealSidebarPanel(panelId: string): void
+```
+Reveals one of this extension's own sidebar panels (short id, un-namespaced):
+reveals the sidebar if hidden, switches to the panel's tab, and expands and
+focuses its accordion section. This is what the panel's auto-registered
+"Sidebar: Focus &lt;title&gt;" command does, minus that command's
+toggle-hide-when-already-active branch — a command that opens a panel's UI
+should never end with it hidden. No-ops if the panel isn't registered.
+
+```ts
+ctx.app.openSessionWindow(sessionName: string, opts?: { createCwd?: string }): void
+```
+Opens a tmux session's active window as a window-tab. If no session by that
+name exists, `opts.createCwd` creates it rooted there first — the same
+create-then-open path the sidebar's pinned-session restore uses — and without
+`createCwd`, a missing session surfaces an error to the user. A name that
+collides with an existing session surfaces tmux's own "duplicate session"
+error, so let the user pick or edit the name.
+
+```ts
+ctx.app.killSession(sessionName: string): void
+```
+Kills a tmux session and closes its tabs. Prefer this over killing tmux from
+your server hook: window-tabs attach to synthetic grouped
+`tmuxserver-view-*` sessions whose shared windows outlive the real session, so
+a raw `tmux kill-session` leaves them as live but orphaned tabs. Unlike the
+sidebar's own Kill Session, this runs **no confirmation of its own** — the
+caller owns the prompt, so an extension that already confirmed a larger
+destructive action doesn't double-prompt. Confirm before calling.
+
+```ts
 ctx.app.getFileIcon(fileName: string): IconResult
 ctx.app.getFolderIcon(folderName: string, expanded: boolean): IconResult
 ctx.app.onDidChangeIconTheme(cb): () => void

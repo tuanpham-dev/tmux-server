@@ -30,6 +30,27 @@ export function activate(ctx) {
     },
   });
 
+  // Session-level host APIs: reveal this extension's own panel, then open a
+  // session as a tab — creating it in the given directory when it doesn't
+  // exist yet (that's the whole flow the worktrees extension uses). Kill is
+  // deliberately unconfirmed by the host, so confirm it here.
+  registerCommand({
+    id: "demoSession",
+    label: "Hello Extension: Open Demo Session",
+    run: () => {
+      app.revealSidebarPanel("helloPanel");
+      app.openSessionWindow("hello-demo", { createCwd: app.getActiveContext().cwd ?? undefined });
+    },
+  });
+
+  registerCommand({
+    id: "killDemoSession",
+    label: "Hello Extension: Kill Demo Session",
+    run: () => {
+      if (window.confirm('Kill tmux session "hello-demo"?')) app.killSession("hello-demo");
+    },
+  });
+
   registerFileViewer({
     id: "demoViewer",
     extensions: ["demo"],

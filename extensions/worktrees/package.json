@@ -1,0 +1,25 @@
+{
+  "name": "worktrees",
+  "private": true,
+  "publisher": "tmux-server",
+  "version": "1.0.0",
+  "displayName": "Worktrees",
+  "description": "Built-in WORKTREES explorer section: git worktrees of the active repo, each openable as its own tmux session — for running parallel agents/branches without collisions (bundled — see extensions/build.mjs).",
+  "icon": "./icon.svg",
+  "contributes": {
+    "configuration": {
+      "title": "Worktrees",
+      "properties": {
+        "worktrees.location": {
+          "type": "string",
+          "default": "{repo}/.worktrees/{branch}",
+          "description": "Where new worktrees are created. {repo} is the repository root, {branch} the branch name (path separators in it replaced with '-'). A relative path resolves against the repository root. When the location is inside the repository, its top folder is added to .git/info/exclude so it stays out of git status (your committed .gitignore is never modified)."
+        }
+      }
+    }
+  },
+  "tmuxServer": {
+    "client": "./dist/client.js",
+    "server": "./server.js"
+  }
+}

@@ -86,13 +86,16 @@ export function useSessionActions(
     [refresh, openWindowTab, showError],
   );
 
-  const killSession = useCallback(
+  // The unconfirmed kill: tmux kill + the window-tab cascade + tab cleanup.
+  // Split out from killSession below so a caller that has already confirmed a
+  // larger destructive action reuses this exact cleanup instead of prompting
+  // twice — notably ctx.app.killSession (extensions.ts), whose contract is
+  // caller-confirms. A raw `tmux kill-session` is *not* equivalent: window-tabs
+  // attach to synthetic grouped tmuxserver-view-* sessions whose shared windows
+  // outlive the real session, so without closeWindowTab they linger as live but
+  // orphaned tabs (viewSweeper only reaps them after 24h *unattached*).
+  const killSessionNow = useCallback(
     async (name: string) => {
-      if (
-        settingsRef.current.confirmBeforeKill &&
-        !(await confirmDialog(`Kill tmux session "${name}"?`, "Kill Session"))
-      )
-        return;
       try {
         await api.killSession(name);
         for (const t of tabs) {
@@ -106,7 +109,19 @@ export function useSessionActions(
         showError(err);
       }
     },
-    [refresh, showError, confirmDialog, tabs, setTabs, settingsRef],
+    [refresh, showError, tabs, setTabs],
+  );
+
+  const killSession = useCallback(
+    async (name: string) => {
+      if (
+        settingsRef.current.confirmBeforeKill &&
+        !(await confirmDialog(`Kill tmux session "${name}"?`, "Kill Session"))
+      )
+        return;
+      await killSessionNow(name);
+    },
+    [confirmDialog, killSessionNow, settingsRef],
   );
 
   const renameSession = useCallback(
@@ -299,6 +314,7 @@ export function useSessionActions(
   return {
     createSession,
     killSession,
+    killSessionNow,
     renameSession,
     createWindow,
     selectWindowInSession,

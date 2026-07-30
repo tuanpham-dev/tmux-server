@@ -19,6 +19,8 @@ import {
   setExecuteCommandHandler,
   setExtensionSettingUpdater,
   setGetCommandsHandler,
+  setKillSessionHandler,
+  setOpenSessionWindowHandler,
   setSidebarVisibleHandler,
   useExtensionRegistry,
 } from "./extensions";
@@ -37,7 +39,7 @@ import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useGitRootDir } from "./hooks/useGitRootDir";
 import { useThemeAssets } from "./hooks/useThemeAssets";
-import type { MenuItem, MenuState, RegistrySourceResult } from "./types";
+import type { MenuItem, MenuState, RegistrySourceResult, TmuxSession } from "./types";
 import { groupKeyForTab, isRealTab } from "./lib/tabs";
 import { leaves } from "./lib/splits";
 import { emitPollTick } from "./lib/pollTick";
@@ -829,6 +831,7 @@ export default function App() {
   const {
     createSession,
     killSession,
+    killSessionNow,
     renameSession,
     createWindow,
     selectWindowInSession,
@@ -859,6 +862,45 @@ export default function App() {
     splitGroup,
     moveTabToAdjacentGroup,
   );
+
+  // ctx.app.openSessionWindow / ctx.app.killSession (extensions.ts) — the
+  // session-level counterparts of the openFileTab/openViewerTab bridges in
+  // useFileOpeners. Both route through the same hooks the sidebar's own menu
+  // items use, so an extension can't diverge from core's tab bookkeeping.
+  useEffect(() => {
+    setOpenSessionWindowHandler((sessionName, createCwd) => {
+      void (async () => {
+        // Queried fresh rather than read off `sessions`: an extension
+        // typically calls this immediately after creating the worktree/dir
+        // the session belongs to, and React state here can still predate the
+        // most recent poll (same rationale as findActiveWindowIndex in
+        // useSessionActions).
+        let existing: TmuxSession | undefined;
+        try {
+          existing = (await api.fetchSessions()).find((s) => s.name === sessionName);
+        } catch (err) {
+          showError(err);
+          return;
+        }
+        if (existing) {
+          const activeIndex = existing.windows.find((w) => w.active)?.index;
+          await refresh();
+          if (activeIndex !== undefined) await openWindowTab(sessionName, activeIndex);
+          return;
+        }
+        // restorePinnedSession is already exactly create-at-cwd → refresh →
+        // open the new window as a tab; nothing about it is pin-specific.
+        if (createCwd) {
+          await restorePinnedSession(sessionName, createCwd);
+          return;
+        }
+        showError(new Error(`No tmux session named "${sessionName}"`));
+      })();
+    });
+    setKillSessionHandler((sessionName) => {
+      void killSessionNow(sessionName);
+    });
+  }, [refresh, openWindowTab, restorePinnedSession, killSessionNow, showError]);
 
   // Session-windows dropdown for a tab-group chip's arrow button. Scoped per
   // editor group (like groupMenuItems), since "checked" below means "already

@@ -306,6 +306,28 @@ export interface ExtensionContext {
     // accordion, and the Run tab drops out of the tab strip once none of its
     // sections are visible. No-ops if that panel was never registered.
     setSidebarPanelVisible(panelId: string, visible: boolean): void;
+    // Reveals one of this extension's own sidebar panels (same unnamespaced
+    // panelId as setSidebarBadge): reveals the sidebar if hidden, switches to
+    // the panel's own tab, and expands/focuses its accordion section — the
+    // same path its auto-registered "Sidebar: Focus <title>" command takes,
+    // minus that command's toggle-hide-when-already-active branch, since a
+    // command that opens a panel's UI must never end with it hidden. No-ops
+    // if that panel was never registered.
+    revealSidebarPanel(panelId: string): void;
+    // Opens a tmux session's active window as a window-tab. When no session
+    // by that name exists, opts.createCwd creates it there first (same
+    // create-then-open path the sidebar's own pinned-session restore uses);
+    // without createCwd, a missing session surfaces an error to the user.
+    // Session-name collisions surface tmux's own "duplicate session" error —
+    // pick the name accordingly.
+    openSessionWindow(sessionName: string, opts?: { createCwd?: string }): void;
+    // Kills a tmux session and closes its tabs, including the synthetic
+    // per-window attachments a raw `tmux kill-session` would leave behind.
+    // Deliberately runs no confirmation of its own (unlike the sidebar's own
+    // Kill Session, which is gated by the confirmBeforeKill setting): the
+    // caller owns the prompt, so an extension that already confirmed a larger
+    // destructive action doesn't double-prompt. Confirm before calling.
+    killSession(sessionName: string): void;
     // One-shot: returns (and clears) a pending "files to include" glob
     // pushed by the FILES-tree "Find in Folder…" menu item, or null if
     // none is pending. Only the search extension's activate() is expected
@@ -792,6 +814,28 @@ export function setRefreshFilesHandler(handler: () => void): void {
   refreshFilesHandler = handler;
 }
 
+let openSessionWindowHandler:
+  | ((sessionName: string, createCwd?: string) => void)
+  | null = null;
+
+// Wired once from App.tsx to the same create-then-open-a-window-tab path the
+// sidebar's pinned-session restore uses — see
+// ExtensionContext.app.openSessionWindow.
+export function setOpenSessionWindowHandler(
+  handler: (sessionName: string, createCwd?: string) => void,
+): void {
+  openSessionWindowHandler = handler;
+}
+
+let killSessionHandler: ((sessionName: string) => void) | null = null;
+
+// Wired once from App.tsx to useSessionActions' killSessionNow — the
+// *unconfirmed* kill, since the extension caller owns the prompt (see
+// ExtensionContext.app.killSession).
+export function setKillSessionHandler(handler: (sessionName: string) => void): void {
+  killSessionHandler = handler;
+}
+
 // Wired from App.tsx to the same globalHandlers + extension-command map the
 // keyboard dispatcher (useGlobalKeybindings) runs — backs
 // ExtensionContext.app.executeCommand/getCommands. Nulled on unmount.
@@ -943,6 +987,21 @@ export function focusAccordionPanel(tabId: string, panelId: string): void {
 
 export function focusExplorerPanel(panelId: string): void {
   focusAccordionPanel(EXPLORER_TAB_ID, panelId);
+}
+
+// Backs ExtensionContext.app.revealSidebarPanel: same reveal/switch logic as
+// the panel's own focus command, but a "tab" panel that's already active is
+// left open rather than toggled shut (focusSidebarTab's hide branch) — an
+// extension revealing its panel to show something always means "show it".
+export function revealSidebarPanelById(panelId: string, location: SidebarPanelLocation): void {
+  if (location === "explorer") focusExplorerPanel(panelId);
+  else if (location === "run") focusAccordionPanel(RUN_TAB_ID, panelId);
+  else if (location === "commands") focusAccordionPanel(COMMANDS_TAB_ID, panelId);
+  else {
+    if (!sidebarVisibility) return;
+    if (!sidebarVisibility.isVisible()) sidebarVisibility.setVisible(true);
+    selectSidebarTab(panelId);
+  }
 }
 
 // "Find in Folder…" (FILES-tree folder context menu, useFileActions.ts) —
@@ -1216,6 +1275,18 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         if (!panel) return;
         panel.hidden = !visible;
         notify();
+      },
+      revealSidebarPanel(panelId) {
+        const namespaced = `ext.${ext.id}.${panelId}`;
+        const panel = extensionSidebarPanels.find((p) => p.id === namespaced);
+        if (!panel) return;
+        revealSidebarPanelById(namespaced, panel.location);
+      },
+      openSessionWindow(sessionName, opts) {
+        openSessionWindowHandler?.(sessionName, opts?.createCwd);
+      },
+      killSession(sessionName) {
+        killSessionHandler?.(sessionName);
       },
       consumeFindInFolderGlob: () => consumePendingFindInFolderGlob(),
       getFileIcon: (fileName) => getFileIconResult(fileName),
