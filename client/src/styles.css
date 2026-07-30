@@ -166,6 +166,13 @@ body {
   .resize-handle {
     display: none;
   }
+
+  /* Swipe left→right reopens the sidebar on touch (see the flick handler in
+     App.tsx), so the collapsed reopen strip is redundant — and a 4px tap
+     target on the screen edge is a poor one anyway. */
+  .sidebar-reopen {
+    display: none;
+  }
 }
 
 .resize-handle {
