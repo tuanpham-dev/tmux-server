@@ -167,6 +167,25 @@ export interface RegisteredWindowAction {
   showInTabBar?: boolean;
 }
 
+// An item contributed to the FILES-tree context menu of a single file or
+// directory row. isVisible is re-evaluated on every menu open (menus are
+// built on demand), so it can read whatever state the extension keeps. The
+// bulk menu shown for a multi-row selection is deliberately not a
+// contribution point — see fileMultiMenuItems.
+export interface RegisteredFileMenuItem {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  label: string;
+  // Codicon name for the menu's leading gutter (MenuItem.icon).
+  icon?: string;
+  // Placement weight among the extension items (ascending; unset sorts
+  // last, then registration order). Built-in items always come first.
+  order?: number;
+  isVisible(path: string, isDir: boolean): boolean;
+  onClick(path: string): void;
+}
+
 export interface ExtensionContext {
   React: typeof ReactNS;
   registerCommand(cmd: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
@@ -224,6 +243,17 @@ export interface ExtensionContext {
     isVisible: (ctx: WindowActionContext) => boolean;
     onClick: (ctx: WindowActionContext) => void;
     showInTabBar?: boolean;
+  }): void;
+  // Contributes an item to the FILES-tree context menu for a file or
+  // directory row, appended after the built-in items behind a separator.
+  // See RegisteredFileMenuItem.
+  registerFileMenuItem(item: {
+    id: string;
+    label: string;
+    icon?: string;
+    order?: number;
+    isVisible: (path: string, isDir: boolean) => boolean;
+    onClick: (path: string) => void;
   }): void;
   // Contributes per-row decorations (badge + row class + tooltip) to the
   // FILES tree, and optionally a root decoration (the branch pill slot).
@@ -613,6 +643,7 @@ export const extensionFileViewers: RegisteredFileViewer[] = [];
 export const extensionFileOpenInterceptors: RegisteredFileOpenInterceptor[] = [];
 export const extensionSidebarPanels: RegisteredSidebarPanel[] = [];
 export const extensionWindowActions: RegisteredWindowAction[] = [];
+export const extensionFileMenuItems: RegisteredFileMenuItem[] = [];
 export const extensionFileDecorationProviders: RegisteredFileDecorationProvider[] = [];
 export const extensionSessionDecorationProviders: RegisteredSessionDecorationProvider[] = [];
 export const extensionTerminalEngines: RegisteredTerminalEngine[] = [];
@@ -1173,6 +1204,18 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       });
       notify();
     },
+    registerFileMenuItem(item) {
+      extensionFileMenuItems.push({
+        id: `ext.${ext.id}.${item.id}`,
+        extensionId: ext.id,
+        label: item.label,
+        icon: item.icon,
+        order: item.order,
+        isVisible: item.isVisible,
+        onClick: item.onClick,
+      });
+      notify();
+    },
     registerFileDecorationProvider(provider) {
       extensionFileDecorationProviders.push({
         id: `ext.${ext.id}.${provider.id}`,
@@ -1429,6 +1472,9 @@ function deactivateClientExtension(extId: string): void {
   }
   for (let i = extensionWindowActions.length - 1; i >= 0; i--) {
     if (extensionWindowActions[i].extensionId === extId) extensionWindowActions.splice(i, 1);
+  }
+  for (let i = extensionFileMenuItems.length - 1; i >= 0; i--) {
+    if (extensionFileMenuItems[i].extensionId === extId) extensionFileMenuItems.splice(i, 1);
   }
   for (let i = extensionFileDecorationProviders.length - 1; i >= 0; i--) {
     if (extensionFileDecorationProviders[i].extensionId === extId) extensionFileDecorationProviders.splice(i, 1);

@@ -2,6 +2,7 @@ import { useCallback, useState, type Dispatch, type MutableRefObject, type SetSt
 import * as api from "../api";
 import { copyText } from "../clipboard";
 import {
+  extensionFileMenuItems,
   findFileViewerFor,
   findPreviewCapableViewerFor,
   requestFindInFolder,
@@ -455,6 +456,28 @@ export function useFileActions(
         danger: true,
         onClick: () => deleteFileEntry(entryPath, isDir),
       });
+      // Extension contributions last, behind a separator. Read from the
+      // module-level registry at menu-open time (not captured in this
+      // callback's deps) so a just-activated extension's items show up
+      // without waiting for a re-render — menus are built on demand.
+      const extItems = extensionFileMenuItems
+        .filter((item) => {
+          try {
+            return item.isVisible(entryPath, isDir);
+          } catch {
+            // A throwing isVisible hides its own item rather than breaking
+            // the whole menu — same fail-safe posture as the file-open
+            // interceptors.
+            return false;
+          }
+        })
+        .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER));
+      if (extItems.length > 0) {
+        items.push({ label: "", separator: true, onClick: () => {} });
+        for (const item of extItems) {
+          items.push({ label: item.label, icon: item.icon, onClick: () => item.onClick(entryPath) });
+        }
+      }
       return items;
     },
     [
