@@ -195,9 +195,12 @@ export interface TabGroupContext {
   cwd: string | null;
 }
 
-// An item contributed to a tab group's chip menu, below the built-in
-// collapse/color/move/close actions. Same per-open evaluation and fail-safe
-// posture as RegisteredFileMenuItem.
+// An item contributed to a tab-group chip's windows dropdown (the chip's
+// arrow button — App.tsx's chipWindowMenuItems), below the window list and
+// "New Window". Deliberately that menu rather than the chip's right-click
+// menu, which is about the group itself (collapse/color/move/close) while
+// this dropdown is where per-session actions already live. Same per-open
+// evaluation and fail-safe posture as RegisteredFileMenuItem.
 export interface RegisteredTabGroupMenuItem {
   // Namespaced ext.<extensionId>.<id>.
   id: string;
@@ -281,8 +284,8 @@ export interface ExtensionContext {
     isVisible: (path: string, isDir: boolean) => boolean;
     onClick: (path: string) => void;
   }): void;
-  // Contributes an item to a tab group's chip menu, appended after the
-  // built-in actions behind a separator. See RegisteredTabGroupMenuItem.
+  // Contributes an item to a tab-group chip's windows dropdown, appended
+  // after "New Window" behind a separator. See RegisteredTabGroupMenuItem.
   registerTabGroupMenuItem(item: {
     id: string;
     label: string;

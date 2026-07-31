@@ -5,7 +5,6 @@ import { useCallback, useEffect, useState, type Dispatch, type MutableRefObject,
 // file used before targeted (per-editor-group) activation existed.
 type SetActiveTabIdArg = string | null | ((current: string | null) => string | null);
 import * as api from "../api";
-import { extensionTabGroupMenuItems } from "../extensions";
 import { groupKeyForTab, isRealTab, loadStoredTabGroupState, moveGroupWithin, normalizeWithinGroups, orderedGroupKeys } from "../lib/tabs";
 import type { AppSettings } from "../settings";
 import type { MenuItem, Tab, TabGroupState, TmuxSession } from "../types";
@@ -227,35 +226,6 @@ export function useTabGroups(
           onClick: () => moveGroup(editorGroupId, sessionName, index + 1),
         });
       }
-      // A tab group is a tmux session, so its directory is the session's
-      // active window's cwd (first window as a fallback; null once the
-      // session itself is gone but its chip is still on screen).
-      const session = sessions.find((s) => s.name === sessionName);
-      const window = session?.windows.find((w) => w.active) ?? session?.windows[0];
-      const groupCtx = { sessionName, cwd: window?.cwd ?? null };
-      // Same contribution contract as the FILES-tree menu: read the
-      // module-level registry at menu-open time, throwing isVisible hides
-      // only its own item, extension rows last behind a separator.
-      const extItems = extensionTabGroupMenuItems
-        .filter((item) => {
-          try {
-            return item.isVisible(groupCtx);
-          } catch {
-            return false;
-          }
-        })
-        .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER));
-      const contributed: MenuItem[] =
-        extItems.length > 0
-          ? [
-              { label: "", separator: true, onClick: () => {} },
-              ...extItems.map((item) => ({
-                label: item.label,
-                icon: item.icon,
-                onClick: () => item.onClick(groupCtx),
-              })),
-            ]
-          : [];
       return [
         {
           label: collapsed ? "Expand Group" : "Collapse Group",
@@ -277,10 +247,9 @@ export function useTabGroups(
         },
         ...moveItems,
         { label: "Close Group", danger: true, onClick: () => closeGroupTabs(editorGroupId, sessionName) },
-        ...contributed,
       ];
     },
-    [tabGroupState, tabs, sessions, toggleGroupCollapsed, moveGroup, closeGroupTabs],
+    [tabGroupState, tabs, toggleGroupCollapsed, moveGroup, closeGroupTabs],
   );
 
   // Synchronous counterpart to the out-of-band rename-migration effect above

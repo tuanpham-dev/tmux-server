@@ -14,6 +14,7 @@ import TerminalView from "./components/TerminalView";
 import { COMMANDS_TAB_ID, EXPLORER_TAB_ID, EXTENSIONS_TAB_ID, RUN_TAB_ID } from "./components/Sidebar";
 import { getContextGetter, setContextKey } from "./contextKeys";
 import {
+  extensionTabGroupMenuItems,
   focusSessionsPanel,
   focusSidebarTab,
   setExecuteCommandHandler,
@@ -915,8 +916,37 @@ export default function App() {
   const chipWindowMenuItems = useCallback(
     (editorGroupId: string, sessionName: string): MenuItem[] => {
       const windows = sessions.find((s) => s.name === sessionName)?.windows ?? [];
+      // Extension contributions (registerTabGroupMenuItem), appended to this
+      // dropdown behind a separator. Read from the module-level registry at
+      // menu-open time rather than captured in this callback's deps, and a
+      // throwing isVisible hides only its own item — same contract as the
+      // FILES-tree menu's contributions. cwd is the session's active
+      // window's directory, so an item acts on the group it was opened from
+      // rather than on whichever session is focused.
+      const groupCtx = {
+        sessionName,
+        cwd: (windows.find((w) => w.active) ?? windows[0])?.cwd ?? null,
+      };
+      const contributed: MenuItem[] = extensionTabGroupMenuItems
+        .filter((item) => {
+          try {
+            return item.isVisible(groupCtx);
+          } catch {
+            return false;
+          }
+        })
+        .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER))
+        .map((item) => ({
+          label: item.label,
+          icon: item.icon,
+          onClick: () => item.onClick(groupCtx),
+        }));
+      const withContributions = (items: MenuItem[]): MenuItem[] =>
+        contributed.length > 0
+          ? [...items, { label: "", separator: true, onClick: () => {} }, ...contributed]
+          : items;
       if (windows.length === 0) {
-        return [{ label: "No windows", disabled: true, onClick: () => {} }];
+        return withContributions([{ label: "No windows", disabled: true, onClick: () => {} }]);
       }
       // A window-tab pins a specific index; the whole-session tab (no
       // windowIndex) instead shows whichever window tmux currently has
@@ -932,7 +962,7 @@ export default function App() {
         openIndexes.add(index);
         if (t.id === activeGroupTabId) activeIndex = index;
       }
-      return [
+      return withContributions([
         ...windows.map((w) => ({
           label: `${w.index} ${w.name}${w.index === activeIndex ? " *" : ""}`,
           checked: openIndexes.has(w.index),
@@ -940,7 +970,7 @@ export default function App() {
         })),
         { separator: true, label: "", onClick: () => {} },
         { label: "New Window", icon: "add", onClick: () => createWindow(sessionName) },
-      ];
+      ]);
     },
     [sessions, tabs, groupActive, openWindowTab, createWindow],
   );
