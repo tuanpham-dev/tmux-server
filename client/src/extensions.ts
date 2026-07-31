@@ -186,6 +186,32 @@ export interface RegisteredFileMenuItem {
   onClick(path: string): void;
 }
 
+// What a tab-group menu item's isVisible/onClick are evaluated against — a
+// plain snapshot, same convention as WindowActionContext. A tab group is a
+// tmux session, so cwd is that session's active window's directory (null
+// while it has no live window, e.g. a group whose session just died).
+export interface TabGroupContext {
+  sessionName: string;
+  cwd: string | null;
+}
+
+// An item contributed to a tab group's chip menu, below the built-in
+// collapse/color/move/close actions. Same per-open evaluation and fail-safe
+// posture as RegisteredFileMenuItem.
+export interface RegisteredTabGroupMenuItem {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  label: string;
+  // Codicon name for the menu's leading gutter (MenuItem.icon).
+  icon?: string;
+  // Placement weight among the extension items (ascending; unset sorts
+  // last, then registration order). Built-in items always come first.
+  order?: number;
+  isVisible(ctx: TabGroupContext): boolean;
+  onClick(ctx: TabGroupContext): void;
+}
+
 export interface ExtensionContext {
   React: typeof ReactNS;
   registerCommand(cmd: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
@@ -254,6 +280,16 @@ export interface ExtensionContext {
     order?: number;
     isVisible: (path: string, isDir: boolean) => boolean;
     onClick: (path: string) => void;
+  }): void;
+  // Contributes an item to a tab group's chip menu, appended after the
+  // built-in actions behind a separator. See RegisteredTabGroupMenuItem.
+  registerTabGroupMenuItem(item: {
+    id: string;
+    label: string;
+    icon?: string;
+    order?: number;
+    isVisible: (ctx: TabGroupContext) => boolean;
+    onClick: (ctx: TabGroupContext) => void;
   }): void;
   // Contributes per-row decorations (badge + row class + tooltip) to the
   // FILES tree, and optionally a root decoration (the branch pill slot).
@@ -644,6 +680,7 @@ export const extensionFileOpenInterceptors: RegisteredFileOpenInterceptor[] = []
 export const extensionSidebarPanels: RegisteredSidebarPanel[] = [];
 export const extensionWindowActions: RegisteredWindowAction[] = [];
 export const extensionFileMenuItems: RegisteredFileMenuItem[] = [];
+export const extensionTabGroupMenuItems: RegisteredTabGroupMenuItem[] = [];
 export const extensionFileDecorationProviders: RegisteredFileDecorationProvider[] = [];
 export const extensionSessionDecorationProviders: RegisteredSessionDecorationProvider[] = [];
 export const extensionTerminalEngines: RegisteredTerminalEngine[] = [];
@@ -1216,6 +1253,18 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       });
       notify();
     },
+    registerTabGroupMenuItem(item) {
+      extensionTabGroupMenuItems.push({
+        id: `ext.${ext.id}.${item.id}`,
+        extensionId: ext.id,
+        label: item.label,
+        icon: item.icon,
+        order: item.order,
+        isVisible: item.isVisible,
+        onClick: item.onClick,
+      });
+      notify();
+    },
     registerFileDecorationProvider(provider) {
       extensionFileDecorationProviders.push({
         id: `ext.${ext.id}.${provider.id}`,
@@ -1475,6 +1524,9 @@ function deactivateClientExtension(extId: string): void {
   }
   for (let i = extensionFileMenuItems.length - 1; i >= 0; i--) {
     if (extensionFileMenuItems[i].extensionId === extId) extensionFileMenuItems.splice(i, 1);
+  }
+  for (let i = extensionTabGroupMenuItems.length - 1; i >= 0; i--) {
+    if (extensionTabGroupMenuItems[i].extensionId === extId) extensionTabGroupMenuItems.splice(i, 1);
   }
   for (let i = extensionFileDecorationProviders.length - 1; i >= 0; i--) {
     if (extensionFileDecorationProviders[i].extensionId === extId) extensionFileDecorationProviders.splice(i, 1);
