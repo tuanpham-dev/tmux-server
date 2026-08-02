@@ -19,9 +19,9 @@ interface Props {
   // belongs in the buffered overlay when local echo is active, unlike every
   // other touch key.
   onSendVoiceText: (text: string) => void;
-  // A file picked via the `{image}` key (plans/mobile-image-upload-key.md)
-  // routes through this to TerminalView's uploadAndType — same upload
-  // pipeline as desktop paste/drop.
+  // Files picked via the `{image}` key (plans/mobile-image-upload-key.md)
+  // route through this to TerminalView's uploadAndType — same upload
+  // pipeline as desktop paste/drop. Any file type, not just images.
   onUploadImages: (files: File[]) => void;
 }
 
@@ -178,13 +178,15 @@ function MicKeyButton({ label, onTranscript }: { label: string; onTranscript: (t
   );
 }
 
-// An `{image}` key: opens the native file picker (photo library + camera on
-// iOS/Android via accept="image/*") on tap, then hands the picked file to
-// onUploadImages — TerminalView's uploadAndType, the same upload pipeline
-// desktop paste/drop use. The <input> stays hidden and permanently
-// mounted; tap just proxies to its own click() (an <input type=file> can't
-// be opened programmatically outside a user gesture, so this must fire from
-// the same tap handler every other key uses).
+// An `{image}` key: opens the native file picker on tap, then hands the
+// picked files to onUploadImages — TerminalView's uploadAndType, the same
+// upload pipeline desktop paste/drop use. No `accept` attribute, so any file
+// type can be picked (on iOS/Android the picker still offers the photo
+// library and camera alongside the file browser); the token stays `{image}`
+// for compatibility with saved layouts. The <input> stays hidden and
+// permanently mounted; tap just proxies to its own click() (an
+// <input type=file> can't be opened programmatically outside a user gesture,
+// so this must fire from the same tap handler every other key uses).
 function ImageKeyButton({ label, onUploadImages }: { label: string; onUploadImages: (files: File[]) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const tap = useTapHandlers(() => inputRef.current?.click());
@@ -194,7 +196,6 @@ function ImageKeyButton({ label, onUploadImages }: { label: string; onUploadImag
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
         multiple
         style={{ display: "none" }}
         onChange={(e) => {

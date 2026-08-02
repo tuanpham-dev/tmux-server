@@ -50,11 +50,21 @@
 }
 
 /* touchKeyBarStyle "floating" — a movable AssistiveTouch-style toggle
-   overlaying the terminal, plus the key cluster it expands. Positioned via
-   inline left/top (toggle) and left/right + top/bottom (cluster), computed
-   in FloatingTouchKeys.tsx from the container's live rect. */
+   overlaying the terminal, plus the key cluster it expands. Both are
+   portalled to <body> and positioned via inline left/top/width in viewport
+   coordinates, computed in FloatingTouchKeys.tsx from the container's live
+   rect — hence position:fixed rather than absolute.
+
+   z-index 45 puts them above the app overlay layer (z-index 40), which is
+   where extensions' full-width overlays live — one-hand's bottom gesture
+   strip in particular, which would otherwise sit on top of a toggle or key
+   parked over it and swallow the tap. Still below the split drag chrome
+   (z-index 50) and menus/dialogs (1000+), which should cover these. The
+   portal is what makes this z-index meaningful at all: inside the terminal's
+   .split-content-host (a z-index 0 stacking context) no value could clear
+   the overlay layer. */
 .touch-key-fab {
-  position: absolute;
+  position: fixed;
   width: 44px;
   height: 44px;
   display: flex;
@@ -70,7 +80,7 @@
   -webkit-touch-callout: none;
   touch-action: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  z-index: 5;
+  z-index: 45;
 }
 
 .touch-key-fab.active {
@@ -80,6 +90,7 @@
 }
 
 .touch-key-fab-cluster {
+  position: fixed;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -88,7 +99,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  z-index: 5;
+  z-index: 45;
 }
 
 .touch-key-fab-cluster .touch-key {

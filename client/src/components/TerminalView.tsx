@@ -369,9 +369,10 @@ export default function TerminalView({
   // routes through this — set to the mount effect's uploadAndType, the same
   // upload pipeline desktop paste/drop already use.
   const uploadImageRef = useRef<(file: File) => void>(() => {});
-  // Multi-image counterpart (paste/drop of several images, and the 📷 key's
-  // multi-select) — uploads all and inserts their paths as one no-submit
-  // block. Set alongside uploadImageRef in the mount effect.
+  // Multi-file counterpart (pasting several images, dropping several files of
+  // any type, and the 📷 key's multi-select) — uploads all and inserts their
+  // paths as one no-submit block. Set alongside uploadImageRef in the mount
+  // effect.
   const uploadImagesRef = useRef<(files: File[]) => void>(() => {});
   // Pushed by the server's attach watcher (a "command" WS message) whenever
   // this attach's foreground program changes — drives touch keys' `when`
@@ -1736,6 +1737,9 @@ export default function TerminalView({
       // gutters included), not just the screen — anywhere over the pane is a
       // reasonable drop target. dragover must preventDefault too, or the
       // browser never fires drop at all (its default is "reject the drop").
+      // Any file type uploads here, unlike onPaste above: a drop carrying
+      // files is unambiguously a file drop, whereas intercepting every
+      // non-image paste would break ordinary text paste.
       const onDragOver = (e: DragEvent) => {
         if (!whenMatches(localEchoWhenRef.current, liveCommand)) return;
         if (!Array.from(e.dataTransfer?.items ?? []).some((it) => it.kind === "file")) return;
@@ -1744,13 +1748,12 @@ export default function TerminalView({
       const onDrop = (e: DragEvent) => {
         if (!whenMatches(localEchoWhenRef.current, liveCommand)) return;
         const files = Array.from(e.dataTransfer?.files ?? []);
-        const imageFiles = files.filter((f) => f.type.startsWith("image/"));
-        if (imageFiles.length === 0) return;
+        if (files.length === 0) return;
         e.preventDefault();
-        if (imageFiles.length === 1) {
-          uploadAndType(imageFiles[0], uniqueUploadName(imageFiles[0].name, imageFiles[0].type));
+        if (files.length === 1) {
+          uploadAndType(files[0], uniqueUploadName(files[0].name, files[0].type));
         } else {
-          uploadAndTypeMany(imageFiles.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })));
+          uploadAndTypeMany(files.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })));
         }
       };
       terminalBodyRef.current!.addEventListener("dragover", onDragOver);
