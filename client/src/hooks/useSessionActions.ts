@@ -1,6 +1,7 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as api from "../api";
-import { isRealTab } from "../lib/tabs";
+import { copyText } from "../clipboard";
+import { isRealTab, tabVirtualPath } from "../lib/tabs";
 import type { SplitDirection } from "../lib/splits";
 import type { AppSettings } from "../settings";
 import type { MenuItem, PinnedSession, Tab, TmuxSession, TmuxWindow } from "../types";
@@ -41,6 +42,10 @@ export function useSessionActions(
   setPinnedSessions: Dispatch<SetStateAction<PinnedSession[]>>,
   splitGroup: (direction: SplitDirection, tabId?: string) => Promise<void>,
   moveTabToAdjacentGroup: (tabId: string, direction: "next" | "previous") => void,
+  // The FILES tree's resolved root (App.tsx's resolvedFilesRootDir) — the
+  // base tabMenuItems' "Copy Relative Path" resolves against, matching the
+  // tree's own copyFileRelativePath semantics.
+  filesRootDir: string | null,
 ) {
   // Every sidebar action that creates a session/window now ends by opening
   // that window as a window-tab (not the shared whole-session tab) — see the
@@ -285,9 +290,31 @@ export function useSessionActions(
         { label: "Close Tab", onClick: () => closeTab(tab.id) },
         { label: "Close Other Tabs", onClick: () => closeOtherTabs(tab.id) },
       ];
+      // A viewer tab shows a file, so its menu offers the same path copies
+      // as the FILES tree's row menu (useFileActions), against the same
+      // root. Falls back to the absolute path when the file lies outside
+      // the current root — e.g. a preview left open after switching to a
+      // session in another repo.
+      const virtualPath = tabVirtualPath(tab);
+      const pathItems: MenuItem[] =
+        virtualPath === undefined
+          ? []
+          : [
+              { label: "Copy Path", onClick: () => copyText(virtualPath).catch(showError) },
+              {
+                label: "Copy Relative Path",
+                onClick: () => {
+                  const rel =
+                    filesRootDir && virtualPath.startsWith(filesRootDir + "/")
+                      ? virtualPath.slice(filesRootDir.length + 1)
+                      : virtualPath;
+                  copyText(rel).catch(showError);
+                },
+              },
+            ];
       // Virtual tabs (image/markdown preview) have no tmux session — New
       // Window/Rename/Kill Session don't apply.
-      if (!isRealTab(tab)) return [...splitItems, ...closeItems];
+      if (!isRealTab(tab)) return [...splitItems, ...closeItems, ...pathItems];
       return [
         ...splitItems,
         ...closeItems,
@@ -308,6 +335,8 @@ export function useSessionActions(
       killSession,
       splitGroup,
       moveTabToAdjacentGroup,
+      filesRootDir,
+      showError,
     ],
   );
 

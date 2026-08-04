@@ -862,6 +862,7 @@ export default function App() {
     setPinnedSessions,
     splitGroup,
     moveTabToAdjacentGroup,
+    resolvedFilesRootDir,
   );
 
   // ctx.app.openSessionWindow / ctx.app.killSession (extensions.ts) — the
