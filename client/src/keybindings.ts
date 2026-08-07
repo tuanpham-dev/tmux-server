@@ -21,10 +21,10 @@ export interface Command {
   // Terminal-scoped commands are dispatched from the terminal's own key handler
   // in TerminalView; files-scoped commands are dispatched from the FILES tree's
   // own key handler in FileTree.tsx; sessions-scoped commands are dispatched
-  // from SessionList.tsx's own key handler. None of these go through the
+  // from ProjectList.tsx’s own key handler. None of these go through the
   // global window dispatcher (useGlobalKeybindings), which yields to all
   // three scopes instead.
-  scope: "global" | "terminal" | "files" | "sessions";
+  scope: "global" | "terminal" | "files" | "projects";
   // When-expression gating this command's *palette row* (not its keybinding
   // dispatch — a binding's own `when` on Keybinding does that). Evaluated
   // against context keys the same way a binding's when is; absent means
@@ -81,13 +81,12 @@ export const COMMANDS: Command[] = [
   { id: "panel.split", label: "Panel: Split Terminal Right", defaultBindings: [], scope: "global" },
   { id: "settings.open", label: "Open Settings", defaultBindings: [{ key: "ctrl+Comma" }], scope: "global" },
   { id: "settings.openKeyboardShortcuts", label: "Preferences: Open Keyboard Shortcuts", defaultBindings: [], scope: "global" },
-  { id: "session.new", label: "Session: New", defaultBindings: [], scope: "global" },
-  { id: "session.kill", label: "Session: Kill Current", defaultBindings: [], scope: "global", enablement: "activeSession" },
-  { id: "session.rename", label: "Session: Rename Current…", defaultBindings: [], scope: "global", enablement: "activeSession" },
+  { id: "session.new", label: "Project: New…", defaultBindings: [], scope: "global" },
+  { id: "session.kill", label: "Project: Close Current", defaultBindings: [], scope: "global", enablement: "activeSession" },
   { id: "session.togglePin", label: "Session: Pin/Unpin Current", defaultBindings: [], scope: "global", enablement: "activeSession" },
-  { id: "window.new", label: "Window: New", defaultBindings: [], scope: "global", enablement: "activeSession" },
-  { id: "window.kill", label: "Window: Kill Current", defaultBindings: [], scope: "global", enablement: "activeSession && activeWindow" },
-  { id: "window.rename", label: "Window: Rename Current…", defaultBindings: [], scope: "global", enablement: "activeSession && activeWindow" },
+  { id: "window.new", label: "Terminal: New", defaultBindings: [], scope: "global", enablement: "activeSession" },
+  { id: "window.kill", label: "Terminal: Close Current", defaultBindings: [], scope: "global", enablement: "activeSession && activeWindow" },
+  { id: "window.rename", label: "Terminal: Rename Current…", defaultBindings: [], scope: "global", enablement: "activeSession && activeWindow" },
   { id: "terminal.copy", label: "Terminal: Copy Selection", defaultBindings: [{ key: "ctrl+shift+KeyC", when: "terminalFocus" }], scope: "terminal" },
   { id: "terminal.find", label: "Terminal: Find", defaultBindings: [{ key: "ctrl+shift+KeyF", when: "terminalFocus" }], scope: "terminal" },
   { id: "terminal.newline", label: "Terminal: Insert Newline", defaultBindings: [{ key: "shift+Enter", when: "terminalFocus" }], scope: "terminal" },
@@ -110,11 +109,11 @@ export const COMMANDS: Command[] = [
   { id: "files.newFolder", label: "Files: New Folder…", defaultBindings: [], scope: "files" },
   { id: "files.copyPath", label: "Files: Copy Path", defaultBindings: [], scope: "files" },
   { id: "files.copyRelativePath", label: "Files: Copy Relative Path", defaultBindings: [], scope: "files" },
-  { id: "sessions.kill", label: "Sessions: Kill Focused", defaultBindings: [{ key: "Delete", when: "sessionsListFocus" }], scope: "sessions" },
-  { id: "sessions.rename", label: "Sessions: Rename Focused…", defaultBindings: [{ key: "F2", when: "sessionsListFocus" }], scope: "sessions" },
-  { id: "sessions.newWindow", label: "Sessions: New Window in Focused Session", defaultBindings: [], scope: "sessions" },
-  { id: "sessions.togglePin", label: "Sessions: Pin/Unpin Focused Session", defaultBindings: [], scope: "sessions" },
-  { id: "sidebar.focusSessions", label: "Sidebar: Focus Sessions", defaultBindings: [], scope: "global" },
+  { id: "projects.kill", label: "Projects: Close Focused", defaultBindings: [{ key: "Delete", when: "projectsListFocus" }], scope: "projects" },
+  { id: "projects.rename", label: "Projects: Rename Focused Terminal…", defaultBindings: [{ key: "F2", when: "projectsListFocus" }], scope: "projects" },
+  { id: "projects.newWindow", label: "Projects: New Terminal in Focused Project", defaultBindings: [], scope: "projects" },
+  { id: "projects.togglePin", label: "Projects: Pin/Unpin Focused Project", defaultBindings: [], scope: "projects" },
+  { id: "sidebar.focusProjects", label: "Sidebar: Focus Projects", defaultBindings: [], scope: "global" },
 ];
 
 // Overrides only (command id → its full replacement binding set, [] meaning
@@ -156,7 +155,29 @@ function isKeybinding(value: unknown): value is Keybinding {
 // extension's namespaced command so their custom binding keeps working.
 const RENAMED_COMMAND_IDS: Record<string, string> = {
   "sidebar.focusPorts": "ext.tmux-server.ports.ports.focus",
+  // The SESSIONS pane became the PROJECTS pane (plans/projects-not-sessions.md)
+  // — pane-scoped ids and its focus command renamed with it.
+  "sessions.kill": "projects.kill",
+  "sessions.rename": "projects.rename",
+  "sessions.newWindow": "projects.newWindow",
+  "sessions.togglePin": "projects.togglePin",
+  "sidebar.focusSessions": "sidebar.focusProjects",
 };
+
+// Context keys renamed alongside the commands above — a stored override's
+// custom `when` clause keeps evaluating against the live key.
+const RENAMED_CONTEXT_KEYS: Record<string, string> = {
+  sessionsListFocus: "projectsListFocus",
+};
+
+function migrateWhen(binding: Keybinding): Keybinding {
+  if (!binding.when) return binding;
+  let when = binding.when;
+  for (const [from, to] of Object.entries(RENAMED_CONTEXT_KEYS)) {
+    when = when.replace(new RegExp(`\\b${from}\\b`, "g"), to);
+  }
+  return when === binding.when ? binding : { ...binding, when };
+}
 
 export function migrateKeybindingOverrides(raw: unknown): KeybindingOverrides {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
@@ -166,7 +187,7 @@ export function migrateKeybindingOverrides(raw: unknown): KeybindingOverrides {
     if (typeof value === "string") {
       result[targetId] = value === "" ? [] : [{ key: value }];
     } else if (Array.isArray(value) && value.every(isKeybinding)) {
-      result[targetId] = value;
+      result[targetId] = value.map(migrateWhen);
     }
   }
   return result;

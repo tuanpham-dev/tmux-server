@@ -1,5 +1,5 @@
 import { migrateKeybindingOverrides, type KeybindingOverrides } from "./keybindings";
-import type { PinnedSession } from "./types";
+import type { Project } from "./types";
 
 export interface AppSettings {
   // "auto" resolves per device (xterm on mobile pointers, ghostty
@@ -80,12 +80,13 @@ export interface AppSettings {
   // bar, or immediately to the right of the active tab.
   newTabPlacement: "end" | "afterActive";
   // Chrome-style tab groups: each session's tabs sit behind a colored,
-  // collapsible chip in the tab bar. Off by default — pure opt-in.
+  // collapsible chip in the tab bar. On by default since projects became
+  // the organizing unit (plans/project-first-ui.md); migrateSettings flips
+  // a stored false once (guarded), so a later deliberate opt-out sticks.
   tabGroupsBySession: boolean;
-  // Default cwd for new sessions. Empty = server default (NEW_SESSION_CWD
-  // from server/.env, else the server's own cwd). Validated server-side; a
-  // non-existent path silently falls back rather than failing the create.
-  newSessionCwd: string;
+  // Where the Open Folder dialog starts browsing. Empty = home. Renamed
+  // from newSessionCwd (migrateSettings copies the old key forward).
+  defaultProjectsFolder: string;
   // `${extensionId}:${themeLabel}` from an installed extension's
   // contributes.themes — see theme.ts. Defaults to the bundled
   // tmux-server.plastic-legacy-theme extension; "" (or any unresolvable
@@ -143,8 +144,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",
-  tabGroupsBySession: false,
-  newSessionCwd: "",
+  tabGroupsBySession: true,
+  defaultProjectsFolder: "",
   colorTheme: "tmux-server.plastic-legacy-theme:Plastic Legacy",
   iconTheme: "tmux-server.seti-icons:seti",
   paletteSortByUsage: false,
@@ -162,6 +163,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
 const LEGACY_DEFAULT_FONT_FAMILY =
   "'IBM Plex Mono', 'Symbols Nerd Font Mono', 'Noto Color Emoji', 'Droid Sans Mono', monospace";
 
+// One-shot settings migrations, guarded like Sidebar.tsx's panel
+// migrations so they never fight a user's later explicit choice. The
+// module-level memo mirrors tasksOrderMigratedThisLoad there: within one
+// page load the flip stays applied for every migrateSettings call (the
+// localStorage-first load AND the later server-doc apply both run through
+// here), while a fresh load consults only the persisted flag.
+const SETTINGS_MIGRATIONS_KEY = "settingsMigrations";
+let tabGroupsFlippedThisLoad = false;
+
+function appliedSettingsMigrations(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SETTINGS_MIGRATIONS_KEY) ?? "null");
+    return Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export function migrateSettings(settings: AppSettings): AppSettings {
   const next = { ...settings };
   if (next.colorTheme === "") next.colorTheme = DEFAULT_SETTINGS.colorTheme;
@@ -171,6 +190,25 @@ export function migrateSettings(settings: AppSettings): AppSettings {
   // the extensions' namespaced ids ("auto" is still "auto").
   if (next.terminalEngine === "ghostty") next.terminalEngine = "ext.tmux-server.ghostty-engine.ghostty";
   if (next.terminalEngine === "xterm") next.terminalEngine = "ext.tmux-server.xterm-engine.xterm";
+  // newSessionCwd → defaultProjectsFolder rename: a stored blob written by a
+  // pre-rename build carries the old key (invisible to the type, present at
+  // runtime); adopt it whenever the new key is still at its "" default.
+  const legacy = next as AppSettings & { newSessionCwd?: string };
+  if (typeof legacy.newSessionCwd === "string" && legacy.newSessionCwd !== "" && next.defaultProjectsFolder === "") {
+    next.defaultProjectsFolder = legacy.newSessionCwd;
+  }
+  delete legacy.newSessionCwd;
+  // Tab groups became the project chips and default on — flip a stored
+  // false exactly once so existing users see them, without overriding a
+  // post-migration opt-out.
+  const migrations = appliedSettingsMigrations();
+  if (!migrations.includes("tab-groups-on") || tabGroupsFlippedThisLoad) {
+    next.tabGroupsBySession = true;
+    if (!migrations.includes("tab-groups-on")) {
+      localStorage.setItem(SETTINGS_MIGRATIONS_KEY, JSON.stringify([...migrations, "tab-groups-on"]));
+    }
+    tabGroupsFlippedThisLoad = true;
+  }
   return next;
 }
 
@@ -178,6 +216,7 @@ const KEY = "settings";
 const KEYBINDINGS_KEY = "keybindings";
 const EXTENSION_SETTINGS_KEY = "extensionSettings";
 const PINNED_SESSIONS_KEY = "pinnedSessions";
+const PROJECTS_KEY = "projects";
 const EXTENSION_REGISTRIES_KEY = "extensionRegistries";
 const SIDEBAR_TABS_ORDER_KEY = "sidebarTabsOrder";
 
@@ -286,28 +325,56 @@ export function saveExtensionSettings(values: ExtensionSettingsValues): void {
   localStorage.setItem(EXTENSION_SETTINGS_KEY, JSON.stringify(values));
 }
 
-// Pinned sessions live outside AppSettings on purpose — "Reset Settings to
-// Defaults" writes `{...DEFAULT_SETTINGS}` and must not wipe pins.
-export function loadPinnedSessions(): PinnedSession[] {
+// Projects (the recent-projects registry, pin flags included) live outside
+// AppSettings on purpose — "Reset Settings to Defaults" writes
+// `{...DEFAULT_SETTINGS}` and must not wipe them.
+export function sanitizeProjects(parsed: unknown): Project[] {
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set<string>();
+  const out: Project[] = [];
+  for (const p of parsed) {
+    if (!isPlainObject(p) || typeof p.cwd !== "string" || p.cwd === "" || seen.has(p.cwd)) continue;
+    seen.add(p.cwd);
+    out.push({
+      cwd: p.cwd,
+      pinned: p.pinned === true,
+      lastOpened: typeof p.lastOpened === "number" ? p.lastOpened : 0,
+    });
+  }
+  return out;
+}
+
+// One-time migration from the pre-projects pinnedSessions shape
+// ({name, cwd}[]): every pin with a usable cwd becomes a pinned project.
+// Pins recorded with an empty cwd are dropped — there's no folder to match
+// or restore into. The old key is deliberately left in place so a
+// downgraded client still finds its pins.
+export function projectsFromPins(parsed: unknown): Project[] {
+  if (!Array.isArray(parsed)) return [];
+  return sanitizeProjects(
+    parsed
+      .filter((p) => isPlainObject(p) && typeof p.cwd === "string" && p.cwd !== "")
+      .map((p) => ({ cwd: (p as { cwd: string }).cwd, pinned: true, lastOpened: Date.now() })),
+  );
+}
+
+export function loadProjects(): Project[] {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(PINNED_SESSIONS_KEY) ?? "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (p): p is PinnedSession =>
-        isPlainObject(p) && typeof p.name === "string" && typeof p.cwd === "string",
-    );
+    const raw = localStorage.getItem(PROJECTS_KEY);
+    if (raw !== null) return sanitizeProjects(JSON.parse(raw));
+    return projectsFromPins(JSON.parse(localStorage.getItem(PINNED_SESSIONS_KEY) ?? "[]"));
   } catch {
     return [];
   }
 }
 
-export function savePinnedSessions(pins: PinnedSession[]): void {
-  localStorage.setItem(PINNED_SESSIONS_KEY, JSON.stringify(pins));
+export function saveProjects(projects: Project[]): void {
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
 }
 
 // Extension registry sources (each an http(s) URL or a local directory path
 // serving an index.json catalog — see server/src/registry.ts). Lives outside
-// AppSettings, like pinnedSessions above, so "Reset Settings to Defaults"
+// AppSettings, like projects above, so "Reset Settings to Defaults"
 // can't wipe a user's configured registries.
 export function loadExtensionRegistries(): string[] {
   try {
@@ -326,7 +393,7 @@ export function saveExtensionRegistries(registries: string[]): void {
 // Command palette usage stats, keyed by command id (same ids as
 // keybindings.ts' COMMANDS / extension command ids) — count for the
 // paletteSortByUsage sort, last (epoch ms) for the always-on "pin last-used
-// to row 1" behavior. Lives outside AppSettings, like pinnedSessions above,
+// to row 1" behavior. Lives outside AppSettings, like projects above,
 // so "Reset Settings to Defaults" (which writes {...DEFAULT_SETTINGS}) can't
 // wipe it. A stale id (uninstalled extension) is harmless — App.tsx's
 // paletteCommands memo only looks up ids it's currently listing.
@@ -365,7 +432,7 @@ export function saveCommandUsage(usage: CommandUsage): void {
 // reorderTabs). Empty means "no cross-device preference yet", in which case
 // Sidebar's own local reconciliation (including its bundled default order)
 // stays authoritative rather than this overwriting it with nothing. Lives
-// outside AppSettings, like pinnedSessions above, so a settings reset can't
+// outside AppSettings, like projects above, so a settings reset can't
 // wipe a drag the user made.
 export function loadSidebarTabsOrder(): string[] {
   try {

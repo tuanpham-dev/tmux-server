@@ -3,7 +3,7 @@ import { setContextKey } from "../contextKeys";
 import {
   getRootDecorations,
   setExplorerPanelFocusBridge,
-  setSessionsFocusBridge,
+  setProjectsFocusBridge,
   setSidebarTabsBridge,
   type RegisteredSidebarPanel,
   type RegisteredWindowAction,
@@ -13,16 +13,15 @@ import { moveId } from "../lib/tabs";
 import type {
   ExtensionInfo,
   MenuItem,
-  PinnedSession,
+  Project,
   RegistrySourceResult,
-  SidebarMode,
   TmuxSession,
   TmuxWindow,
 } from "../types";
 import ExtensionsPanel from "./ExtensionsPanel";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
-import SessionList, { type SessionListHandle } from "./SessionList";
+import ProjectList, { type ProjectListHandle } from "./ProjectList";
 import SidebarTabStrip, { type SidebarTabInfo } from "./SidebarTabStrip";
 
 // Built-in ids are the literal union below; an extension panel's id is
@@ -40,7 +39,7 @@ interface PanelState {
   sizes: Record<PanelId, number>;
 }
 
-const PANEL_IDS: PanelId[] = ["sessions", "files"];
+const PANEL_IDS: PanelId[] = ["projects", "files"];
 const MIN_PANEL_HEIGHT = 60;
 const PANELS_KEY = "sidebarPanels";
 
@@ -49,6 +48,10 @@ const PANELS_KEY = "sidebarPanels";
 // each user's accustomed order/collapse/size carries over to the
 // extension's namespaced panel id.
 const LEGACY_PORTS_PANEL_ID = "ports";
+// The PROJECTS section's id before the SESSIONS pane was sunset in its
+// favor (plans/projects-not-sessions.md) — loadPanelState rewrites it the
+// same way as the ports id below, keeping order/collapse/size.
+const LEGACY_SESSIONS_PANEL_ID = "sessions";
 const PORTS_EXT_PANEL_ID = "ext.tmux-server.ports.ports";
 const TASKS_EXT_PANEL_ID = "ext.tmux-server.tasks.tasks";
 
@@ -77,9 +80,9 @@ function appliedPanelMigrations(): string[] {
 let tasksOrderMigratedThisLoad = false;
 
 const DEFAULT_PANEL_STATE: PanelState = {
-  order: ["sessions", "files"],
-  collapsed: { sessions: false, files: false },
-  sizes: { sessions: 1, files: 1 },
+  order: ["projects", "files"],
+  collapsed: { projects: false, files: false },
+  sizes: { projects: 1, files: 1 },
 };
 
 function loadPanelState(): PanelState {
@@ -94,6 +97,13 @@ function loadPanelState(): PanelState {
       Array.isArray(parsed.order) && parsed.order.every((id: unknown) => typeof id === "string")
         ? [...(parsed.order as PanelId[])]
         : [...DEFAULT_PANEL_STATE.order];
+    // The sunset SESSIONS pane's id rewrites to "projects" BEFORE the
+    // missing-id backfill below — otherwise the backfill would append a
+    // second "projects" at the end and the stored slot would be lost.
+    const legacySessionsIdx = order.indexOf(LEGACY_SESSIONS_PANEL_ID);
+    if (legacySessionsIdx !== -1 && !order.includes("projects")) {
+      order[legacySessionsIdx] = "projects";
+    }
     for (const id of PANEL_IDS) if (!order.includes(id)) order.push(id);
     const collapsed = { ...DEFAULT_PANEL_STATE.collapsed, ...parsed.collapsed };
     const sizes = { ...DEFAULT_PANEL_STATE.sizes, ...parsed.sizes };
@@ -112,6 +122,21 @@ function loadPanelState(): PanelState {
     }
     delete collapsed[LEGACY_PORTS_PANEL_ID];
     delete sizes[LEGACY_PORTS_PANEL_ID];
+    // Collapse/size carry-over for the sunset SESSIONS pane → PROJECTS (the
+    // order rewrite already happened above, ahead of the id backfill).
+    // Checked against the *stored* object, not the default-merged one —
+    // DEFAULT_PANEL_STATE always carries a "projects" key, so the merged
+    // maps can never lack it.
+    const storedCollapsed: Record<string, unknown> = parsed.collapsed ?? {};
+    const storedSizes: Record<string, unknown> = parsed.sizes ?? {};
+    if (LEGACY_SESSIONS_PANEL_ID in storedCollapsed && !("projects" in storedCollapsed)) {
+      collapsed.projects = collapsed[LEGACY_SESSIONS_PANEL_ID];
+    }
+    if (LEGACY_SESSIONS_PANEL_ID in storedSizes && !("projects" in storedSizes)) {
+      sizes.projects = sizes[LEGACY_SESSIONS_PANEL_ID];
+    }
+    delete collapsed[LEGACY_SESSIONS_PANEL_ID];
+    delete sizes[LEGACY_SESSIONS_PANEL_ID];
     // One-time reorder: builds that predate declared panel order (see
     // RegisteredSidebarPanel.order) appended TASKS after PORTS in plain
     // registration order. Guarded by PANEL_MIGRATIONS_KEY — rerunning would
@@ -135,7 +160,7 @@ function loadPanelState(): PanelState {
       }
       tasksOrderMigratedThisLoad = true;
     }
-    return { order: order.filter((id) => id !== LEGACY_PORTS_PANEL_ID), collapsed, sizes };
+    return { order: order.filter((id) => id !== LEGACY_PORTS_PANEL_ID && id !== LEGACY_SESSIONS_PANEL_ID), collapsed, sizes };
   } catch {
     return { ...DEFAULT_PANEL_STATE };
   }
@@ -226,24 +251,29 @@ interface Props {
   activeWindow: { sessionName: string; index: number } | null;
   onOpenAllWindows: (session: string) => void;
   onOpenWindow: (session: string, index: number) => void;
-  onCreate: (name?: string) => void;
   onKillWindow: (session: string, index: number) => void;
-  // Backs SessionList's sessions.kill/rename/togglePin keyboard dispatch —
+  // Backs ProjectList's projects.kill/rename/togglePin keyboard dispatch —
   // the same functions App.tsx already wires to the global session.*
   // commands (which act on the active tab), here acting on whichever row
   // has keyboard focus in the list instead.
   onKillSession: (name: string) => void;
-  onRenameSession: (name: string) => void;
   onRenameWindow: (session: string, win: TmuxWindow) => void;
   onTogglePinSession: (name: string) => void;
   onNewWindowInSession: (session: string) => void;
-  onNewWindowInDir: (cwd: string) => void;
   onOpenLazygit: () => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
-  sessionMenuItems: (name: string, dead: boolean) => MenuItem[];
+  sessionMenuItems: (name: string) => MenuItem[];
+  deadProjectMenuItems: (cwd: string) => MenuItem[];
   windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
-  pinnedSessions: PinnedSession[];
-  onRestorePinned: (name: string, cwd: string) => void;
+  projects: Project[];
+  // Opens (or creates) the session rooted in this folder — dead-row clicks
+  // and the recent-projects dropdown both land here.
+  onOpenProject: (cwd: string) => void;
+  // Opens the folder-picker dialog (App owns it) — the panel header's "+".
+  onAddProject: () => void;
+  // Builds the recent-projects dropdown items on demand (App wires in the
+  // folder-picker opener) — shown via onShowMenu from the header button.
+  recentProjectsMenu: () => MenuItem[];
   onOpenSettings: () => void;
   // The bottom terminal panel's toggle lives up here with the app's other
   // global chrome toggles (hide-sidebar below), not in a TabBar's actions —
@@ -253,6 +283,11 @@ interface Props {
   onTogglePanel: () => void;
   onCollapse: () => void;
   filesRootDir: string | null;
+  // FILES-tree root mode: the active project's fixed folder, or the active
+  // terminal's live cwd (follows `cd`). Toggled by the panel-header switch;
+  // owned by App since the resolved root also feeds quick-switcher search.
+  filesRootMode: "project" | "cwd";
+  onFilesRootModeChange: (mode: "project" | "cwd") => void;
   onDropFiles: (destDir: string, dataTransfer: DataTransfer) => void;
   filesRefreshKey: number;
   onFilesRefresh: () => void;
@@ -320,25 +355,27 @@ export default function Sidebar({
   activeWindow,
   onOpenAllWindows,
   onOpenWindow,
-  onCreate,
   onKillWindow,
   onKillSession,
-  onRenameSession,
   onRenameWindow,
   onTogglePinSession,
   onNewWindowInSession,
-  onNewWindowInDir,
   onOpenLazygit,
   onShowMenu,
   sessionMenuItems,
+  deadProjectMenuItems,
   windowMenuItems,
-  pinnedSessions,
-  onRestorePinned,
+  projects,
+  onOpenProject,
+  onAddProject,
+  recentProjectsMenu,
   onOpenSettings,
   panelVisible,
   onTogglePanel,
   onCollapse,
   filesRootDir,
+  filesRootMode,
+  onFilesRootModeChange,
   onDropFiles,
   filesRefreshKey,
   onFilesRefresh,
@@ -383,10 +420,7 @@ export default function Sidebar({
   resolvedBindings,
   confirmDialog,
 }: Props) {
-  const [mode, setMode] = useState<SidebarMode>(
-    () => (localStorage.getItem("sidebarMode") as SidebarMode) ?? "sessions",
-  );
-  const sessionListRef = useRef<SessionListHandle>(null);
+  const projectListRef = useRef<ProjectListHandle>(null);
   const [panelState, setPanelState] = useState<PanelState>(loadPanelState);
   const [tabsState, setTabsState] = useState<TabsState>(loadTabsState);
   // Applies the settings-doc-synced tab order once, the first time it shows
@@ -424,7 +458,7 @@ export default function Sidebar({
   }, []);
 
   const panelRefs = useRef<Record<PanelId, HTMLDivElement | null>>({
-    sessions: null,
+    projects: null,
     files: null,
   });
 
@@ -521,10 +555,6 @@ export default function Sidebar({
     }
     return cb;
   };
-
-  useEffect(() => {
-    localStorage.setItem("sidebarMode", mode);
-  }, [mode]);
 
   useEffect(() => {
     localStorage.setItem(PANELS_KEY, JSON.stringify(panelState));
@@ -638,50 +668,39 @@ export default function Sidebar({
     }));
   };
 
-  const startCreating = () => {
-    // A collapsed SESSIONS panel needs to expand for the inline input to be
-    // visible at all — mirrors code-server's "clicking an activity icon
-    // reveals its panel" behavior.
-    setPanelState((prev) => ({
-      ...prev,
-      collapsed: { ...prev.collapsed, sessions: false },
-    }));
-    sessionListRef.current?.startCreating();
-  };
-
-  // Lets "Sidebar: Focus Sessions" (App.tsx's globalHandlers, via
-  // extensions.ts's focusSessionsPanel) expand this accordion panel and
-  // hand off to SessionList's own focusList — see setSessionsFocusBridge's
+  // Lets "Sidebar: Focus Projects" (App.tsx's globalHandlers, via
+  // extensions.ts's focusProjectsPanel) expand this accordion panel and
+  // hand off to ProjectList's own focusList — see setProjectsFocusBridge's
   // doc comment for why this lives in extensions.ts rather than being
   // called directly (App.tsx doesn't otherwise know about Sidebar's
-  // internal panelState/SessionList). Read via a ref (not the closed-over
+  // internal panelState/ProjectList). Read via a ref (not the closed-over
   // panelState) since the bridge effect below only re-registers on mount.
   const panelStateRef = useRef(panelState);
   panelStateRef.current = panelState;
-  // A collapsed panel unmounts SessionList (panelContent's `!isCollapsed`
+  // A collapsed panel unmounts ProjectList (panelContent's `!isCollapsed`
   // guard) — expanding it and calling focusList in the same tick would hit
   // a stale/null ref, since the DOM hasn't updated yet. Deferred here to the
-  // next render where the panel is actually expanded and SessionList has
+  // next render where the panel is actually expanded and ProjectList has
   // (re)mounted.
-  const pendingSessionsFocusRef = useRef(false);
+  const pendingProjectsFocusRef = useRef(false);
   useEffect(() => {
-    if (!panelState.collapsed.sessions && pendingSessionsFocusRef.current) {
-      pendingSessionsFocusRef.current = false;
-      sessionListRef.current?.focusList();
+    if (!panelState.collapsed.projects && pendingProjectsFocusRef.current) {
+      pendingProjectsFocusRef.current = false;
+      projectListRef.current?.focusList();
     }
-  }, [panelState.collapsed.sessions]);
+  }, [panelState.collapsed.projects]);
   useEffect(() => {
-    setSessionsFocusBridge({
+    setProjectsFocusBridge({
       focus: () => {
-        if (panelStateRef.current.collapsed.sessions) {
-          pendingSessionsFocusRef.current = true;
-          setPanelState((prev) => ({ ...prev, collapsed: { ...prev.collapsed, sessions: false } }));
+        if (panelStateRef.current.collapsed.projects) {
+          pendingProjectsFocusRef.current = true;
+          setPanelState((prev) => ({ ...prev, collapsed: { ...prev.collapsed, projects: false } }));
         } else {
-          sessionListRef.current?.focusList();
+          projectListRef.current?.focusList();
         }
       },
     });
-    return () => setSessionsFocusBridge(null);
+    return () => setProjectsFocusBridge(null);
   }, []);
 
   // Generic bridge for accordion-located extension panels' focus commands,
@@ -690,7 +709,7 @@ export default function Sidebar({
   // focus onto the first focusable row inside its content. An extension
   // component can't expose an imperative focusList handle through the
   // generic render, so "first roving-tabindex stop" is the contract — the
-  // same landing spot SessionList/PortsPanel's own focusList pick when
+  // same landing spot ProjectList/PortsPanel's own focusList pick when
   // nothing was focused yet. Expansion unmounts→mounts content, so the
   // focus is deferred one render, mirroring the sessions bridge above.
   const pendingExplorerFocusRef = useRef<string | null>(null);
@@ -722,30 +741,26 @@ export default function Sidebar({
   }, []);
 
   const panelTitle = (id: PanelId): string => {
-    if (id === "sessions") return mode === "sessions" ? "Sessions" : "Directories";
+    if (id === "projects") return "Projects";
     if (id === "files") return filesRootDir ?? "Files";
     return accordionPanels.find((p) => p.id === id)?.title ?? id;
   };
 
   const panelActions = (id: PanelId) => {
-    if (id === "sessions") {
+    if (id === "projects") {
       return (
         <>
           <button
-            className={`icon-button mode-button${mode === "sessions" ? " active" : ""}`}
-            title="Group by session"
-            onClick={() => setMode("sessions")}
+            className="icon-button"
+            title="Open Recent…"
+            onClick={(e) => {
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              onShowMenu(rect.left, rect.bottom + 4, recentProjectsMenu());
+            }}
           >
-            <Icon name="list-flat" />
+            <Icon name="history" />
           </button>
-          <button
-            className={`icon-button mode-button${mode === "dirs" ? " active" : ""}`}
-            title="Group by directory"
-            onClick={() => setMode("dirs")}
-          >
-            <Icon name="list-tree" />
-          </button>
-          <button className="icon-button" title="New session" onClick={startCreating}>
+          <button className="icon-button" title="New Project…" onClick={onAddProject}>
             <Icon name="add" />
           </button>
         </>
@@ -753,9 +768,25 @@ export default function Sidebar({
     }
     if (id === "files") {
       return (
-        <button className="icon-button" title="Refresh" onClick={onFilesRefresh}>
-          <Icon name="refresh" />
-        </button>
+        <>
+          <button
+            className={`icon-button mode-button${filesRootMode === "project" ? " active" : ""}`}
+            title="Files in project folder"
+            onClick={() => onFilesRootModeChange("project")}
+          >
+            <Icon name="root-folder" />
+          </button>
+          <button
+            className={`icon-button mode-button${filesRootMode === "cwd" ? " active" : ""}`}
+            title="Files in terminal's folder (follows cd)"
+            onClick={() => onFilesRootModeChange("cwd")}
+          >
+            <Icon name="terminal" />
+          </button>
+          <button className="icon-button" title="Refresh" onClick={onFilesRefresh}>
+            <Icon name="refresh" />
+          </button>
+        </>
       );
     }
     // Extension accordion sections put their own header buttons into the
@@ -764,28 +795,25 @@ export default function Sidebar({
   };
 
   const panelContent = (id: PanelId) => {
-    if (id === "sessions") {
+    if (id === "projects") {
       return (
-        <SessionList
-          ref={sessionListRef}
-          mode={mode}
+        <ProjectList
+          ref={projectListRef}
           sessions={sessions}
           activeSessionName={activeSessionName}
           activeWindow={activeWindow}
-          pinnedSessions={pinnedSessions}
+          projects={projects}
           onOpenAllWindows={onOpenAllWindows}
           onOpenWindow={onOpenWindow}
-          onCreate={onCreate}
           onKillWindow={onKillWindow}
           onKillSession={onKillSession}
-          onRenameSession={onRenameSession}
           onRenameWindow={onRenameWindow}
           onTogglePinSession={onTogglePinSession}
           onNewWindowInSession={onNewWindowInSession}
-          onNewWindowInDir={onNewWindowInDir}
-          onRestorePinned={onRestorePinned}
+          onOpenProject={onOpenProject}
           onShowMenu={onShowMenu}
           sessionMenuItems={sessionMenuItems}
+          deadProjectMenuItems={deadProjectMenuItems}
           windowMenuItems={windowMenuItems}
           extensionWindowActions={extensionWindowActions}
           resolvedBindings={resolvedBindings}

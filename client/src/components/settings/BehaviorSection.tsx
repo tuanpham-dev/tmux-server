@@ -156,7 +156,7 @@ export default function BehaviorSection() {
           checked={settings.confirmBeforeKill}
           onChange={(e) => set("confirmBeforeKill", e.target.checked)}
         />
-        <span>Confirm before killing sessions and windows</span>
+        <span>Confirm before closing projects and terminals</span>
       </label>
 
       <label className="settings-row">
@@ -193,16 +193,16 @@ export default function BehaviorSection() {
           checked={settings.tabGroupsBySession}
           onChange={(e) => set("tabGroupsBySession", e.target.checked)}
         />
-        <span>Group tabs by session in the tab bar</span>
+        <span>Group tabs by project in the tab bar</span>
       </label>
 
       <label className="settings-row">
-        <span className="settings-label">Default new-session directory</span>
+        <span className="settings-label">Default projects folder</span>
         <input
           className="dialog-input"
           placeholder="Server default"
-          value={settings.newSessionCwd}
-          onChange={(e) => set("newSessionCwd", e.target.value)}
+          value={settings.defaultProjectsFolder}
+          onChange={(e) => set("defaultProjectsFolder", e.target.value)}
         />
       </label>
 

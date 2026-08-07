@@ -1,28 +1,33 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
+import { bumpRecent, projectName, sessionNameForProject } from "../lib/projects";
 import { isRealTab, tabVirtualPath } from "../lib/tabs";
 import type { SplitDirection } from "../lib/splits";
 import type { AppSettings } from "../settings";
-import type { MenuItem, PinnedSession, Tab, TmuxSession, TmuxWindow } from "../types";
+import type { MenuItem, Project, Tab, TmuxSession, TmuxWindow } from "../types";
 
 // createWindow's server call returns void (see server/src/tmux.ts), so the
 // window it just created isn't known until the next session list fetch —
-// unlike createSession/restorePinnedSession, whose own return value already
-// carries the fresh session's windows. A direct fetch rather than waiting on
-// the `sessions` prop: that's React state, still stale within this same
-// callback invocation right after refresh() resolves.
+// unlike openProject, whose own create call already carries the fresh
+// session's windows. A direct fetch rather than waiting on the `sessions`
+// prop: that's React state, still stale within this same callback
+// invocation right after refresh() resolves.
 async function findActiveWindowIndex(sessionName: string): Promise<number | undefined> {
   const freshSessions = await api.fetchSessions();
   return freshSessions.find((s) => s.name === sessionName)?.windows.find((w) => w.active)?.index;
 }
 
-// Session/window CRUD (create/rename/kill), pinning, and the context menus
-// built on top of them (sessionMenuItems/windowMenuItems/tabMenuItems).
-// Takes the tab-closing primitives (closeTab/closeOtherTabs) and renameGroup
-// from useTabs/useTabGroups, and openWindowTab/openAllWindows/pinnedSessions
-// state, as explicit parameters rather than reaching into those hooks
-// directly. See plans/session-open-all-and-pinned-sessions.md.
+// Session/window CRUD, project open/close/pin/recents (the projects
+// registry — see plans/projects-not-sessions.md), and the context menus
+// built on top of them (sessionMenuItems/deadProjectMenuItems/
+// windowMenuItems/tabMenuItems/recentProjectMenuItems). Takes the
+// tab-closing primitives (closeTab/closeOtherTabs) and
+// openWindowTab/openAllWindows/projects state as explicit parameters rather
+// than reaching into those hooks directly. Sessions have no rename action
+// anywhere — a project's name is its folder's, and session names are
+// cosmetic (sessionNameForProject), so renaming would only make labels
+// diverge.
 export function useSessionActions(
   refresh: () => Promise<void>,
   showError: (err: unknown) => void,
@@ -37,9 +42,8 @@ export function useSessionActions(
   openAllWindows: (session: string) => Promise<void>,
   closeTab: (id: string) => Promise<void>,
   closeOtherTabs: (id: string) => Promise<void>,
-  renameGroup: (oldName: string, newName: string) => void,
-  pinnedSessions: PinnedSession[],
-  setPinnedSessions: Dispatch<SetStateAction<PinnedSession[]>>,
+  projects: Project[],
+  setProjects: Dispatch<SetStateAction<Project[]>>,
   splitGroup: (direction: SplitDirection, tabId?: string) => Promise<void>,
   moveTabToAdjacentGroup: (tabId: string, direction: "next" | "previous") => void,
   // The FILES tree's resolved root (App.tsx's resolvedFilesRootDir) — the
@@ -47,15 +51,28 @@ export function useSessionActions(
   // tree's own copyFileRelativePath semantics.
   filesRootDir: string | null,
 ) {
-  // Every sidebar action that creates a session/window now ends by opening
-  // that window as a window-tab (not the shared whole-session tab) — see the
-  // plan's "Sidebar actions open window-tabs" decision. createSession and
-  // restorePinnedSession get the fresh session's windows for free from their
-  // own create call; createWindow needs findActiveWindowIndex's extra fetch.
-  const createSession = useCallback(
-    async (name?: string) => {
+  // Opens the project rooted in `cwd`: focuses the live session already
+  // rooted there, or creates one — named after the folder, started in
+  // exactly that folder (exactCwd) so session_path round-trips and the
+  // panel's cwd matching holds. Every open (not a failed create) records
+  // the folder into the recents registry via bumpRecent.
+  const openProject = useCallback(
+    async (cwd: string) => {
       try {
-        const created = await api.createSession(name, settingsRef.current.newSessionCwd);
+        const live = sessions.find((s) => s.path === cwd);
+        if (live) {
+          setProjects((prev) => bumpRecent(prev, cwd));
+          const activeIndex =
+            live.windows.find((w) => w.active)?.index ?? live.windows[0]?.index;
+          if (activeIndex !== undefined) await openWindowTab(live.name, activeIndex);
+          return;
+        }
+        const created = await api.createSession(
+          sessionNameForProject(cwd, sessions.map((s) => s.name)),
+          cwd,
+          true,
+        );
+        setProjects((prev) => bumpRecent(prev, cwd));
         await refresh();
         const activeIndex = created.windows.find((w) => w.active)?.index;
         if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
@@ -63,33 +80,45 @@ export function useSessionActions(
         showError(err);
       }
     },
-    [refresh, openWindowTab, showError, settingsRef],
+    [sessions, refresh, openWindowTab, showError, setProjects],
   );
 
+  // Pins/unpins the project a session's folder belongs to (keyed by
+  // session_path — rename-proof). Pinning a session in a folder that was
+  // never opened as a project registers it; unpinning keeps the entry in
+  // recents, it only stops surviving session death.
   const togglePinSession = useCallback(
     (name: string) => {
-      setPinnedSessions((prev) => {
-        if (prev.some((p) => p.name === name)) return prev.filter((p) => p.name !== name);
-        const cwd = sessions.find((s) => s.name === name)?.windows.find((w) => w.active)?.cwd ?? "";
-        return [...prev, { name, cwd }];
+      const path = sessions.find((s) => s.name === name)?.path;
+      if (!path) return;
+      setProjects((prev) => {
+        const existing = prev.find((p) => p.cwd === path);
+        if (existing) return prev.map((p) => (p.cwd === path ? { ...p, pinned: !p.pinned } : p));
+        return [...prev, { cwd: path, pinned: true, lastOpened: Date.now() }];
       });
     },
-    [sessions, setPinnedSessions],
+    [sessions, setProjects],
   );
 
-  const restorePinnedSession = useCallback(
-    async (name: string, cwd: string) => {
-      try {
-        const created = await api.createSession(name, cwd);
-        await refresh();
-        const activeIndex = created.windows.find((w) => w.active)?.index;
-        if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
-      } catch (err) {
-        showError(err);
-      }
+  const unpinProject = useCallback(
+    (cwd: string) => {
+      setProjects((prev) => prev.map((p) => (p.cwd === cwd ? { ...p, pinned: false } : p)));
     },
-    [refresh, openWindowTab, showError],
+    [setProjects],
   );
+
+  // Forgets a folder entirely (recents entry and pin alike) — the recent
+  // dropdown's per-entry trailing action.
+  const removeRecentProject = useCallback(
+    (cwd: string) => {
+      setProjects((prev) => prev.filter((p) => p.cwd !== cwd));
+    },
+    [setProjects],
+  );
+
+  const clearRecentProjects = useCallback(() => {
+    setProjects((prev) => prev.filter((p) => p.pinned));
+  }, [setProjects]);
 
   // The unconfirmed kill: tmux kill + the window-tab cascade + tab cleanup.
   // Split out from killSession below so a caller that has already confirmed a
@@ -117,35 +146,35 @@ export function useSessionActions(
     [refresh, showError, tabs, setTabs],
   );
 
-  const killSession = useCallback(
+  // Closes the whole project a session belongs to: every live session
+  // rooted in the same folder dies (a pathless session is just itself).
+  // Confirm wording scales with what's actually being closed.
+  const closeProject = useCallback(
     async (name: string) => {
+      const target = sessions.find((s) => s.name === name);
+      const members =
+        target?.path !== undefined && target.path !== ""
+          ? sessions.filter((s) => s.path === target.path)
+          : target
+            ? [target]
+            : [];
+      if (members.length === 0) return;
+      const label = target!.path ? projectName(target!.path) : name;
+      const terminals = members.reduce((n, s) => n + s.windows.length, 0);
+      const detail =
+        members.length > 1
+          ? `${terminals} terminals across ${members.length} sessions will be closed.`
+          : terminals === 1
+            ? "Its terminal will be closed."
+            : `Its ${terminals} terminals will be closed.`;
       if (
         settingsRef.current.confirmBeforeKill &&
-        !(await confirmDialog(`Kill tmux session "${name}"?`, "Kill Session"))
+        !(await confirmDialog(`Close project "${label}"? ${detail}`, "Close Project"))
       )
         return;
-      await killSessionNow(name);
+      for (const s of members) await killSessionNow(s.name);
     },
-    [confirmDialog, killSessionNow, settingsRef],
-  );
-
-  const renameSession = useCallback(
-    async (name: string) => {
-      const newName = (await promptDialog("New session name", name))?.trim();
-      if (!newName || newName === name) return;
-      try {
-        await api.renameSession(name, newName);
-        setTabs((prev) =>
-          prev.map((t) => (t.sessionName === name ? { ...t, sessionName: newName } : t)),
-        );
-        renameGroup(name, newName);
-        setPinnedSessions((prev) => prev.map((p) => (p.name === name ? { ...p, name: newName } : p)));
-        await refresh();
-      } catch (err) {
-        showError(err);
-      }
-    },
-    [refresh, showError, promptDialog, setTabs, renameGroup, setPinnedSessions],
+    [confirmDialog, killSessionNow, settingsRef, sessions],
   );
 
   const createWindow = useCallback(
@@ -182,7 +211,7 @@ export function useSessionActions(
 
   const renameWindow = useCallback(
     async (session: string, win: TmuxWindow) => {
-      const newName = (await promptDialog("New window name", win.name))?.trim();
+      const newName = (await promptDialog("New terminal name", win.name))?.trim();
       if (!newName || newName === win.name) return;
       try {
         await api.renameWindow(session, win.index, newName);
@@ -196,11 +225,12 @@ export function useSessionActions(
 
   const killWindow = useCallback(
     async (session: string, index: number) => {
+      const winName = sessions.find((s) => s.name === session)?.windows.find((w) => w.index === index)?.name;
       if (
         settingsRef.current.confirmBeforeKill &&
         !(await confirmDialog(
-          `Kill window ${index} of session "${session}"?`,
-          "Kill Window",
+          `Close terminal "${winName ?? index}"?`,
+          "Close Terminal",
         ))
       )
         return;
@@ -219,50 +249,82 @@ export function useSessionActions(
         showError(err);
       }
     },
-    [refresh, showError, confirmDialog, tabs, closeTab, settingsRef],
+    [refresh, showError, confirmDialog, tabs, closeTab, settingsRef, sessions],
   );
 
-  // `dead` (see lib/sessions.ts's SessionRow) selects the pinned-but-killed
-  // variant: no live tmux state to act on, so only restore/unpin apply.
+  // Menu for a live session row. Pin state is the project registry's flag
+  // for the session's folder (session_path) — see togglePinSession above.
   const sessionMenuItems = useCallback(
-    (name: string, dead: boolean): MenuItem[] => {
-      const pin = pinnedSessions.find((p) => p.name === name);
-      if (dead) {
-        const cwd = pin?.cwd ?? "";
-        return [
-          { label: "Open", onClick: () => restorePinnedSession(name, cwd) },
-          { label: "New Window", onClick: () => restorePinnedSession(name, cwd) },
-          { label: "Unpin Session", onClick: () => togglePinSession(name) },
-        ];
-      }
+    (name: string): MenuItem[] => {
+      const path = sessions.find((s) => s.name === name)?.path;
+      const pinned = path !== undefined && projects.some((p) => p.cwd === path && p.pinned);
       return [
-        { label: "Open All Windows", onClick: () => openAllWindows(name) },
-        { label: "New Window", onClick: () => createWindow(name) },
-        { label: "Rename Session…", onClick: () => renameSession(name) },
-        pin
-          ? { label: "Unpin Session", onClick: () => togglePinSession(name) }
-          : { label: "Pin Session", onClick: () => togglePinSession(name) },
-        { label: "Kill Session", danger: true, onClick: () => killSession(name) },
+        { label: "Open All Terminals", onClick: () => openAllWindows(name) },
+        { label: "New Terminal", onClick: () => createWindow(name) },
+        pinned
+          ? { label: "Unpin Project", onClick: () => togglePinSession(name) }
+          : { label: "Pin Project", onClick: () => togglePinSession(name) },
+        { label: "Close Project", danger: true, onClick: () => closeProject(name) },
       ];
     },
     [
-      pinnedSessions,
-      restorePinnedSession,
+      sessions,
+      projects,
       togglePinSession,
       openAllWindows,
       createWindow,
-      renameSession,
-      killSession,
+      closeProject,
     ],
+  );
+
+  // Menu for a dead pinned-project row: no live tmux state to act on, so
+  // only open/unpin/forget apply.
+  const deadProjectMenuItems = useCallback(
+    (cwd: string): MenuItem[] => [
+      { label: "Open Project", onClick: () => openProject(cwd) },
+      { label: "Unpin Project", onClick: () => unpinProject(cwd) },
+      { label: "Remove from Recent", onClick: () => removeRecentProject(cwd) },
+    ],
+    [openProject, unpinProject, removeRecentProject],
+  );
+
+  // The recent-projects header dropdown: every registered folder MRU-first,
+  // each row opening its project and carrying a trailing "forget" action;
+  // footer offers the folder picker and the bulk clear (which keeps pins).
+  const recentProjectMenuItems = useCallback(
+    (openFolderPicker: () => void): MenuItem[] => {
+      const items: MenuItem[] = [...projects]
+        .sort((a, b) => b.lastOpened - a.lastOpened)
+        .map((p) => ({
+          label: `${projectName(p.cwd)} — ${p.cwd}`,
+          icon: p.pinned ? "pinned" : "folder",
+          onClick: () => openProject(p.cwd),
+          trailing: {
+            icon: "close",
+            title: "Remove from Recent",
+            onClick: () => removeRecentProject(p.cwd),
+          },
+        }));
+      if (items.length === 0) {
+        items.push({ label: "No recent projects", disabled: true, onClick: () => {} });
+      }
+      items.push({ label: "", separator: true, onClick: () => {} });
+      items.push({ label: "Open Folder…", onClick: openFolderPicker });
+      if (projects.some((p) => !p.pinned)) {
+        items.push({ label: "Clear Recently Opened", onClick: clearRecentProjects });
+      }
+      return items;
+    },
+    [projects, openProject, removeRecentProject, clearRecentProjects],
   );
 
   const windowMenuItems = useCallback(
     (session: string, win: TmuxWindow): MenuItem[] => [
-      { label: "Select Window", onClick: () => selectWindowInSession(session, win.index) },
-      { label: "New Window", onClick: () => createWindow(session) },
-      { label: "Rename Window…", onClick: () => renameWindow(session, win) },
+      { label: "Select Terminal", onClick: () => selectWindowInSession(session, win.index) },
+      { label: "New Terminal", onClick: () => createWindow(session) },
+      { label: "Rename Terminal…", onClick: () => renameWindow(session, win) },
       {
-        label: "Kill Window",
+        label: "Close Terminal",
         danger: true,
         onClick: () => killWindow(session, win.index),
       },
@@ -313,17 +375,16 @@ export function useSessionActions(
               },
             ];
       // Virtual tabs (image/markdown preview) have no tmux session — New
-      // Window/Rename/Kill Session don't apply.
+      // Window/Close Project don’t apply.
       if (!isRealTab(tab)) return [...splitItems, ...closeItems, ...pathItems];
       return [
         ...splitItems,
         ...closeItems,
-        { label: "New Window", onClick: () => createWindow(tab.sessionName) },
-        { label: "Rename Session…", onClick: () => renameSession(tab.sessionName) },
+        { label: "New Terminal", onClick: () => createWindow(tab.sessionName) },
         {
-          label: "Kill Session",
+          label: "Close Project",
           danger: true,
-          onClick: () => killSession(tab.sessionName),
+          onClick: () => closeProject(tab.sessionName),
         },
       ];
     },
@@ -331,8 +392,7 @@ export function useSessionActions(
       closeTab,
       closeOtherTabs,
       createWindow,
-      renameSession,
-      killSession,
+      closeProject,
       splitGroup,
       moveTabToAdjacentGroup,
       filesRootDir,
@@ -341,17 +401,17 @@ export function useSessionActions(
   );
 
   return {
-    createSession,
-    killSession,
+    closeProject,
     killSessionNow,
-    renameSession,
     createWindow,
     selectWindowInSession,
     renameWindow,
     killWindow,
     togglePinSession,
-    restorePinnedSession,
+    openProject,
     sessionMenuItems,
+    deadProjectMenuItems,
+    recentProjectMenuItems,
     windowMenuItems,
     tabMenuItems,
   };

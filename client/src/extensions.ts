@@ -393,7 +393,7 @@ export interface ExtensionContext {
     // Kills a tmux session and closes its tabs, including the synthetic
     // per-window attachments a raw `tmux kill-session` would leave behind.
     // Deliberately runs no confirmation of its own (unlike the sidebar's own
-    // Kill Session, which is gated by the confirmBeforeKill setting): the
+    // Close Project, which is gated by the confirmBeforeKill setting): the
     // caller owns the prompt, so an extension that already confirmed a larger
     // destructive action doesn't double-prompt. Confirm before calling.
     killSession(sessionName: string): void;
@@ -707,7 +707,7 @@ export function subscribeExtensionRegistry(cb: Listener): () => void {
 }
 
 // Re-render nudge for components that query the registries imperatively per
-// render (FileTree/SessionList reading decoration providers) rather than
+// render (FileTree/ProjectList reading decoration providers) rather than
 // consuming useExtensionRegistry's snapshot arrays — the returned tick is
 // only ever used as a dependency/render trigger. Also bumped by providers'
 // refresh() handles when their cached data (not the registry itself) changes.
@@ -985,19 +985,19 @@ export function focusSidebarTab(id: string): void {
   selectSidebarTab(id);
 }
 
-interface SessionsFocusBridge {
-  // Expands the SESSIONS accordion panel if collapsed, then moves keyboard
+interface ProjectsFocusBridge {
+  // Expands the PROJECTS accordion panel if collapsed, then moves keyboard
   // focus to its focused-or-first row.
   focus(): void;
 }
 
-let sessionsFocusBridge: SessionsFocusBridge | null = null;
+let projectsFocusBridge: ProjectsFocusBridge | null = null;
 
-// Wired once from Sidebar.tsx — lets sidebar.focusSessions below (App.tsx's
+// Wired once from Sidebar.tsx — lets sidebar.focusProjects below (App.tsx's
 // globalHandlers) reach into the accordion panel it doesn't otherwise know
 // about, same bridge pattern as setSidebarTabsBridge above.
-export function setSessionsFocusBridge(bridge: SessionsFocusBridge | null): void {
-  sessionsFocusBridge = bridge;
+export function setProjectsFocusBridge(bridge: ProjectsFocusBridge | null): void {
+  projectsFocusBridge = bridge;
 }
 
 // Same literal-id-not-import approach as SEARCH_PANEL_ID above — Sidebar.tsx
@@ -1007,12 +1007,12 @@ const EXPLORER_TAB_ID = "explorer";
 const RUN_TAB_ID = "run-view";
 const COMMANDS_TAB_ID = "commands-view";
 
-// Drives the "Sidebar: Focus Sessions" command: reveal the sidebar and
+// Drives the "Sidebar: Focus Projects" command: reveal the sidebar and
 // switch to the Explorer tab if needed (reusing focusSidebarTab's own
 // reveal/switch logic, but never its toggle-hide branch — this command
 // always ends by focusing a row, not hiding the sidebar), then hand off to
-// the SESSIONS panel itself.
-export function focusSessionsPanel(): void {
+// the PROJECTS panel itself.
+export function focusProjectsPanel(): void {
   if (!sidebarVisibility) return;
   if (!sidebarVisibility.isVisible()) {
     sidebarVisibility.setVisible(true);
@@ -1020,12 +1020,12 @@ export function focusSessionsPanel(): void {
   } else if (sidebarTabsBridge?.getActive() !== EXPLORER_TAB_ID) {
     selectSidebarTab(EXPLORER_TAB_ID);
   }
-  sessionsFocusBridge?.focus();
+  projectsFocusBridge?.focus();
 }
 
 interface ExplorerPanelFocusBridge {
   // Expands the given accordion section if collapsed, then moves keyboard
-  // focus into its content — the generic counterpart of the SESSIONS bridge
+  // focus into its content — the generic counterpart of the PROJECTS bridge
   // above, for extension panels registered with an accordion location
   // ("explorer"/"run"). One bridge serves both accordions: panel ids are
   // namespaced and unique, and Sidebar.tsx's collapse state/panel refs are
@@ -1036,15 +1036,15 @@ interface ExplorerPanelFocusBridge {
 let explorerPanelFocusBridge: ExplorerPanelFocusBridge | null = null;
 
 // Wired once from Sidebar.tsx — same bridge pattern as
-// setSessionsFocusBridge above.
+// setProjectsFocusBridge above.
 export function setExplorerPanelFocusBridge(bridge: ExplorerPanelFocusBridge | null): void {
   explorerPanelFocusBridge = bridge;
 }
 
 // Drives every accordion-located extension panel's "Sidebar: Focus <title>"
 // command: switch to the accordion's own tab (Explorer or Run), then hand
-// off to the section — see focusSessionsPanel's doc comment for the
-// reveal/switch logic this mirrors.
+// off to the section — see focusProjectsPanel's doc comment for the
+// reveal/switch logic this mirrors (see focusProjectsPanel).
 export function focusAccordionPanel(tabId: string, panelId: string): void {
   if (!sidebarVisibility) return;
   if (!sidebarVisibility.isVisible()) {

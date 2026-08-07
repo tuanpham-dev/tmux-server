@@ -18,6 +18,7 @@ import {
   type SplitDirection,
   type SplitNode,
 } from "../lib/splits";
+import { projectName } from "../lib/projects";
 import type { AppSettings } from "../settings";
 import type { ExtensionInfo, RegistrySourceResult, Tab, TmuxSession } from "../types";
 
@@ -794,6 +795,26 @@ export function useTabs(
     });
   }, [activeRealTab, activeWindow, filesRootDir]);
 
+  // Folder-derived display name for a session's project — the label every
+  // surface (tabs, chips, quick switcher) uses instead of the tmux session
+  // name; pathless sessions keep their name. projectKeyForSession is the
+  // grouping counterpart: same-folder sessions share a key, so a merged
+  // project gets one tab-group chip (see useTabGroups).
+  const projectLabelForSession = useCallback(
+    (name: string): string => {
+      const s = sessions.find((x) => x.name === name);
+      return s?.path ? projectName(s.path) : name;
+    },
+    [sessions],
+  );
+  const projectKeyForSession = useCallback(
+    (name: string): string => {
+      const s = sessions.find((x) => x.name === name);
+      return s?.path || name;
+    },
+    [sessions],
+  );
+
   const tabLabel = useCallback(
     (tab: Tab): string => {
       if (tab.settingsView) return "Settings";
@@ -812,12 +833,12 @@ export function useTabs(
       if (virtualPath !== undefined) {
         return virtualPath.slice(virtualPath.lastIndexOf("/") + 1);
       }
-      if (tab.windowIndex === undefined) return tab.sessionName;
+      if (tab.windowIndex === undefined) return projectLabelForSession(tab.sessionName);
       const session = sessions.find((s) => s.name === tab.sessionName);
       const win = session?.windows.find((w) => w.index === tab.windowIndex);
-      return `${tab.sessionName}:${win?.name ?? `window ${tab.windowIndex}`}`;
+      return `${projectLabelForSession(tab.sessionName)} · ${win?.name ?? `terminal ${tab.windowIndex}`}`;
     },
-    [sessions, extensions, registryCatalog],
+    [sessions, extensions, registryCatalog, projectLabelForSession],
   );
 
   // Suppressed on the active tab — you're already looking at it, a dot
@@ -1118,6 +1139,8 @@ export function useTabs(
     filesRootDir,
     tabLabel,
     tabActivity,
+    projectLabelForSession,
+    projectKeyForSession,
     openSwitchedSession,
     splitTree: splitLayout.tree,
     activeGroupId: splitLayout.activeGroupId,

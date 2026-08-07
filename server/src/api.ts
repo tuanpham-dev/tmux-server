@@ -124,8 +124,11 @@ api.post("/sessions", async (req, res) => {
     const expanded = expandHome(rawCwd);
     if (await isDirectory(expanded)) cwd = expanded;
   }
+  // Project opens set exactCwd so the session starts at the registered folder
+  // itself rather than its git root — only honored when cwd validated above.
+  const exactCwd = req.body?.exactCwd === true && cwd !== undefined;
   try {
-    res.status(201).json(await createSession(name, cwd));
+    res.status(201).json(await createSession(name, cwd, exactCwd));
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }
@@ -536,7 +539,12 @@ api.get("/fs", async (req, res) => {
     // Plain listing only — git status badges and the branch pill are the
     // git-scm extension's file-decoration provider's job now (see
     // extensions/git-scm), not inlined here.
-    res.json({ path: dirPath, entries: await listDir(dirPath) });
+    // The echoed path is `~`-shortened, matching how session/window paths
+    // leave the server everywhere else — the folder picker feeds it into
+    // the projects registry, where equality against session_path must never
+    // mix expanded and shortened forms. (FileTree keys by its own request
+    // path and ignores this field.)
+    res.json({ path: shortenHome(dirPath), entries: await listDir(dirPath) });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

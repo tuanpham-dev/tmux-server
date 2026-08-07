@@ -36,6 +36,7 @@ interface SharedProps {
   onToggleSidebar: () => void;
   groupingEnabled: boolean;
   groupKey: (tab: Tab) => string | null;
+  groupLabel: (groupKey: string) => string;
   groupState: Record<string, TabGroupState>;
   onToggleGroupCollapsed: (sessionName: string) => void;
   // Both take the editor group id first — a session chip's order/position
@@ -125,6 +126,7 @@ function Leaf({
   onToggleSidebar,
   groupingEnabled,
   groupKey,
+  groupLabel,
   groupState,
   onToggleGroupCollapsed,
   groupMenuItems,
@@ -175,6 +177,7 @@ function Leaf({
         onToggleSidebar={onToggleSidebar}
         groupingEnabled={groupingEnabled}
         groupKey={groupKey}
+        groupLabel={groupLabel}
         groupState={groupState}
         onToggleGroupCollapsed={onToggleGroupCollapsed}
         groupMenuItems={(sessionName) => groupMenuItems(groupId, sessionName)}

@@ -510,17 +510,6 @@ body.resizing-row {
   transform: scaleY(-1);
 }
 
-.new-session-input {
-  margin: 2px 8px 6px;
-  padding: 4px 6px;
-  background: var(--input-bg);
-  border: 1px solid var(--focus-border);
-  border-radius: 2px;
-  color: var(--fg);
-  font-size: 14px;
-  outline: none;
-}
-
 .session-list {
   display: flex;
   flex-direction: column;
@@ -1817,6 +1806,32 @@ body.scrollbar-dragging {
   opacity: 0.7;
 }
 
+.context-menu-item-trailing {
+  display: none;
+  align-items: center;
+  margin-left: auto;
+  padding: 1px;
+  border-radius: 3px;
+  color: var(--fg-inactive);
+}
+
+.context-menu-item:hover .context-menu-item-trailing,
+.context-menu-item:focus .context-menu-item-trailing {
+  display: inline-flex;
+}
+
+.context-menu-item-trailing:hover {
+  color: var(--list-active-fg);
+  background: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+/* A trailing action shares the row-end slot with the shortcut hint; when
+   both exist the hint keeps its place and the trailing button sits after
+   it, but in practice recent-project rows carry no shortcut hints. */
+.context-menu-item-shortcut + .context-menu-item-trailing {
+  margin-left: 6px;
+}
+
 .context-menu-item:hover {
   background: var(--list-active-bg);
   color: var(--list-active-fg);
@@ -1912,6 +1927,58 @@ body.scrollbar-dragging {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+.dialog.folder-picker {
+  width: 460px;
+  max-width: calc(100vw - 32px);
+}
+
+.folder-picker-list {
+  margin-top: 8px;
+  height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-picker-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.folder-picker-entry:hover,
+.folder-picker-entry:focus {
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
+  outline: none;
+}
+
+.folder-picker-entry .codicon {
+  color: var(--fg-inactive);
+}
+
+.folder-picker-empty {
+  padding: 8px;
+  color: var(--fg-inactive);
+  font-size: 12.5px;
+}
+
+.folder-picker-error {
+  margin-top: 6px;
+  color: var(--error-fg, #f48771);
+  font-size: 12.5px;
 }
 
 .dialog-button {

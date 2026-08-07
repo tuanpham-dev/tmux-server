@@ -34,6 +34,10 @@ export interface TmuxSession {
   name: string;
   created: number;
   attached: number;
+  // The session's default working directory (tmux's session_path, from -c at
+  // creation) — the key the client matches sessions to registered projects
+  // by, since it survives renames where the name can't.
+  path: string;
   windows: TmuxWindow[];
 }
 
@@ -119,7 +123,7 @@ async function querySessions(): Promise<TmuxSession[]> {
     tmux([
       "list-sessions",
       "-F",
-      "#{session_id}\t#{session_name}\t#{session_created}\t#{session_attached}",
+      "#{session_id}\t#{session_name}\t#{session_created}\t#{session_attached}\t#{session_path}",
     ]).catch(emptyIfNoServer),
     tmux([
       "list-windows",
@@ -131,13 +135,14 @@ async function querySessions(): Promise<TmuxSession[]> {
 
   const sessions = new Map<string, TmuxSession>();
   for (const line of sessionsOut.split("\n").filter(Boolean)) {
-    const [id, name, created, attached] = line.split("\t");
+    const [id, name, created, attached, sessionPath] = line.split("\t");
     if (name.startsWith(WINDOW_TAB_PREFIX)) continue;
     sessions.set(name, {
       id,
       name,
       created: Number(created),
       attached: Number(attached),
+      path: shortenHome(sessionPath ?? ""),
       windows: [],
     });
   }
@@ -157,16 +162,18 @@ async function querySessions(): Promise<TmuxSession[]> {
   return [...sessions.values()];
 }
 
-export async function createSession(name?: string, cwd?: string): Promise<TmuxSession> {
+export async function createSession(name?: string, cwd?: string, exactCwd = false): Promise<TmuxSession> {
   const args = ["new-session", "-d", "-P", "-F", "#{session_name}"];
   // Without -c, tmux starts the session in this server process's own cwd
   // (the server/ folder) — same pitfall as createWindow below. A caller-
   // provided cwd (the client's "default new session dir" setting, validated
   // in api.ts) wins over NEW_SESSION_CWD from server/.env. Either way, start
   // at the git repo root containing that dir (matching the FILES panel's
-  // rooting), falling back to the dir itself when it isn't inside a repo.
+  // rooting), falling back to the dir itself when it isn't inside a repo —
+  // unless exactCwd: a project session must start at the registered folder
+  // itself so session_path round-trips to the project's cwd.
   const dir = cwd || process.env.NEW_SESSION_CWD;
-  if (dir) args.push("-c", (await getGitRoot(dir)) ?? dir);
+  if (dir) args.push("-c", exactCwd ? dir : ((await getGitRoot(dir)) ?? dir));
   if (name) args.push("-s", name);
   // Browser-opener bridge: the session's very first pane spawns during this
   // call, before any attach has run applyTmuxOptions' set-environment — -e
@@ -365,8 +372,15 @@ export async function createWindow(session: string, cwd?: string): Promise<numbe
   // Without -c, tmux defaults a new window's cwd to the cwd of the process
   // that ran this command — the server's own directory, not the session's —
   // since it's invoked here via execFile rather than from inside a tmux
-  // pane. Look up the active pane's path explicitly and pass it as -c.
-  const dir = cwd ?? (await tmux(["display-message", "-t", `=${session}:`, "-p", "#{pane_current_path}"])).trim();
+  // pane. Default to the session's own folder (session_path — the project
+  // directory), so a new terminal always starts at the project root no
+  // matter where the active pane has cd'd; the active pane's path is only
+  // the fallback for a session with no working directory of its own.
+  const dir =
+    cwd ??
+    (
+      await tmux(["display-message", "-t", `=${session}:`, "-p", "#{?#{session_path},#{session_path},#{pane_current_path}}"])
+    ).trim();
   const created = await tmux([
     "new-window",
     "-t",

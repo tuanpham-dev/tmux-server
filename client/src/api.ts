@@ -30,11 +30,11 @@ export function fetchSessions(): Promise<TmuxSession[]> {
   return request("/api/sessions");
 }
 
-export function createSession(name?: string, cwd?: string): Promise<TmuxSession> {
+export function createSession(name?: string, cwd?: string, exactCwd?: boolean): Promise<TmuxSession> {
   return request("/api/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, cwd: cwd || undefined }),
+    body: JSON.stringify({ name, cwd: cwd || undefined, exactCwd: exactCwd || undefined }),
   });
 }
 

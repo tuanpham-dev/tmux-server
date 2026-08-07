@@ -3,6 +3,7 @@ import * as api from "./api";
 import BottomPanel from "./components/BottomPanel";
 import ContextMenu from "./components/ContextMenu";
 import Dialog from "./components/Dialog";
+import FolderPickerDialog from "./components/FolderPickerDialog";
 import ExtensionPageView from "./components/ExtensionPageView";
 import Icon from "./components/Icon";
 import KeyboardShortcutsView from "./components/KeyboardShortcutsView";
@@ -15,7 +16,7 @@ import { COMMANDS_TAB_ID, EXPLORER_TAB_ID, EXTENSIONS_TAB_ID, RUN_TAB_ID } from 
 import { getContextGetter, setContextKey } from "./contextKeys";
 import {
   extensionTabGroupMenuItems,
-  focusSessionsPanel,
+  focusProjectsPanel,
   focusSidebarTab,
   setExecuteCommandHandler,
   setExtensionSettingUpdater,
@@ -40,8 +41,9 @@ import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useGitRootDir } from "./hooks/useGitRootDir";
 import { useThemeAssets } from "./hooks/useThemeAssets";
-import type { MenuItem, MenuState, RegistrySourceResult, TmuxSession } from "./types";
+import type { MenuItem, MenuState, RegistrySourceResult, Tab, TmuxSession } from "./types";
 import { groupKeyForTab, isRealTab } from "./lib/tabs";
+import { bumpRecent, projectName, sessionNameForProject } from "./lib/projects";
 import { leaves } from "./lib/splits";
 import { emitPollTick } from "./lib/pollTick";
 import { rewriteLocalUrl } from "./lib/openUrlRewrite";
@@ -233,6 +235,13 @@ export default function App() {
   const [sidebarVisible, setSidebarVisible] = useState(
     () => localStorage.getItem("sidebarVisible") !== "false",
   );
+
+  // The Open Folder dialog (FolderPickerDialog) — opened by the PROJECTS
+  // panel's "+", the recent-projects dropdown's "Open Folder…", the
+  // "Project: New…" command ("project" mode: a pick lands in openProject),
+  // and the bottom panel's "New Project…" ("panelTerminal" mode: a pick
+  // opens a panel terminal in the picked project instead).
+  const [folderPickerMode, setFolderPickerMode] = useState<null | "project" | "panelTerminal">(null);
 
   useEffect(() => {
     localStorage.setItem("sidebarVisible", String(sidebarVisible));
@@ -430,8 +439,8 @@ export default function App() {
     extensionSettings,
     setExtensionSettings,
     extensionSettingsRef,
-    pinnedSessions,
-    setPinnedSessions,
+    projects,
+    setProjects,
     commandUsage,
     setCommandUsage,
     extensionRegistries,
@@ -586,6 +595,8 @@ export default function App() {
     filesRootDir,
     tabLabel,
     tabActivity,
+    projectLabelForSession,
+    projectKeyForSession,
     openSwitchedSession,
     activeGroupTabs,
     splitTree,
@@ -608,10 +619,32 @@ export default function App() {
     registryCatalog,
   );
 
-  // The FILES tree and quick-switcher search root at the git repo containing
-  // the active window's cwd (falling back to the cwd when it isn't a repo),
-  // while lazygit and the extension active-context keep the raw cwd below.
-  const resolvedFilesRootDir = useGitRootDir(filesRootDir);
+  // FILES-tree root mode (the panel header's switch): "project" roots the
+  // tree (and quick-switcher file search) at the active project's fixed
+  // folder so `cd` can't drag it elsewhere; "cwd" follows the active
+  // terminal's live directory instead. Device-local view preference, like
+  // the sidebar panel layout.
+  const [filesRootMode, setFilesRootMode] = useState<"project" | "cwd">(
+    () => (localStorage.getItem("filesRootMode") === "cwd" ? "cwd" : "project"),
+  );
+  useEffect(() => {
+    localStorage.setItem("filesRootMode", filesRootMode);
+  }, [filesRootMode]);
+
+  // Project mode: the active session's own folder (session_path); a session
+  // with no reported path falls back to the git repo containing the active
+  // terminal's cwd (then the cwd itself when it isn't a repo). Cwd mode:
+  // the live cwd, verbatim. lazygit and the extension active-context keep
+  // the raw cwd regardless.
+  const gitRootFallback = useGitRootDir(
+    filesRootMode === "project" && !activeSession?.path ? filesRootDir : null,
+  );
+  const resolvedFilesRootDir =
+    filesRootMode === "cwd"
+      ? filesRootDir
+      : activeSession?.path
+        ? activeSession.path
+        : gitRootFallback;
 
   // Extension window-action buttons for a group's own active tab, rendered
   // in that group's tab bar (see TabBar.tsx's extras slot) — the tab-bar
@@ -707,7 +740,19 @@ export default function App() {
     setFilesRefreshKey,
   );
 
-  const { tabGroupState, toggleGroupCollapsed, closeGroupTabs, groupMenuItems, renameGroup, moveGroup } = useTabGroups(
+  // Group key/label with the project resolver baked in — one chip per
+  // project folder (see plans/project-first-ui.md); a pathless session's
+  // key is its own name, so its chip label passes through unchanged.
+  const tabGroupKey = useCallback(
+    (tab: Tab) => groupKeyForTab(tab, projectKeyForSession),
+    [projectKeyForSession],
+  );
+  const groupLabelForKey = useCallback(
+    (key: string) => (key.startsWith("/") || key.startsWith("~") ? projectName(key) : key),
+    [],
+  );
+
+  const { tabGroupState, toggleGroupCollapsed, closeGroupTabs, groupMenuItems, moveGroup } = useTabGroups(
     tabs,
     tabsRef,
     setTabs,
@@ -720,6 +765,7 @@ export default function App() {
     settingsRef,
     settings.tabGroupsBySession,
     confirmDialog,
+    projectKeyForSession,
   );
 
   // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
@@ -737,7 +783,6 @@ export default function App() {
     selectPane: selectPanelPane,
     resizePanes: resizePanelPanes,
     newTerminal,
-    newTerminalInFreshSession,
     splitActivePane,
     closeTab: closePanelTab,
     removePane: removePanelPane,
@@ -817,30 +862,37 @@ export default function App() {
         newTerminal(activeRealTab.sessionName);
         return;
       }
+      // One entry per project (not per session): a merged project's entry
+      // targets its primary session, same rule as everywhere else.
+      const seen = new Set<string>();
+      const projectItems: MenuItem[] = [];
+      for (const s of sessions) {
+        const key = projectKeyForSession(s.name);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        projectItems.push({ label: projectLabelForSession(s.name), onClick: () => newTerminal(s.name) });
+      }
       const items: MenuItem[] = [
-        ...sessions.map((s) => ({
-          label: s.name,
-          onClick: () => newTerminal(s.name),
-        })),
-        { label: "New Session…", onClick: () => newTerminalInFreshSession() },
+        ...projectItems,
+        { label: "New Project…", onClick: () => setFolderPickerMode("panelTerminal") },
       ];
       showMenu(anchor.x, anchor.y, items);
     },
-    [activeRealTab, sessions, newTerminal, newTerminalInFreshSession, showMenu],
+    [activeRealTab, sessions, newTerminal, projectLabelForSession, projectKeyForSession, showMenu],
   );
 
   const {
-    createSession,
-    killSession,
+    closeProject,
     killSessionNow,
-    renameSession,
     createWindow,
     selectWindowInSession,
     renameWindow,
     killWindow,
     togglePinSession,
-    restorePinnedSession,
+    openProject,
     sessionMenuItems,
+    deadProjectMenuItems,
+    recentProjectMenuItems,
     windowMenuItems,
     tabMenuItems,
   } = useSessionActions(
@@ -857,12 +909,38 @@ export default function App() {
     openAllWindows,
     closeTab,
     closeOtherTabs,
-    renameGroup,
-    pinnedSessions,
-    setPinnedSessions,
+    projects,
+    setProjects,
     splitGroup,
     moveTabToAdjacentGroup,
     resolvedFilesRootDir,
+  );
+
+  // The bottom panel's "New Project…": ensure the picked folder's session
+  // exists (created exactly there, named after it — same rules as
+  // openProject), record it into recents, then attach a fresh panel
+  // terminal to it. Unlike openProject this never opens an editor tab —
+  // the pick came from the panel, so the panel is where the terminal goes.
+  const openPanelTerminalInProject = useCallback(
+    async (cwd: string) => {
+      try {
+        let target = sessions.find((s) => s.path === cwd)?.name;
+        if (!target) {
+          const created = await api.createSession(
+            sessionNameForProject(cwd, sessions.map((s) => s.name)),
+            cwd,
+            true,
+          );
+          target = created.name;
+          await refresh();
+        }
+        setProjects((prev) => bumpRecent(prev, cwd));
+        newTerminal(target);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [sessions, refresh, setProjects, newTerminal, showError],
   );
 
   // ctx.app.openSessionWindow / ctx.app.killSession (extensions.ts) — the
@@ -890,10 +968,15 @@ export default function App() {
           if (activeIndex !== undefined) await openWindowTab(sessionName, activeIndex);
           return;
         }
-        // restorePinnedSession is already exactly create-at-cwd → refresh →
-        // open the new window as a tab; nothing about it is pin-specific.
+        // create-at-cwd → refresh → open the new window as a tab. The
+        // extension names the session itself (e.g. a worktree branch), so
+        // this stays name-based — unlike openProject, whose sessions are
+        // named after their folder.
         if (createCwd) {
-          await restorePinnedSession(sessionName, createCwd);
+          const created = await api.createSession(sessionName, createCwd);
+          await refresh();
+          const activeIndex = created.windows.find((w) => w.active)?.index;
+          if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
           return;
         }
         showError(new Error(`No tmux session named "${sessionName}"`));
@@ -902,7 +985,7 @@ export default function App() {
     setKillSessionHandler((sessionName) => {
       void killSessionNow(sessionName);
     });
-  }, [refresh, openWindowTab, restorePinnedSession, killSessionNow, showError]);
+  }, [refresh, openWindowTab, killSessionNow, showError]);
 
   // Session-windows dropdown for a tab-group chip's arrow button. Scoped per
   // editor group (like groupMenuItems), since "checked" below means "already
@@ -915,18 +998,22 @@ export default function App() {
   // confused with useSessionActions' windowMenuItems, which builds a single
   // window row's right-click menu (rename/kill/etc.) in the sidebar.
   const chipWindowMenuItems = useCallback(
-    (editorGroupId: string, sessionName: string): MenuItem[] => {
-      const windows = sessions.find((s) => s.name === sessionName)?.windows ?? [];
+    (editorGroupId: string, chipKey: string): MenuItem[] => {
+      // Every session mapping to this chip's group key — a merged project's
+      // chip reaches all of its backing sessions' terminals; the first is
+      // the primary (same rule as projectRows).
+      const members = sessions.filter((s) => (s.path || s.name) === chipKey);
+      const primary = members[0];
+      const primaryWindows = primary?.windows ?? [];
       // Extension contributions (registerTabGroupMenuItem), appended to this
       // dropdown behind a separator. Read from the module-level registry at
       // menu-open time rather than captured in this callback's deps, and a
       // throwing isVisible hides only its own item — same contract as the
-      // FILES-tree menu's contributions. cwd is the session's active
-      // window's directory, so an item acts on the group it was opened from
-      // rather than on whichever session is focused.
+      // FILES-tree menu's contributions. sessionName/cwd come from the
+      // primary session, keeping the extension-facing shape unchanged.
       const groupCtx = {
-        sessionName,
-        cwd: (windows.find((w) => w.active) ?? windows[0])?.cwd ?? null,
+        sessionName: primary?.name ?? chipKey,
+        cwd: (primaryWindows.find((w) => w.active) ?? primaryWindows[0])?.cwd ?? null,
       };
       const contributed: MenuItem[] = extensionTabGroupMenuItems
         .filter((item) => {
@@ -946,34 +1033,40 @@ export default function App() {
         contributed.length > 0
           ? [...items, { label: "", separator: true, onClick: () => {} }, ...contributed]
           : items;
-      if (windows.length === 0) {
-        return withContributions([{ label: "No windows", disabled: true, onClick: () => {} }]);
+      const entries = members.flatMap((m) => m.windows.map((w) => ({ session: m, window: w })));
+      if (entries.length === 0) {
+        return withContributions([{ label: "No terminals", disabled: true, onClick: () => {} }]);
       }
-      // A window-tab pins a specific index; the whole-session tab (no
+      // A window-tab pins a specific index; a whole-session tab (no
       // windowIndex) instead shows whichever window tmux currently has
-      // active for this session — so it "opens" (and can be the "active *"
-      // one for) that one.
-      const groupTabs = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t) === sessionName);
+      // active for its session — so it "opens" (and can be the "active *"
+      // one for) that one. Open/active tracking is per (session, index)
+      // since a merged chip spans sessions.
+      const groupTabs = tabs.filter(
+        (t) => t.groupId === editorGroupId && groupKeyForTab(t, projectKeyForSession) === chipKey,
+      );
       const activeGroupTabId = groupActive[editorGroupId];
-      const openIndexes = new Set<number>();
-      let activeIndex: number | undefined;
+      const openKeys = new Set<string>();
+      let activeKey: string | undefined;
       for (const t of groupTabs) {
-        const index = t.windowIndex ?? windows.find((w) => w.active)?.index;
+        const member = members.find((m) => m.name === t.sessionName);
+        const index = t.windowIndex ?? member?.windows.find((w) => w.active)?.index;
         if (index === undefined) continue;
-        openIndexes.add(index);
-        if (t.id === activeGroupTabId) activeIndex = index;
+        const k = `${t.sessionName}:${index}`;
+        openKeys.add(k);
+        if (t.id === activeGroupTabId) activeKey = k;
       }
       return withContributions([
-        ...windows.map((w) => ({
-          label: `${w.index} ${w.name}${w.index === activeIndex ? " *" : ""}`,
-          checked: openIndexes.has(w.index),
-          onClick: () => openWindowTab(sessionName, w.index),
+        ...entries.map(({ session: m, window: w }) => ({
+          label: `${w.name}${`${m.name}:${w.index}` === activeKey ? " *" : ""}`,
+          checked: openKeys.has(`${m.name}:${w.index}`),
+          onClick: () => openWindowTab(m.name, w.index),
         })),
         { separator: true, label: "", onClick: () => {} },
-        { label: "New Window", icon: "add", onClick: () => createWindow(sessionName) },
+        { label: "New Terminal", icon: "add", onClick: () => createWindow(primary?.name ?? chipKey) },
       ]);
     },
-    [sessions, tabs, groupActive, openWindowTab, createWindow],
+    [sessions, tabs, groupActive, openWindowTab, createWindow, projectKeyForSession],
   );
 
   // Chrome-style "+" in a tab bar (TabBar.tsx's tab-new-btn) — creates a new
@@ -1008,7 +1101,7 @@ export default function App() {
       "sidebar.focusRun": () => focusSidebarTab(RUN_TAB_ID),
       "sidebar.focusCommands": () => focusSidebarTab(COMMANDS_TAB_ID),
       "sidebar.focusExtensions": () => focusSidebarTab(EXTENSIONS_TAB_ID),
-      "sidebar.focusSessions": () => focusSessionsPanel(),
+      "sidebar.focusProjects": () => focusProjectsPanel(),
       "quickSwitcher.toggle": () => setSwitcherQuery((q) => (q === null ? "" : null)),
       "commandPalette.toggle": () => setSwitcherQuery((q) => (q === null ? ">" : null)),
       "tab.next": () => cycleTab(1),
@@ -1021,12 +1114,9 @@ export default function App() {
       },
       "settings.open": openSettingsTab,
       "settings.openKeyboardShortcuts": openKeyboardShortcutsTab,
-      "session.new": () => createSession(),
+      "session.new": () => setFolderPickerMode("project"),
       "session.kill": () => {
-        if (activeRealTab) killSession(activeRealTab.sessionName);
-      },
-      "session.rename": () => {
-        if (activeRealTab) renameSession(activeRealTab.sessionName);
+        if (activeRealTab) closeProject(activeRealTab.sessionName);
       },
       "session.togglePin": () => {
         if (activeRealTab) togglePinSession(activeRealTab.sessionName);
@@ -1149,9 +1239,7 @@ export default function App() {
       cycleTab,
       openSettingsTab,
       openKeyboardShortcutsTab,
-      createSession,
-      killSession,
-      renameSession,
+      closeProject,
       togglePinSession,
       createWindow,
       killWindow,
@@ -1323,11 +1411,6 @@ export default function App() {
     recordCommandUsage,
   ]);
 
-  const newWindowInDir = (cwd: string) => {
-    if (!activeRealTab) return;
-    createWindow(activeRealTab.sessionName, cwd);
-  };
-
   // Branch pill in the FILES panel header: find-or-create the active
   // session's lazygit window (started in the file tree's root when created)
   // and bring it up as a window tab.
@@ -1402,25 +1485,27 @@ export default function App() {
             }
             onOpenAllWindows={openAllWindows}
             onOpenWindow={openWindowTab}
-            onCreate={createSession}
             onKillWindow={killWindow}
-            onKillSession={killSession}
-            onRenameSession={renameSession}
+            onKillSession={closeProject}
             onRenameWindow={renameWindow}
             onTogglePinSession={togglePinSession}
             onNewWindowInSession={createWindow}
-            onNewWindowInDir={newWindowInDir}
             onOpenLazygit={openLazygit}
             onShowMenu={showMenu}
             sessionMenuItems={sessionMenuItems}
+            deadProjectMenuItems={deadProjectMenuItems}
             windowMenuItems={windowMenuItems}
-            pinnedSessions={pinnedSessions}
-            onRestorePinned={restorePinnedSession}
+            projects={projects}
+            onOpenProject={openProject}
+            onAddProject={() => setFolderPickerMode("project")}
+            recentProjectsMenu={() => recentProjectMenuItems(() => setFolderPickerMode("project"))}
             onOpenSettings={openSettingsTab}
             panelVisible={panel.visible}
             onTogglePanel={togglePanel}
             onCollapse={() => setSidebarVisible(false)}
             filesRootDir={resolvedFilesRootDir}
+            filesRootMode={filesRootMode}
+            onFilesRootModeChange={setFilesRootMode}
             onDropFiles={handleFileTreeDrop}
             filesRefreshKey={filesRefreshKey}
             onFilesRefresh={handleFilesRefresh}
@@ -1493,7 +1578,8 @@ export default function App() {
           onSplitAndMoveTab={splitGroupAndMoveTab}
           onToggleSidebar={() => setSidebarVisible((v) => !v)}
           groupingEnabled={settings.tabGroupsBySession}
-          groupKey={groupKeyForTab}
+          groupKey={tabGroupKey}
+          groupLabel={groupLabelForKey}
           groupState={tabGroupState}
           onToggleGroupCollapsed={toggleGroupCollapsed}
           groupMenuItems={groupMenuItems}
@@ -1709,12 +1795,25 @@ export default function App() {
       {menu && (
         <ContextMenu menu={menu} onClose={() => setMenu(null)} resolvedBindings={resolvedBindings} />
       )}
+      {folderPickerMode !== null && (
+        <FolderPickerDialog
+          initialPath={settings.defaultProjectsFolder || "~"}
+          onPick={(path) => {
+            const mode = folderPickerMode;
+            setFolderPickerMode(null);
+            if (mode === "panelTerminal") void openPanelTerminalInProject(path);
+            else void openProject(path);
+          }}
+          onCancel={() => setFolderPickerMode(null)}
+        />
+      )}
       {dialog && <Dialog dialog={dialog} />}
       {switcherQuery !== null && (
         <QuickSwitcher
           sessions={sessions}
           tabs={tabs}
           tabLabel={tabLabel}
+          projectLabel={projectLabelForSession}
           filesRootDir={resolvedFilesRootDir}
           initialQuery={switcherQuery}
           commands={paletteCommands}

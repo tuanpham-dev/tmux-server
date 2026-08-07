@@ -117,7 +117,7 @@ export default function ExtensionsPanel({
   // fresh every time the user switches to it (via sidebar.focusExtensions/
   // Ctrl+Shift+X or the tab strip) — focusing the search input here is
   // exactly "land somewhere useful" for that shortcut, no separate bridge
-  // needed (contrast SessionList/PortsPanel, which stay mounted inside an
+  // needed (contrast ProjectList/PortsPanel, which stay mounted inside an
   // always-present accordion and need an explicit focus bridge instead).
   useEffect(() => {
     searchInputRef.current?.focus();
@@ -218,7 +218,7 @@ export default function ExtensionsPanel({
   };
 
   // ---- Keyboard navigation (roving tabindex over both sections' headers +
-  // rows) — mirrors SessionList.tsx's flattened-row approach. Row order here
+  // rows) — mirrors ProjectList.tsx’s flattened-row approach. Row order here
   // matches the JSX below exactly (installed header, its rows if expanded,
   // available header, its rows if expanded).
   type NavRow =

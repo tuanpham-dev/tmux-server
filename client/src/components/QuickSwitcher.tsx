@@ -26,6 +26,9 @@ interface Props {
   // sessionName of their own) get their real title instead of falling
   // through to an empty string.
   tabLabel: (tab: Tab) => string;
+  // Folder-derived project label for a session (useTabs' resolver) — the
+  // terminal/project rows below never show raw tmux session names.
+  projectLabel: (session: string) => string;
   filesRootDir: string | null;
   // Seeds the input on open — "" for a plain switch, ">" to land straight in
   // command-palette mode (see App.tsx's commandPalette.toggle handler).
@@ -81,6 +84,7 @@ export default function QuickSwitcher({
   sessions,
   tabs,
   tabLabel,
+  projectLabel,
   filesRootDir,
   initialQuery,
   commands,
@@ -159,8 +163,8 @@ export default function QuickSwitcher({
         if (alreadyOpen) continue;
         list.push({
           key: `window:${session.name}:${win.index}`,
-          label: `${session.name}:${win.name}`,
-          group: "window",
+          label: `${projectLabel(session.name)} · ${win.name}`,
+          group: "terminal",
           run: () => onOpenWindow(session.name, win.index),
         });
       }
@@ -172,13 +176,13 @@ export default function QuickSwitcher({
       if (alreadyOpen) continue;
       list.push({
         key: `session:${session.name}`,
-        label: session.name,
-        group: "session",
+        label: projectLabel(session.name),
+        group: "project",
         run: () => onOpenSession(session.name),
       });
     }
     return list;
-  }, [sessions, tabs, tabLabel, onActivateTab, onOpenWindow, onOpenSession]);
+  }, [sessions, tabs, tabLabel, projectLabel, onActivateTab, onOpenWindow, onOpenSession]);
 
   // Files arrive already fuzzy-filtered and capped by the server (see the
   // search effect above), ranked after the tab/window/session groups — so
@@ -259,7 +263,7 @@ export default function QuickSwitcher({
         <input
           ref={inputRef}
           className="quick-switcher-input"
-          placeholder={isCommandMode ? "Type a command…" : "Go to tab, window, or session… (\">\" for commands)"}
+          placeholder={isCommandMode ? "Type a command…" : "Go to tab, terminal, or project… (\">\" for commands)"}
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);

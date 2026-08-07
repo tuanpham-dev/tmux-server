@@ -25,7 +25,7 @@ export interface UseListNavigationOptions {
   // Fires on every plain arrow/Home/End move (not on activate/expand/
   // collapse) — selection-owning callers (GitPanel) use this to single-
   // select on a plain move and range-extend on a Shift move; callers with no
-  // selection concept (SessionList, PortsPanel, ExtensionsPanel) can omit it
+  // selection concept (ProjectList, PortsPanel, ExtensionsPanel) can omit it
   // and just read focusedId.
   onFocusChange?: (id: string, opts: { shiftKey: boolean }) => void;
 }
@@ -47,14 +47,14 @@ export interface UseListNavigationResult {
 }
 
 // Roving-tabindex keyboard navigation shared by every non-FILES-tree list
-// widget in the app (SessionList, PortsPanel, ExtensionsPanel; via the
+// widget in the app (ProjectList, PortsPanel, ExtensionsPanel; via the
 // extensions/_shared copy, SearchPanel and GitPanel). FileTree.tsx predates
 // this hook and keeps its own hand-rolled equivalent — migrating it is out
 // of scope, see plans/keyboard-nav-context-menus-sessions-search-git.md.
 //
 // Handles exactly the "list-widget" keys (arrows, Home/End, Enter/Space,
 // Delete, ContextMenu/Shift+F10) — never a rebindable operation. Callers
-// that also want rebindable commands (e.g. SessionList's sessions.kill)
+// that also want rebindable commands (e.g. ProjectList’s projects.kill)
 // dispatch those themselves BEFORE calling this hook's onKeyDown, using
 // their own resolvedBindings check, exactly like FileTree.tsx does.
 //

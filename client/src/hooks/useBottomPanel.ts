@@ -237,19 +237,6 @@ export function useBottomPanel(
     [createPane, addTabWithPane],
   );
 
-  // The picker's "New Session…" path: creates the session, then attaches the
-  // window tmux gives every new session rather than adding a second one.
-  const newTerminalInFreshSession = useCallback(async () => {
-    try {
-      const created = await api.createSession();
-      const index = created.windows[0]?.index ?? 0;
-      const pane = await createPane(created.name, index);
-      if (pane) addTabWithPane(pane);
-    } catch (err) {
-      showError(err);
-    }
-  }, [createPane, addTabWithPane, showError]);
-
   // Splits the active tab's active pane: a new pane, backed by its own fresh
   // window in that pane's session, lands immediately to its right and takes
   // half its flex weight (lib/splits.ts's splitLeaf convention). Side-by-side
@@ -431,7 +418,6 @@ export function useBottomPanel(
     selectPane,
     resizePanes,
     newTerminal,
-    newTerminalInFreshSession,
     splitActivePane,
     closeTab,
     closePane,

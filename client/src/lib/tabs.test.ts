@@ -17,7 +17,7 @@ function makeTab(overrides: Partial<Tab>): Tab {
 }
 
 function makeSession(overrides: Partial<TmuxSession>): TmuxSession {
-  return { id: "$1", name: "session", created: 0, attached: 0, windows: [], ...overrides };
+  return { id: "$1", name: "session", created: 0, attached: 0, path: "~", windows: [], ...overrides };
 }
 
 describe("groupKeyForTab", () => {
@@ -53,6 +53,34 @@ describe("groupKeyForTab", () => {
   it("returns null for the settings tab", () => {
     const tab = makeTab({ sessionName: "", attachName: "", settingsView: true });
     expect(groupKeyForTab(tab)).toBeNull();
+  });
+
+  it("maps through a session-key resolver (project-path grouping)", () => {
+    const key = (name: string) => (name.startsWith("app") ? "~/works/app" : name);
+    expect(groupKeyForTab(makeTab({ sessionName: "app" }), key)).toBe("~/works/app");
+    expect(groupKeyForTab(makeTab({ sessionName: "app-2", windowIndex: 0 }), key)).toBe("~/works/app");
+    const viewer = makeTab({
+      sessionName: "",
+      attachName: "",
+      extViewerId: "image",
+      extViewerPath: "/a.png",
+      originSessionName: "app",
+    });
+    expect(groupKeyForTab(viewer, key)).toBe("~/works/app");
+  });
+});
+
+describe("normalizeTabGroups with a session-key resolver", () => {
+  it("collapses two sessions sharing a path into one contiguous block", () => {
+    const key = (name: string) => (name.startsWith("app") ? "~/works/app" : name);
+    const tabs = [
+      makeTab({ id: "a1", sessionName: "app" }),
+      makeTab({ id: "o1", sessionName: "other" }),
+      makeTab({ id: "a2", sessionName: "app-2" }),
+    ];
+    const normalized = normalizeTabGroups(tabs, key);
+    expect(normalized.map((t) => t.id)).toEqual(["a1", "a2", "o1"]);
+    expect(orderedGroupKeys(normalized, key)).toEqual(["~/works/app", "other"]);
   });
 });
 

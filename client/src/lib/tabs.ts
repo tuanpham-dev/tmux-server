@@ -43,15 +43,23 @@ export function tabsAreDuplicates(a: Tab, b: Tab): boolean {
   return false;
 }
 
+// Maps a tab's session name to its group key. Identity by default; the app
+// passes useTabs' projectKeyForSession (the session's folder, falling back
+// to its name) so every session rooted in one folder shares a single group
+// — one project, one chip (plans/project-first-ui.md).
+export type SessionKeyResolver = (sessionName: string) => string;
+const identityKey: SessionKeyResolver = (name) => name;
+
 // Chrome-style tab groups (plans/tab-groups-by-session.md): a real tab's
-// group is simply its session. A viewer tab (image/markdown/etc.) joins the
-// group of the real session it was opened from (originSessionName, cleared
-// once that session no longer exists — see the effect in App() that strips
-// it). The settings tab is never grouped — it's a global singleton, not
-// tied to any one session.
-export function groupKeyForTab(tab: Tab): string | null {
-  if (isRealTab(tab)) return tab.sessionName;
-  return tab.originSessionName ?? null;
+// group is its session's key under `keyForSession` — the project folder in
+// the app, the raw session name by default. A viewer tab
+// (image/markdown/etc.) joins the group of the real session it was opened
+// from (originSessionName, cleared once that session no longer exists — see
+// the effect in App() that strips it). The settings tab is never grouped —
+// it's a global singleton, not tied to any one session.
+export function groupKeyForTab(tab: Tab, keyForSession: SessionKeyResolver = identityKey): string | null {
+  if (isRealTab(tab)) return keyForSession(tab.sessionName);
+  return tab.originSessionName !== undefined ? keyForSession(tab.originSessionName) : null;
 }
 
 // Every group's tabs as a contiguous block, keyed by group, in first-
@@ -59,12 +67,15 @@ export function groupKeyForTab(tab: Tab): string | null {
 // settings, or a preview tab whose origin session went away. The one
 // decomposition normalizeTabGroups, orderedGroupKeys, and moveGroup all
 // share, so "what order are the groups in" can't drift across call sites.
-function groupBlocks(tabs: Tab[]): { order: string[]; blocks: Map<string, Tab[]>; singletons: Tab[] } {
+function groupBlocks(
+  tabs: Tab[],
+  keyForSession: SessionKeyResolver = identityKey,
+): { order: string[]; blocks: Map<string, Tab[]>; singletons: Tab[] } {
   const order: string[] = [];
   const blocks = new Map<string, Tab[]>();
   const singletons: Tab[] = [];
   for (const tab of tabs) {
-    const key = groupKeyForTab(tab);
+    const key = groupKeyForTab(tab, keyForSession);
     if (key === null) {
       singletons.push(tab);
       continue;
@@ -81,8 +92,8 @@ function groupBlocks(tabs: Tab[]): { order: string[]; blocks: Map<string, Tab[]>
 
 // The distinct group keys among `tabs`, in first-appearance order — the
 // same order normalizeTabGroups anchors on and moveGroup reorders.
-export function orderedGroupKeys(tabs: Tab[]): string[] {
-  return groupBlocks(tabs).order;
+export function orderedGroupKeys(tabs: Tab[], keyForSession?: SessionKeyResolver): string[] {
+  return groupBlocks(tabs, keyForSession).order;
 }
 
 // Reorders `tabs` so every group's members sit contiguously, anchored at the
@@ -91,8 +102,8 @@ export function orderedGroupKeys(tabs: Tab[]): string[] {
 // away — pushed after every group, in their own original relative order.
 // Returns the same array reference when the order is already normalized, so
 // callers can safely bail a setState on it.
-export function normalizeTabGroups(tabs: Tab[]): Tab[] {
-  const { order, blocks, singletons } = groupBlocks(tabs);
+export function normalizeTabGroups(tabs: Tab[], keyForSession?: SessionKeyResolver): Tab[] {
+  const { order, blocks, singletons } = groupBlocks(tabs, keyForSession);
   const next: Tab[] = [];
   for (const key of order) next.push(...blocks.get(key)!);
   next.push(...singletons);
@@ -108,8 +119,8 @@ export function normalizeTabGroups(tabs: Tab[]): Tab[] {
 // grouping is enabled, the only time this is callable. Returns the same
 // array reference when the move is a no-op (unknown group key, or the
 // target position doesn't actually change anything).
-export function moveGroup(tabs: Tab[], groupKey: string, toIndex: number): Tab[] {
-  const { order, blocks, singletons } = groupBlocks(tabs);
+export function moveGroup(tabs: Tab[], groupKey: string, toIndex: number, keyForSession?: SessionKeyResolver): Tab[] {
+  const { order, blocks, singletons } = groupBlocks(tabs, keyForSession);
   if (!blocks.has(groupKey)) return tabs;
   const withoutDragged = order.filter((k) => k !== groupKey);
   const clamped = Math.max(0, Math.min(toIndex, withoutDragged.length));
@@ -202,7 +213,7 @@ export function loadStoredTabs(fallbackGroupId: string): Tab[] {
 // here, and one group's reordering never disturbs another group's tabs, even
 // though both live in the same flat array. Returns the same reference when
 // no editor group's subsequence changed.
-export function normalizeWithinGroups(tabs: Tab[]): Tab[] {
+export function normalizeWithinGroups(tabs: Tab[], keyForSession?: SessionKeyResolver): Tab[] {
   const editorGroupIds = Array.from(new Set(tabs.map((t) => t.groupId)));
   let next = tabs;
   for (const editorGroupId of editorGroupIds) {
@@ -211,7 +222,7 @@ export function normalizeWithinGroups(tabs: Tab[]): Tab[] {
       if (next[i].groupId === editorGroupId) slots.push(i);
     }
     const subsequence = slots.map((i) => next[i]);
-    const normalized = normalizeTabGroups(subsequence);
+    const normalized = normalizeTabGroups(subsequence, keyForSession);
     if (normalized === subsequence) continue;
     const replaced = [...next];
     slots.forEach((slot, idx) => {
@@ -231,13 +242,14 @@ export function moveGroupWithin(
   editorGroupId: string,
   sessionKey: string,
   toIndex: number,
+  keyForSession?: SessionKeyResolver,
 ): Tab[] {
   const slots: number[] = [];
   for (let i = 0; i < tabs.length; i++) {
     if (tabs[i].groupId === editorGroupId) slots.push(i);
   }
   const subsequence = slots.map((i) => tabs[i]);
-  const moved = moveGroup(subsequence, sessionKey, toIndex);
+  const moved = moveGroup(subsequence, sessionKey, toIndex, keyForSession);
   if (moved === subsequence) return tabs;
   const next = [...tabs];
   slots.forEach((slot, idx) => {

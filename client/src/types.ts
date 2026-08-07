@@ -17,19 +17,24 @@ export interface TmuxSession {
   name: string;
   created: number;
   attached: number;
+  // The session's default working directory (tmux's session_path, `~`-
+  // shortened) — the key sessions are matched to projects by, since it
+  // survives renames where the name can't.
+  path: string;
   windows: TmuxWindow[];
 }
 
-export type SidebarMode = "sessions" | "dirs";
-
-// A pinned session survives its tmux session being killed: the sidebar keeps
-// showing a dead row for it, and recreating a session by this name restores
-// it in `cwd` (captured from the active window at pin time). Matched against
-// live sessions by name — the only key that survives a kill/recreate cycle,
-// since tmux's own session id doesn't.
-export interface PinnedSession {
-  name: string;
+// A project is a folder: `cwd` (full `~`-shortened path) is its identity and
+// what its tmux session is matched by (session.path === cwd); the display
+// name is always derived from the folder basename (lib/projects.ts's
+// projectName), never stored. The registry doubles as the recent-projects
+// list, MRU by lastOpened. A pinned project survives its session being
+// killed: the PROJECTS panel keeps a dead row that recreates the session in
+// exactly this folder; unpinned projects live only in the recents dropdown.
+export interface Project {
   cwd: string;
+  pinned: boolean;
+  lastOpened: number;
 }
 
 export interface Tab {
@@ -142,11 +147,21 @@ export interface MenuItem {
   // `checked` — used by the chip dropdown's "New Window" item. `checked`
   // wins if both are set.
   icon?: string;
+  // Right-aligned icon button giving the row a secondary action — e.g. the
+  // recent-projects dropdown's per-entry "Remove from Recent". Clicking it
+  // runs its own onClick without triggering the row's; Delete on the
+  // keyboard-focused row dispatches it too (see ContextMenu).
+  trailing?: {
+    icon: string;
+    title: string;
+    onClick: () => void;
+  };
 }
 
-// Per-session tab-group UI state (client/src/App.tsx's tabGroupState),
-// keyed by sessionName — see App.tsx's rename-migration comment for why
-// name, not the stable session id, is the key.
+// Per-project tab-group UI state (useTabGroups' tabGroupState), keyed by
+// the group key — the session's project folder (session_path), falling
+// back to the session name for pathless sessions. Pre-project state keyed
+// by session name migrates best-effort in useTabGroups' reconcile effect.
 export interface TabGroupState {
   color: string; // a utils/groupColor.ts GROUP_COLORS key
   collapsed: boolean;

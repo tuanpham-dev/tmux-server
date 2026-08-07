@@ -31,6 +31,10 @@ export function useTabGroups(
   settingsRef: MutableRefObject<AppSettings>,
   groupingEnabled: boolean,
   confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>,
+  // Maps a session name to its group key — useTabs' projectKeyForSession
+  // (the session's folder, falling back to its name), so every session
+  // rooted in one folder shares a single chip (plans/project-first-ui.md).
+  keyForSession: (sessionName: string) => string,
 ) {
   const [tabGroupState, setTabGroupState] = useState<Record<string, TabGroupState>>(
     loadStoredTabGroupState,
@@ -39,33 +43,40 @@ export function useTabGroups(
     localStorage.setItem("tabGroupState", JSON.stringify(tabGroupState));
   }, [tabGroupState]);
 
-  // Keeps tabGroupState in sync with which sessions actually have tabs open:
-  // prunes entries for sessions with no tab left (forgets color/collapsed,
+  // Keeps tabGroupState in sync with which projects actually have tabs open:
+  // prunes entries for group keys with no tab left (forgets color/collapsed,
   // same as Chrome forgetting a closed group), and — only while grouping is
-  // enabled — auto-assigns a fresh palette color to any session that gained
-  // tabs without one yet.
+  // enabled — auto-assigns a fresh palette color to any key that gained tabs
+  // without one yet. Also the best-effort key migration from the pre-project
+  // era, when this state was keyed by session name: a live key with no entry
+  // adopts its session's name-keyed entry (if any) before a fresh color
+  // would be assigned, so stored chip colors survive the re-key.
   useEffect(() => {
     setTabGroupState((prev) => {
-      const sessionNames = new Set(tabs.filter(isRealTab).map((t) => t.sessionName));
+      const liveKeys = new Map<string, string>(); // group key -> a session name mapping to it
+      for (const t of tabs) {
+        if (isRealTab(t)) liveKeys.set(keyForSession(t.sessionName), t.sessionName);
+      }
       let changed = false;
       const next: Record<string, TabGroupState> = {};
-      for (const [name, state] of Object.entries(prev)) {
-        if (sessionNames.has(name)) next[name] = state;
+      for (const [key, state] of Object.entries(prev)) {
+        if (liveKeys.has(key)) next[key] = state;
         else changed = true;
       }
       if (settingsRef.current.tabGroupsBySession) {
         let colorCount = Object.keys(next).length;
-        for (const name of sessionNames) {
-          if (!next[name]) {
-            next[name] = { color: nextAutoColor(colorCount), collapsed: false };
-            colorCount++;
+        for (const [key, sessionName] of liveKeys) {
+          if (!next[key]) {
+            const legacy = key !== sessionName ? prev[sessionName] : undefined;
+            next[key] = legacy ?? { color: nextAutoColor(colorCount), collapsed: false };
+            if (!legacy) colorCount++;
             changed = true;
           }
         }
       }
       return changed ? next : prev;
     });
-  }, [tabs, groupingEnabled, settingsRef]);
+  }, [tabs, groupingEnabled, settingsRef, keyForSession]);
 
   // Enforces group contiguity while grouping is enabled — reorders `tabs` so
   // each session's tabs sit adjacent to each other, independently within
@@ -74,8 +85,8 @@ export function useTabGroups(
   // bails on an unchanged reference.
   useEffect(() => {
     if (!groupingEnabled) return;
-    setTabs((prev) => normalizeWithinGroups(prev));
-  }, [tabs, groupingEnabled, setTabs]);
+    setTabs((prev) => normalizeWithinGroups(prev, keyForSession));
+  }, [tabs, groupingEnabled, setTabs, keyForSession]);
 
   // A tab activated while its group is collapsed must not stay hidden
   // behind its own chip — expand its group so the active tab is always
@@ -84,14 +95,14 @@ export function useTabGroups(
   useEffect(() => {
     if (!activeTabId) return;
     const tab = tabs.find((t) => t.id === activeTabId);
-    const key = tab ? groupKeyForTab(tab) : null;
+    const key = tab ? groupKeyForTab(tab, keyForSession) : null;
     if (!key) return;
     setTabGroupState((prev) => {
       const state = prev[key];
       if (!state?.collapsed) return prev;
       return { ...prev, [key]: { ...state, collapsed: false } };
     });
-  }, [activeTabId, tabs]);
+  }, [activeTabId, tabs, keyForSession]);
 
   // tabGroupState's own key migration for an out-of-band session rename —
   // useTabs runs the equivalent rename-detection independently (from
@@ -128,7 +139,7 @@ export function useTabGroups(
       const collapsing = !state.collapsed;
       if (collapsing) {
         const memberIds = new Set(
-          tabsRef.current.filter((t) => groupKeyForTab(t) === sessionName).map((t) => t.id),
+          tabsRef.current.filter((t) => groupKeyForTab(t, keyForSession) === sessionName).map((t) => t.id),
         );
         const hasOutside = tabsRef.current.some((t) => !memberIds.has(t.id));
         if (!hasOutside) return prev;
@@ -144,7 +155,7 @@ export function useTabGroups(
       }
       return { ...prev, [sessionName]: { ...state, collapsed: collapsing } };
     });
-  }, [tabsRef, mruTabIdsRef, setActiveTabId]);
+  }, [tabsRef, mruTabIdsRef, setActiveTabId, keyForSession]);
 
   // Moves a whole group's block to a new position relative to the other
   // groups within one editor group's own tab bar only — the drag-a-chip /
@@ -154,9 +165,9 @@ export function useTabGroups(
   // other tab-order change.
   const moveGroup = useCallback(
     (editorGroupId: string, sessionName: string, toIndex: number) => {
-      setTabs((prev) => moveGroupWithin(prev, editorGroupId, sessionName, toIndex));
+      setTabs((prev) => moveGroupWithin(prev, editorGroupId, sessionName, toIndex, keyForSession));
     },
-    [setTabs],
+    [setTabs, keyForSession],
   );
 
   // Scoped to one editor group's own tabs — closing a session's chip in one
@@ -166,7 +177,7 @@ export function useTabGroups(
   // per-bar).
   const closeGroupTabs = useCallback(
     async (editorGroupId: string, sessionName: string) => {
-      const toClose = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t) === sessionName);
+      const toClose = tabs.filter((t) => t.groupId === editorGroupId && groupKeyForTab(t, keyForSession) === sessionName);
       if (toClose.length === 0) return;
       const anyDirty = toClose.some((t) => dirtyTabsRef.current.has(t.id));
       if (anyDirty) {
@@ -196,7 +207,7 @@ export function useTabGroups(
         return next;
       });
     },
-    [tabs, confirmDialog, dirtyTabsRef, mruTabIdsRef, setTabs, setActiveTabId, settingsRef],
+    [tabs, confirmDialog, dirtyTabsRef, mruTabIdsRef, setTabs, setActiveTabId, settingsRef, keyForSession],
   );
 
   // `editorGroupId` scopes chip order/position (Move Left/Right) and Close
@@ -211,7 +222,7 @@ export function useTabGroups(
       // group, no "Move Right" for the last) rather than rendered disabled —
       // MenuItem has no disabled field, and a two-item omit is simpler.
       const barTabs = tabs.filter((t) => t.groupId === editorGroupId);
-      const order = orderedGroupKeys(barTabs);
+      const order = orderedGroupKeys(barTabs, keyForSession);
       const index = order.indexOf(sessionName);
       const moveItems: MenuItem[] = [];
       if (index > 0) {
@@ -249,11 +260,12 @@ export function useTabGroups(
         { label: "Close Group", danger: true, onClick: () => closeGroupTabs(editorGroupId, sessionName) },
       ];
     },
-    [tabGroupState, tabs, toggleGroupCollapsed, moveGroup, closeGroupTabs],
+    [tabGroupState, tabs, toggleGroupCollapsed, moveGroup, closeGroupTabs, keyForSession],
   );
 
   // Synchronous counterpart to the out-of-band rename-migration effect above
-  // — useSessionActions' renameSession calls this right after the API call
+  // — kept for out-of-band rename reconciliation callers; sessions no
+  // longer have an in-app rename action (a project's name is its folder's)
   // succeeds, so the group's color/collapsed state follows immediately
   // instead of waiting for the next sessions poll to detect the rename.
   const renameGroup = useCallback((oldName: string, newName: string) => {

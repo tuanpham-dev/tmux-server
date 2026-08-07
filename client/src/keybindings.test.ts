@@ -157,27 +157,38 @@ describe("COMMANDS", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("scopes every sessions.* command to sessions and gates it on sessionsListFocus", () => {
-    const sessionsCommands = COMMANDS.filter((c) => c.id.startsWith("sessions."));
-    expect(sessionsCommands.length).toBe(4);
-    for (const cmd of sessionsCommands) {
-      expect(cmd.scope).toBe("sessions");
-      for (const binding of cmd.defaultBindings) expect(binding.when).toBe("sessionsListFocus");
+  it("scopes every projects.* command to projects and gates it on projectsListFocus", () => {
+    const projectsCommands = COMMANDS.filter((c) => c.id.startsWith("projects."));
+    expect(projectsCommands.length).toBe(4);
+    for (const cmd of projectsCommands) {
+      expect(cmd.scope).toBe("projects");
+      for (const binding of cmd.defaultBindings) expect(binding.when).toBe("projectsListFocus");
     }
   });
 
-  it("defaults sessions.kill to Delete and sessions.rename to F2, mirroring files.*", () => {
-    expect(COMMANDS.find((c) => c.id === "sessions.kill")?.defaultBindings).toEqual([
-      { key: "Delete", when: "sessionsListFocus" },
+  it("defaults projects.kill to Delete and projects.rename to F2, mirroring files.*", () => {
+    expect(COMMANDS.find((c) => c.id === "projects.kill")?.defaultBindings).toEqual([
+      { key: "Delete", when: "projectsListFocus" },
     ]);
-    expect(COMMANDS.find((c) => c.id === "sessions.rename")?.defaultBindings).toEqual([
-      { key: "F2", when: "sessionsListFocus" },
+    expect(COMMANDS.find((c) => c.id === "projects.rename")?.defaultBindings).toEqual([
+      { key: "F2", when: "projectsListFocus" },
     ]);
   });
 
-  it("registers sidebar.focusSessions as an unbound global command", () => {
-    const cmd = COMMANDS.find((c) => c.id === "sidebar.focusSessions");
+  it("registers sidebar.focusProjects as an unbound global command", () => {
+    const cmd = COMMANDS.find((c) => c.id === "sidebar.focusProjects");
     expect(cmd?.scope).toBe("global");
     expect(cmd?.defaultBindings).toEqual([]);
+  });
+
+  it("remaps the sunset sessions-pane override ids and their when clauses", () => {
+    const migrated = migrateKeybindingOverrides({
+      "sessions.kill": [{ key: "Backspace", when: "sessionsListFocus" }],
+      "sidebar.focusSessions": "ctrl+shift+KeyS",
+    });
+    expect(migrated).toEqual({
+      "projects.kill": [{ key: "Backspace", when: "projectsListFocus" }],
+      "sidebar.focusProjects": [{ key: "ctrl+shift+KeyS" }],
+    });
   });
 });

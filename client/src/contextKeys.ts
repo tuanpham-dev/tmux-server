@@ -14,7 +14,7 @@ const contextStore: Record<string, unknown> = {};
 export const CONTEXT_KEYS: { key: string; description: string }[] = [
   { key: "terminalFocus", description: "A terminal has keyboard focus" },
   { key: "filesTreeFocus", description: "The FILES tree has keyboard focus" },
-  { key: "sessionsListFocus", description: "The SESSIONS list has keyboard focus" },
+  { key: "projectsListFocus", description: "The PROJECTS list has keyboard focus" },
   { key: "panelFocus", description: "The bottom terminal panel holds keyboard focus" },
   { key: "sidebarVisible", description: "The sidebar is shown" },
   { key: "sidebarFocus", description: "Focus is currently within the sidebar" },
@@ -39,7 +39,7 @@ export function getContextGetter(e?: KeyboardEvent): (key: string) => unknown {
     if (key === "filesTreeFocus" && e) {
       return (e.target as HTMLElement | null)?.closest(".file-tree") != null;
     }
-    if (key === "sessionsListFocus" && e) {
+    if (key === "projectsListFocus" && e) {
       return (e.target as HTMLElement | null)?.closest(".session-list") != null;
     }
     return contextStore[key];

@@ -103,6 +103,20 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
               onClose();
               item.onClick();
             }}
+            onKeyDown={
+              item.trailing
+                ? (e) => {
+                    // Delete on the focused row fires its trailing action —
+                    // the keyboard path to the little icon button below.
+                    if (e.key === "Delete") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onClose();
+                      item.trailing!.onClick();
+                    }
+                  }
+                : undefined
+            }
           >
             {hasChecks && (
               <span className="context-menu-item-check">
@@ -112,6 +126,24 @@ export default function ContextMenu({ menu, onClose, resolvedBindings }: Props) 
             <span className="context-menu-item-label">{item.label}</span>
             {shortcutHint(item.shortcutCommand) && (
               <span className="context-menu-item-shortcut">{shortcutHint(item.shortcutCommand)}</span>
+            )}
+            {item.trailing && (
+              // A span, not a nested <button> (invalid inside the row
+              // button). The menu closes on activation so the snapshot of
+              // items it renders can never go stale against the state the
+              // action just changed.
+              <span
+                role="button"
+                className="context-menu-item-trailing"
+                title={item.trailing.title}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose();
+                  item.trailing!.onClick();
+                }}
+              >
+                <Icon name={item.trailing.icon} />
+              </span>
             )}
           </button>
         ),

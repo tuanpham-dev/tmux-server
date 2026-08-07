@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { orderedGroupKeys } from "../lib/tabs";
 import type { MenuItem, Tab, TabGroupState } from "../types";
 import { adjustForContrast, GROUP_COLORS, groupColorHex } from "../utils/groupColor";
 import { getFileIconResult, useIconThemeVersion } from "../utils/iconThemes";
@@ -40,6 +39,9 @@ interface Props {
   // isn't grouped (settings/extension-viewer tabs).
   groupingEnabled: boolean;
   groupKey: (tab: Tab) => string | null;
+  // Display label for a group key — the project's folder name (App resolves
+  // a path key via projectName; a pathless session's key is its own name).
+  groupLabel: (groupKey: string) => string;
   groupState: Record<string, TabGroupState>;
   onToggleGroupCollapsed: (sessionName: string) => void;
   groupMenuItems: (sessionName: string) => MenuItem[];
@@ -95,6 +97,7 @@ export default function TabBar({
   onToggleSidebar,
   groupingEnabled,
   groupKey,
+  groupLabel,
   groupState,
   onToggleGroupCollapsed,
   groupMenuItems,
@@ -120,8 +123,16 @@ export default function TabBar({
 
   // The distinct group keys among `tabs`, in first-appearance order — the
   // single source of truth chip hit-testing (computeGroupInsertion below)
-  // and the render loop's chip order both derive from.
-  const groupOrder = groupingEnabled ? orderedGroupKeys(tabs) : [];
+  // and the render loop's chip order both derive from. Derived through the
+  // `groupKey` prop (not lib/tabs' orderedGroupKeys directly) so the
+  // project-key resolver App bakes into that prop applies here too.
+  const groupOrder: string[] = [];
+  if (groupingEnabled) {
+    for (const tab of tabs) {
+      const key = groupKey(tab);
+      if (key !== null && !groupOrder.includes(key)) groupOrder.push(key);
+    }
+  }
 
   // Resolved tab-bar background, used to contrast-adjust group colors
   // against whatever the active color theme actually renders (a fixed
@@ -413,7 +424,7 @@ export default function TabBar({
         role="button"
         tabIndex={0}
         aria-expanded={!collapsed}
-        aria-label={`${sessionName} tab group, ${collapsed ? "collapsed" : "expanded"}`}
+        aria-label={`${groupLabel(sessionName)} tab group, ${collapsed ? "collapsed" : "expanded"}`}
         onPointerDown={(e) => handleChipPointerDown(e, sessionName)}
         onClick={() => handleChipClick(sessionName)}
         onKeyDown={(e) => {
@@ -428,9 +439,9 @@ export default function TabBar({
       >
         <button
           className="tab-group-chip-window-btn"
-          title="Session windows"
+          title="Project terminals"
           aria-haspopup="menu"
-          aria-label={`${sessionName} windows`}
+          aria-label={`${groupLabel(sessionName)} terminals`}
           data-menu-trigger="true"
           onClick={(e) => {
             e.stopPropagation();
@@ -449,7 +460,7 @@ export default function TabBar({
         >
           <Icon name="chevron-down" />
         </button>
-        <span className="tab-group-chip-label">{sessionName}</span>
+        <span className="tab-group-chip-label">{groupLabel(sessionName)}</span>
         {groupHasActivity[sessionName] && <span className="activity-dot" />}
       </div>
     );

@@ -8,22 +8,24 @@ import {
   loadExtensionRegistries,
   loadExtensionSettings,
   loadKeybindingOverrides,
-  loadPinnedSessions,
+  loadProjects,
   loadSettings,
   loadSidebarTabsOrder,
   migrateSettings,
+  projectsFromPins,
+  sanitizeProjects,
   saveCommandUsage,
   saveExtensionRegistries,
   saveExtensionSettings,
   saveKeybindingOverrides,
-  savePinnedSessions,
+  saveProjects,
   saveSettings,
   saveSidebarTabsOrder,
   type AppSettings,
   type CommandUsage,
   type ExtensionSettingsValues,
 } from "../settings";
-import type { PinnedSession } from "../types";
+import type { Project } from "../types";
 
 // Owns settings/keybindingOverrides/extensionSettings: localStorage-first
 // load, skip-initial-persist write-back, and the server-doc GET (server
@@ -102,21 +104,21 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     saveExtensionSettings(extensionSettings);
   }, [extensionSettings]);
 
-  // Pinned sessions — same localStorage-first + skip-initial-persist +
-  // server-doc flow as the three states above, but stored as its own
-  // top-level doc key rather than inside AppSettings (see settings.ts).
-  const [pinnedSessions, setPinnedSessions] = useState<PinnedSession[]>(loadPinnedSessions);
-  const pinnedSessionsMounted = useRef(false);
+  // Projects (recents + pins) — same localStorage-first + skip-initial-
+  // persist + server-doc flow as the three states above, but stored as its
+  // own top-level doc key rather than inside AppSettings (see settings.ts).
+  const [projects, setProjects] = useState<Project[]>(loadProjects);
+  const projectsMounted = useRef(false);
   useEffect(() => {
-    if (!pinnedSessionsMounted.current) {
-      pinnedSessionsMounted.current = true;
+    if (!projectsMounted.current) {
+      projectsMounted.current = true;
       return;
     }
-    savePinnedSessions(pinnedSessions);
-  }, [pinnedSessions]);
+    saveProjects(projects);
+  }, [projects]);
 
   // Extension registry sources — same localStorage-first + skip-initial-
-  // persist + server-doc flow as pinnedSessions above, and its own top-level
+  // persist + server-doc flow as projects above, and its own top-level
   // doc key for the same reason: a settings reset must not drop a user's
   // configured registries.
   const [extensionRegistries, setExtensionRegistries] = useState<string[]>(loadExtensionRegistries);
@@ -148,7 +150,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
 
   // Command palette usage stats (count/last per command id) — same
   // localStorage-first + skip-initial-persist + server-doc flow as
-  // pinnedSessions above, and for the same reason: its own top-level doc key
+  // projects above, and for the same reason: its own top-level doc key
   // outside AppSettings so a settings reset can't erase it.
   const [commandUsage, setCommandUsage] = useState<CommandUsage>(loadCommandUsage);
   const commandUsageMounted = useRef(false);
@@ -185,16 +187,13 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
         ) {
           setExtensionSettings(doc.extensionSettings as ExtensionSettingsValues);
         }
-        if (Array.isArray(doc.pinnedSessions)) {
-          setPinnedSessions(
-            doc.pinnedSessions.filter(
-              (p): p is PinnedSession =>
-                typeof p === "object" &&
-                p !== null &&
-                typeof (p as PinnedSession).name === "string" &&
-                typeof (p as PinnedSession).cwd === "string",
-            ),
-          );
+        if (Array.isArray(doc.projects)) {
+          setProjects(sanitizeProjects(doc.projects));
+        } else if (Array.isArray(doc.pinnedSessions)) {
+          // A doc last written by a pre-projects build: migrate its pins
+          // (same conversion as settings.ts's loadProjects). The old key is
+          // preserved by the read-merge write-back below, never rewritten.
+          setProjects(projectsFromPins(doc.pinnedSessions));
         }
         if (Array.isArray(doc.extensionRegistries)) {
           setExtensionRegistries(doc.extensionRegistries.filter((s): s is string => typeof s === "string"));
@@ -250,7 +249,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           settings,
           keybindings: keybindingOverrides,
           extensionSettings,
-          pinnedSessions,
+          projects,
           commandUsage,
           extensionRegistries,
           sidebarTabsOrder,
@@ -259,7 +258,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           settings,
           keybindings: keybindingOverrides,
           extensionSettings,
-          pinnedSessions,
+          projects,
           commandUsage,
           extensionRegistries,
           sidebarTabsOrder,
@@ -272,7 +271,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     settings,
     keybindingOverrides,
     extensionSettings,
-    pinnedSessions,
+    projects,
     commandUsage,
     extensionRegistries,
     sidebarTabsOrder,
@@ -290,8 +289,8 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     extensionSettings,
     setExtensionSettings,
     extensionSettingsRef,
-    pinnedSessions,
-    setPinnedSessions,
+    projects,
+    setProjects,
     commandUsage,
     setCommandUsage,
     extensionRegistries,
