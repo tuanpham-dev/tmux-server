@@ -443,6 +443,10 @@ export default function TerminalView({
       let ws: WebSocket;
       let reconnectAttempt = 0;
       let reconnectTimer: number | undefined;
+      // Half-open detection state (see probeLiveness below): when the last
+      // frame arrived, and the deadline for an in-flight liveness probe.
+      let lastFrameAt = Date.now();
+      let pongTimer: number | undefined;
       const proto = location.protocol === "https:" ? "wss" : "ws";
 
       // Every path that puts raw bytes on the wire as terminal input
@@ -831,11 +835,19 @@ export default function TerminalView({
 
         ws.onopen = () => {
           reconnectAttempt = 0;
+          lastFrameAt = Date.now();
           container.classList.remove("reconnecting");
           refit();
         };
 
         ws.onmessage = (ev) => {
+          // Any frame proves the path is alive — not just a "pong" reply
+          // (which otherwise falls through the dispatch below as a no-op).
+          lastFrameAt = Date.now();
+          if (pongTimer !== undefined) {
+            clearTimeout(pongTimer);
+            pongTimer = undefined;
+          }
           if (ev.data instanceof ArrayBuffer) {
             engine.write(new Uint8Array(ev.data));
             requestScrollState();
@@ -894,6 +906,12 @@ export default function TerminalView({
         };
 
         ws.onclose = () => {
+          // An unanswered probe's deadline must not outlive this socket —
+          // left armed, it would fire against the reconnected one.
+          if (pongTimer !== undefined) {
+            clearTimeout(pongTimer);
+            pongTimer = undefined;
+          }
           if (disposed) return;
           if (receivedExit) {
             onExitRef.current();
@@ -907,6 +925,36 @@ export default function TerminalView({
       };
 
       connect();
+
+      // Half-open detection (fixes the blank-terminal-after-long-idle bug):
+      // a NAT/proxy idle timeout or the OS sleeping mid-connection kills the
+      // TCP path without the browser ever firing onclose — readyState stays
+      // OPEN, input silently goes nowhere, no output arrives, and the
+      // reconnect path above never runs. When the socket has been quiet for
+      // a while, send an app-level ping (wsAttach echoes "pong"); a missed
+      // deadline force-closes the socket, which *does* fire onclose locally
+      // and routes into the normal reconnect path.
+      const PING_IDLE_MS = 30_000;
+      const PONG_DEADLINE_MS = 5_000;
+      const probeLiveness = () => {
+        if (ws.readyState !== WebSocket.OPEN || pongTimer !== undefined) return;
+        ws.send(JSON.stringify({ type: "ping" }));
+        pongTimer = window.setTimeout(() => {
+          pongTimer = undefined;
+          ws.close();
+        }, PONG_DEADLINE_MS);
+      };
+      const heartbeatTimer = window.setInterval(() => {
+        if (Date.now() - lastFrameAt >= PING_IDLE_MS) probeLiveness();
+      }, PING_IDLE_MS);
+      // Waking from sleep / regaining network is the moment a half-open
+      // socket actually gets noticed — probe right away rather than waiting
+      // out the next interval tick (throttled while backgrounded anyway).
+      const onConnectivityResume = () => {
+        if (!document.hidden && Date.now() - lastFrameAt >= PING_IDLE_MS) probeLiveness();
+      };
+      document.addEventListener("visibilitychange", onConnectivityResume);
+      window.addEventListener("online", onConnectivityResume);
 
       // Closure over the outer `let ws`, which connect() reassigns on every
       // reconnect — always reaches whichever socket is currently live. The
@@ -1814,6 +1862,10 @@ export default function TerminalView({
 
       cleanup = () => {
         clearTimeout(reconnectTimer);
+        clearTimeout(pongTimer);
+        clearInterval(heartbeatTimer);
+        document.removeEventListener("visibilitychange", onConnectivityResume);
+        window.removeEventListener("online", onConnectivityResume);
         clearTimeout(queryThrottleTimer);
         clearTimeout(settleTimer);
         onDragEnd();

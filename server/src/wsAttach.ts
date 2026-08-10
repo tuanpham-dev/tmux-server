@@ -19,7 +19,7 @@ import {
 } from "./tmux.js";
 
 interface ClientMsg {
-  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll" | "search" | "promptJump";
+  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll" | "search" | "promptJump" | "ping";
   data?: string;
   cols?: number;
   rows?: number;
@@ -43,6 +43,14 @@ const SEARCH_ACTIONS = new Set<SearchAction>(["start", "next", "prev", "cancel"]
 const HIGH_WATER = 1024 * 1024;
 const LOW_WATER = 256 * 1024;
 const RESUME_POLL_MS = 50;
+
+// A client that vanishes without a TCP FIN (phone sleep, network drop, NAT
+// idle timeout) never triggers "close" on its own — the attach PTY would
+// outlive it indefinitely, holding the session "attached" and eventually
+// pausing at HIGH_WATER. Protocol-level pings (browsers auto-reply, no
+// client code involved) detect the dead path; terminate() fires "close",
+// which kills the PTY.
+const PEER_PING_MS = 30_000;
 
 export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number): void {
   const url = new URL(req.url ?? "", "http://localhost");
@@ -73,6 +81,23 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
       ws.send(JSON.stringify(payload));
     }
   };
+
+  // Dead-peer reaper — see PEER_PING_MS. Missing two consecutive pongs
+  // (~60s of silence from a peer that answers automatically when alive)
+  // means the path is gone, not slow.
+  let peerAlive = true;
+  ws.on("pong", () => {
+    peerAlive = true;
+  });
+  const peerPing = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (!peerAlive) {
+      ws.terminate();
+      return;
+    }
+    peerAlive = false;
+    ws.ping();
+  }, PEER_PING_MS);
 
   let paused = false;
   let resumePoll: NodeJS.Timeout | null = null;
@@ -179,7 +204,12 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     } catch {
       return;
     }
-    if (msg.type === "input" && typeof msg.data === "string") {
+    if (msg.type === "ping") {
+      // App-level liveness probe from the client's half-open detection
+      // (TerminalView) — protocol pings aren't available to browser JS, so
+      // the client proves the path with a JSON round trip instead.
+      send({ type: "pong" });
+    } else if (msg.type === "input" && typeof msg.data === "string") {
       term.write(msg.data);
     } else if (msg.type === "scrollQuery") {
       getScrollState(session)
@@ -250,6 +280,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
   });
 
   ws.on("close", () => {
+    clearInterval(peerPing);
     stopResumePoll();
     unsubscribeEvents();
     term.kill();
