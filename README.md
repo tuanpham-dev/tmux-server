@@ -226,29 +226,37 @@ Notes:
 
 ## Port forwarding
 
-If something on the server listens on a port (a dev server, a database) and you want `localhost:PORT` on your own machine to reach it — like `ssh -L`, but without SSH access — download and run the tunnel CLI:
+If something on the server listens on a port (a dev server, a database) and you want `localhost:PORT` on your own machine to reach it — like `ssh -L`, but without SSH access — pipe the tunnel CLI from the server straight into Node (nothing is written to disk):
 
 ```bash
-curl -O http://<host>:3001/tunnel.mjs
-node tunnel.mjs --url http://<host>:3001 3000
+curl -s http://<host>:3001/tunnel.mjs | node --input-type=module - --url http://<host>:3001 3000
 ```
 
 Now `http://localhost:3000` on your machine reaches `127.0.0.1:3000` on the server. Forward multiple ports in one command, and use `LOCAL:REMOTE` when you want a different local port:
 
 ```bash
-node tunnel.mjs --url http://<host>:3001 3000 8080:80
+curl -s http://<host>:3001/tunnel.mjs | node --input-type=module - --url http://<host>:3001 3000 8080:80
 ```
+
+Or skip the port list entirely with `--all`, which forwards every port currently listening inside the server's tmux sessions and keeps watching: a dev server you start later appears as a new local forward within seconds, and forwards whose remote port goes away are closed — no restart, no editing arguments:
+
+```bash
+curl -s http://<host>:3001/tunnel.mjs | node --input-type=module - --url http://<host>:3001 --all
+```
+
+A port that can't be bound locally (something on your machine already uses it) is reported once and skipped; explicit specs can be mixed in and keep priority over `--all` for their local ports. Run `--all` from your own machine, not from a shell inside a tmux session on the server itself — there the tunnel's own listeners are indistinguishable from tmux-hosted servers and would keep vanished ports alive.
+
+The command works as-is on Windows too (`cmd` or PowerShell 7+): `curl` ships with Windows 10+, and nothing is stored on disk, so there's no Unix-only path involved. (On legacy Windows PowerShell 5.1, write `curl.exe` — bare `curl` is aliased to `Invoke-WebRequest` there.) If you'd rather keep a saved copy, `curl -O http://<host>:3001/tunnel.mjs` then `node tunnel.mjs ...` works the same way.
 
 `--url` defaults to `$TMUX_SERVER_URL`, then `http://127.0.0.1:3001`. All forwards share a single WebSocket connection, multiplexed per-connection — the CLI is a single dependency-free file (Node 20+, stdlib only), always served fresh from the server it's connecting to, so it never drifts out of sync with the server's protocol.
 
 The **PORTS** panel in the sidebar lists the server's listening ports, lets you select the ones you want, and builds this command for you — just copy it and run it locally. If your browser session is carrying a `Cookie` or `Authorization` header (because tmux-server is fronted by a reverse-proxy auth layer), the panel automatically bakes it into the copied command via `-H`/`--header`, so the download and the tunnel both authenticate the same way your browser did. Values are masked on screen (click the eye icon to reveal them before copying) — but the pasted command still contains the real secret, so it lands in your shell history like any credential-bearing command.
 
-If you're downloading or running the CLI by hand instead of using the panel's copy button, pass auth through yourself with URL credentials or headers:
+If you're running the CLI by hand instead of using the panel's copy button, pass auth through yourself with URL credentials or headers (once for the download, once for the tunnel):
 
 ```bash
-curl -u user:pass -O https://myhost/tunnel.mjs
-node tunnel.mjs --url https://user:pass@myhost 3000
-node tunnel.mjs --url https://myhost --header 'Cookie: session=...' 3000
+curl -su user:pass https://myhost/tunnel.mjs | node --input-type=module - --url https://user:pass@myhost 3000
+curl -s -H 'Cookie: session=...' https://myhost/tunnel.mjs | node --input-type=module - --url https://myhost --header 'Cookie: session=...' 3000
 ```
 
 The nginx config above needs no changes — `/ws/tunnel` is covered by the same `location /` WebSocket proxy block as terminal sessions. Note that if a proxy strips the `Cookie`/`Authorization` header before forwarding upstream (some hardening configs explicitly clear `Authorization`), the panel has no way to detect that and will silently omit the header — same as if there were no auth layer at all.

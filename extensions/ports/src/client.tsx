@@ -112,9 +112,13 @@ function buildCommand(origin: string, ports: number[], auth: TunnelAuth, mask: b
   const headers = authHeaders(auth).map((h) => ({ ...h, value: mask ? MASK : h.value }));
   const curlArgs = headers.map((h) => `-H ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
   const nodeArgs = headers.map((h) => `--header ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
-  const curl = `curl -so /tmp/tunnel.mjs ${curlArgs ? `${curlArgs} ` : ""}${origin}/tunnel.mjs`;
-  const node = `node /tmp/tunnel.mjs --url ${origin} ${nodeArgs ? `${nodeArgs} ` : ""}${ports.join(" ")}`;
-  return `${curl} && ${node}`;
+  // The script streams from curl straight into node's stdin — no file ever
+  // touches disk (no stray tunnel.mjs in the user's cwd), and no /tmp-style
+  // path that breaks on Windows. --input-type=module because stdin scripts
+  // default to CommonJS.
+  const curl = `curl -s ${curlArgs ? `${curlArgs} ` : ""}${origin}/tunnel.mjs`;
+  const node = `node --input-type=module - --url ${origin} ${nodeArgs ? `${nodeArgs} ` : ""}${ports.join(" ")}`;
+  return `${curl} | ${node}`;
 }
 
 // code-server-style: a configured PROXY_DOMAIN routes "<port>.<domain>"

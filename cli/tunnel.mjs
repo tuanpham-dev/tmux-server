@@ -59,6 +59,14 @@ function encodeUint32(n) {
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+// URL credentials become a Basic Authorization header on every request the
+// CLI makes (WS handshake and --all port-list polls alike).
+function withUrlAuth(url, headers) {
+  if (!url.username && !url.password) return headers;
+  const cred = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+  return { ...headers, Authorization: `Basic ${Buffer.from(cred).toString("base64")}` };
+}
+
 function buildFrame(opcode, payload, masked) {
   const len = payload.length;
   let offset = 2;
@@ -167,17 +175,13 @@ function connectWebSocket(urlStr, headers) {
     const mod = isTls ? https : http;
     const key = crypto.randomBytes(16).toString("base64");
 
-    const reqHeaders = {
+    const reqHeaders = withUrlAuth(url, {
       Connection: "Upgrade",
       Upgrade: "websocket",
       "Sec-WebSocket-Key": key,
       "Sec-WebSocket-Version": "13",
       ...headers,
-    };
-    if (url.username || url.password) {
-      const cred = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
-      reqHeaders.Authorization = `Basic ${Buffer.from(cred).toString("base64")}`;
-    }
+    });
 
     const req = mod.request({
       hostname: url.hostname,
@@ -207,6 +211,43 @@ function connectWebSocket(urlStr, headers) {
     req.on("response", (res) => {
       reject(new Error(`server did not upgrade (status ${res.statusCode})`));
     });
+
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+// Plain GET against the tmux-server API, honoring the same base path, URL
+// credentials, and extra headers as the WebSocket connection.
+function httpGetJson(urlStr, apiPath, headers) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlStr);
+    const isTls = url.protocol === "https:" || url.protocol === "wss:";
+    const mod = isTls ? https : http;
+
+    const req = mod.request(
+      {
+        hostname: url.hostname,
+        port: url.port || (isTls ? 443 : 80),
+        path: `${url.pathname === "/" ? "" : url.pathname}${apiPath}`,
+        headers: withUrlAuth(url, { Accept: "application/json", ...headers }),
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`GET ${apiPath} failed (status ${res.statusCode})`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          } catch {
+            reject(new Error(`GET ${apiPath}: invalid JSON response`));
+          }
+        });
+      },
+    );
 
     req.on("error", reject);
     req.end();
@@ -330,7 +371,10 @@ class WsTunnel {
     }
   }
 
-  forward(localPort, remotePort) {
+  // opts.onListenError makes a failed local bind non-fatal (--all keeps
+  // running and retries on later polls); without it the process exits, which
+  // is the right behavior for explicitly requested specs.
+  forward(localPort, remotePort, opts = {}) {
     const server = net.createServer((localSocket) => {
       const id = this.nextChannelId++;
       const ch = {
@@ -366,23 +410,106 @@ class WsTunnel {
     });
 
     server.on("error", (err) => {
+      if (opts.onListenError) {
+        opts.onListenError(err);
+        return;
+      }
       console.error(`failed to listen on 127.0.0.1:${localPort}: ${err.message}`);
       process.exit(1);
     });
 
     server.listen(localPort, "127.0.0.1", () => {
-      console.log(`localhost:${localPort} -> remote:${remotePort}`);
+      console.log(
+        `localhost:${localPort} -> remote:${remotePort}${opts.label ? ` (${opts.label})` : ""}`,
+      );
+      if (opts.onListen) opts.onListen();
     });
+    return server;
   }
+}
+
+// --- Auto-forward (--all) -------------------------------------------------
+// Polls the server's tmux-attributed port list and keeps one local listener
+// per remote port: new ports appear without restarting, vanished ports close
+// their listeners (in-flight connections drain). A local port that can't be
+// bound (something already listening on this machine) is reported once and
+// silently retried on later polls.
+
+const AUTO_POLL_MS = 3000;
+
+function startAutoForward(tunnel, urlStr, headers, skipPorts) {
+  const active = new Map(); // remote port -> local net.Server
+  const bindFailed = new Set(); // local bind failures already reported
+  let lastFetchError = null;
+
+  const poll = async () => {
+    let list;
+    try {
+      list = await httpGetJson(urlStr, "/api/ext/tmux-server.ports/list", headers);
+      if (lastFetchError) {
+        console.log("port list reachable again");
+        lastFetchError = null;
+      }
+    } catch (err) {
+      // Report each distinct failure once, not every 3s.
+      if (err.message !== lastFetchError) {
+        console.error(`port list fetch failed: ${err.message}`);
+        lastFetchError = err.message;
+      }
+      return;
+    }
+
+    const current = new Set();
+    for (const entry of Array.isArray(list) ? list : []) {
+      const port = entry?.port;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+      current.add(port);
+      if (skipPorts.has(port) || active.has(port)) continue;
+
+      const label = `${entry.process ?? "?"} in ${entry.session}`;
+      const server = tunnel.forward(port, port, {
+        label,
+        onListen: () => bindFailed.delete(port),
+        onListenError: (err) => {
+          active.delete(port);
+          if (!bindFailed.has(port)) {
+            bindFailed.add(port);
+            console.error(`skipping ${port} (${label}): cannot listen locally: ${err.message}`);
+          }
+        },
+      });
+      active.set(port, server);
+    }
+
+    for (const [port, server] of active) {
+      if (!current.has(port)) {
+        active.delete(port);
+        server.close();
+        console.log(`localhost:${port} closed (no longer listening on server)`);
+      }
+    }
+    // A vanished port's bind failure is stale — report again if it returns.
+    for (const port of bindFailed) {
+      if (!current.has(port)) bindFailed.delete(port);
+    }
+  };
+
+  void poll();
+  // Deliberately not unref'd: with zero forwards yet, this timer is what
+  // keeps the process alive.
+  setInterval(() => void poll(), AUTO_POLL_MS);
 }
 
 // --- CLI ------------------------------------------------------------------
 
 function printUsage() {
   console.error(
-    "Usage: node tunnel.mjs [--url http://host:port] [--header 'Name: value']... <spec>...\n" +
+    "Usage: node tunnel.mjs [--url http://host:port] [--header 'Name: value']... [--all] [<spec>...]\n" +
       "  spec = PORT            forward localhost:PORT -> remote 127.0.0.1:PORT\n" +
-      "       | LOCAL:REMOTE    forward localhost:LOCAL -> remote 127.0.0.1:REMOTE",
+      "       | LOCAL:REMOTE    forward localhost:LOCAL -> remote 127.0.0.1:REMOTE\n" +
+      "  --all                  forward every port listening inside the server's tmux\n" +
+      "                         sessions; polls so new ports are picked up and vanished\n" +
+      "                         ones closed without restarting",
   );
 }
 
@@ -408,12 +535,15 @@ function parseSpec(spec) {
 
 function parseArgs(argv) {
   let url = process.env.TMUX_SERVER_URL || "http://127.0.0.1:3001";
+  let all = false;
   const headers = {};
   const specs = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--url") {
       url = argv[++i];
+    } else if (arg === "--all") {
+      all = true;
     } else if (arg === "--header") {
       const raw = argv[++i] ?? "";
       const idx = raw.indexOf(":");
@@ -426,8 +556,8 @@ function parseArgs(argv) {
       specs.push(parseSpec(arg));
     }
   }
-  if (specs.length === 0) throw new Error("no port specs given");
-  return { url, headers, specs };
+  if (specs.length === 0 && !all) throw new Error("no port specs given (or use --all)");
+  return { url, headers, specs, all };
 }
 
 function main() {
@@ -442,6 +572,10 @@ function main() {
 
   const tunnel = new WsTunnel(args.url, args.headers);
   for (const spec of args.specs) tunnel.forward(spec.local, spec.remote);
+  if (args.all) {
+    // Explicitly requested local ports stay owned by their specs.
+    startAutoForward(tunnel, args.url, args.headers, new Set(args.specs.map((s) => s.local)));
+  }
 }
 
 main();
