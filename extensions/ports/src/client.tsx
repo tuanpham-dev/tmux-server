@@ -107,8 +107,9 @@ function authHeaders(auth: TunnelAuth): { name: string; value: string }[] {
 
 // Builds the copy-pasteable tunnel command. When `mask` is set, header values
 // are replaced with a placeholder for on-screen display; `mask: false` is
-// what actually gets copied to the clipboard.
-function buildCommand(origin: string, ports: number[], auth: TunnelAuth, mask: boolean): string {
+// what actually gets copied to the clipboard. `ports: "all"` builds the
+// --all auto-forward variant (see cli/tunnel.mjs) instead of a fixed list.
+function buildCommand(origin: string, ports: number[] | "all", auth: TunnelAuth, mask: boolean): string {
   const headers = authHeaders(auth).map((h) => ({ ...h, value: mask ? MASK : h.value }));
   const curlArgs = headers.map((h) => `-H ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
   const nodeArgs = headers.map((h) => `--header ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
@@ -117,7 +118,8 @@ function buildCommand(origin: string, ports: number[], auth: TunnelAuth, mask: b
   // path that breaks on Windows. --input-type=module because stdin scripts
   // default to CommonJS.
   const curl = `curl -s ${curlArgs ? `${curlArgs} ` : ""}${origin}/tunnel.mjs`;
-  const node = `node --input-type=module - --url ${origin} ${nodeArgs ? `${nodeArgs} ` : ""}${ports.join(" ")}`;
+  const portArgs = ports === "all" ? "--all" : ports.join(" ");
+  const node = `node --input-type=module - --url ${origin} ${nodeArgs ? `${nodeArgs} ` : ""}${portArgs}`;
   return `${curl} | ${node}`;
 }
 
@@ -146,6 +148,7 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [copied, setCopied] = useState(false);
   const [copiedPort, setCopiedPort] = useState<number | null>(null);
+  const [copiedAll, setCopiedAll] = useState(false);
   const [auth, setAuth] = useState<TunnelAuth>(NO_AUTH);
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(NO_PROXY_CONFIG);
   const [revealed, setRevealed] = useState(false);
@@ -269,6 +272,19 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
       .catch(() => {});
   };
 
+  // Copies the --all auto-forward script (see cli/tunnel.mjs) — independent
+  // of the port list/selection above, since --all forwards whatever's
+  // listening at the time it runs rather than a fixed snapshot.
+  const onCopyAll = () => {
+    const command = buildCommand(origin, "all", auth, false);
+    copyText(command)
+      .then(() => {
+        setCopiedAll(true);
+        window.setTimeout(() => setCopiedAll(false), 1500);
+      })
+      .catch(() => {});
+  };
+
   const onOpenPort = (port: number) => {
     window.open(proxyUrl(port, proxyConfig), "_blank", "noopener");
   };
@@ -334,13 +350,22 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
     <div className="ports-panel">
       {actionsTarget &&
         createPortal(
-          <button
-            className="icon-button"
-            title="Refresh"
-            onClick={() => setRefreshKey((k) => k + 1)}
-          >
-            <Icon name="refresh" />
-          </button>,
+          <>
+            <button
+              className="icon-button"
+              title={copiedAll ? "Copied" : "Copy auto-forward-all script"}
+              onClick={onCopyAll}
+            >
+              <Icon name={copiedAll ? "check" : "copy"} />
+            </button>
+            <button
+              className="icon-button"
+              title="Refresh"
+              onClick={() => setRefreshKey((k) => k + 1)}
+            >
+              <Icon name="refresh" />
+            </button>
+          </>,
           actionsTarget,
         )}
       {error && <div className="ports-error">{error}</div>}
