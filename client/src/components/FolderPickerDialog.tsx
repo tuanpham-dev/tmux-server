@@ -11,13 +11,18 @@ interface Props {
 
 // Code-server-style "Open Folder" dialog: an editable path input over a
 // browsable listing of the current folder's subdirectories (the existing
-// /api/fs listing endpoint — files are filtered out here). Enter in the
-// input lists the typed path; clicking (or Enter-ing) a row descends; ".."
-// ascends; "Open Folder" resolves with the last successfully listed folder.
-// The server echoes back the expanded absolute path on every listing, so
-// navigation always works on canonical paths even when the user types
-// "~/…". A failed listing (typo'd path) shows its error inline and disables
-// the confirm until a valid folder is listed again.
+// /api/fs listing endpoint — files are filtered out here). Typing
+// prefix-matches a subfolder name and selects it; DOM focus never leaves the
+// input — ArrowUp/ArrowDown move that selection, and Enter activates it
+// (descend, or ascend for ".."), falling back to listing the typed path
+// verbatim when nothing is selected. Clicking a row also descends. "New
+// Folder" creates a folder in the currently listed directory (via the
+// existing /api/mkdir endpoint) and descends into it. "Open Folder" resolves
+// with the last successfully listed folder. The server echoes back the
+// expanded absolute path on every listing, so navigation always works on
+// canonical paths even when the user types "~/…". A failed listing (typo'd
+// path) shows its error inline and disables the confirm until a valid folder
+// is listed again.
 export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Props) {
   // What the user is asked to list next (input Enter / row click / "..").
   const [requestPath, setRequestPath] = useState(initialPath);
@@ -26,8 +31,15 @@ export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Pr
   const [inputValue, setInputValue] = useState(initialPath);
   const [dirs, setDirs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Index into the combined [".." (if any), ...dirs] list — set by
+  // ArrowUp/ArrowDown or by a typeahead prefix match; null means nothing
+  // selected (Enter falls back to listing the raw input).
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const newFolderInputRef = useRef<HTMLInputElement>(null);
   // Guards against an out-of-order response landing after a faster, newer
   // one (typing a new path while a slow listing is still in flight).
   const requestSeq = useRef(0);
@@ -36,6 +48,15 @@ export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Pr
     inputRef.current?.focus();
     inputRef.current?.select();
   }, []);
+
+  useEffect(() => {
+    if (creatingFolder) newFolderInputRef.current?.focus();
+  }, [creatingFolder]);
+
+  useEffect(() => {
+    if (selectedIndex === null) return;
+    listRef.current?.querySelector<HTMLElement>(".folder-picker-entry.selected")?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
 
   useEffect(() => {
     const seq = ++requestSeq.current;
@@ -47,6 +68,8 @@ export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Pr
         setListedPath(listing.path);
         setInputValue(listing.path);
         setError(null);
+        setSelectedIndex(null);
+        setCreatingFolder(false);
       })
       .catch((err: Error) => {
         if (seq !== requestSeq.current) return;
@@ -64,29 +87,51 @@ export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Pr
     if (idx === -1) return null;
     return idx === 0 ? "/" : listedPath.slice(0, idx);
   })();
+  // Index offset of the first dir entry in the combined selection list —
+  // 1 when a ".." row is showing, else 0.
+  const parentOffset = parentPath !== null ? 1 : 0;
+  const entryCount = parentOffset + dirs.length;
 
   const descend = (name: string) => {
     if (listedPath === null) return;
     setRequestPath(listedPath === "/" ? `/${name}` : `${listedPath}/${name}`);
   };
 
-  // ArrowUp/ArrowDown walk the entry buttons; Enter activates the focused
-  // one (native button behavior). Home/End jump to first/last.
-  const onListKeyDown = (e: React.KeyboardEvent) => {
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
-    const buttons = [...(listRef.current?.querySelectorAll<HTMLButtonElement>(".folder-picker-entry") ?? [])];
-    if (buttons.length === 0) return;
-    e.preventDefault();
-    const focused = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const next =
-      e.key === "Home"
-        ? 0
-        : e.key === "End"
-          ? buttons.length - 1
-          : e.key === "ArrowDown"
-            ? Math.min(focused + 1, buttons.length - 1)
-            : Math.max(focused - 1, 0);
-    buttons[next]?.focus();
+  const activateEntryAt = (index: number) => {
+    if (parentPath !== null && index === 0) {
+      setRequestPath(parentPath);
+      return;
+    }
+    const name = dirs[index - parentOffset];
+    if (name !== undefined) descend(name);
+  };
+
+  const handleInputChange = (value: string) => {
+    setInputValue(value);
+    if (value === listedPath) {
+      setSelectedIndex(null);
+      return;
+    }
+    const segment = value.slice(value.lastIndexOf("/") + 1);
+    if (!segment) {
+      setSelectedIndex(null);
+      return;
+    }
+    const lower = segment.toLowerCase();
+    const match = dirs.findIndex((name) => name.toLowerCase().startsWith(lower));
+    setSelectedIndex(match === -1 ? null : match + parentOffset);
+  };
+
+  const submitNewFolder = () => {
+    const name = newFolderName.trim();
+    if (!name || listedPath === null) return;
+    api
+      .makeDir(listedPath, name)
+      .then(() => {
+        setCreatingFolder(false);
+        descend(name);
+      })
+      .catch((err: Error) => setError(err.message));
   };
 
   return (
@@ -109,36 +154,80 @@ export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Pr
           value={inputValue}
           placeholder="~/path/to/project"
           spellCheck={false}
-          onChange={(e) => setInputValue(e.target.value)}
+          onChange={(e) => handleInputChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              if (inputValue.trim()) setRequestPath(inputValue.trim());
+              if (selectedIndex !== null) activateEntryAt(selectedIndex);
+              else if (inputValue.trim()) setRequestPath(inputValue.trim());
             } else if (e.key === "ArrowDown") {
               e.preventDefault();
-              listRef.current?.querySelector<HTMLButtonElement>(".folder-picker-entry")?.focus();
+              if (entryCount > 0) setSelectedIndex((prev) => (prev === null ? 0 : Math.min(prev + 1, entryCount - 1)));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSelectedIndex((prev) => (prev === null ? null : Math.max(prev - 1, 0)));
             }
           }}
         />
         {error && <div className="folder-picker-error">{error}</div>}
-        <div className="folder-picker-list" ref={listRef} onKeyDown={onListKeyDown}>
+        <div className="folder-picker-list" ref={listRef}>
+          {creatingFolder && (
+            <div className="folder-picker-entry folder-picker-new">
+              <Icon name="folder" />
+              <input
+                ref={newFolderInputRef}
+                className="folder-picker-new-input"
+                value={newFolderName}
+                placeholder="Folder name"
+                spellCheck={false}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitNewFolder();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCreatingFolder(false);
+                  }
+                }}
+              />
+            </div>
+          )}
           {parentPath !== null && (
-            <button className="folder-picker-entry" onClick={() => setRequestPath(parentPath)}>
+            <button
+              className={`folder-picker-entry${selectedIndex === 0 ? " selected" : ""}`}
+              onClick={() => setRequestPath(parentPath)}
+            >
               <Icon name="folder" />
               <span>..</span>
             </button>
           )}
-          {dirs.map((name) => (
-            <button key={name} className="folder-picker-entry" onClick={() => descend(name)}>
+          {dirs.map((name, i) => (
+            <button
+              key={name}
+              className={`folder-picker-entry${selectedIndex === i + parentOffset ? " selected" : ""}`}
+              onClick={() => descend(name)}
+            >
               <Icon name="folder" />
               <span>{name}</span>
             </button>
           ))}
-          {listedPath !== null && dirs.length === 0 && !error && (
+          {listedPath !== null && dirs.length === 0 && !error && !creatingFolder && (
             <div className="folder-picker-empty">No subfolders</div>
           )}
         </div>
         <div className="dialog-buttons">
+          <button
+            className="dialog-button secondary new-folder-button"
+            disabled={listedPath === null}
+            onClick={() => {
+              setCreatingFolder(true);
+              setNewFolderName("");
+            }}
+          >
+            New Folder
+          </button>
           <button className="dialog-button secondary" onClick={onCancel}>
             Cancel
           </button>
