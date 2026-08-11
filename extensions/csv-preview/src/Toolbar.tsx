@@ -27,6 +27,8 @@ interface CsvToolbarProps {
   setHasHeader: (v: boolean) => void;
   delimiter: string;
   setDelimiter: (v: string) => void;
+  wordWrap: boolean;
+  setWordWrap: (v: boolean) => void;
   copied: boolean;
   onCopyAll: () => void;
 }
@@ -35,7 +37,7 @@ export function CsvToolbar({
   canUndo, canRedo, onUndo, onRedo, statusText, hiddenCols, headers,
   showHiddenPanel, setShowHiddenPanel, hiddenPanelRef, setHiddenCols,
   showFind, onOpenFind, hasData, onAddRow, onAddColumn,
-  hasHeader, setHasHeader, delimiter, setDelimiter, copied, onCopyAll,
+  hasHeader, setHasHeader, delimiter, setDelimiter, wordWrap, setWordWrap, copied, onCopyAll,
 }: CsvToolbarProps) {
   return (
     <div className="csv-toolbar">
@@ -94,6 +96,10 @@ export function CsvToolbar({
         <option value="&#9;">⇥ tab</option>
         <option value="|">| pipe</option>
       </select>
+      <span className="csv-toolbar-sep" />
+      <label className="csv-header-toggle" title="Wrap long cell text onto multiple lines instead of truncating it">
+        <input type="checkbox" checked={wordWrap} onChange={(e) => setWordWrap(e.target.checked)} /> Wrap
+      </label>
       <span className="csv-toolbar-sep" />
       <button onClick={onCopyAll} disabled={!hasData} title="Copy whole CSV" className="csv-text-button">
         <Icon name="copy" /> {copied ? "Copied!" : "Copy"}

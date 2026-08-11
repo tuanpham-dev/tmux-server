@@ -78,6 +78,8 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
   const findInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
 
+  const [wordWrap, setWordWrap] = useState(false);
+
   const [ctrlSelectedCols, setCtrlSelectedCols] = useState<Set<number> | null>(null);
   const [pinnedCols, setPinnedCols] = useState<Set<number>>(new Set());
   const [hiddenCols, setHiddenCols] = useState<Set<number>>(new Set());
@@ -149,18 +151,43 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
     setEditingCell(null);
   }
 
-  useEffect(() => {
-    if (content === null) return;
-    if (!content.trim()) { setHeaders([]); setRows([]); setParseWarning(null); clearHistory(); return; }
-    const result = Papa.parse<string[]>(content, {
+  function parseAndApply(text: string) {
+    if (!text.trim()) { setHeaders([]); setRows([]); setParseWarning(null); clearHistory(); setDirtyState(false); return; }
+    const result = Papa.parse<string[]>(text, {
       delimiter: delimiter === "auto" ? "" : delimiter,
       skipEmptyLines: true,
       header: false,
     });
     const errs = result.errors.filter((e) => e.type !== "Delimiter");
     applyParsed(result.data as string[][], result.meta.delimiter, errs.length ? errs[0].message : null);
+  }
+
+  useEffect(() => {
+    if (content === null) return;
+    parseAndApply(content);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, hasHeader, delimiter]);
+
+  // Reload discards in-memory edits and re-fetches from disk. Calls
+  // parseAndApply directly rather than relying on the effect above:
+  // setContent(text) is a no-op re-render when the file on disk is
+  // unchanged (same string value, so the effect's dependency array sees no
+  // change via Object.is) — but the user's edits still need clearing.
+  const [reloading, setReloading] = useState(false);
+  async function handleReload() {
+    if (dirty && !window.confirm("Discard unsaved changes and reload from disk?")) return;
+    setReloading(true);
+    setLoadError(null);
+    try {
+      const text = await fetchFileText(filePath);
+      setContent(text);
+      parseAndApply(text);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReloading(false);
+    }
+  }
 
   // ── Save ───────────────────────────────────────────────────────────────
 
@@ -280,25 +307,39 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
   const scrollToCell = useCallback((row: number, col: number) => {
     const el = scrollRef.current;
     if (!el) return;
-    const rowTop = row * ROW_HEIGHT;
-    const rowBot = rowTop + ROW_HEIGHT;
-    const usableH = el.clientHeight - ROW_HEIGHT;
-    if (rowTop < el.scrollTop) el.scrollTop = rowTop;
-    else if (rowBot > el.scrollTop + usableH) el.scrollTop = rowBot - usableH;
+    if (wordWrap) {
+      // Rows have variable height while wrapped (and virtualization is off,
+      // see visStart/visEnd below), so every row is already in the DOM —
+      // measure its actual position instead of assuming ROW_HEIGHT.
+      const rowEl = el.querySelector<HTMLElement>(`tr[data-row-idx="${row}"]`);
+      if (rowEl) {
+        const cr = el.getBoundingClientRect(), rr = rowEl.getBoundingClientRect();
+        if (rr.top < cr.top) el.scrollTop += rr.top - cr.top;
+        else if (rr.bottom > cr.bottom) el.scrollTop += rr.bottom - cr.bottom;
+      }
+    } else {
+      const rowTop = row * ROW_HEIGHT;
+      const rowBot = rowTop + ROW_HEIGHT;
+      const usableH = el.clientHeight - ROW_HEIGHT;
+      if (rowTop < el.scrollTop) el.scrollTop = rowTop;
+      else if (rowBot > el.scrollTop + usableH) el.scrollTop = rowBot - usableH;
+    }
     const th = el.querySelector<HTMLElement>(`th[data-col-idx="${col}"]`);
     if (th) {
       const cr = el.getBoundingClientRect(), tr = th.getBoundingClientRect();
       if (tr.left - cr.left < rowNumColWRef.current) el.scrollLeft += tr.left - cr.left - rowNumColWRef.current;
       else if (tr.right - cr.left > el.clientWidth) el.scrollLeft += tr.right - cr.left - el.clientWidth;
     }
-  }, []);
+  }, [wordWrap]);
 
   const handleScroll = useCallback(() => { if (scrollRef.current) setScrollTop(scrollRef.current.scrollTop); }, []);
 
-  const visStart = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - VIRT_BUFFER);
-  const visEnd = Math.min(maxRow, Math.ceil((scrollTop + viewportH) / ROW_HEIGHT) + VIRT_BUFFER);
-  const topSpace = visStart * ROW_HEIGHT;
-  const botSpace = Math.max(0, (totalRows - visEnd - 1) * ROW_HEIGHT);
+  // Virtualization assumes a fixed ROW_HEIGHT, which wrapped rows don't
+  // have — render every row (no windowing) while word wrap is on.
+  const visStart = wordWrap ? 0 : Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - VIRT_BUFFER);
+  const visEnd = wordWrap ? maxRow : Math.min(maxRow, Math.ceil((scrollTop + viewportH) / ROW_HEIGHT) + VIRT_BUFFER);
+  const topSpace = wordWrap ? 0 : visStart * ROW_HEIGHT;
+  const botSpace = wordWrap ? 0 : Math.max(0, (totalRows - visEnd - 1) * ROW_HEIGHT);
 
   // ── Selection ──────────────────────────────────────────────────────────
 
@@ -456,9 +497,16 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
     fillPreviewRowRef.current = selBounds.maxRow;
     setFillPreviewRow(selBounds.maxRow);
   }
-  function getRowFromMouseY(clientY: number): number | null {
+  function getRowFromMouseY(clientY: number, clientX: number): number | null {
     const el = scrollRef.current;
     if (!el) return null;
+    if (wordWrap) {
+      // Rows aren't a fixed height while wrapped — every row is in the DOM
+      // (virtualization is off), so find the one actually under the cursor.
+      const rowEl = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("tr[data-row-idx]");
+      const idx = rowEl ? Number(rowEl.dataset.rowIdx) : NaN;
+      return Number.isNaN(idx) ? null : Math.max(0, Math.min(idx, maxRow));
+    }
     const y = clientY - el.getBoundingClientRect().top + el.scrollTop - ROW_HEIGHT;
     return Math.max(0, Math.min(Math.floor(y / ROW_HEIGHT), maxRow));
   }
@@ -482,7 +530,7 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!isDraggingFillRef.current) return;
-      const ri = getRowFromMouseY(e.clientY);
+      const ri = getRowFromMouseY(e.clientY, e.clientX);
       if (ri !== null && fillBoundsRef.current && ri > fillBoundsRef.current.maxRow) {
         fillPreviewRowRef.current = ri;
         setFillPreviewRow(ri);
@@ -507,7 +555,7 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
     window.addEventListener("mouseup", onUp);
     return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sortedWithIdx, rows]);
+  }, [sortedWithIdx, rows, wordWrap]);
 
   // ── Row / column mutations ─────────────────────────────────────────────
 
@@ -848,6 +896,9 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
       <button className="icon-button" title={saveError ? `Save failed: ${saveError}` : "Save (Ctrl+S)"} disabled={saving} onClick={handleSave}>
         <Icon name="save" />
       </button>
+      <button className="icon-button" title="Reload from disk" disabled={reloading} onClick={handleReload}>
+        <Icon name="refresh" />
+      </button>
       <button className="icon-button" title="Open in Editor" onClick={() => openInEditor?.(filePath)}>
         <Icon name="file-code" />
       </button>
@@ -883,6 +934,8 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
             setHasHeader={setHasHeader}
             delimiter={delimiter}
             setDelimiter={setDelimiter}
+            wordWrap={wordWrap}
+            setWordWrap={setWordWrap}
             copied={copied}
             onCopyAll={handleCopyAll}
           />
@@ -937,7 +990,7 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
           {!hasData ? (
             <div className="csv-empty">Empty file</div>
           ) : (
-            <div ref={scrollRef} tabIndex={0} onKeyDown={handleTableKeyDown} onScroll={handleScroll} className="csv-scroll">
+            <div ref={scrollRef} tabIndex={0} onKeyDown={handleTableKeyDown} onScroll={handleScroll} className={`csv-scroll${wordWrap ? " csv-wrap" : ""}`}>
               <table
                 className="csv-table"
                 style={{ width: rowNumColW + headers.reduce((s, _, ci) => (hiddenCols.has(ci) ? s : s + getColWidth(ci)), 0) + 32 }}
@@ -995,8 +1048,8 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
                     const ri = visStart + i;
                     const rowFullySel = isRowFullySelected(ri);
                     return (
-                      <tr key={originalIdx} className="csv-row" style={{ height: ROW_HEIGHT }}>
-                        <td className={`csv-td csv-td-rownum${rowFullySel ? " csv-td-rownum-selected" : ""}`} style={{ height: ROW_HEIGHT }}>
+                      <tr key={originalIdx} data-row-idx={ri} className="csv-row" style={{ height: wordWrap ? undefined : ROW_HEIGHT }}>
+                        <td className={`csv-td csv-td-rownum${rowFullySel ? " csv-td-rownum-selected" : ""}`} style={{ height: wordWrap ? undefined : ROW_HEIGHT }}>
                           <div className="csv-rownum-cell">
                             <button onClick={(e) => selectRow(ri, e.shiftKey)} title="Click to select row · Shift+click to extend" className={`csv-rownum-button${rowFullySel ? " csv-rownum-button-selected" : ""}`}>
                               {ri + 1}
@@ -1021,7 +1074,7 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
                             <td
                               key={ci}
                               className={`csv-td${isPinned ? " csv-td-pinned" : ""}`}
-                              style={{ height: ROW_HEIGHT, ...(isPinned ? { left: getPinnedLeft(ci) } : {}) }}
+                              style={{ height: wordWrap ? undefined : ROW_HEIGHT, ...(isPinned ? { left: getPinnedLeft(ci) } : {}) }}
                               onContextMenu={(e) => showCellMenu(e, ri, ci)}
                             >
                               <EditableCell

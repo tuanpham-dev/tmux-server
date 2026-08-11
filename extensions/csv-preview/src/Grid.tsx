@@ -131,6 +131,13 @@ export function EditableHeaderCell({
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => { onRename(colIdx, draft); setEditing(false); }}
           onKeyDown={(e) => {
+            // Without this, keystrokes bubble to the table's onKeyDown
+            // (handleTableKeyDown), which doesn't know about this
+            // component's local `editing` state and treats a plain
+            // character key as "start editing the selected cell" — moving
+            // focus into row 0's cell mid-typing and splitting the typed
+            // text between the header and that cell.
+            e.stopPropagation();
             if (e.key === "Enter" || e.key === "Tab" || e.key === "Escape") {
               e.preventDefault();
               onRename(colIdx, draft);

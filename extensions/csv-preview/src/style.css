@@ -622,6 +622,32 @@
   font-size: 12.5px;
 }
 
+/* Word wrap: data rows grow to fit content instead of clipping at
+   ROW_HEIGHT (client.tsx drops the inline height when this is active, so
+   these just need to stop *forcing* a fixed height). Virtualization assumes
+   a fixed row height too, so it's disabled (visStart/visEnd in client.tsx)
+   whenever this class is active — every .csv-cell here is guaranteed to be
+   actually mounted, not just a virtualized placeholder. */
+.csv-wrap .csv-cell-wrap {
+  height: auto;
+  min-height: 100%;
+}
+
+.csv-wrap .csv-cell {
+  position: static;
+  align-items: flex-start;
+  padding: 6px 8px;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-overflow: clip;
+}
+
+.csv-wrap .csv-rownum-cell {
+  align-items: flex-start;
+  padding-top: 6px;
+}
+
 .csv-fill-handle {
   position: absolute;
   right: -3px;
