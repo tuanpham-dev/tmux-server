@@ -98,8 +98,18 @@ export function activate({ router }) {
     }
     // ORB (Chrome's Opaque Response Blocking) requires an explicit opt-in
     // for subresource loads made from an opaque-origin (sandboxed iframe)
-    // context, even when served by this same process.
+    // context, even when served by this same process. Module scripts
+    // (<script type="module">, and anything they import) go further and
+    // fetch in CORS mode regardless of same-origin-ness, sending
+    // "Origin: null" for this opaque-origin iframe — without an explicit
+    // Access-Control-Allow-Origin the browser discards the response before
+    // it ever reaches the module loader, so e.g. a subfolder entry point
+    // like src/main.js silently fails while a same-folder classic <script>
+    // works. No credentials are ever sent from an opaque origin, so the
+    // wildcard is safe here (browsers reject "*" only when a request
+    // carries credentials).
     res.set("Cross-Origin-Resource-Policy", "cross-origin");
+    res.set("Access-Control-Allow-Origin", "*");
     const ext = path.extname(target).toLowerCase();
     if (ext === ".html" || ext === ".htm") {
       try {
