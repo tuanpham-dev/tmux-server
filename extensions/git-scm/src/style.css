@@ -472,6 +472,16 @@
   color: var(--error);
 }
 
+/* Tint the line text itself, not just the gutter marker — a bare marker
+   next to plain-`--fg` text reads as barely-there at a glance. */
+.git-diff-line-add .git-diff-line-text {
+  color: color-mix(in srgb, var(--git-added-fg) 75%, var(--fg));
+}
+
+.git-diff-line-del .git-diff-line-text {
+  color: color-mix(in srgb, var(--error) 75%, var(--fg));
+}
+
 /* --- Merge banner --- */
 
 .git-merge-banner {
