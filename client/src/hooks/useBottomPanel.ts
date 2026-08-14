@@ -237,6 +237,17 @@ export function useBottomPanel(
     [createPane, addTabWithPane],
   );
 
+  // Attaches an *existing* tmux window as its own panel tab — the counterpart
+  // of newTerminal for a window that's already alive (picked from App's
+  // attach-window menu). Same detach-only close semantics as every pane.
+  const attachWindow = useCallback(
+    async (session: string, windowIndex: number) => {
+      const pane = await createPane(session, windowIndex);
+      if (pane) addTabWithPane(pane);
+    },
+    [createPane, addTabWithPane],
+  );
+
   // Splits the active tab's active pane: a new pane, backed by its own fresh
   // window in that pane's session, lands immediately to its right and takes
   // half its flex weight (lib/splits.ts's splitLeaf convention). Side-by-side
@@ -418,6 +429,7 @@ export function useBottomPanel(
     selectPane,
     resizePanes,
     newTerminal,
+    attachWindow,
     splitActivePane,
     closeTab,
     closePane,

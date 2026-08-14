@@ -40,6 +40,10 @@ interface Props {
   // Resolves the target session (active session, or a picker when there is
   // none) and opens a terminal — implemented in App, anchored at the + button.
   onRequestTerminal: (anchor: { x: number; y: number }) => void;
+  // Lists existing tmux windows not open anywhere (editor tabs or panel) and
+  // attaches the pick as a panel tab — implemented in App, anchored at the
+  // dropdown button.
+  onRequestAttachWindow: (anchor: { x: number; y: number }) => void;
   onSplit: () => void;
   onHide: () => void;
   onSetHeight: (height: number) => void;
@@ -67,6 +71,7 @@ export default function BottomPanel({
   onResizePanes,
   onPaneExit,
   onRequestTerminal,
+  onRequestAttachWindow,
   onSplit,
   onHide,
   onSetHeight,
@@ -202,6 +207,16 @@ export default function BottomPanel({
             }}
           >
             <Icon name="add" />
+          </button>
+          <button
+            className="panel-action"
+            title="Attach Window"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              onRequestAttachWindow({ x: rect.left, y: rect.bottom });
+            }}
+          >
+            <Icon name="triangle-down" />
           </button>
           <button
             className="panel-action"

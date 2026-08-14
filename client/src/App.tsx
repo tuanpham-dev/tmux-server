@@ -783,6 +783,7 @@ export default function App() {
     selectPane: selectPanelPane,
     resizePanes: resizePanelPanes,
     newTerminal,
+    attachWindow: attachPanelWindow,
     splitActivePane,
     closeTab: closePanelTab,
     removePane: removePanelPane,
@@ -879,6 +880,37 @@ export default function App() {
       showMenu(anchor.x, anchor.y, items);
     },
     [activeRealTab, sessions, newTerminal, projectLabelForSession, projectKeyForSession, showMenu],
+  );
+
+  // The panel's "Attach Window…" dropdown: every tmux window not already
+  // surfaced somewhere — open as an editor window-tab or attached as a panel
+  // pane — offered for attaching as a new panel tab. Labels match the panel's
+  // own tab labels (session:window-name).
+  const requestPanelAttachWindow = useCallback(
+    (anchor: { x: number; y: number }) => {
+      const openKeys = new Set<string>();
+      for (const t of tabs) {
+        if (t.windowIndex !== undefined) openKeys.add(`${t.sessionName}:${t.windowIndex}`);
+      }
+      for (const t of panel.tabs) {
+        for (const p of t.panes) openKeys.add(`${p.sessionName}:${p.windowIndex}`);
+      }
+      const items: MenuItem[] = [];
+      for (const s of sessions) {
+        for (const w of s.windows) {
+          if (openKeys.has(`${s.name}:${w.index}`)) continue;
+          items.push({
+            label: `${s.name}:${w.name}`,
+            onClick: () => attachPanelWindow(s.name, w.index),
+          });
+        }
+      }
+      if (items.length === 0) {
+        items.push({ label: "No windows to attach", disabled: true, onClick: () => {} });
+      }
+      showMenu(anchor.x, anchor.y, items);
+    },
+    [tabs, panel.tabs, sessions, attachPanelWindow, showMenu],
   );
 
   const {
@@ -1771,6 +1803,7 @@ export default function App() {
             // killed) — drop the pane without a detach call.
             onPaneExit={(tabId, paneId) => removePanelPane(tabId, paneId, false)}
             onRequestTerminal={requestPanelTerminal}
+            onRequestAttachWindow={requestPanelAttachWindow}
             onSplit={splitActivePane}
             onHide={hidePanel}
             onSetHeight={setPanelHeight}
