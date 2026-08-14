@@ -1,16 +1,19 @@
 # Git
 
-A VS Code-style SOURCE CONTROL panel for the active directory's git repository: stage, commit, push/pull, and diff.
+A VS Code-style SOURCE CONTROL panel for the active directory's git repository: stage, commit, amend, push/pull/fetch, branch switching, stash, commit history, and diff.
 
 ## Contributes
 
-- **Sidebar panel:** SOURCE CONTROL — staged/unstaged file lists, stage/unstage/discard, commit message box, push/pull, and branch status.
-- **Diff viewer:** click a file to open its working-tree or staged diff; Shift+click opens it in the editor instead.
-- **File tree git status:** modified/added/untracked/renamed/deleted badges in the FILES tree (see Settings → UI → "Git status in file tree" to toggle).
+- **Sidebar panel:** SOURCE CONTROL — staged/unstaged/conflicted file lists, stage/unstage/discard, commit message box (Ctrl/Cmd+Enter to commit, Amend toggle to rewrite HEAD instead of composing a new commit), a branch button (switch or create a local branch), a COMMITS section (recent history with unpushed markers, click a commit for its full diff, Load More), and a More Actions (`…`) menu for Pull/Push/Fetch/Stash/Pop Stash.
+- **Diff viewer:** click a file to open its working-tree or staged diff, or a COMMITS row to open that commit's diff; Shift+click a file opens it in the editor instead.
+- **Merge conflict resolver:** click a conflicted file to accept Current/Incoming/Both per block (or Accept All), then Save and Mark as Resolved — used for merge, rebase, cherry-pick/revert conflicts, and a stash pop that lands in conflict.
+- **File tree git status:** modified/added/untracked/renamed/deleted badges in the FILES tree (see Settings → UI → "Git status in file tree" to toggle), plus a branch-name pill on the FILES tree root.
 
 ## Settings
 
 - **Poll interval** (`gitScm.pollInterval`, default 3000ms) — how often the active directory's git status refreshes in the background; 0 disables polling.
+- **Fetch interval** (`gitScm.fetchInterval`, default 0/off) — how often to run a non-interactive `git fetch` in the background so ahead/behind counts stay current; never prompts for credentials, so an auth-requiring remote just fails the fetch silently. Manual fetch is always available via More Actions (`…`).
+- **File tree decorations** (`gitScm.fileTreeDecorations`, default on) — git status badges and row colors in the FILES tree; off skips the per-repo status scan.
 - **Click action** (`gitScm.clickAction`, default "Open Diff") — what clicking a file in the panel opens; the other action is always available via Shift+click.
 
 ## Authentication

@@ -723,7 +723,25 @@ export function activate({ router, log, host }) {
       // FILES tree's status call (server/src/git.ts) already works around.
       const raw = await git(["status", "--porcelain=v2", "--branch", "-uall", "-z"], root);
       const { operation, mergeMsg } = await detectOperation(root);
-      res.json({ root, operation, mergeMsg, ...parseStatus(raw) });
+      // %B is the raw, unwrapped subject+body — what Amend's prefill should
+      // show back verbatim. Absent (rather than erroring) on an unborn
+      // branch, where there's no commit yet to amend.
+      let lastCommitMessage = null;
+      try {
+        lastCommitMessage = (await git(["log", "-1", "--format=%B"], root)).replace(/\n+$/, "");
+      } catch {
+        // No commits yet.
+      }
+      // Drives the More Actions menu's "Pop Latest Stash" enabled state.
+      // refs/stash doesn't exist until the first stash, which makes
+      // rev-list fail (not return 0) — caught and treated as "no stashes".
+      let stashCount = 0;
+      try {
+        stashCount = Number((await git(["rev-list", "--walk-reflogs", "--count", "refs/stash"], root)).trim());
+      } catch {
+        // No stashes yet.
+      }
+      res.json({ root, operation, mergeMsg, lastCommitMessage, stashCount, ...parseStatus(raw) });
     } catch {
       // Not a git repository — a plain empty-state response, not an error
       // (confirmed: no "Initialize Repository" affordance for v1).
@@ -731,13 +749,29 @@ export function activate({ router, log, host }) {
     }
   });
 
+  // Resolves cwd (which may be any directory inside the repo, e.g. the
+  // active pane's subdirectory) to the repo root so root-relative paths
+  // (as returned by /status and echoed back by the client) always match
+  // what git sees — a bare pathspec resolved against a subdirectory cwd
+  // either 404s ("did not match any files") or silently matches nothing.
+  async function requireRoot(cwd, res) {
+    const root = await repoRootOf(cwd);
+    if (!root) {
+      res.status(400).json({ error: "Not a git repository." });
+      return null;
+    }
+    return root;
+  }
+
   router.post("/stage", async (req, res) => {
     const cwd = requireCwd(req, res);
     if (!cwd) return;
     const paths = requirePaths(req, res);
     if (!paths) return;
     try {
-      await git(["add", "-A", "--", ...paths], cwd);
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      await git(["add", "-A", "--", ...paths], root);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -750,12 +784,14 @@ export function activate({ router, log, host }) {
     const paths = requirePaths(req, res);
     if (!paths) return;
     try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
       try {
-        await git(["reset", "-q", "HEAD", "--", ...paths], cwd);
+        await git(["reset", "-q", "HEAD", "--", ...paths], root);
       } catch {
         // Defensive fallback for git versions where HEAD doesn't resolve on
         // an unborn branch — the repo-with-no-commits-yet case.
-        await git(["rm", "--cached", "-r", "--", ...paths], cwd);
+        await git(["rm", "--cached", "-r", "--", ...paths], root);
       }
       res.json({ ok: true });
     } catch (err) {
@@ -771,6 +807,8 @@ export function activate({ router, log, host }) {
     const paths = requirePaths(req, res);
     if (!paths) return;
     try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
       // Untracked paths can't be `restore`d (they're not in the index or
       // HEAD); the client tells us which of the requested paths are
       // untracked so each gets the right command.
@@ -778,8 +816,8 @@ export function activate({ router, log, host }) {
         ? req.body.untracked.filter((p) => typeof p === "string")
         : [];
       const tracked = paths.filter((p) => !untracked.includes(p));
-      if (tracked.length > 0) await git(["restore", "--worktree", "--", ...tracked], cwd);
-      if (untracked.length > 0) await git(["clean", "-f", "--", ...untracked], cwd);
+      if (tracked.length > 0) await git(["restore", "--worktree", "--", ...tracked], root);
+      if (untracked.length > 0) await git(["clean", "-f", "--", ...untracked], root);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -887,8 +925,12 @@ export function activate({ router, log, host }) {
       res.status(400).json({ error: "commit message is required" });
       return;
     }
+    const amend = req.body?.amend === true;
     try {
-      await git(["commit", "-m", message], cwd);
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      const args = amend ? ["commit", "--amend", "-m", message] : ["commit", "-m", message];
+      await git(args, root);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -1026,6 +1068,25 @@ export function activate({ router, log, host }) {
   router.post("/pull", networkHandler("pull"));
   router.post("/sync", networkHandler("sync"));
 
+  // Non-interactive fetch: no askpass relay env, so a repo whose remote
+  // needs auth just fails fast (GIT_TERMINAL_PROMPT=0) instead of parking a
+  // credential prompt nobody's watching — this is the one network op the
+  // background timer calls unattended (see gitScm.fetchInterval), and the
+  // manual "Fetch" menu entry reuses it for consistency rather than routing
+  // through the interactive gitNetwork/askpass path push/pull/sync use.
+  router.post("/fetch", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      await git(["fetch"], root, { timeout: 30000 });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   router.get("/diff", async (req, res) => {
     const cwd = requireCwd(req, res);
     if (!cwd) return;
@@ -1038,21 +1099,185 @@ export function activate({ router, log, host }) {
     const untracked = req.query.untracked === "1";
     const origPath = typeof req.query.origPath === "string" ? req.query.origPath : undefined;
     try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
       let diff;
       if (staged) {
         // Both pathspecs are required for a rename to actually render as a
         // rename — `git diff --cached -- newpath` alone shows a plain
         // "new file" diff instead, confirmed empirically.
         const pathArgs = origPath ? [origPath, filePath] : [filePath];
-        diff = await git(["diff", "--cached", "--", ...pathArgs], cwd);
+        diff = await git(["diff", "--cached", "--", ...pathArgs], root);
       } else if (untracked) {
-        diff = await git(["diff", "--no-index", "--", "/dev/null", filePath], cwd, {
+        diff = await git(["diff", "--no-index", "--", "/dev/null", filePath], root, {
           allowNonZeroExit: true,
         });
       } else {
-        diff = await git(["diff", "--", filePath], cwd);
+        diff = await git(["diff", "--", filePath], root);
       }
       res.json({ diff });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // \x1f (field) / \x1e (record) separators — never legitimately present in
+  // a hash, name, timestamp, or single-line subject, so no escaping needed
+  // to split back apart. Fails (not empty-result) on an unborn branch —
+  // caught and turned into an empty list below, same "no error, empty
+  // state" convention /status already uses for "not a git repository".
+  const LOG_FORMAT = "%H%x1f%an%x1f%at%x1f%s%x1e";
+
+  router.get("/log", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(200, Math.floor(rawLimit)) : 20;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      let raw;
+      try {
+        raw = await git(["log", `--format=${LOG_FORMAT}`, "-n", String(limit)], root);
+      } catch {
+        res.json({ commits: [] });
+        return;
+      }
+      const commits = raw
+        .split("\x1e")
+        .map((record) => record.replace(/^\n/, ""))
+        .filter((record) => record.length > 0)
+        .map((record) => {
+          const [hash, author, timestamp, subject] = record.split("\x1f");
+          return { hash, author, timestamp: Number(timestamp), subject };
+        });
+      res.json({ commits });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  const COMMIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
+
+  router.get("/commit-diff", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const hash = typeof req.query.hash === "string" ? req.query.hash : "";
+    if (!COMMIT_HASH_RE.test(hash)) {
+      res.status(400).json({ error: "hash must be a hex commit SHA" });
+      return;
+    }
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      const diff = await git(["show", hash, "--format=fuller", "--patch"], root);
+      res.json({ diff });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.get("/branches", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      const [raw, current] = await Promise.all([
+        git(["for-each-ref", "refs/heads", "--format=%(refname:short)%00"], root),
+        currentBranch(root),
+      ]);
+      // Same NUL-plus-git's-own-trailing-newline shape as /log's record
+      // separator — see that route's comment for why the leading "\n"
+      // strip is needed.
+      const branches = raw
+        .split("\0")
+        .map((b) => b.replace(/^\n/, ""))
+        .filter((b) => b.length > 0);
+      res.json({ branches, current });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Rejects a branch name starting with "-" — passed straight through to
+  // `git switch` as a positional argument otherwise, where a leading dash
+  // would be parsed as an option instead of a ref name.
+  const SAFE_BRANCH_RE = /^[^-]/;
+
+  router.post("/checkout", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const branch = typeof req.body?.branch === "string" ? req.body.branch.trim() : "";
+    const create = req.body?.create === true;
+    if (!branch || !SAFE_BRANCH_RE.test(branch)) {
+      res.status(400).json({ error: "branch is required and cannot start with '-'" });
+      return;
+    }
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      // Errors (dirty working tree blocking the switch, branch already
+      // exists on create, invalid ref name) pass through as git wrote them
+      // — no attempt to reword git's own messages here.
+      await git(create ? ["switch", "-c", branch] : ["switch", branch], root);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post("/stash", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const includeUntracked = req.body?.includeUntracked === true;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      await git(includeUntracked ? ["stash", "push", "-u"] : ["stash", "push"], root);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.post("/stash-pop", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      await new Promise((resolve, reject) => {
+        execFile(
+          "git",
+          ["stash", "pop"],
+          {
+            cwd: root,
+            encoding: "utf8",
+            timeout: DEFAULT_TIMEOUT,
+            maxBuffer: 8 * 1024 * 1024,
+            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+          },
+          (err, stdout, stderr) => {
+            // `git stash pop` exits 1 both for a real failure (no stash
+            // entries — stdout empty, stderr carries the message) and for a
+            // structurally-successful-but-conflicting pop (stash left
+            // conflict markers in the working tree, the stash entry itself
+            // kept — narration lands on stdout, stderr empty). Only the
+            // latter is tolerated: the panel's next status refresh renders
+            // the conflict as an ordinary Merge Changes entry, same as any
+            // other conflicted path, with no dedicated stash-conflict UI.
+            if (err && !(err.code === 1 && stderr.trim() === "")) {
+              const wrapped = new Error(stderr.trim() || err.message);
+              wrapped.stderr = stderr;
+              reject(wrapped);
+            } else {
+              resolve();
+            }
+          },
+        );
+      });
+      res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
