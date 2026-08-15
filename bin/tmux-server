@@ -799,6 +799,35 @@ cmd_disable() {
 
 cmd_update() {
   info "updating $REPO_DIR..."
+  # A dirty repo breaks the pull below in two ways: tracked edits make
+  # `pull --ff-only` refuse to merge, and untracked files block checkout of
+  # incoming commits that add them as tracked (seen with hand-patched
+  # deploys). Surface the state up front and offer to discard it. Only ever
+  # discards on an explicit interactive "y" — with no terminal on stdin the
+  # answer stays empty and the update aborts, so automation can't silently
+  # wipe local changes. Ignored files (node_modules, dist) survive: clean
+  # without -x leaves them alone.
+  local dirty reply=""
+  dirty="$(git -C "$REPO_DIR" status --porcelain)"
+  if [ -n "$dirty" ]; then
+    warn "repo has local changes:"
+    printf '%s\n' "$dirty" | sed 's/^/  /'
+    if [ -t 0 ]; then
+      printf 'Discard them and continue? [y/N] '
+      read -r reply
+    fi
+    case "$reply" in
+      y|Y|yes|YES)
+        git -C "$REPO_DIR" reset --hard HEAD
+        git -C "$REPO_DIR" clean -fd
+        ok "cleaned"
+        ;;
+      *)
+        fail "aborting — clean up $REPO_DIR (or re-run and answer y) then: tmux-server update"
+        return 1
+        ;;
+    esac
+  fi
   git -C "$REPO_DIR" pull --ff-only
   ( cd "$REPO_DIR" && npm install && npm run build )
   ok "updated"
