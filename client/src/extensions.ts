@@ -859,6 +859,29 @@ export function clearFocusActiveTerminalHandler(handler: () => void): void {
   if (focusActiveTerminalHandler === handler) focusActiveTerminalHandler = null;
 }
 
+// Hands keyboard focus (back) to the focused terminal view after a tab
+// activation or overlay close. TerminalView's own [focused] effect only
+// fires on focused-state *transitions*, so activating the tab that is
+// already active — quick-switching to the tab you're on, a new tmux window
+// folding into the live whole-session tab — is a state no-op and leaves
+// DOM focus wherever the triggering UI (palette input, sidebar row) left
+// it, stranded on <body> once that UI unmounts. The rAF defers past the
+// triggering commit so the handler read is the post-activation view's; if
+// the activated tab isn't a terminal, its view cleared the handler by then
+// and this is a no-op. `onlyIfUnowned` restricts the refocus to stranded
+// focus (body/null) so an overlay close never steals from a dialog the same
+// action just opened — dialogs autofocus on mount, which commits before
+// this rAF fires. Touch devices bail entirely: granting keyboard focus
+// there pops the on-screen keyboard (same gate as the [focused] effect).
+export function requestTerminalRefocus(opts?: { onlyIfUnowned?: boolean }): void {
+  if (window.matchMedia("(pointer: coarse)").matches) return;
+  requestAnimationFrame(() => {
+    const ae = document.activeElement;
+    if (opts?.onlyIfUnowned && ae !== null && ae !== document.body) return;
+    focusActiveTerminalHandler?.();
+  });
+}
+
 let openFileTabHandler: ((path: string, line?: number) => void) | null = null;
 
 // Wired once from App.tsx to whatever dispatch logic decides which viewer

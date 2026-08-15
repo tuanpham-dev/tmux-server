@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import * as api from "../api";
-import { findFileViewerFor, setActiveContext, type RegisteredFileViewer } from "../extensions";
+import {
+  findFileViewerFor,
+  requestTerminalRefocus,
+  setActiveContext,
+  type RegisteredFileViewer,
+} from "../extensions";
 import {
   groupKeyForTab,
   isRealTab,
@@ -272,6 +277,11 @@ export function useTabs(
         setActiveTabId(tab.id, activeGroup);
         return insertTab(prev, tab);
       });
+      // Unconditional (not transition-dependent): when the activated tab was
+      // already active, TerminalView's [focused] effect won't fire, and the
+      // invoking UI (quick switcher, sidebar row) otherwise keeps/strands
+      // keyboard focus.
+      requestTerminalRefocus();
     },
     [sessions, insertTab],
   );
@@ -438,6 +448,10 @@ export function useTabs(
       );
       if (existing) {
         setActiveTabId(existing.id);
+        // Same rationale as openSession's call: an already-active target
+        // produces no focused-state transition, so grant terminal focus
+        // explicitly.
+        requestTerminalRefocus();
         return existing.id;
       }
       // If this is the session's currently active window and a whole-session
@@ -453,6 +467,7 @@ export function useTabs(
         );
         if (wholeSessionTab) {
           setActiveTabId(wholeSessionTab.id);
+          requestTerminalRefocus();
           return wholeSessionTab.id;
         }
       }

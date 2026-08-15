@@ -18,6 +18,7 @@ import {
   extensionTabGroupMenuItems,
   focusProjectsPanel,
   focusSidebarTab,
+  requestTerminalRefocus,
   setExecuteCommandHandler,
   setExtensionSettingUpdater,
   setGetCommandsHandler,
@@ -1923,7 +1924,15 @@ export default function App() {
           onOpenSession={openSession}
           onOpenFile={openFileOrViewer}
           onOpenFileSecondary={openFileOrViewerSecondary}
-          onClose={() => setSwitcherQuery(null)}
+          onClose={() => {
+            setSwitcherQuery(null);
+            // Every close path — Escape, overlay click, and entry
+            // activation (runEntry closes before running) — otherwise
+            // strands keyboard focus on <body> once the switcher's input
+            // unmounts. Guarded so an entry that opened a dialog (rename,
+            // kill confirm, folder picker) keeps the dialog's autofocus.
+            requestTerminalRefocus({ onlyIfUnowned: true });
+          }}
         />
       )}
       {uploadProgress && (
