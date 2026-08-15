@@ -11,6 +11,17 @@ export interface TmuxWindow {
   command: string;
 }
 
+// `tmux-server open`'s SSE payload (server/src/openUrl.ts's OpenTargetPayload)
+// — a directory to open as a project, or a file to open in its project.
+// `path`/`projectCwd` arrive already `~`-shortened, matching TmuxSession.path.
+export interface OpenTargetPayload {
+  kind: "dir" | "file";
+  path: string;
+  projectCwd: string;
+  line?: number;
+  action?: "editor" | "preview";
+}
+
 export interface TmuxSession {
   // Stable tmux id ("$3") — survives rename.
   id: string;

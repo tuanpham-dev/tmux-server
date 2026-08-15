@@ -36,7 +36,7 @@ import {
   uninstallExtension,
 } from "./extensions.js";
 import { hasReceivedEvents, paneHistory, recordEnd, recordStart } from "./commandEvents.js";
-import { broadcastOpenUrl, subscribeOpenUrl } from "./openUrl.js";
+import { broadcastOpenTarget, broadcastOpenUrl, subscribeOpenUrl } from "./openUrl.js";
 import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { shellIntegrationPath, shellIntegrationSourceLine } from "./shellIntegration.js";
@@ -980,6 +980,64 @@ api.post("/open-url", urlencoded({ extended: false }), (req, res) => {
 
 api.get("/open-url/events", (_req, res) => {
   subscribeOpenUrl(res);
+});
+
+// `tmux-server open` bridge (plans/cli-open-command.md). Same loopback +
+// custom-header pattern as /open-url — a local curl from the CLI, not a
+// browser — but broadcasts a named `open-target` event on the same SSE
+// stream instead of the unnamed open-url messages, so existing subscribers
+// (the shim's popup-open path) are unaffected.
+
+const MAX_OPEN_TARGET_PATH_LENGTH = 4096;
+
+api.post("/open-target", urlencoded({ extended: false }), async (req, res) => {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  if (req.headers["x-tmux-server-open"] === undefined) {
+    res.status(403).json({ error: "missing header" });
+    return;
+  }
+  const body = req.body as Record<string, unknown> | undefined;
+  const rawPath = body?.path;
+  if (typeof rawPath !== "string" || !rawPath || rawPath.length > MAX_OPEN_TARGET_PATH_LENGTH) {
+    res.status(400).json({ error: "path is required" });
+    return;
+  }
+  let line: number | undefined;
+  if (body?.line !== undefined) {
+    const n = Number(body.line);
+    if (!Number.isInteger(n) || n < 1) {
+      res.status(400).json({ error: "line must be a positive integer" });
+      return;
+    }
+    line = n;
+  }
+  let action: "editor" | "preview" | undefined;
+  if (body?.action !== undefined) {
+    if (body.action !== "editor" && body.action !== "preview") {
+      res.status(400).json({ error: "action must be editor or preview" });
+      return;
+    }
+    action = body.action;
+  }
+  const target = expandHome(rawPath);
+  if (!(await exists(target))) {
+    res.status(400).json({ error: "path does not exist" });
+    return;
+  }
+  const dir = await isDirectory(target);
+  const kind = dir ? "dir" : "file";
+  const projectCwd = dir ? target : ((await getGitRoot(path.dirname(target))) ?? path.dirname(target));
+  const delivered = broadcastOpenTarget({
+    kind,
+    path: shortenHome(target),
+    projectCwd: shortenHome(projectCwd),
+    line,
+    action,
+  });
+  res.json({ delivered });
 });
 
 // Command events (plans/warp-features.md Phase 1). /report follows the

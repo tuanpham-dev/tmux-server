@@ -55,9 +55,11 @@ export function useSessionActions(
   // rooted there, or creates one — named after the folder, started in
   // exactly that folder (exactCwd) so session_path round-trips and the
   // panel's cwd matching holds. Every open (not a failed create) records
-  // the folder into the recents registry via bumpRecent.
+  // the folder into the recents registry via bumpRecent. Returns the
+  // session's name (undefined on failure) — useOpenTarget's file-open path
+  // needs it as the open-file API's session target.
   const openProject = useCallback(
-    async (cwd: string) => {
+    async (cwd: string): Promise<string | undefined> => {
       try {
         const live = sessions.find((s) => s.path === cwd);
         if (live) {
@@ -65,7 +67,7 @@ export function useSessionActions(
           const activeIndex =
             live.windows.find((w) => w.active)?.index ?? live.windows[0]?.index;
           if (activeIndex !== undefined) await openWindowTab(live.name, activeIndex);
-          return;
+          return live.name;
         }
         const created = await api.createSession(
           sessionNameForProject(cwd, sessions.map((s) => s.name)),
@@ -76,8 +78,10 @@ export function useSessionActions(
         await refresh();
         const activeIndex = created.windows.find((w) => w.active)?.index;
         if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
+        return created.name;
       } catch (err) {
         showError(err);
+        return undefined;
       }
     },
     [sessions, refresh, openWindowTab, showError, setProjects],

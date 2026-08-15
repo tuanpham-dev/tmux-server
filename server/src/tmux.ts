@@ -179,6 +179,10 @@ export async function createSession(name?: string, cwd?: string, exactCwd = fals
   // call, before any attach has run applyTmuxOptions' set-environment — -e
   // (tmux ≥3.2, older than features this file already relies on) covers it.
   args.push("-e", `BROWSER=${openShimPath}`);
+  // Lets `tmux-server open` (run from inside this session's own pane) target
+  // the instance that created it without needing --port (plans/
+  // cli-open-command.md). Same PORT resolution as index.ts's own constant.
+  args.push("-e", `TMUX_SERVER_PORT=${process.env.PORT ?? 3001}`);
   const createdName = (await tmux(args)).trim();
   // Not listSessions(): its ≤500ms-old cache (or an in-flight query started
   // before the create) can predate this session — the invalidation middleware

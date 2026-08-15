@@ -74,3 +74,23 @@ export function broadcastOpenUrl(url: string, serverPort: number): void {
   const frame = `data: ${JSON.stringify({ url, serverPort })}\n\n`;
   for (const res of subscribers) res.write(frame);
 }
+
+// `tmux-server open` bridge (plans/cli-open-command.md): the CLI POSTs
+// /api/open-target, which broadcasts one of these as a *named* SSE event on
+// this same subscriber set — reusing the open-url stream instead of a
+// second connection per client. `path`/`projectCwd` are already
+// `~`-shortened by the caller so they compare directly against
+// TmuxSession.path.
+export interface OpenTargetPayload {
+  kind: "dir" | "file";
+  path: string;
+  projectCwd: string;
+  line?: number;
+  action?: "editor" | "preview";
+}
+
+export function broadcastOpenTarget(payload: OpenTargetPayload): number {
+  const frame = `event: open-target\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const res of subscribers) res.write(frame);
+  return subscribers.size;
+}

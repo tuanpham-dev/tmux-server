@@ -202,6 +202,8 @@ export function isAuthExemptPath(path: string): boolean {
   // /api/open-url follows the bell pattern exactly (local curl from the
   // $BROWSER shim, loopback + custom-header checks in its handler); its
   // /events SSE sibling is deliberately NOT exempt — exact match only.
+  // /api/open-target is the same pattern again, this time for the CLI's
+  // `tmux-server open` (plans/cli-open-command.md).
   // /api/command-events/report likewise (local curl from the
   // shell-integration snippet); the GET /api/command-events browser
   // endpoint stays gated, which is why report has its own subpath.
@@ -209,6 +211,7 @@ export function isAuthExemptPath(path: string): boolean {
     isOriginExemptPath(path) ||
     path === "/api/push/bell" ||
     path === "/api/open-url" ||
+    path === "/api/open-target" ||
     path === "/api/command-events/report"
   );
 }

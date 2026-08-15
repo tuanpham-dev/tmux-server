@@ -858,6 +858,190 @@ cmd_update() {
 
 cmd_path() { echo "$REPO_DIR"; }
 
+# --- open: code-server-style folder/file opener ----------------------------
+usage_open() {
+  cat <<'EOF'
+Usage: tmux-server open [path[:line]] [editor|preview] [--port <n>] [--help]
+
+Opens a folder as a project, or a file in the editor, in every connected
+browser tab (like `code`/`code-server`). With no path, opens the current
+directory.
+
+  path[:line]     Folder or file to open — a trailing :N jumps a file to
+                   that line (e.g. src/index.ts:42).
+  editor|preview   Force the file into the editor (nvim) or its preview
+                   viewer, instead of the default click-through behavior.
+  --port <n>       Target a specific instance instead of auto-detecting
+                   one (default: $TMUX_SERVER_PORT when run from inside a
+                   pane this app created, else whichever instance is
+                   running — prompting if more than one is).
+
+With no browser tab connected, prints a link you can open manually instead.
+EOF
+}
+
+# Percent-encodes a string for use in a URL query value — kept dependency-
+# free (no python3/jq assumed) to match this script's other helpers. Works
+# byte-by-byte via `od` rather than bash's own string indexing, which is
+# locale-dependent (a non-ASCII path would get each character's *codepoint*
+# encoded instead of its UTF-8 bytes) — this way nothing here needs to touch
+# LC_ALL, whose value a `local` override would otherwise still hand to any
+# subprocess spawned in this scope (bash keeps the export attribute on a
+# `local` when the outer variable was already exported, which LC_ALL/LANG
+# typically are).
+urlencode() {
+  local hex out="" h dec ch i
+  hex="$(printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n')"
+  for ((i = 0; i < ${#hex}; i += 2)); do
+    h="${hex:i:2}"
+    dec=$((16#$h))
+    if { [ "$dec" -ge 48 ] && [ "$dec" -le 57 ]; } ||
+      { [ "$dec" -ge 65 ] && [ "$dec" -le 90 ]; } ||
+      { [ "$dec" -ge 97 ] && [ "$dec" -le 122 ]; } ||
+      [ "$dec" -eq 46 ] || [ "$dec" -eq 126 ] || [ "$dec" -eq 95 ] || [ "$dec" -eq 45 ]; then
+      printf -v ch "\\x$h"
+      out+="$ch"
+    else
+      out+="%${h^^}"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+cmd_open() {
+  local opt_port="" target="." action="" target_set=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --help|-h) usage_open; return 0 ;;
+      --port=*) opt_port="${1#*=}"; shift ;;
+      --port)
+        if [ $# -lt 2 ]; then
+          fail "--port requires a value"
+          exit 1
+        fi
+        opt_port="$2"
+        shift 2
+        ;;
+      -*)
+        fail "unknown flag: $1"
+        exit 1
+        ;;
+      editor|preview)
+        if [ -n "$action" ]; then
+          fail "unexpected argument: $1"
+          exit 1
+        fi
+        action="$1"
+        shift
+        ;;
+      *)
+        if [ "$target_set" -eq 1 ]; then
+          fail "unexpected argument: $1"
+          exit 1
+        fi
+        target="$1"
+        target_set=1
+        shift
+        ;;
+    esac
+  done
+
+  # Resolve the target to an absolute, existing path — retrying with a
+  # trailing ":<digits>" stripped (a file:line reference) only once the
+  # literal path doesn't exist, so filenames that legitimately contain a
+  # colon stay openable as-is.
+  local abs="" line=""
+  abs="$(realpath -e -- "$target" 2>/dev/null)" || true
+  if [ -z "$abs" ] && [[ "$target" =~ ^(.+):([0-9]+)$ ]]; then
+    abs="$(realpath -e -- "${BASH_REMATCH[1]}" 2>/dev/null)" || true
+    [ -n "$abs" ] && line="${BASH_REMATCH[2]}"
+  fi
+  if [ -z "$abs" ]; then
+    fail "no such file or directory: $target"
+    exit 1
+  fi
+
+  # Instance targeting: --port wins, then $TMUX_SERVER_PORT (set in every
+  # session this app creates — see server/src/tmux.ts — so running `open`
+  # from inside one of its panes targets that pane's own instance with no
+  # flags needed), then discovery matching `stop`'s (one instance: use it;
+  # several: numbered prompt; none interactive: fail with the list).
+  local port="${opt_port:-${TMUX_SERVER_PORT:-}}"
+  if [ -z "$port" ]; then
+    local raw count
+    raw="$(list_instances_raw)"
+    if [ -z "$raw" ]; then
+      fail "no running instance found — start one with: tmux-server start"
+      exit 1
+    fi
+    count="$(printf '%s\n' "$raw" | wc -l)"
+    if [ "$count" -eq 1 ]; then
+      port="$(printf '%s\n' "$raw" | awk -F'|' '{print $2}')"
+    elif [ ! -t 0 ]; then
+      warn "more than one instance is running; re-run with --port <n>:"
+      printf '%s\n' "$raw" | awk -F'|' '{ printf "  pid %s  port %s  %s  (%s)\n", $1, $2, $3, $4 }'
+      exit 1
+    else
+      heading "Running instances"
+      printf '%-4s %-8s %-6s %-22s %s\n' "#" "PID" "PORT" "APP_NAME" "MANAGED BY"
+      local i=0 iline pid p app_name managed_by
+      while IFS= read -r iline; do
+        [ -n "$iline" ] || continue
+        i=$((i + 1))
+        IFS='|' read -r pid p app_name managed_by <<< "$iline"
+        printf '%-4s %-8s %-6s %-22s %s\n' "$i" "$pid" "$p" "$app_name" "$managed_by"
+      done <<< "$raw"
+      local choice
+      printf 'Open on which instance? [1-%s/q=cancel]: ' "$count"
+      read -r choice
+      if [ -z "$choice" ] || [ "$choice" = "q" ] || [ "$choice" = "Q" ]; then
+        info "cancelled"
+        return 0
+      fi
+      if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+        fail "invalid choice: $choice"
+        exit 1
+      fi
+      port="$(printf '%s\n' "$raw" | sed -n "${choice}p" | awk -F'|' '{print $2}')"
+    fi
+  fi
+
+  local curl_args=(-s -m 5 -X POST -H 'X-Tmux-Server-Open: 1' --data-urlencode "path=$abs")
+  [ -n "$line" ] && curl_args+=(--data-urlencode "line=$line")
+  [ -n "$action" ] && curl_args+=(--data-urlencode "action=$action")
+
+  local response
+  if ! response="$(curl "${curl_args[@]}" "http://127.0.0.1:$port/api/open-target" 2>/dev/null)"; then
+    fail "couldn't reach the server on port $port — is it running? (tmux-server start)"
+    exit 1
+  fi
+  local delivered
+  delivered="$(printf '%s' "$response" | grep -o '"delivered":[0-9]*' | grep -o '[0-9]*$')"
+  if [ -z "$delivered" ]; then
+    fail "unexpected response from server on port $port: $response"
+    exit 1
+  fi
+  if [ "$delivered" -gt 0 ]; then
+    ok "opened in $delivered connected client(s)"
+    return 0
+  fi
+
+  local display="$abs"
+  case "$display" in
+    "$HOME") display="~" ;;
+    "$HOME"/*) display="~${display#"$HOME"}" ;;
+  esac
+  local link="http://127.0.0.1:$port"
+  if [ -d "$abs" ]; then
+    link="$link/?folder=$(urlencode "$display")"
+  else
+    link="$link/?file=$(urlencode "$display")"
+    [ -n "$line" ] && link="$link&line=$line"
+    [ -n "$action" ] && link="$link&action=$action"
+  fi
+  info "no connected client — open: $link"
+}
+
 cmd_doctor() {
   local required_failed=0
 
@@ -970,6 +1154,9 @@ Commands:
   update     Pull the latest code, reinstall, rebuild, and restart
   doctor     Check dependencies, install health, and troubleshoot problems
   run        Run in the foreground (used internally by the systemd service)
+  open       Open a folder or file in the app, like `code`/`code-server`
+             (see: tmux-server open --help); a bare `tmux-server <path>`
+             does the same
   path       Print the install directory
   help       Show this help
 EOF
@@ -990,12 +1177,20 @@ main() {
     disable) cmd_disable ;;
     update) cmd_update ;;
     doctor) cmd_doctor ;;
+    open) cmd_open "$@" ;;
     path) cmd_path ;;
     help|-h|--help) cmd_help ;;
     *)
-      fail "unknown command: $cmd"
-      cmd_help
-      exit 1
+      # `tmux-server <path>` shorthand for `tmux-server open <path>` — only
+      # when it actually looks like one, so a genuine typo'd command still
+      # gets the unknown-command error instead of a confusing open failure.
+      if [ -e "$cmd" ] || [ "$cmd" = "." ] || [ "$cmd" = ".." ]; then
+        cmd_open "$cmd" "$@"
+      else
+        fail "unknown command: $cmd"
+        cmd_help
+        exit 1
+      fi
       ;;
   esac
 }

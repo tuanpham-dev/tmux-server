@@ -34,6 +34,7 @@ import { COMMANDS, formatBinding } from "./keybindings";
 import { DEFAULT_SETTINGS } from "./settings";
 import { evaluateWhen } from "./whenClause";
 import { useBottomPanel } from "./hooks/useBottomPanel";
+import { useOpenTarget } from "./hooks/useOpenTarget";
 import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
 import { useSettingsSync } from "./hooks/useSettingsSync";
@@ -41,7 +42,7 @@ import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useGitRootDir } from "./hooks/useGitRootDir";
 import { useThemeAssets } from "./hooks/useThemeAssets";
-import type { MenuItem, MenuState, RegistrySourceResult, Tab, TmuxSession } from "./types";
+import type { MenuItem, MenuState, OpenTargetPayload, RegistrySourceResult, Tab, TmuxSession } from "./types";
 import { groupKeyForTab, isRealTab } from "./lib/tabs";
 import { bumpRecent, projectName, sessionNameForProject } from "./lib/projects";
 import { leaves } from "./lib/splits";
@@ -94,6 +95,11 @@ export default function App() {
     const t = setTimeout(() => setOpenUrlBanner(null), 15000);
     return () => clearTimeout(t);
   }, [openUrlBanner]);
+  // `tmux-server open` bridge (plans/cli-open-command.md): populated below,
+  // once openProject/extFileViewers/etc are all in scope, via the same
+  // ref-bridge pattern refreshClipboardMirrorRef uses — this effect (and the
+  // EventSource it owns) mounts long before useOpenTarget's callback exists.
+  const openTargetRef = useRef<(payload: OpenTargetPayload) => void>(() => {});
   useEffect(() => {
     // Prefetched (not per-event) so the open itself never awaits a fetch —
     // transient activation only lasts a few seconds.
@@ -119,6 +125,17 @@ export default function App() {
       const opened = window.open(target, "_blank", "noopener,noreferrer");
       if (!opened) setOpenUrlBanner(target);
     };
+    // In-app navigation, not a popup — every connected tab handles it (no
+    // document.hasFocus() gate); openProject/openWindowTab are idempotent,
+    // so N tabs handling the same event just re-focuses each one.
+    es.addEventListener("open-target", (e) => {
+      const evt = e as MessageEvent<string>;
+      try {
+        openTargetRef.current(JSON.parse(evt.data) as OpenTargetPayload);
+      } catch {
+        // malformed payload; drop it
+      }
+    });
     return () => es.close();
   }, []);
 
@@ -947,6 +964,56 @@ export default function App() {
     moveTabToAdjacentGroup,
     resolvedFilesRootDir,
   );
+
+  // `tmux-server open` bridge (plans/cli-open-command.md): openProject is
+  // only available past this point, so the SSE listener declared above
+  // reaches it through this ref, refreshed every render.
+  const { handleOpenTarget } = useOpenTarget(
+    openProject,
+    extFileViewers,
+    openExtViewerTab,
+    openWindowTab,
+    refresh,
+    showError,
+  );
+  openTargetRef.current = handleOpenTarget;
+
+  // code-server-style deep links: `?folder=<path>` opens a project,
+  // `?file=<path>[&line=N][&action=editor|preview]` opens a file — the
+  // no-connected-client fallback `tmux-server open` prints. Runs once, after
+  // the first session list is in (openProject's live-session lookup needs
+  // it to avoid a spurious duplicate create), then strips the params so a
+  // reload/share of the URL can't re-fire the open.
+  const deepLinkConsumedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkConsumedRef.current || !sessionsLoadedRef.current) return;
+    const params = new URLSearchParams(location.search);
+    const folder = params.get("folder");
+    const file = params.get("file");
+    if (!folder && !file) return;
+    deepLinkConsumedRef.current = true;
+    const lineParam = params.get("line");
+    const line = lineParam && /^\d+$/.test(lineParam) ? Number(lineParam) : undefined;
+    const actionParam = params.get("action");
+    const action = actionParam === "editor" || actionParam === "preview" ? actionParam : undefined;
+    (async () => {
+      try {
+        if (folder) {
+          const listing = await api.listDir(folder);
+          await handleOpenTarget({ kind: "dir", path: listing.path, projectCwd: listing.path });
+        } else if (file) {
+          const dirname = file.slice(0, file.lastIndexOf("/")) || "/";
+          const gitRoot = await api.getGitRoot(dirname);
+          await handleOpenTarget({ kind: "file", path: file, projectCwd: gitRoot.root, line, action });
+        }
+      } catch (err) {
+        showError(err);
+      }
+    })();
+    const url = new URL(location.href);
+    for (const key of ["folder", "file", "line", "action"]) url.searchParams.delete(key);
+    history.replaceState(null, "", url);
+  }, [sessions, handleOpenTarget, showError]);
 
   // The bottom panel's "New Project…": ensure the picked folder's session
   // exists (created exactly there, named after it — same rules as

@@ -106,6 +106,7 @@ The installer checks for Node 20+, `tmux`, `git`, and a C/C++ toolchain up front
 | `tmux-server enable` / `disable` | Install and enable (or disable) the systemd service |
 | `tmux-server update` | Pull the latest code, reinstall, rebuild, and restart |
 | `tmux-server doctor` | Check dependencies and install health, and troubleshoot problems |
+| `tmux-server open [path]` | Open a folder or file in the app, like `code`/`code-server` — see below |
 
 Config (`PORT`, `AUTH_TOKEN`, `ALLOWED_HOSTS`, `NEW_SESSION_CWD`, `APP_NAME`, `PROXY_DOMAIN`, `EXTENSION_REGISTRY`) goes in `~/.local/share/tmux-server/server/.env` — see [Production](#production) below for what each does. Without systemd (e.g. on macOS), `start`/`stop`/`restart` fall back to running the server in the background directly instead of managing a service.
 
@@ -121,6 +122,12 @@ tmux-server start --port=8040 --app-name="Tmux Server - Work"
 - **Without systemd** (foreground-fallback mode): flags start an *additional* background instance on the given port, alongside anything already running — handy for running a second, differently-configured instance (e.g. a "work" one on another port) without disturbing the main one. Starting on a port that's already in use is refused.
 
 `tmux-server stop` stops the only running instance automatically; if more than one instance is running, it lists them and asks which to stop (or pass `--port <n>` or `--all` to skip the prompt). See `tmux-server stop --help`.
+
+#### Opening a folder or file
+
+`tmux-server open [path[:line]] [editor|preview]` opens a folder as a project, or a file in the editor — like `code`/`code-server`, but for every browser tab currently connected to that instance. With no path, opens the current directory; a bare `tmux-server <path>` works the same as `tmux-server open <path>`. A file's default action mirrors a click in the FILES panel (nvim, or its preview viewer when one applies); pass `editor` or `preview` as a second argument to force one or the other. Run from inside a pane this app created (e.g. a `claude` session opened as a project), `open` targets that pane's own instance automatically — otherwise it auto-detects the running instance, or asks which one if more than one is up (`--port <n>` skips that).
+
+If no browser tab is connected, `open` prints a link (`?folder=`/`?file=`) you can open manually instead — note that link carries no auth token, so on an `AUTH_TOKEN`-protected instance it only works in a browser that's already logged in.
 
 ## Manual setup (from source)
 
