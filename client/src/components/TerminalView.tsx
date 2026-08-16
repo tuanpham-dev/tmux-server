@@ -825,8 +825,19 @@ export default function TerminalView({
       let receivedExit = false;
 
       const connect = () => {
+        // Send the real grid size along so the server spawns the attach PTY
+        // at it (see wsAttach.ts): a fresh attach at the default 80x24
+        // bounces the tmux window to 80x24 until the post-open resize
+        // message lands, reflowing every full-screen TUI twice — after a
+        // long disconnect on a slow link that reflow storm left panes
+        // visibly garbled. fit() is recomputed per attempt since the layout
+        // can change while disconnected (rotation, keyboard); it returns
+        // null only when the terminal is hidden/unmeasurable, where the
+        // server's 80x24 default plus the onopen refit covers it as before.
+        const dims = engine.fit();
+        const size = dims ? `&cols=${dims.cols}&rows=${dims.rows}` : "";
         ws = new WebSocket(
-          `${proto}://${location.host}/ws/attach?session=${encodeURIComponent(attachNameRef.current)}`,
+          `${proto}://${location.host}/ws/attach?session=${encodeURIComponent(attachNameRef.current)}${size}`,
         );
         // Terminal output rides binary WS frames straight from the PTY (see
         // wsAttach.ts) — everything else stays JSON text. Set per-socket

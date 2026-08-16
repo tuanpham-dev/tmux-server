@@ -60,10 +60,25 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     return;
   }
 
+  // Spawn at the client's real grid size (sent as query params) instead of
+  // a fixed 80x24: tmux's default window-size latest resizes the window to
+  // each newly-attached client, so an 80x24 spawn bounces the window to
+  // 80x24 and back once the client's post-open "resize" message lands —
+  // two SIGWINCH reflows for every full-screen TUI in the session. On a
+  // fast local link the resize usually races ahead of the attach and hides
+  // this; on a slow/proxied link (phone waking after a long disconnect)
+  // the double reflow ran for real and left panes visibly garbled.
+  const parseDim = (v: string | null): number | null => {
+    const n = Number(v);
+    return Number.isInteger(n) && n > 0 && n <= 10_000 ? n : null;
+  };
+  const cols = parseDim(url.searchParams.get("cols")) ?? 80;
+  const rows = parseDim(url.searchParams.get("rows")) ?? 24;
+
   const term = pty.spawn("tmux", ["attach-session", "-t", `=${session}`], {
     name: "xterm-256color",
-    cols: 80,
-    rows: 24,
+    cols,
+    rows,
     cwd: process.env.HOME,
     // spawnEnv: don't hand the server's own config (PORT, AUTH_TOKEN, ...)
     // to the attach client — see spawnEnv.ts.
