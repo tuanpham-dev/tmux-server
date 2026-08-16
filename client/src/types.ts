@@ -100,6 +100,12 @@ export interface Tab {
   // "App.tsx (Working Tree)" instead of the bare basename tabLabel derives
   // by default. Absent for every other viewer tab.
   extViewerTitle?: string;
+  // Bumped by openExtViewerTab each time an explicit open/preview action
+  // re-targets this already-open viewer tab (FILES-tree click or "Preview",
+  // terminal link, quick switcher, ctx.app.openViewerTab) — surfaced to the
+  // mounted viewer as FileViewerHostProps.reloadKey so it can re-fetch the
+  // file from disk. Plain tab-bar switching never touches it.
+  extViewerReloadKey?: number;
   // Only on a viewer tab (extViewerPath set): the real session it was
   // opened "from" (App.tsx's openExtViewerTab), pinned at creation time so
   // it can join that session's Chrome-style tab group — see groupKeyForTab

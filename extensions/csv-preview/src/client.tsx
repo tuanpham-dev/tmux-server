@@ -21,6 +21,19 @@ import { useUndoHistory } from "./undo";
 import { CsvFindBar, CsvToolbar } from "./Toolbar";
 import type { Bounds, CellPos, CellRange, SortDir } from "./types";
 
+// Set once from activate() — read-through so flipping csv.clickAction in
+// Settings applies live (the registered mode below is a thunk, same
+// mechanism as markdown-preview's markdown.clickAction).
+interface SettingsApi {
+  get(key: string): unknown;
+}
+
+let extSettings: SettingsApi | null = null;
+
+function readClickAction(): "edit" | "preview" {
+  return extSettings?.get("csv.clickAction") === "preview" ? "preview" : "edit";
+}
+
 interface Props {
   filePath: string;
   active: boolean;
@@ -30,6 +43,10 @@ interface Props {
   // Reported on every dirty/clean transition so the host's closeTab/
   // closeOtherTabs can confirm before discarding unsaved edits.
   setDirty?: (dirty: boolean) => void;
+  // Bumped by the host when an open/preview action re-targets this
+  // already-open tab — re-fetch from disk, unless the grid has unsaved
+  // edits (never silently clobber them; the toolbar Reload still asks).
+  reloadKey?: number;
 }
 
 const ROW_HEIGHT = 32;
@@ -39,7 +56,7 @@ const DEFAULT_COL_W = 120;
 
 const basenameOf = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
-function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setDirty }: Props) {
+function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setDirty, reloadKey }: Props) {
   const basename = basenameOf(filePath);
 
   const [content, setContent] = useState<string | null>(null);
@@ -174,8 +191,7 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
   // unchanged (same string value, so the effect's dependency array sees no
   // change via Object.is) — but the user's edits still need clearing.
   const [reloading, setReloading] = useState(false);
-  async function handleReload() {
-    if (dirty && !window.confirm("Discard unsaved changes and reload from disk?")) return;
+  async function reloadFromDisk() {
     setReloading(true);
     setLoadError(null);
     try {
@@ -188,6 +204,35 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
       setReloading(false);
     }
   }
+  async function handleReload() {
+    if (dirty && !window.confirm("Discard unsaved changes and reload from disk?")) return;
+    await reloadFromDisk();
+  }
+
+  // The host bumps reloadKey when an explicit open/preview action lands on
+  // this already-open tab — pick up on-disk changes, but never silently
+  // clobber unsaved grid edits: while dirty, surface a banner offering the
+  // reload instead (a blocking confirm here would ambush an action that
+  // didn't mention reload; the banner keeps it opt-in).
+  const [showReloadPrompt, setShowReloadPrompt] = useState(false);
+  const prevReloadKeyRef = useRef(reloadKey);
+  useEffect(() => {
+    if (reloadKey === prevReloadKeyRef.current) return;
+    prevReloadKeyRef.current = reloadKey;
+    if (dirty) {
+      setShowReloadPrompt(true);
+    } else {
+      setShowReloadPrompt(false);
+      void reloadFromDisk();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
+
+  // Going clean (saved, or undone back to the loaded state) makes the
+  // banner's "you have unsaved changes" claim false — drop it.
+  useEffect(() => {
+    if (!dirty) setShowReloadPrompt(false);
+  }, [dirty]);
 
   // ── Save ───────────────────────────────────────────────────────────────
 
@@ -965,6 +1010,30 @@ function CsvView({ filePath, active, toolbarTarget, openInEditor, showMenu, setD
 
           {parseWarning && <div className="csv-warning">{parseWarning}</div>}
 
+          {showReloadPrompt && (
+            <div className="csv-reload-banner">
+              <span className="csv-reload-banner-text">
+                Reload requested, but you have unsaved changes.
+              </span>
+              <button
+                className="csv-text-button"
+                onClick={() => {
+                  setShowReloadPrompt(false);
+                  void reloadFromDisk();
+                }}
+              >
+                Reload (discard changes)
+              </button>
+              <button
+                className="icon-button"
+                title="Keep my changes"
+                onClick={() => setShowReloadPrompt(false)}
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+          )}
+
           {hasData && (
             <div className="csv-formula-bar">
               <span className="csv-formula-label">{anchorPos ? (headers[anchorPos.col] ?? `C${anchorPos.col + 1}`) : "value"}</span>
@@ -1130,16 +1199,22 @@ export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
     extensions: string[];
-    mode: "default" | "preview";
+    mode: "default" | "preview" | (() => "default" | "preview");
     component: typeof CsvView;
   }) => void;
   assetUrl: (relPath: string) => string;
+  settings: SettingsApi;
 }) {
+  extSettings = ctx.settings;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "csvViewer",
     extensions: ["csv", "tsv"],
-    mode: "preview",
+    // A thunk, so flipping csv.clickAction applies live: "preview" makes a
+    // FILES-tree click open this grid directly ("default" mode), "edit"
+    // keeps the click on nvim with the grid behind the Preview affordances
+    // — same mechanism as markdown-preview's markdown.clickAction.
+    mode: () => (readClickAction() === "preview" ? "default" : "preview"),
     component: CsvView,
   });
 }
@@ -1147,4 +1222,5 @@ export function activate(ctx: {
 export function deactivate() {
   removeStylesheet?.();
   removeStylesheet = null;
+  extSettings = null;
 }

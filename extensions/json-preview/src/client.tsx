@@ -13,12 +13,29 @@ import Icon from "../../_shared/Icon";
 
 const YAML_EXTENSIONS = new Set(["yml", "yaml"]);
 
+// Set once from activate() — read-through so flipping json.clickAction in
+// Settings applies live (the registered mode below is a thunk, same
+// mechanism as markdown-preview's markdown.clickAction).
+interface SettingsApi {
+  get(key: string): unknown;
+}
+
+let extSettings: SettingsApi | null = null;
+
+function readClickAction(): "edit" | "preview" {
+  return extSettings?.get("json.clickAction") === "preview" ? "preview" : "edit";
+}
+
 interface Props {
   filePath: string;
   active: boolean;
   toolbarTarget?: HTMLDivElement | null;
   openInEditor?: (path: string) => void;
   fontSize?: number;
+  // Bumped by the host when an open/preview action re-targets this
+  // already-open tab — the tree mirrors disk (no in-memory edits to lose),
+  // so just re-fetch.
+  reloadKey?: number;
 }
 
 // Points every StyleProps hook at classes defined in the host's styles.css
@@ -78,7 +95,7 @@ function extOf(filePath: string): string {
 // guard disables Format & Save instead of corrupting them.
 const WIDE_INTEGER_RE = /(?<!["\d.])\d{16,}(?!["\d])/;
 
-function JsonView({ filePath, active, toolbarTarget, openInEditor, fontSize = 14 }: Props) {
+function JsonView({ filePath, active, toolbarTarget, openInEditor, fontSize = 14, reloadKey }: Props) {
   const basename = filePath.slice(filePath.lastIndexOf("/") + 1);
   const isYaml = YAML_EXTENSIONS.has(extOf(filePath));
   const [content, setContent] = useState<string | null>(null);
@@ -90,12 +107,16 @@ function JsonView({ filePath, active, toolbarTarget, openInEditor, fontSize = 14
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Re-fetched on reloadKey too: the host bumps it when an explicit open/
+  // preview action lands on this already-open tab, and this view is a
+  // read-only mirror of the file on disk.
   useEffect(() => {
+    setLoadError(null);
     fetchFileText(filePath)
       .then(setContent)
       .catch((err) => setLoadError(err instanceof Error ? err.message : String(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath]);
+  }, [filePath, reloadKey]);
 
   const parsed = useMemo(() => {
     if (content === null) return { ok: false as const, error: null };
@@ -266,16 +287,22 @@ export function activate(ctx: {
   registerFileViewer: (v: {
     id: string;
     extensions: string[];
-    mode: "default" | "preview";
+    mode: "default" | "preview" | (() => "default" | "preview");
     component: typeof JsonView;
   }) => void;
   assetUrl: (relPath: string) => string;
+  settings: SettingsApi;
 }) {
+  extSettings = ctx.settings;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
   ctx.registerFileViewer({
     id: "jsonViewer",
     extensions: ["json", ...YAML_EXTENSIONS],
-    mode: "preview",
+    // A thunk, so flipping json.clickAction applies live: "preview" makes a
+    // FILES-tree click open this tree directly ("default" mode), "edit"
+    // keeps the click on nvim with the tree behind the Preview affordances
+    // — same mechanism as markdown-preview's markdown.clickAction.
+    mode: () => (readClickAction() === "preview" ? "default" : "preview"),
     component: JsonView,
   });
 }
@@ -283,4 +310,5 @@ export function activate(ctx: {
 export function deactivate() {
   removeStylesheet?.();
   removeStylesheet = null;
+  extSettings = null;
 }

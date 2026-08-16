@@ -1764,6 +1764,7 @@ export default function App() {
                   openInEditor={openFileInSession}
                   showMenu={showMenu}
                   fontSize={effectiveSettings.fontSize}
+                  reloadKey={tab.extViewerReloadKey}
                   setDirty={(dirty) => {
                     if (dirty) dirtyTabsRef.current.add(tab.id);
                     else dirtyTabsRef.current.delete(tab.id);

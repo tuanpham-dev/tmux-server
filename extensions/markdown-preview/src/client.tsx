@@ -199,9 +199,12 @@ interface Props {
   // this is surfaced directly in the tab bar rather than only the context
   // menu, since the user had to opt out of the editor to get here.
   openInEditor?: (path: string) => void;
+  // Bumped by the host when an open/preview action re-targets this
+  // already-open tab — the preview is read-only, so just re-fetch.
+  reloadKey?: number;
 }
 
-function MarkdownView({ filePath, active, toolbarTarget, openInEditor }: Props) {
+function MarkdownView({ filePath, active, toolbarTarget, openInEditor, reloadKey }: Props) {
   const basename = filePath.slice(filePath.lastIndexOf("/") + 1);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [content, setContent] = useState<string | null>(null);
@@ -224,7 +227,9 @@ function MarkdownView({ filePath, active, toolbarTarget, openInEditor }: Props) 
   }, []);
 
   // No auto-refresh/polling — fetched once on mount, plus the portaled
-  // Refresh button below for picking up on-disk edits on demand.
+  // Refresh button below and the host-bumped reloadKey (an explicit open/
+  // preview action landing on this already-open tab) for picking up
+  // on-disk edits.
   const load = useCallback(() => {
     setError(null);
     fetchFileText(filePath)
@@ -235,7 +240,7 @@ function MarkdownView({ filePath, active, toolbarTarget, openInEditor }: Props) 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath]);
+  }, [filePath, reloadKey]);
 
   useEffect(
     () => () => {

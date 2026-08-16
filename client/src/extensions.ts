@@ -48,6 +48,12 @@ export interface FileViewerHostProps {
   // Reports dirty/clean transitions so closing the tab can confirm before
   // discarding unsaved edits (CsvView's editable grid).
   setDirty?: (dirty: boolean) => void;
+  // Bumped each time an explicit open/preview action re-targets this
+  // already-open tab (FILES-tree click or "Preview", terminal link, quick
+  // switcher, ctx.app.openViewerTab) — see Tab.extViewerReloadKey. A viewer
+  // showing on-disk content should re-fetch when it changes; one holding
+  // unsaved edits (a dirty CSV grid) should leave them untouched instead.
+  reloadKey?: number;
   // Terminal/UI font size, in px — JsonView sizes its tree to match.
   fontSize?: number;
 }

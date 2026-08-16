@@ -310,11 +310,18 @@ export function useTabs(
         setActiveTabId(existing.id);
         // Re-opening an already-open viewer tab still applies a freshly
         // passed title — e.g. git-scm's diff viewer toggling Working Tree
-        // <-> Staged on the same path.
-        if (title !== undefined && existing.extViewerTitle !== title) {
-          return prev.map((t) => (t.id === existing.id ? { ...t, extViewerTitle: title } : t));
-        }
-        return prev;
+        // <-> Staged on the same path — and bumps extViewerReloadKey so the
+        // mounted viewer re-fetches from disk (every call here is an
+        // explicit open/preview action, never a plain tab switch).
+        return prev.map((t) =>
+          t.id === existing.id
+            ? {
+                ...t,
+                extViewerTitle: title !== undefined ? title : t.extViewerTitle,
+                extViewerReloadKey: (t.extViewerReloadKey ?? 0) + 1,
+              }
+            : t,
+        );
       }
       const tab: Tab = {
         id: crypto.randomUUID(),
