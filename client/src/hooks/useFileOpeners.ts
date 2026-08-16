@@ -6,6 +6,7 @@ import {
   findPreviewCapableViewerFor,
   setOpenFileTabHandler,
   setOpenViewerTabHandler,
+  setCloseViewerTabHandler,
   setRefreshFilesHandler,
   type RegisteredFileViewer,
 } from "../extensions";
@@ -25,6 +26,7 @@ export function useFileOpeners(
   openWindowTab: (session: string, index: number) => Promise<string | null>,
   setActiveTabId: (id: string) => void,
   openExtViewerTab: (viewerId: string, filePath: string, title?: string) => void,
+  closeExtViewerTab: (viewerId: string, path: string) => void,
   setFilesRefreshKey: (updater: (k: number) => number) => void,
 ) {
   // The "Preview" escape hatch (context-menu item / Shift+Enter / hover icon
@@ -144,8 +146,9 @@ export function useFileOpeners(
   // openExtViewerTab's title param and filesRefreshKey in App.
   useEffect(() => {
     setOpenViewerTabHandler(openExtViewerTab);
+    setCloseViewerTabHandler(closeExtViewerTab);
     setRefreshFilesHandler(() => setFilesRefreshKey((k) => k + 1));
-  }, [openExtViewerTab, setFilesRefreshKey]);
+  }, [openExtViewerTab, closeExtViewerTab, setFilesRefreshKey]);
 
   // Quick switcher's Shift+Enter action (also terminal ctrl+shift+click —
   // see TerminalView's onOpenFileSecondary). Mirrors the "Preview" escape

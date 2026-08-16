@@ -555,13 +555,12 @@ export function useTabs(
     closedTabsRef.current = [...closedTabsRef.current, tab].slice(-CLOSED_TABS_LIMIT);
   };
 
-  const closeTab = useCallback(
-    async (id: string) => {
-      if (dirtyTabsRef.current.has(id)) {
-        const ok = await confirmDialog("This tab has unsaved changes. Close anyway?", "Close");
-        if (!ok) return;
-        dirtyTabsRef.current.delete(id);
-      }
+  // The actual removal — MRU/window cleanup, group collapse, active-tab
+  // reassignment — split out from closeTab so an unconditional close (no
+  // dirty-changes confirm) can reuse it. See closeExtViewerTab below.
+  const closeTabImmediate = useCallback(
+    (id: string) => {
+      dirtyTabsRef.current.delete(id);
       const tab = tabs.find((t) => t.id === id);
       if (tab?.windowIndex !== undefined) {
         api.closeWindowTab(tab.attachName).catch(() => {});
@@ -608,7 +607,31 @@ export function useTabs(
         return neighbor ? neighbor.id : null;
       }, closingGroupId);
     },
-    [tabs, confirmDialog, settingsRef],
+    [tabs, settingsRef],
+  );
+
+  const closeTab = useCallback(
+    async (id: string) => {
+      if (dirtyTabsRef.current.has(id)) {
+        const ok = await confirmDialog("This tab has unsaved changes. Close anyway?", "Close");
+        if (!ok) return;
+      }
+      closeTabImmediate(id);
+    },
+    [confirmDialog, closeTabImmediate],
+  );
+
+  // Closes an extension's own viewer tab by (viewerId, path) with no dirty-
+  // changes confirm — for an extension that already knows it's safe to
+  // close (e.g. prompts' draft tab right after its own save completes), the
+  // one case extensions have no close-tab API for otherwise. No-op if no
+  // such tab is open.
+  const closeExtViewerTab = useCallback(
+    (viewerId: string, path: string) => {
+      const tab = tabs.find((t) => t.extViewerId === viewerId && t.extViewerPath === path);
+      if (tab) closeTabImmediate(tab.id);
+    },
+    [tabs, closeTabImmediate],
   );
 
   // Cycles within whichever editor group currently has focus (Ctrl+Tab
@@ -1137,6 +1160,7 @@ export function useTabs(
     insertTab,
     openSession,
     openExtViewerTab,
+    closeExtViewerTab,
     openSettingsTab,
     openKeyboardShortcutsTab,
     openExtensionPageTab,

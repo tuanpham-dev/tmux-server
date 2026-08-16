@@ -596,6 +596,7 @@ export default function App() {
     insertTab,
     openSession,
     openExtViewerTab,
+    closeExtViewerTab,
     openSettingsTab,
     openKeyboardShortcutsTab,
     openExtensionPageTab,
@@ -755,6 +756,7 @@ export default function App() {
     openWindowTab,
     setActiveTabId,
     openExtViewerTab,
+    closeExtViewerTab,
     setFilesRefreshKey,
   );
 

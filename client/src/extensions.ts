@@ -360,6 +360,13 @@ export interface ExtensionContext {
     // already-open (viewerId, path) tab also updates its title, e.g. to
     // reflect a working-tree/staged toggle.
     openViewerTab(viewerId: string, path: string, opts?: { title?: string }): void;
+    // Closes an already-open viewer tab (opened via openViewerTab above)
+    // for this extension's own viewerId, with no unsaved-changes confirm —
+    // for a draft-style tab the extension is retiring right after its own
+    // save flow already handled the content, since extensions otherwise
+    // have no way to close a tab they opened. No-op if path isn't currently
+    // open under this extension's viewerId.
+    closeViewerTab(viewerId: string, path: string): void;
     // Bumps the FILES tree's refresh key so its git-status badges reflect a
     // change this extension just made (stage/commit/discard/pull) without
     // waiting for the tree's own poll.
@@ -908,6 +915,13 @@ export function setRefreshFilesHandler(handler: () => void): void {
   refreshFilesHandler = handler;
 }
 
+let closeViewerTabHandler: ((namespacedViewerId: string, path: string) => void) | null = null;
+
+// Wired once from App.tsx to closeExtViewerTab — see ExtensionContext.app.closeViewerTab.
+export function setCloseViewerTabHandler(handler: (namespacedViewerId: string, path: string) => void): void {
+  closeViewerTabHandler = handler;
+}
+
 let openSessionWindowHandler:
   | ((sessionName: string, createCwd?: string) => void)
   | null = null;
@@ -1376,6 +1390,9 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       },
       openViewerTab(viewerId, path, opts) {
         openViewerTabHandler?.(`ext.${ext.id}.${viewerId}`, path, opts?.title);
+      },
+      closeViewerTab(viewerId, path) {
+        closeViewerTabHandler?.(`ext.${ext.id}.${viewerId}`, path);
       },
       refreshFiles() {
         refreshFilesHandler?.();
