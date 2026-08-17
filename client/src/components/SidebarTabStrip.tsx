@@ -29,6 +29,24 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const justDraggedRef = useRef(false);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+
+  // Plain (unshifted) mouse wheel scrolls the strip horizontally too, not
+  // just Shift+wheel (the browser's native horizontal-scroll gesture) —
+  // matches TabBar's and BottomPanel's own tab strips. Native (non-passive)
+  // listener: React's onWheel can't preventDefault a scroll that's already
+  // begun.
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.shiftKey || e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Mutable drag session state — kept out of React state since it updates on
   // every pointermove and must be readable synchronously from window
@@ -181,7 +199,7 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
   }, [activeId]);
 
   return (
-    <div className="sidebar-tabs" role="tablist" aria-label="Sidebar views">
+    <div className="sidebar-tabs" role="tablist" aria-label="Sidebar views" ref={stripRef}>
       {tabs.map((tab) => {
         const indicatorClass =
           dropIndicator?.id === tab.id ? ` drop-indicator-${dropIndicator.edge}` : "";

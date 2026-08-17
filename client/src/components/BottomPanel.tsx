@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { TerminalTheme } from "../engines/types";
 import type { Keybinding } from "../keybindings";
 import type { AppSettings } from "../settings";
@@ -82,6 +82,23 @@ export default function BottomPanel({
   onSessionSwitch,
 }: Props) {
   const paneRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const tabStripRef = useRef<HTMLDivElement | null>(null);
+
+  // Plain (unshifted) mouse wheel scrolls the strip horizontally too, not
+  // just Shift+wheel (the browser's native horizontal-scroll gesture) —
+  // matches TabBar's own tab strip. Native (non-passive) listener: React's
+  // onWheel can't preventDefault a scroll that's already begun.
+  useEffect(() => {
+    const el = tabStripRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.shiftKey || e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   const paneLabel = (pane: PanelPane): string => {
     const session = sessions.find((s) => s.name === pane.sessionName);
@@ -167,7 +184,7 @@ export default function BottomPanel({
       <div className="bottom-panel-resize" onPointerDown={handleHeightPointerDown} />
       <div className="bottom-panel-header">
         <span className="bottom-panel-title">TERMINAL</span>
-        <div className="tab-strip">
+        <div className="tab-strip" ref={tabStripRef}>
           {panel.tabs.map((tab) => (
             <div
               key={tab.id}
