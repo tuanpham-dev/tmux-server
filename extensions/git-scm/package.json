@@ -41,6 +41,16 @@
             "Open in Editor"
           ],
           "description": "What clicking a file in the SOURCE CONTROL panel opens. Shift+click always opens the other one."
+        },
+        "gitScm.agentPrograms": {
+          "type": "string",
+          "default": "claude",
+          "description": "Comma-separated foreground commands (tmux's pane_current_command) a diff comment's \"Send to Agent\" button will target, e.g. \"claude,codex\"."
+        },
+        "gitScm.sendAutoSubmit": {
+          "type": "boolean",
+          "default": false,
+          "description": "Submit a diff comment's context block to the agent immediately. Off (default) types it into the pane for you to review before pressing Enter."
         }
       }
     }

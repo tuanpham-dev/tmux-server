@@ -60,6 +60,7 @@ import {
   renameSession,
   renameWindow,
   selectWindow,
+  sendTextToSession,
 } from "./tmux.js";
 
 export const api = Router();
@@ -325,6 +326,30 @@ api.delete("/sessions/:name", async (req, res) => {
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// Types text into a session's active pane, optionally submitting it — the
+// shared primitive every "send this to the agent pane" extension flow (agent
+// launcher, diff comments, element picker, GitHub handoff) drives through a
+// plain fetch (a public core route, per docs/EXTENSION_API.md), so none of
+// them needs its own tmux send-keys.
+api.post("/sessions/:name/send-text", async (req, res) => {
+  const { text, submit } = req.body ?? {};
+  if (typeof text !== "string" || text.length === 0) {
+    res.status(400).json({ error: "text must be a non-empty string" });
+    return;
+  }
+  if (text.length > 64 * 1024) {
+    res.status(400).json({ error: "text exceeds 64KB" });
+    return;
+  }
+  try {
+    await sendTextToSession(req.params.name, text, submit === true);
+    res.status(204).end();
+  } catch (err) {
+    const message = errMessage(err);
+    res.status(/can't find session/i.test(message) ? 404 : 400).json({ error: message });
   }
 });
 

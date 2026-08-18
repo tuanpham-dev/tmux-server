@@ -26,12 +26,113 @@ const SCROLL_SCRIPT = `<script>(function(){
   });
 })();</script>`;
 
-function injectScrollScript(html) {
+// The element picker (Orca-style "Design Mode", scoped to live-preview's own
+// sandboxed HTML files only — see plans/orca-features-implementation.md's
+// Approach on why a proxied dev-server response is a different risk class
+// and out of scope here). Armed/disarmed by a postMessage from the parent
+// tab (client.tsx's inspect toggle); while armed, mousemove outlines the
+// hovered element with one shared overlay box (no per-element style writes,
+// so hovering doesn't fight the page's own styles) and a capture-phase click
+// (preventDefault'd so the page's own click handlers never fire while
+// picking) posts the selector/outerHTML/computed-styles back to the parent.
+const INSPECT_SCRIPT = `<script>(function(){
+  var armed = false;
+  var hovered = null;
+  var overlay = null;
+  var STYLE_PROPS = ["display","position","top","right","bottom","left","width","height",
+    "margin","padding","boxSizing","color","backgroundColor","fontFamily","fontSize",
+    "fontWeight","lineHeight","flexDirection","justifyContent","alignItems"];
+
+  function ensureOverlay() {
+    if (overlay) return overlay;
+    overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;" +
+      "background:rgba(79,168,255,0.25);border:1px solid rgba(79,168,255,0.9);display:none;";
+    document.documentElement.appendChild(overlay);
+    return overlay;
+  }
+
+  // Walks up from el to (not including) <body>, building a short CSS-like
+  // path: tag#id (stops climbing once an id is hit — ids are unique enough
+  // to anchor the whole path), else tag.class1.class2 plus :nth-of-type(n)
+  // when siblings share the same tag. A rough locator for a human or an
+  // agent to find the element again, not a guaranteed-unique selector.
+  function selectorFor(el) {
+    var parts = [];
+    var node = el;
+    while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+      var part = node.tagName.toLowerCase();
+      if (node.id) {
+        parts.unshift(part + "#" + node.id);
+        break;
+      }
+      if (typeof node.className === "string" && node.className.trim()) {
+        var cls = node.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2);
+        if (cls.length) part += "." + cls.join(".");
+      }
+      var parent = node.parentElement;
+      if (parent) {
+        var siblings = Array.prototype.filter.call(parent.children, function (c) {
+          return c.tagName === node.tagName;
+        });
+        if (siblings.length > 1) {
+          part += ":nth-of-type(" + (Array.prototype.indexOf.call(siblings, node) + 1) + ")";
+        }
+      }
+      parts.unshift(part);
+      node = node.parentElement;
+    }
+    return parts.join(" > ");
+  }
+
+  function onMouseMove(e) {
+    if (!armed) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === overlay) return;
+    hovered = el;
+    var r = el.getBoundingClientRect();
+    var o = ensureOverlay();
+    o.style.left = r.left + "px";
+    o.style.top = r.top + "px";
+    o.style.width = r.width + "px";
+    o.style.height = r.height + "px";
+    o.style.display = "block";
+  }
+
+  function onClick(e) {
+    if (!armed) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var el = hovered || document.elementFromPoint(e.clientX, e.clientY);
+    if (!el) return;
+    var cs = window.getComputedStyle(el);
+    var styles = {};
+    STYLE_PROPS.forEach(function (p) { styles[p] = cs[p]; });
+    var html = el.outerHTML;
+    if (html.length > 4000) html = html.slice(0, 4000) + "…";
+    window.parent.postMessage(
+      { __livePreviewPicked: { selector: selectorFor(el), outerHTML: html, styles: styles } },
+      "*",
+    );
+  }
+
+  window.addEventListener("message", function (e) {
+    var val = e && e.data && e.data.__livePreviewInspect;
+    if (typeof val !== "boolean") return;
+    armed = val;
+    if (!armed && overlay) overlay.style.display = "none";
+  });
+  document.addEventListener("mousemove", onMouseMove, true);
+  document.addEventListener("click", onClick, true);
+})();</script>`;
+
+function injectScripts(html) {
+  const combined = SCROLL_SCRIPT + INSPECT_SCRIPT;
   const headClose = html.search(/<\/head\s*>/i);
-  if (headClose !== -1) return html.slice(0, headClose) + SCROLL_SCRIPT + html.slice(headClose);
+  if (headClose !== -1) return html.slice(0, headClose) + combined + html.slice(headClose);
   const bodyClose = html.search(/<\/body\s*>/i);
-  if (bodyClose !== -1) return html.slice(0, bodyClose) + SCROLL_SCRIPT + html.slice(bodyClose);
-  return html + SCROLL_SCRIPT;
+  if (bodyClose !== -1) return html.slice(0, bodyClose) + combined + html.slice(bodyClose);
+  return html + combined;
 }
 
 // Joins root + relPath, rejecting anything that escapes root — same
@@ -114,7 +215,7 @@ export function activate({ router }) {
     if (ext === ".html" || ext === ".htm") {
       try {
         const html = await readFile(target, "utf8");
-        res.type("html").send(injectScrollScript(html));
+        res.type("html").send(injectScripts(html));
       } catch {
         res.status(404).json({ error: "file not found" });
       }

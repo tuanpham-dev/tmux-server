@@ -82,6 +82,18 @@ export function killSession(name: string): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
+// Types text into a session's active pane, optionally submitting it. Core's
+// own callers use this directly; extensions hit the same public route with a
+// plain fetch instead (see docs/EXTENSION_API.md) rather than importing
+// client code across the extension boundary.
+export function sendTextToSession(name: string, text: string, submit?: boolean): Promise<void> {
+  return request(`/api/sessions/${encodeURIComponent(name)}/send-text`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text, submit }),
+  });
+}
+
 // Resolves with the new window's index — the bottom terminal panel attaches
 // the window it just created (see hooks/useBottomPanel.ts); every other
 // caller ignores it and lets the session poll surface the new window.

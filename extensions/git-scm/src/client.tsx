@@ -18,6 +18,7 @@ import type { MenuItem } from "../../_shared/types";
 import { useListNavigation } from "../../_shared/useListNavigation";
 import { useLongPressMenu } from "../../_shared/useLongPressMenu";
 import { useMarqueeSelection } from "../../_shared/useMarqueeSelection";
+import DiffView from "./DiffView";
 import { statusForEntry, type GitFileStatus } from "../statusModel.mjs";
 import {
   parseConflictSegments,
@@ -34,7 +35,7 @@ interface ActiveContext {
   windowIndex: number | null;
   cwd: string | null;
 }
-interface SettingsApi {
+export interface SettingsApi {
   get(key: string): unknown;
   onDidChange(cb: () => void): () => void;
 }
@@ -46,7 +47,7 @@ let openViewerTab: ((viewerId: string, path: string, opts?: { title?: string }) 
 let openFileTab: ((path: string) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
 let setSidebarBadge: ((panelId: string, badge: number | null) => void) | null = null;
-let extSettings: SettingsApi | null = null;
+export let extSettings: SettingsApi | null = null;
 let getFileIcon: ((fileName: string) => IconResult) | null = null;
 let getFolderIcon: ((folderName: string, expanded: boolean) => IconResult) | null = null;
 let onDidChangeIconTheme: ((cb: () => void) => () => void) | null = null;
@@ -338,7 +339,7 @@ function encodeDiffKey(
   return [cwd, path, staged ? "1" : "0", untracked ? "1" : "0", origPath ?? "", commitHash ?? ""].join(KEY_SEP);
 }
 
-function decodeDiffKey(key: string): {
+export function decodeDiffKey(key: string): {
   cwd: string;
   path: string;
   staged: boolean;
@@ -392,7 +393,7 @@ async function apiPost(path: string, body: unknown): Promise<void> {
   }
 }
 
-async function apiGetJson<T>(path: string): Promise<T> {
+export async function apiGetJson<T>(path: string): Promise<T> {
   const res = await serverFetch!(path);
   const data = await res.json().catch(() => ({}) as Record<string, never>);
   if (!res.ok) throw new ApiError((data as { error?: string }).error || `${res.status} ${res.statusText}`);
@@ -612,7 +613,7 @@ function CommitRow({ commit, unpushed, onClick }: { commit: CommitEntry; unpushe
 // least once. Started/stopped from activate()/deactivate(); GitPanel
 // subscribes to the same status stream instead of fetching its own copy.
 let currentStatus: StatusResponse | null = null;
-const statusListeners = new Set<(status: StatusResponse | null) => void>();
+export const statusListeners = new Set<(status: StatusResponse | null) => void>();
 const fetchErrorListeners = new Set<(message: string) => void>();
 let pollCwd: string | null = null;
 let pollTimer: number | null = null;
@@ -2301,179 +2302,6 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-// ---- DiffView (registerFileViewer component, extensions: []) ----
-
-interface DiffProps {
-  filePath: string;
-  active: boolean;
-  toolbarTarget?: HTMLDivElement | null;
-  openInEditor?: (path: string) => void;
-}
-
-function parseHunks(diffText: string): { header: string; lines: { kind: "add" | "del" | "ctx"; text: string }[] }[] {
-  const hunks: { header: string; lines: { kind: "add" | "del" | "ctx"; text: string }[] }[] = [];
-  let current: (typeof hunks)[number] | null = null;
-  for (const line of diffText.split("\n")) {
-    if (line.startsWith("@@")) {
-      current = { header: line, lines: [] };
-      hunks.push(current);
-    } else if (current) {
-      if (line.startsWith("+")) current.lines.push({ kind: "add", text: line.slice(1) });
-      else if (line.startsWith("-")) current.lines.push({ kind: "del", text: line.slice(1) });
-      else if (line.startsWith(" ")) current.lines.push({ kind: "ctx", text: line.slice(1) });
-      // Lines like "\ No newline at end of file" are dropped — nothing
-      // useful to render for a unified-diff viewer.
-    }
-  }
-  return hunks;
-}
-
-function DiffView({ filePath, active, toolbarTarget, openInEditor }: DiffProps) {
-  const parsed = useMemo(() => decodeDiffKey(filePath), [filePath]);
-  const [diffText, setDiffText] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // Guards the status-triggered auto-refresh below from piling up a new
-  // fetch on every poll tick while a previous one is still in flight — a
-  // manual Reload or a filePath change is never skipped this way.
-  const fetchingRef = useRef(false);
-  // Every fetchDiff call gets a fresh id; a response only applies if it's
-  // still the most recent one requested — otherwise a slow response from a
-  // stale filePath (or an overtaken auto-refresh) could land after a newer
-  // request already started, clobbering its result with old data.
-  const requestIdRef = useRef(0);
-
-  const fetchDiff = useCallback(() => {
-    const id = ++requestIdRef.current;
-    fetchingRef.current = true;
-    let url: string;
-    if (parsed.commitHash) {
-      const params = new URLSearchParams({ cwd: parsed.cwd, hash: parsed.commitHash });
-      url = `/commit-diff?${params}`;
-    } else {
-      const params = new URLSearchParams({
-        cwd: parsed.cwd,
-        path: parsed.path,
-        staged: parsed.staged ? "1" : "0",
-        untracked: parsed.untracked ? "1" : "0",
-      });
-      if (parsed.origPath) params.set("origPath", parsed.origPath);
-      url = `/diff?${params}`;
-    }
-    return apiGetJson<{ diff: string }>(url)
-      .then((data) => {
-        if (requestIdRef.current !== id) return;
-        setDiffText(data.diff);
-        setError(null);
-      })
-      .catch((err) => {
-        if (requestIdRef.current !== id) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (requestIdRef.current === id) fetchingRef.current = false;
-      });
-  }, [parsed]);
-
-  // Fresh load whenever the tab's target changes — resets to the loading
-  // state, unlike the background refresh below, which keeps showing the
-  // last-good diff while it refetches.
-  useEffect(() => {
-    setDiffText(null);
-    setError(null);
-    fetchDiff();
-  }, [filePath, fetchDiff]);
-
-  // Refetches whenever the shared status poller reports a change (staged,
-  // committed, or edited elsewhere) while this tab is the active one — a
-  // diff tab left open across a background poll would otherwise show
-  // indefinitely stale content.
-  useEffect(() => {
-    if (!active) return;
-    const onStatus = () => {
-      if (!fetchingRef.current) fetchDiff();
-    };
-    statusListeners.add(onStatus);
-    return () => {
-      statusListeners.delete(onStatus);
-    };
-  }, [active, fetchDiff]);
-
-  // A commit-diff's raw text leads with `git show --format=fuller`'s commit
-  // metadata block (hash/author/dates/message) before the first "@@" hunk —
-  // split it off so it can render as its own header above the hunks, unlike
-  // a plain file diff's pre-hunk lines (diff --git/index/---/+++), which
-  // stay dropped exactly as before (see parseHunks — it already skips
-  // anything before the first "@@").
-  const { commitHeader, diffBody } = useMemo(() => {
-    if (!parsed.commitHash || diffText === null) return { commitHeader: "", diffBody: diffText ?? "" };
-    const lines = diffText.split("\n");
-    const idx = lines.findIndex((l) => l.startsWith("@@"));
-    if (idx === -1) return { commitHeader: diffText, diffBody: "" };
-    return { commitHeader: lines.slice(0, idx).join("\n"), diffBody: lines.slice(idx).join("\n") };
-  }, [parsed.commitHash, diffText]);
-
-  const hunks = useMemo(() => (diffBody ? parseHunks(diffBody) : []), [diffBody]);
-
-  const controls = (
-    <>
-      <button className="icon-button" title="Reload" onClick={() => fetchDiff()}>
-        <Icon name="refresh" />
-      </button>
-      {!parsed.commitHash && (
-        <button
-          className="icon-button"
-          title="Open in Editor"
-          onClick={() => openInEditor?.(`${parsed.cwd}/${parsed.path}`)}
-        >
-          <Icon name="go-to-file" />
-        </button>
-      )}
-    </>
-  );
-
-  return (
-    <div className={`git-diff-host${active ? "" : " hidden"}`}>
-      {error && <div className="git-diff-status git-diff-error">{error}</div>}
-      {!error && diffText === null && <div className="git-diff-status">Loading…</div>}
-      {!error && diffText !== null && diffText === "" && (
-        <div className="git-diff-status">No differences.</div>
-      )}
-      {/* Commit metadata (hash/author/dates/message) from `git show
-          --format=fuller`, split off ahead of the first "@@" hunk — see the
-          commitHeader/diffBody useMemo above. */}
-      {!error && commitHeader && <pre className="git-diff-raw git-diff-commit-header">{commitHeader}</pre>}
-      {/* A pure rename (100% similarity) or a mode-only/binary change
-          produces diff header lines but no "@@" hunks — fall back to the
-          raw diff text rather than rendering a blank pane. Skipped for a
-          commit diff whose body is empty (idx===-1 case above) — its full
-          text is already shown by commitHeader just above. */}
-      {!error &&
-        diffText !== null &&
-        diffText !== "" &&
-        hunks.length === 0 &&
-        !(parsed.commitHash && diffBody === "") && <pre className="git-diff-raw">{diffText}</pre>}
-      {!error && hunks.length > 0 && (
-        <div className="git-diff-body">
-          {hunks.map((hunk, i) => (
-            <div key={i} className="git-diff-hunk">
-              <div className="git-diff-hunk-header">{hunk.header}</div>
-              {hunk.lines.map((line, j) => (
-                <div key={j} className={`git-diff-line git-diff-line-${line.kind}`}>
-                  <span className="git-diff-line-marker">
-                    {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
-                  </span>
-                  <span className="git-diff-line-text">{line.text}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-      {active && toolbarTarget && createPortal(controls, toolbarTarget)}
     </div>
   );
 }

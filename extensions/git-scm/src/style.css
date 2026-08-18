@@ -631,6 +631,63 @@
   color: color-mix(in srgb, var(--error) 75%, var(--fg));
 }
 
+.git-diff-line {
+  cursor: pointer;
+}
+
+.git-diff-line-selected {
+  background: color-mix(in srgb, var(--fg-accent) 22%, transparent);
+}
+
+.git-diff-comment-anchor {
+  padding: 4px 10px;
+}
+
+.git-diff-comment-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--fg-accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.git-diff-comment-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px;
+  background: var(--sidebar-header-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.git-diff-comment-box textarea {
+  resize: vertical;
+  min-height: 48px;
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+}
+
+.git-diff-comment-error {
+  color: var(--error);
+  font-size: 12px;
+}
+
+.git-diff-comment-buttons {
+  display: flex;
+  gap: 6px;
+}
+
 /* --- Merge banner --- */
 
 .git-merge-banner {

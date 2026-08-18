@@ -21,6 +21,16 @@
           "minimum": 250,
           "maximum": 10000,
           "description": "How often (ms) to check the previewed folder for changes when auto-refresh is on."
+        },
+        "livePreview.agentPrograms": {
+          "type": "string",
+          "default": "claude",
+          "description": "Comma-separated foreground commands (tmux's pane_current_command) the element picker's \"send to agent\" targets, e.g. \"claude,codex\"."
+        },
+        "livePreview.sendAutoSubmit": {
+          "type": "boolean",
+          "default": false,
+          "description": "Submit a picked element's context to the agent immediately. Off (default) types it into the pane for you to review before pressing Enter."
         }
       }
     }

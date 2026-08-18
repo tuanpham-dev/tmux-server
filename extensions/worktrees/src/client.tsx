@@ -16,6 +16,7 @@ import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
 import type { MenuItem } from "../../_shared/types";
 import { useLongPressMenu } from "../../_shared/useLongPressMenu";
+import { sendToAgent } from "../../_shared/agentTarget";
 
 // ---- Module-level host bridge ----
 
@@ -26,15 +27,20 @@ let openSessionWindow: ((sessionName: string, opts?: { createCwd?: string }) => 
 let killSessionInHost: ((sessionName: string) => void) | null = null;
 let revealSidebarPanel: ((panelId: string) => void) | null = null;
 let removeStylesheet: (() => void) | null = null;
+let extSettings: SettingsApi | null = null;
 
-// Set by the "New Worktree Session…" command and consumed by the panel on its
-// next render — the command reveals the panel, the panel opens its form. A
-// module-level flag rather than a prop because the command runs outside React.
+// Set by the "New Worktree Session…"/"New Agent Session…" commands and
+// consumed by the panel on its next render — the commands reveal the panel,
+// the panel opens its form. Module-level rather than a prop because the
+// commands run outside React. agentIndex is which preset (see AGENT_PRESETS
+// below) the form preselects; null leaves it at "None".
 let pendingCreate = false;
+let pendingCreateAgentIndex: number | null = null;
 const pendingCreateListeners = new Set<() => void>();
 
-function requestCreateForm() {
+function requestCreateForm(agentIndex: number | null = null) {
   pendingCreate = true;
+  pendingCreateAgentIndex = agentIndex;
   for (const cb of pendingCreateListeners) cb();
 }
 
@@ -44,6 +50,34 @@ interface ActiveContext {
   sessionName: string | null;
   windowIndex: number | null;
   cwd: string | null;
+}
+
+interface SettingsApi {
+  get(key: string): unknown;
+  onDidChange(cb: () => void): () => void;
+}
+
+interface AgentPreset {
+  name: string;
+  command: string;
+}
+
+// worktrees.agents is a JSON-string setting (the documented pattern for
+// richer-than-scalar configuration) — malformed JSON or a non-array/missing
+// setting just means no presets, not an error.
+function parseAgentPresets(raw: unknown): AgentPreset[] {
+  if (typeof raw !== "string") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (p): p is AgentPreset =>
+      typeof p === "object" && p !== null && typeof (p as AgentPreset).name === "string" && typeof (p as AgentPreset).command === "string",
+  );
 }
 
 interface Worktree {
@@ -159,6 +193,18 @@ function WorktreesPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) 
   // the branch field, so the common case needs no second edit.
   const sessionEditedRef = useRef(false);
   const branchInputRef = useRef<HTMLInputElement>(null);
+  const [agentPresets, setAgentPresets] = useState<AgentPreset[]>(() =>
+    parseAgentPresets(extSettings?.get("worktrees.agents")),
+  );
+  // "" = None; otherwise an index into agentPresets. Persists across opens
+  // (module-level would survive unmount too, but per-mount is enough here —
+  // reopening the panel losing the last pick is an acceptable reset).
+  const [agentChoice, setAgentChoice] = useState<string>("");
+
+  useEffect(
+    () => extSettings?.onDidChange(() => setAgentPresets(parseAgentPresets(extSettings?.get("worktrees.agents")))),
+    [],
+  );
 
   useEffect(() => {
     if (!onDidChangeContext) return;
@@ -191,12 +237,13 @@ function WorktreesPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) 
   // default for `worktree add -b` is exactly that, the placeholder says so, and
   // prefilling would depend on the listing having loaded — which it hasn't when
   // the palette command opens this form on a fresh panel.
-  const openForm = useCallback(() => {
+  const openForm = useCallback((presetIndex: number | null = null) => {
     setFormOpen(true);
     sessionEditedRef.current = false;
     setBranch("");
     setSessionName("");
     setBase("");
+    setAgentChoice(presetIndex === null ? "" : String(presetIndex));
     // The input mounts with the form; focus after paint.
     window.setTimeout(() => branchInputRef.current?.focus(), 0);
   }, []);
@@ -207,7 +254,8 @@ function WorktreesPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) 
     const consume = () => {
       if (!pendingCreate) return;
       pendingCreate = false;
-      openForm();
+      openForm(pendingCreateAgentIndex);
+      pendingCreateAgentIndex = null;
     };
     pendingCreateListeners.add(consume);
     consume();
@@ -233,13 +281,24 @@ function WorktreesPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) 
       // Host-owned: creates the session rooted in the new worktree (it isn't
       // running yet, so createCwd is what makes this work) and opens it.
       openSessionWindow?.(name, { createCwd: created.path });
+      const preset = agentChoice !== "" ? agentPresets[Number(agentChoice)] : undefined;
+      if (preset) {
+        // Not awaited — the session UI shouldn't stay busy for the retry
+        // window; a still-failing send surfaces via the panel's own error
+        // banner instead of blocking the create flow. Retries on 404 since
+        // the session doesn't exist yet the instant openSessionWindow
+        // returns — it's fire-and-forget on the host side.
+        sendToAgent(name, preset.command, true, { retries: 12, retryDelayMs: 400 }).catch((err: Error) => {
+          setError(`Worktree created, but couldn't start "${preset.name}": ${err.message}`);
+        });
+      }
       refresh();
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [branch, base, mode, sessionName, cwd, busy, refresh]);
+  }, [branch, base, mode, sessionName, cwd, busy, refresh, agentChoice, agentPresets]);
 
   const openWorktree = useCallback((wt: Worktree) => {
     if (wt.session) {
@@ -421,6 +480,21 @@ function WorktreesPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) 
               setSessionName(e.target.value);
             }}
           />
+          {agentPresets.length > 0 && (
+            <select
+              className="worktrees-input"
+              aria-label="Start agent"
+              value={agentChoice}
+              onChange={(e) => setAgentChoice(e.target.value)}
+            >
+              <option value="">Start agent: None</option>
+              {agentPresets.map((preset, i) => (
+                <option key={preset.name + i} value={i}>
+                  Start agent: {preset.name}
+                </option>
+              ))}
+            </select>
+          )}
           <div className="worktrees-form-buttons">
             <button type="submit" disabled={!branch.trim() || busy}>
               Create
@@ -489,6 +563,7 @@ interface ExtensionContext {
   registerCommand(command: { id: string; label: string; defaultBinding?: string; run: () => void }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
+  settings: SettingsApi;
   app: {
     getActiveContext(): ActiveContext;
     onDidChangeContext(cb: (ctx: ActiveContext) => void): () => void;
@@ -507,6 +582,7 @@ export function activate(ctx: ExtensionContext): void {
   openSessionWindow = ctx.app.openSessionWindow;
   killSessionInHost = ctx.app.killSession;
   revealSidebarPanel = ctx.app.revealSidebarPanel;
+  extSettings = ctx.settings;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
 
   ctx.registerSidebarPanel({
@@ -529,6 +605,18 @@ export function activate(ctx: ExtensionContext): void {
     run: () => {
       revealSidebarPanel?.(PANEL_ID);
       requestCreateForm();
+    },
+  });
+
+  // Same handoff, but preselects the first configured agent preset — for
+  // when starting an agent is the point, not an afterthought.
+  ctx.registerCommand({
+    id: "newAgentSession",
+    label: "Worktrees: New Agent Session…",
+    run: () => {
+      revealSidebarPanel?.(PANEL_ID);
+      const presets = parseAgentPresets(ctx.settings.get("worktrees.agents"));
+      requestCreateForm(presets.length > 0 ? 0 : null);
     },
   });
 }

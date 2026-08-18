@@ -1042,6 +1042,27 @@ export interface OpenFileResult {
   deferredPane?: string;
 }
 
+// Types `text` into `session`'s active pane, optionally submitting it —
+// the shared primitive behind every "send this to the agent pane" flow
+// (worktrees' agent launcher, git-scm's diff comments, live-preview's
+// element picker, github's issue handoff). `-l --` sends the text literally
+// (the `--` terminator keeps a leading "-" in `text` from parsing as a
+// send-keys flag); submit is a separate send-keys call after a short settle
+// delay, not a trailing "\n" in the same call — verified in production by
+// tmux-server-extensions' claude-auto-retry (an immediate Enter is dropped
+// by Ink-based TUIs like Claude Code).
+const SEND_TEXT_SETTLE_MS = 150;
+
+export async function sendTextToSession(session: string, text: string, submit: boolean): Promise<void> {
+  if (!session) throw new Error("session is required");
+  const target = `=${session}:`;
+  await tmux(["send-keys", "-t", target, "-l", "--", text]);
+  if (submit) {
+    await new Promise((resolve) => setTimeout(resolve, SEND_TEXT_SETTLE_MS));
+    await tmux(["send-keys", "-t", target, "Enter"]);
+  }
+}
+
 // Opens filePath, preferring (in order): the current window's active pane if
 // it's already running nvim/vim; any nvim found in another window of the
 // session; an idle shell in the current window; or, failing all of that, a

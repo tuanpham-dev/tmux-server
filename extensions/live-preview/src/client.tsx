@@ -3,13 +3,21 @@ import { createPortal } from "react-dom";
 import "./style.css";
 import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
+import { agentWindows, fetchSessions, sendToAgent } from "../../_shared/agentTarget";
 
 interface SettingsApi {
   get(key: string): unknown;
   onDidChange(cb: () => void): () => void;
 }
 
+interface ActiveContext {
+  sessionName: string | null;
+  windowIndex: number | null;
+  cwd: string | null;
+}
+
 let extSettings: SettingsApi | null = null;
+let getActiveContext: (() => ActiveContext) | null = null;
 
 // Parsed from ctx.assetUrl() at activate() time rather than hardcoded —
 // ctx exposes no direct "this extension's server-hook base" accessor, but
@@ -27,6 +35,28 @@ function readPollInterval(): number {
   const value = Number(extSettings?.get("livePreview.pollInterval"));
   if (!Number.isFinite(value)) return 1000;
   return Math.min(10000, Math.max(250, value));
+}
+
+function readAgentPrograms(): string {
+  const raw = extSettings?.get("livePreview.agentPrograms");
+  return typeof raw === "string" && raw.trim() ? raw : "claude";
+}
+
+function readSendAutoSubmit(): boolean {
+  return extSettings?.get("livePreview.sendAutoSubmit") === true;
+}
+
+interface PickedElement {
+  selector: string;
+  outerHTML: string;
+  styles: Record<string, string>;
+}
+
+function buildElementContextBlock(basename: string, picked: PickedElement): string {
+  const styleLines = Object.entries(picked.styles)
+    .map(([k, v]) => `  ${k}: ${v};`)
+    .join("\n");
+  return `Element ${picked.selector} in ${basename}:\n\`\`\`html\n${picked.outerHTML}\n\`\`\`\nComputed styles:\n${styleLines}`;
 }
 
 interface Props {
@@ -49,6 +79,9 @@ function HtmlPreview({ filePath, active, toolbarTarget, openInEditor }: Props) {
   const lastMtime = useRef<number | null>(null);
   const scrollRef = useRef<[number, number] | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [inspecting, setInspecting] = useState(false);
+  const [sendState, setSendState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [sendError, setSendError] = useState<string | null>(null);
 
   useEffect(
     () =>
@@ -128,7 +161,63 @@ function HtmlPreview({ filePath, active, toolbarTarget, openInEditor }: Props) {
     if (scrollRef.current) {
       iframeRef.current?.contentWindow?.postMessage({ __livePreviewRestore: scrollRef.current }, "*");
     }
+    // A reload (auto-refresh, manual Reload, or navigating within the
+    // iframe) drops the previewed page's own armed state along with its
+    // whole document — re-arm here if the toggle is still on.
+    if (inspecting) {
+      iframeRef.current?.contentWindow?.postMessage({ __livePreviewInspect: true }, "*");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const toggleInspect = useCallback(() => {
+    setInspecting((prev) => {
+      const next = !prev;
+      iframeRef.current?.contentWindow?.postMessage({ __livePreviewInspect: next }, "*");
+      return next;
+    });
+  }, []);
+
+  // Element picker (T12/T13): server.js's INSPECT_SCRIPT posts back the
+  // clicked element once armed; resolve an agent pane in the active
+  // project (server.js's SCROLL_SCRIPT handshake is the pattern this
+  // mirrors — source-checked against this tab's own iframe).
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      const picked = (e.data as { __livePreviewPicked?: PickedElement })?.__livePreviewPicked;
+      if (!picked) return;
+      setInspecting(false);
+      setSendState("sending");
+      setSendError(null);
+      const text = buildElementContextBlock(basename, picked);
+      const activeCwd = getActiveContext?.()?.cwd ?? dir;
+      fetchSessions()
+        .then((sessions) => {
+          const targets = agentWindows(sessions, activeCwd, readAgentPrograms());
+          if (targets.length === 0) {
+            throw new Error("No agent is running in this project — start one first.");
+          }
+          // Live Preview has no context-menu picker surface like DiffView's
+          // showMenu — several candidates just target the first, consistent
+          // with "pick one and go" for a lightweight inline toggle.
+          return sendToAgent(targets[0].sessionName, text, readSendAutoSubmit());
+        })
+        .then(() => setSendState("sent"))
+        .catch((err: Error) => {
+          setSendState("error");
+          setSendError(err.message);
+        });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [basename, dir]);
+
+  useEffect(() => {
+    if (sendState !== "sent") return;
+    const id = window.setTimeout(() => setSendState("idle"), 1500);
+    return () => window.clearTimeout(id);
+  }, [sendState]);
 
   const controls = (
     <>
@@ -137,6 +226,21 @@ function HtmlPreview({ filePath, active, toolbarTarget, openInEditor }: Props) {
       </button>
       <button className="icon-button" title="Open in Editor" onClick={() => openInEditor?.(filePath)}>
         <Icon name="file-code" />
+      </button>
+      <button
+        className={`icon-button${inspecting ? " active" : ""}`}
+        title={
+          sendState === "error"
+            ? `Couldn't send: ${sendError}`
+            : sendState === "sent"
+              ? "Sent to agent"
+              : inspecting
+                ? "Click an element to send it to the agent (Esc-free: click the button again to cancel)"
+                : "Inspect element → send to agent"
+        }
+        onClick={toggleInspect}
+      >
+        <Icon name={sendState === "sent" ? "check" : "inspect"} />
       </button>
     </>
   );
@@ -177,8 +281,10 @@ export function activate(ctx: {
   }) => void;
   assetUrl: (relPath: string) => string;
   settings: SettingsApi;
+  app: { getActiveContext: () => ActiveContext };
 }) {
   extSettings = ctx.settings;
+  getActiveContext = ctx.app.getActiveContext;
   const match = ctx.assetUrl("x").match(/^(\/api\/extensions\/[^/]+)\/file\//);
   hookBase = match ? match[1].replace("/extensions/", "/ext/") : "";
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
