@@ -16,6 +16,8 @@ import type { ExtensionInfo, MenuItem } from "./types";
 import { getFileExtension } from "./utils/fileExtension";
 import { getFileIconResult, getFolderIconResult, subscribeIconTheme } from "./utils/iconThemes";
 import type { IconResult } from "./utils/iconThemes";
+import { getActiveThemeColors, getActiveTokenColors, subscribeColorTheme } from "./theme";
+import type { TokenColorRule } from "./theme";
 
 export interface ActiveContext {
   sessionName: string | null;
@@ -426,6 +428,17 @@ export interface ExtensionContext {
     // loading or changes in Settings — call getFileIcon/getFolderIcon again
     // to get the fresh result, same shape as settings.onDidChange below.
     onDidChangeIconTheme(cb: () => void): () => void;
+    // The active color theme's raw workbench `colors` and TextMate
+    // `tokenColors` rules — for an extension that runs its own real
+    // scope-resolving tokenizer (e.g. text-editor's Shiki-based syntax
+    // highlighting) rather than the app's own approximate CSS-var chains.
+    // Empty ({}/[]) when no theme is active or it defines neither.
+    getThemeColors(): Record<string, string>;
+    getTokenColors(): TokenColorRule[];
+    // Fires with no arguments whenever the active color theme finishes
+    // loading or changes in Settings — call getThemeColors/getTokenColors
+    // again for the fresh values, same shape as onDidChangeIconTheme above.
+    onDidChangeColorTheme(cb: () => void): () => void;
     // Runs a command by id — a built-in command (e.g. "tab.next",
     // "quickSwitcher.toggle") or an extension command by its namespaced id
     // (ext.<extensionId>.<id>). No-ops on an unknown id, or one whose scope
@@ -1445,6 +1458,16 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
           unsubscribe();
         };
       },
+      getThemeColors: () => getActiveThemeColors(),
+      getTokenColors: () => getActiveTokenColors(),
+      onDidChangeColorTheme(cb) {
+        const unsubscribe = subscribeColorTheme(cb);
+        runtime.colorThemeListeners.add(unsubscribe);
+        return () => {
+          runtime.colorThemeListeners.delete(unsubscribe);
+          unsubscribe();
+        };
+      },
       executeCommand: (commandId) => executeCommandHandler?.(commandId),
       getCommands: () => getCommandsHandler?.() ?? [],
       focusActiveTerminal: () => focusActiveTerminalHandler?.(),
@@ -1486,6 +1509,9 @@ interface ExtensionRuntime {
   // Unsubscribe closures returned by subscribeIconTheme for this extension's
   // onDidChangeIconTheme callbacks — see makeContext's app.onDidChangeIconTheme.
   iconThemeListeners: Set<() => void>;
+  // Same as iconThemeListeners, for subscribeColorTheme — see makeContext's
+  // app.onDidChangeColorTheme.
+  colorThemeListeners: Set<() => void>;
 }
 
 const activatedIds = new Set<string>();
@@ -1521,7 +1547,12 @@ async function activateClientExtension(ext: ExtensionInfo): Promise<void> {
     // failures are deterministic (bad export, activate() bug), so a retry
     // could only duplicate registrations.
     activatedIds.add(ext.id);
-    const runtime: ExtensionRuntime = { module: mod, contextListeners: new Set(), iconThemeListeners: new Set() };
+    const runtime: ExtensionRuntime = {
+      module: mod,
+      contextListeners: new Set(),
+      iconThemeListeners: new Set(),
+      colorThemeListeners: new Set(),
+    };
     extensionRuntimes.set(ext.id, runtime);
     const activate = (mod as { activate?: unknown }).activate;
     if (typeof activate !== "function") {
@@ -1600,6 +1631,7 @@ function deactivateClientExtension(extId: string): void {
   }
   if (runtime) for (const cb of runtime.contextListeners) contextListeners.delete(cb);
   if (runtime) for (const unsubscribe of runtime.iconThemeListeners) unsubscribe();
+  if (runtime) for (const unsubscribe of runtime.colorThemeListeners) unsubscribe();
   extensionSettingsListeners.delete(extId);
   extensionRuntimes.delete(extId);
   activatedIds.delete(extId);

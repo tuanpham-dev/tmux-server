@@ -4,11 +4,11 @@ tmux-server's default dark color theme — extracted from the app's own original
 
 ## Contributes
 
-- **Color theme:** Plastic Legacy — a dark theme covering the editor, terminal ANSI palette, sidebar, tabs, and git-status colors.
+- **Color theme:** Plastic Legacy — a dark theme covering the editor, terminal ANSI palette, sidebar, tabs, git-status colors, and syntax highlighting (`tokenColors`) for any extension that tokenizes code against the active theme (e.g. `text-editor`).
 
 ## Source
 
-Based on [hadialqattan/plastic-legacy](https://github.com/hadialqattan/plastic-legacy), MIT-licensed — see `LICENSE.txt`.
+Based on [hadialqattan/plastic-legacy](https://github.com/hadialqattan/plastic-legacy), MIT-licensed — see `LICENSE.txt`. Both `colors` and `tokenColors` are carried over from the upstream `themes/main.json`; earlier versions of this extension only ported `colors`, which made syntax highlighting flat for any consumer that reads the theme's `tokenColors` (there was none, until `text-editor` added real TextMate tokenization).
 
 ## Notes
 

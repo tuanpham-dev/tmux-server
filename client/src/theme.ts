@@ -148,6 +148,56 @@ const CSS_VAR_KEY_CHAINS: Record<string, string[]> = {
   "--warning": ["editorWarning.foreground"],
 };
 
+// ---- tokenColors (syntax highlighting) ----
+//
+// VS Code's tokenColors are TextMate scope rules, resolved via full
+// scope-stack matching against a real grammar — this app doesn't attempt
+// that resolution itself. It just parses and exposes the raw rules (below)
+// so a consumer that DOES run a real TextMate tokenizer (extensions/
+// text-editor, via Shiki) can resolve them properly. See
+// getActiveTokenColors/subscribeColorTheme.
+
+export interface TokenColorRule {
+  scope?: string | string[];
+  settings?: { foreground?: string; fontStyle?: string };
+}
+
+function scopesOf(rule: TokenColorRule): string[] {
+  const s = rule.scope;
+  if (!s) return [];
+  return Array.isArray(s) ? s : s.split(",").map((x) => x.trim());
+}
+
+// ---- active-theme module state ----
+//
+// Same subscribe-from-a-module-var shape as utils/iconThemes.ts's
+// active/listeners/notify — extensions (text-editor's Shiki tokenizer) read
+// the active theme's raw colors/tokenColors through this rather than
+// re-fetching the theme file themselves (they can't: ctx.assetUrl only
+// resolves paths within their OWN extension, not the active theme
+// extension's).
+let activeColors: Record<string, string> = {};
+let activeTokenColors: TokenColorRule[] = [];
+const themeListeners = new Set<() => void>();
+function notifyThemeListeners(): void {
+  for (const l of themeListeners) l();
+}
+export function subscribeColorTheme(cb: () => void): () => void {
+  themeListeners.add(cb);
+  return () => themeListeners.delete(cb);
+}
+export function setActiveTokenTheme(colors: Record<string, string>, tokenColors: TokenColorRule[]): void {
+  activeColors = colors;
+  activeTokenColors = tokenColors;
+  notifyThemeListeners();
+}
+export function getActiveThemeColors(): Record<string, string> {
+  return activeColors;
+}
+export function getActiveTokenColors(): TokenColorRule[] {
+  return activeTokenColors;
+}
+
 const ALL_THEME_VAR_NAMES = Object.keys(CSS_VAR_KEY_CHAINS);
 
 function buildCssVars(colors: Record<string, string>): Record<string, string> {
@@ -218,8 +268,14 @@ export function parseJsonc(text: string): unknown {
   return JSON.parse(stripped);
 }
 
-function parseThemeJson(text: string): { colors?: Record<string, string>; include?: string } {
-  return parseJsonc(text) as { colors?: Record<string, string>; include?: string };
+interface ThemeJson {
+  colors?: Record<string, string>;
+  include?: string;
+  tokenColors?: TokenColorRule[];
+}
+
+function parseThemeJson(text: string): ThemeJson {
+  return parseJsonc(text) as ThemeJson;
 }
 
 // Resolves `include` (and any other extension-relative path found inside a
@@ -238,7 +294,7 @@ export function joinRelPath(fromRelPath: string, relOrDotPath: string): string {
   return resolved.join("/");
 }
 
-async function fetchThemeFile(extensionId: string, relPath: string): Promise<{ colors?: Record<string, string>; include?: string }> {
+async function fetchThemeFile(extensionId: string, relPath: string): Promise<ThemeJson> {
   const res = await fetch(extensionFileUrl(extensionId, relPath));
   if (!res.ok) throw new Error(`failed to load theme file: ${res.status}`);
   return parseThemeJson(await res.text());
@@ -247,30 +303,46 @@ async function fetchThemeFile(extensionId: string, relPath: string): Promise<{ c
 export interface ResolvedColorTheme {
   terminalTheme: TerminalTheme;
   cssVars: Record<string, string>;
+  colors: Record<string, string>;
+  tokenColors: TokenColorRule[];
 }
 
 const themeCache = new Map<string, Promise<ResolvedColorTheme>>();
 
 export function loadColorTheme(extensionId: string, themeRelPath: string): Promise<ResolvedColorTheme> {
-  const cacheKey = `${extensionId} ${themeRelPath}`;
+  const cacheKey = `${extensionId} ${themeRelPath}`;
   const cached = themeCache.get(cacheKey);
   if (cached) return cached;
 
   const promise = (async () => {
     const doc = await fetchThemeFile(extensionId, themeRelPath);
     let colors: Record<string, string> = {};
+    let tokenColors: TokenColorRule[] = [];
     if (typeof doc.include === "string") {
       try {
         const includeRelPath = joinRelPath(themeRelPath, doc.include);
         const includeDoc = await fetchThemeFile(extensionId, includeRelPath);
         colors = { ...includeDoc.colors };
+        tokenColors = [...(includeDoc.tokenColors ?? [])];
       } catch {
         // Missing/unreadable include — fall through with just this theme's
         // own colors rather than failing the whole theme.
       }
     }
     colors = { ...colors, ...doc.colors };
-    return { terminalTheme: buildTerminalTheme(colors), cssVars: buildCssVars(colors) };
+    // Concatenated, not merged-by-key like colors: an includer's own rules
+    // are appended after the base file's, matching real VS Code's own
+    // "include's rules first, this file's own after" order (colorThemeData.ts's
+    // tokenColors getter processes an include before the includer for the
+    // same reason) — a real TextMate resolver's specificity-then-last-wins
+    // rule picks the includer's override for any scope both define.
+    tokenColors = [...tokenColors, ...(doc.tokenColors ?? [])];
+    return {
+      terminalTheme: buildTerminalTheme(colors),
+      cssVars: buildCssVars(colors),
+      colors,
+      tokenColors,
+    };
   })();
   themeCache.set(cacheKey, promise);
   return promise;

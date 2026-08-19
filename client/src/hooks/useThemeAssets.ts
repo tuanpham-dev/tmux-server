@@ -8,6 +8,7 @@ import {
   applyColorThemeCssVars,
   loadColorTheme,
   resolveColorThemeValue,
+  setActiveTokenTheme,
   terminalTheme as builtInTerminalTheme,
   type ResolvedColorTheme,
 } from "../theme";
@@ -80,6 +81,7 @@ export function useThemeAssets(
     if (!target) {
       setColorTheme(null);
       applyColorThemeCssVars(null);
+      setActiveTokenTheme({}, []);
       setThemeSettled(true);
       return;
     }
@@ -89,6 +91,7 @@ export function useThemeAssets(
         if (cancelled) return;
         setColorTheme(resolved);
         applyColorThemeCssVars(resolved.cssVars);
+        setActiveTokenTheme(resolved.colors, resolved.tokenColors);
         setThemeSettled(true);
       })
       .catch((err) => {
@@ -96,6 +99,7 @@ export function useThemeAssets(
         if (!cancelled) {
           setColorTheme(null);
           applyColorThemeCssVars(null);
+          setActiveTokenTheme({}, []);
           setThemeSettled(true);
         }
       });
