@@ -639,6 +639,13 @@
   background: color-mix(in srgb, var(--fg-accent) 22%, transparent);
 }
 
+/* A line covered by an already-queued (not-yet-sent) comment — a left-edge
+   stripe rather than a full-row tint so it stays visible together with
+   .git-diff-line-selected on a line the user reselects to add another. */
+.git-diff-line-commented {
+  box-shadow: inset 3px 0 0 var(--fg-accent);
+}
+
 .git-diff-comment-anchor {
   padding: 4px 10px;
 }
@@ -664,6 +671,7 @@
   padding: 8px;
   background: var(--sidebar-header-bg);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-accent);
   border-radius: 4px;
 }
 
@@ -686,6 +694,103 @@
 .git-diff-comment-buttons {
   display: flex;
   gap: 6px;
+}
+
+/* Shared primary/ghost buttons for diff-comment actions (Add Comment, Send
+   to Agent vs. Cancel, Clear) — gives the panel a clear default action
+   instead of every button reading with the same plain weight. */
+.git-diff-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--fg-accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.git-diff-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.git-diff-btn-ghost {
+  background: none;
+  border: none;
+  color: var(--fg-inactive);
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.git-diff-btn-ghost:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.git-diff-btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- Pending comments (queued via "Add Comment", delivered together) --- */
+
+.git-diff-pending-panel {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar-header-bg);
+  font-size: 12px;
+}
+
+.git-diff-pending-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.git-diff-pending-count {
+  flex: 1;
+  color: var(--fg);
+}
+
+.git-diff-pending-panel .git-diff-comment-error {
+  padding: 0 10px 6px;
+}
+
+/* --- Inline comment cards (GitHub-review style) — anchored to the diff line
+   where their range ends, instead of listed separately, so it's obvious at a
+   glance which lines a comment is about. */
+
+.git-diff-inline-comment {
+  margin: 4px 10px;
+  padding: 6px 8px;
+  background: var(--sidebar-header-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-accent);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.git-diff-inline-comment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.git-diff-inline-comment-range {
+  color: var(--fg-accent);
+  font-family: var(--terminal-font, monospace);
+}
+
+.git-diff-inline-comment-text {
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* --- Merge banner --- */

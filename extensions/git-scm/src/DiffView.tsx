@@ -3,7 +3,7 @@
 // doesn't grow client.tsx's already-large file further. Reached the same way
 // it always was: only via ctx.app.openViewerTab, from GitPanel/ConflictView's
 // diff-key composite paths (see client.tsx's encodeDiffKey/decodeDiffKey).
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "../../_shared/Icon";
 import type { MenuItem } from "../../_shared/types";
@@ -84,6 +84,24 @@ function lineNumberOf(line: DiffLine): number | null {
   return line.kind === "del" ? line.oldLine : line.newLine;
 }
 
+// A drafted-but-not-yet-sent comment — the selection it was written against,
+// captured by value (not a live Selection reference) so it survives after
+// the user moves on to select and comment on a different range.
+interface PendingComment extends Selection {
+  id: number;
+  text: string;
+}
+
+// "L2-2" / "L7-9" line-range label shown on an inline pending-comment card —
+// same axis-picking as buildContextBlock's range, just terser. Falls back to
+// a plain word when a stale hunkIndex/hunk mismatch leaves no lines to read.
+function rangeLabel(hunk: Hunk | undefined, selection: Selection): string {
+  const numbers = (hunk?.lines.slice(selection.start, selection.end + 1) ?? [])
+    .map(lineNumberOf)
+    .filter((n): n is number => n !== null);
+  return numbers.length > 0 ? `L${Math.min(...numbers)}-${Math.max(...numbers)}` : "selected lines";
+}
+
 // The comment box's context block: repo-relative path, the line range the
 // selection covers (whichever axis — old for pure deletions, new otherwise
 // — each selected line actually advances), the selected lines verbatim with
@@ -98,6 +116,12 @@ function buildContextBlock(path: string, hunk: Hunk, selection: Selection, comme
     .join("\n");
   const location = path ? `In ${path} around ${range} of this diff hunk:` : `Around ${range} of this diff hunk:`;
   return `${location}\n${body}\n\n${comment}`;
+}
+
+// Joins every pending comment's own context block into one message — sent
+// as a single review, not one send-keys call per comment.
+function buildCombinedText(path: string, hunks: Hunk[], pending: PendingComment[]): string {
+  return pending.map((pc) => buildContextBlock(path, hunks[pc.hunkIndex], pc, pc.text)).join("\n\n---\n\n");
 }
 
 function readAgentPrograms(): string {
@@ -128,6 +152,10 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
   const [comment, setComment] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendBusy, setSendBusy] = useState(false);
+  // Comments drafted via "Add Comment" but not yet sent — Send to Agent
+  // (in the toolbar) delivers all of them together in one message.
+  const [pendingComments, setPendingComments] = useState<PendingComment[]>([]);
+  const nextPendingId = useRef(0);
 
   const closeComment = useCallback(() => {
     setCommentOpen(false);
@@ -175,6 +203,7 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
     setError(null);
     setSelection(null);
     closeComment();
+    setPendingComments([]);
     fetchDiff();
   }, [filePath, fetchDiff, closeComment]);
 
@@ -222,11 +251,35 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
     [closeComment],
   );
 
-  const sendComment = useCallback(async () => {
+  // Queues the drafted comment rather than sending it — lets the user select
+  // and comment on more ranges (elsewhere in this hunk or another one)
+  // before delivering everything as one message via sendAllComments.
+  const addComment = useCallback(() => {
     if (!selection || !comment.trim()) return;
-    const hunk = hunks[selection.hunkIndex];
-    if (!hunk) return;
-    const text = buildContextBlock(parsed.path, hunk, selection, comment.trim());
+    const id = nextPendingId.current++;
+    setPendingComments((prev) => [...prev, { ...selection, id, text: comment.trim() }]);
+    closeComment();
+    setSelection(null);
+  }, [selection, comment, closeComment]);
+
+  const removePendingComment = useCallback((id: number) => {
+    setPendingComments((prev) => prev.filter((pc) => pc.id !== id));
+  }, []);
+
+  const sendAllComments = useCallback(async () => {
+    if (pendingComments.length === 0) return;
+    // The diff may have refreshed (background status poll, or a manual
+    // Reload) since a comment was queued — hunks[] can have shifted or
+    // shrunk underneath a stale hunkIndex. Drop anything that no longer
+    // resolves rather than sending a comment against the wrong lines.
+    const valid = pendingComments.filter((pc) => hunks[pc.hunkIndex]);
+    const dropped = pendingComments.length - valid.length;
+    if (valid.length === 0) {
+      setSendError("The diff changed since these comments were added — please re-add them.");
+      setPendingComments([]);
+      return;
+    }
+    const text = buildCombinedText(parsed.path, hunks, valid);
     setSendBusy(true);
     setSendError(null);
     try {
@@ -237,27 +290,27 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
         setSendError("No agent is running in this repo — start one first.");
         return;
       }
+      const finish = () => {
+        setPendingComments([]);
+        if (dropped > 0) {
+          setSendError(`${dropped} comment${dropped === 1 ? "" : "s"} dropped — the diff had changed since they were added.`);
+        }
+      };
       if (targets.length === 1) {
-        await sendToAgent(targets[0].sessionName, text, submit);
-        closeComment();
-        setSelection(null);
+        await sendToAgent(targets[0].sessionName, text, submit, { windowIndex: targets[0].windowIndex });
+        finish();
         return;
       }
       // Several candidate agent panes — let the user pick which one gets it.
-      const rect = document
-        .querySelector(`.git-diff-comment-box`)
-        ?.getBoundingClientRect();
+      const rect = document.querySelector(".git-diff-pending-panel")?.getBoundingClientRect();
       const x = rect ? rect.left : 0;
       const y = rect ? rect.bottom : 0;
       showMenu?.(x, y, [
         ...targets.map((t) => ({
           label: `${t.sessionName} · ${t.windowName || `#${t.windowIndex}`}`,
           onClick: () => {
-            void sendToAgent(t.sessionName, text, submit)
-              .then(() => {
-                closeComment();
-                setSelection(null);
-              })
+            void sendToAgent(t.sessionName, text, submit, { windowIndex: t.windowIndex })
+              .then(finish)
               .catch((err: Error) => setSendError(err.message));
           },
         })),
@@ -267,7 +320,7 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
     } finally {
       setSendBusy(false);
     }
-  }, [selection, comment, hunks, parsed.path, parsed.cwd, showMenu, closeComment]);
+  }, [pendingComments, hunks, parsed.path, parsed.cwd, showMenu]);
 
   const controls = (
     <>
@@ -317,66 +370,122 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
                   selection?.hunkIndex === hunkIndex &&
                   lineIndex >= selection.start &&
                   lineIndex <= selection.end;
+                const commented = pendingComments.some(
+                  (pc) => pc.hunkIndex === hunkIndex && lineIndex >= pc.start && lineIndex <= pc.end,
+                );
+                // Cards render right after the last line of their range (GitHub
+                // review style) — a comment covering several lines shows once,
+                // anchored to where its range ends, not once per covered line.
+                const commentsHere = pendingComments.filter(
+                  (pc) => pc.hunkIndex === hunkIndex && pc.end === lineIndex,
+                );
+                // The "Comment" trigger / compose box for the LIVE selection
+                // anchors the same way — right after its last line — so what
+                // you're about to add lands exactly where it'll render once saved.
+                const showComposer = selection?.hunkIndex === hunkIndex && selection.end === lineIndex;
                 return (
-                  <div
-                    key={lineIndex}
-                    className={`git-diff-line git-diff-line-${line.kind}${selected ? " git-diff-line-selected" : ""}`}
-                    onClick={(e) => onLineClick(hunkIndex, lineIndex, e.shiftKey)}
-                  >
-                    <span className="git-diff-line-marker">
-                      {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
-                    </span>
-                    <span className="git-diff-line-text">{line.text}</span>
-                  </div>
+                  <Fragment key={lineIndex}>
+                    <div
+                      className={`git-diff-line git-diff-line-${line.kind}${selected ? " git-diff-line-selected" : ""}${commented ? " git-diff-line-commented" : ""}`}
+                      onClick={(e) => onLineClick(hunkIndex, lineIndex, e.shiftKey)}
+                    >
+                      <span className="git-diff-line-marker">
+                        {line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}
+                      </span>
+                      <span className="git-diff-line-text">{line.text}</span>
+                    </div>
+                    {commentsHere.map((pc) => (
+                      <div key={pc.id} className="git-diff-inline-comment">
+                        <div className="git-diff-inline-comment-header">
+                          <span className="git-diff-inline-comment-range">{rangeLabel(hunk, pc)}</span>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            title="Remove this comment"
+                            onClick={() => removePendingComment(pc.id)}
+                          >
+                            <Icon name="close" />
+                          </button>
+                        </div>
+                        <div className="git-diff-inline-comment-text">{pc.text}</div>
+                      </div>
+                    ))}
+                    {showComposer && (
+                      <div className="git-diff-comment-anchor">
+                        {!commentOpen && (
+                          <button
+                            type="button"
+                            className="git-diff-comment-trigger"
+                            onClick={() => setCommentOpen(true)}
+                          >
+                            <Icon name="comment" /> Comment
+                          </button>
+                        )}
+                        {commentOpen && (
+                          <div className="git-diff-comment-box">
+                            <textarea
+                              autoFocus
+                              placeholder="What should the agent do with these lines?"
+                              value={comment}
+                              onChange={(e) => setComment(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  closeComment();
+                                } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                  e.preventDefault();
+                                  addComment();
+                                }
+                              }}
+                            />
+                            <div className="git-diff-comment-buttons">
+                              <button
+                                type="button"
+                                className="git-diff-btn-primary"
+                                disabled={!comment.trim()}
+                                onClick={addComment}
+                              >
+                                Add Comment
+                              </button>
+                              <button type="button" className="git-diff-btn-ghost" onClick={closeComment}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </Fragment>
                 );
               })}
-              {selection?.hunkIndex === hunkIndex && (
-                <div className="git-diff-comment-anchor">
-                  {!commentOpen && (
-                    <button
-                      type="button"
-                      className="git-diff-comment-trigger"
-                      onClick={() => setCommentOpen(true)}
-                    >
-                      <Icon name="comment" /> Comment
-                    </button>
-                  )}
-                  {commentOpen && (
-                    <div className="git-diff-comment-box">
-                      <textarea
-                        autoFocus
-                        placeholder="What should the agent do with these lines?"
-                        value={comment}
-                        onChange={(e) => setComment(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            closeComment();
-                          } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                            e.preventDefault();
-                            void sendComment();
-                          }
-                        }}
-                      />
-                      {sendError && <div className="git-diff-comment-error">{sendError}</div>}
-                      <div className="git-diff-comment-buttons">
-                        <button
-                          type="button"
-                          disabled={!comment.trim() || sendBusy}
-                          onClick={() => void sendComment()}
-                        >
-                          {sendBusy ? "Sending…" : "Send to Agent"}
-                        </button>
-                        <button type="button" onClick={closeComment}>
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           ))}
+        </div>
+      )}
+      {pendingComments.length > 0 && (
+        <div className="git-diff-pending-panel">
+          <div className="git-diff-pending-summary">
+            <span className="git-diff-pending-count">
+              {pendingComments.length} comment{pendingComments.length === 1 ? "" : "s"} pending
+            </span>
+            <button
+              type="button"
+              className="git-diff-btn-primary"
+              disabled={sendBusy}
+              onClick={() => void sendAllComments()}
+            >
+              <Icon name="send" /> {sendBusy ? "Sending…" : "Send to Agent"}
+            </button>
+            <button
+              type="button"
+              className="git-diff-btn-ghost"
+              disabled={sendBusy}
+              onClick={() => setPendingComments([])}
+            >
+              Clear
+            </button>
+          </div>
+          {sendError && <div className="git-diff-comment-error">{sendError}</div>}
         </div>
       )}
       {active && toolbarTarget && createPortal(controls, toolbarTarget)}

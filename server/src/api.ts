@@ -335,7 +335,7 @@ api.delete("/sessions/:name", async (req, res) => {
 // plain fetch (a public core route, per docs/EXTENSION_API.md), so none of
 // them needs its own tmux send-keys.
 api.post("/sessions/:name/send-text", async (req, res) => {
-  const { text, submit } = req.body ?? {};
+  const { text, submit, windowIndex } = req.body ?? {};
   if (typeof text !== "string" || text.length === 0) {
     res.status(400).json({ error: "text must be a non-empty string" });
     return;
@@ -344,8 +344,12 @@ api.post("/sessions/:name/send-text", async (req, res) => {
     res.status(400).json({ error: "text exceeds 64KB" });
     return;
   }
+  if (windowIndex !== undefined && !(Number.isInteger(windowIndex) && windowIndex >= 0)) {
+    res.status(400).json({ error: "windowIndex must be a non-negative integer" });
+    return;
+  }
   try {
-    await sendTextToSession(req.params.name, text, submit === true);
+    await sendTextToSession(req.params.name, text, submit === true, windowIndex);
     res.status(204).end();
   } catch (err) {
     const message = errMessage(err);

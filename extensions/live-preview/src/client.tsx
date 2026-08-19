@@ -201,7 +201,7 @@ function HtmlPreview({ filePath, active, toolbarTarget, openInEditor }: Props) {
           // Live Preview has no context-menu picker surface like DiffView's
           // showMenu — several candidates just target the first, consistent
           // with "pick one and go" for a lightweight inline toggle.
-          return sendToAgent(targets[0].sessionName, text, readSendAutoSubmit());
+          return sendToAgent(targets[0].sessionName, text, readSendAutoSubmit(), { windowIndex: targets[0].windowIndex });
         })
         .then(() => setSendState("sent"))
         .catch((err: Error) => {

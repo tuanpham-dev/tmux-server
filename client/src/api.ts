@@ -82,15 +82,19 @@ export function killSession(name: string): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
-// Types text into a session's active pane, optionally submitting it. Core's
-// own callers use this directly; extensions hit the same public route with a
+// Types text into a session's pane, optionally submitting it. Core's own
+// callers use this directly; extensions hit the same public route with a
 // plain fetch instead (see docs/EXTENSION_API.md) rather than importing
-// client code across the extension boundary.
-export function sendTextToSession(name: string, text: string, submit?: boolean): Promise<void> {
+// client code across the extension boundary. windowIndex targets a specific
+// window within the session — omit it only when the session is known to
+// have just one window (e.g. one just created), since omitting it targets
+// tmux's own "current" (last-focused) window, not necessarily the intended
+// one.
+export function sendTextToSession(name: string, text: string, submit?: boolean, windowIndex?: number): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}/send-text`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text, submit }),
+    body: JSON.stringify({ text, submit, windowIndex }),
   });
 }
 

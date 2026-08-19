@@ -1053,9 +1053,19 @@ export interface OpenFileResult {
 // by Ink-based TUIs like Claude Code).
 const SEND_TEXT_SETTLE_MS = 150;
 
-export async function sendTextToSession(session: string, text: string, submit: boolean): Promise<void> {
+export async function sendTextToSession(
+  session: string,
+  text: string,
+  submit: boolean,
+  windowIndex?: number,
+): Promise<void> {
   if (!session) throw new Error("session is required");
-  const target = `=${session}:`;
+  // Omitting the window targets tmux's own "current" window for the
+  // session, which is whichever window last had focus — not necessarily
+  // the one a caller resolved via agentWindows() (e.g. a repo session with
+  // several windows, agent running in one that isn't the active one). Pass
+  // windowIndex whenever the caller already knows which window it means.
+  const target = windowIndex !== undefined ? `=${session}:${windowIndex}` : `=${session}:`;
   await tmux(["send-keys", "-t", target, "-l", "--", text]);
   if (submit) {
     await new Promise((resolve) => setTimeout(resolve, SEND_TEXT_SETTLE_MS));
