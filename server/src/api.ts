@@ -61,6 +61,7 @@ import {
   renameWindow,
   selectWindow,
   sendTextToSession,
+  WindowGoneError,
 } from "./tmux.js";
 
 export const api = Router();
@@ -404,6 +405,14 @@ api.post("/sessions/:name/windows/:index/open-tab", async (req, res) => {
     const attachName = await createWindowTab(req.params.name, index);
     res.status(201).json({ attachName });
   } catch (err) {
+    // Distinguished so the client can recover quietly (see useFileOpeners'
+    // openFileInSession) instead of surfacing tmux's raw "can't find
+    // window: N" — the window vanishing between two requests is an ordinary
+    // race, not a real failure.
+    if (err instanceof WindowGoneError) {
+      res.status(404).json({ error: errMessage(err) });
+      return;
+    }
     res.status(400).json({ error: errMessage(err) });
   }
 });

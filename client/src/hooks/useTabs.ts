@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import * as api from "../api";
+import { ApiError } from "../api";
 import {
   findFileViewerFor,
   requestTerminalRefocus,
@@ -125,6 +126,12 @@ export function useTabs(
   // stale closure) — same rationale as activeTabIdRef below.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  // Same rationale, for `sessions` — openWindowTab awaits a refresh() partway
+  // through (see useFileOpeners' openFileInSession) and must see the
+  // post-refresh session list on the other side of that await, not whatever
+  // `sessions` closure it captured when this render created it.
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
 
   // One-time defensive migration: a tab whose groupId doesn't name a leaf
   // in the restored tree (corrupted/partial localStorage — normal operation
@@ -450,7 +457,12 @@ export function useTabs(
       // flight, the new tab still lands in the group they initiated it
       // from, not whatever became focused meanwhile.
       const activeGroup = splitLayoutRef.current.activeGroupId;
-      const existing = tabs.find(
+      // tabsRef/sessionsRef, not the closed-over tabs/sessions: a caller may
+      // have awaited a refresh() immediately before this call (see
+      // useFileOpeners' openFileInSession) expecting the post-refresh state,
+      // but this function's own closure was fixed at the render that created
+      // it — same stale-closure rationale as tabsRef itself.
+      const existing = tabsRef.current.find(
         (t) => t.sessionName === session && t.windowIndex === index && t.groupId === activeGroup,
       );
       if (existing) {
@@ -465,11 +477,11 @@ export function useTabs(
       // tab is already open in this group, that tab already shows this exact
       // content — focus it instead of spawning a duplicate grouped-session
       // tab under a different label.
-      const isActiveWindow = sessions
+      const isActiveWindow = sessionsRef.current
         .find((s) => s.name === session)
         ?.windows.find((w) => w.index === index)?.active;
       if (isActiveWindow) {
-        const wholeSessionTab = tabs.find(
+        const wholeSessionTab = tabsRef.current.find(
           (t) => t.sessionName === session && t.windowIndex === undefined && t.groupId === activeGroup,
         );
         if (wholeSessionTab) {
@@ -496,11 +508,16 @@ export function useTabs(
         setActiveTabId(tab.id, activeGroup);
         return tab.id;
       } catch (err) {
+        // The window vanished between the caller resolving `index` and this
+        // call reaching the server (createWindowTab's WindowGoneError, see
+        // server/src/tmux.ts) — an ordinary race, not a real failure. Recover
+        // quietly rather than surfacing tmux's raw error as a toast.
+        if (err instanceof ApiError && err.status === 404) return null;
         showError(err);
         return null;
       }
     },
-    [tabs, sessions, showError, insertTab],
+    [showError, insertTab],
   );
 
   // Opens every one of a session's windows as its own window-tab (the

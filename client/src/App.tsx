@@ -788,11 +788,20 @@ export default function App() {
     projectKeyForSession,
   );
 
+  // The project the bottom panel is currently scoped to — same identity the
+  // editor's own tab groups use (useTabs' projectKeyForSession), so a
+  // project's panel tabs and its editor tab group agree on what counts as
+  // "this project". null when there's no active editor tab at all (the panel
+  // then shows nothing and relies on requestPanelTerminal's project picker).
+  const activeProjectKey = activeRealTab ? projectKeyForSession(activeRealTab.sessionName) : null;
+
   // The bottom terminal panel (plans/bottom-terminal-panel.md) — its own state
   // model, separate from the editor's tabs/split tree, since it only ever
   // holds terminals and only ever splits side-by-side.
   const {
     panel,
+    visibleTabs: panelVisibleTabs,
+    activeTabId: panelActiveTabId,
     panelFocused,
     setPanelFocused,
     togglePanel,
@@ -807,7 +816,7 @@ export default function App() {
     splitActivePane,
     closeTab: closePanelTab,
     removePane: removePanelPane,
-  } = useBottomPanel(sessions, sessionsLoadedRef, showError);
+  } = useBottomPanel(sessions, sessionsLoadedRef, showError, activeProjectKey, projectKeyForSession);
 
   // See editorSelectionRef's comment above. Skips its own first run, so the
   // panel keeps focus across a reload that restores it.
@@ -1860,6 +1869,8 @@ export default function App() {
         {panel.visible && (
           <BottomPanel
             panel={panel}
+            visibleTabs={panelVisibleTabs}
+            activeTabId={panelActiveTabId}
             panelFocused={panelFocused}
             sessions={sessions}
             settings={effectiveSettings}

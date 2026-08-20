@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import net from "node:net";
 import { getGitRoot } from "./files.js";
 import { openShimPath } from "./openUrl.js";
 import { isServerOnlyVar, spawnEnv } from "./spawnEnv.js";
@@ -431,6 +432,12 @@ export async function openLazygitWindow(session: string, cwd?: string): Promise<
   return Number(created.trim());
 }
 
+// Thrown by createWindowTab when the target window is gone by the time
+// select-window runs — distinguishes "the window vanished, an ordinary race"
+// from any other failure, so api.ts can map it to 404 and the client can
+// recover quietly instead of surfacing tmux's raw "can't find window: N".
+export class WindowGoneError extends Error {}
+
 // Creates a tmux session grouped with `session` (sharing its window list)
 // and points it at one specific window, giving that window an independently
 // trackable "current window" pointer — verified live that grouped sessions
@@ -444,7 +451,18 @@ export async function createWindowTab(session: string, index: number): Promise<s
   // target rejects the "=" exact-match prefix ("not found") — verified live.
   // Plain name only for this one call.
   await tmux(["new-session", "-d", "-t", session, "-s", generated]);
-  await tmux(["select-window", "-t", `=${generated}:${index}`]);
+  try {
+    await tmux(["select-window", "-t", `=${generated}:${index}`]);
+  } catch (err) {
+    // The window this tab was meant to pin to is already gone (window
+    // indexes aren't stable ids — see TmuxWindow.id's comment — so a caller
+    // acting on a stale index hits this). Without this cleanup the grouped
+    // session created above leaks: confirmed live, 4 orphaned
+    // tmuxserver-view-* sessions were sitting on this box from exactly this
+    // failure path before the fix.
+    await killWindowTab(generated).catch(() => {});
+    throw new WindowGoneError(`window ${index} of ${session} is gone`);
+  }
   return generated;
 }
 
@@ -949,22 +967,55 @@ async function readNvimSocketPath(nvimPid: number): Promise<string | null> {
   return null;
 }
 
+// A live socket file on disk is not the same as a live listener — a stale
+// nvim.tuanp/<id>/nvim.<pid>.0 path (routine: 23 were found sitting around
+// on this box) can outlive the process. Confirmed live: pointing
+// `nvim --server` at a dead socket does NOT fail — nvim prints "E247:
+// connection refused. Editing locally" and starts a full interactive editor
+// that never exits, hanging the caller forever. Probing the socket first
+// (~250ms budget) turns that into a fast, ordinary "no RPC available" so the
+// caller falls back to the keystroke path instead of hanging.
+function isSocketAlive(socket: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const conn = net.createConnection(socket);
+    const finish = (alive: boolean) => {
+      conn.removeAllListeners();
+      conn.destroy();
+      resolve(alive);
+    };
+    conn.setTimeout(250, () => finish(false));
+    conn.once("connect", () => finish(true));
+    conn.once("error", () => finish(false));
+  });
+}
+
 async function findNvimSocket(panePid: number): Promise<string | null> {
   const map = await buildProcessMap();
   const nvimPids = findDescendants(panePid, map, (comm) => comm === "nvim");
   for (const pid of nvimPids) {
     const socket = await readNvimSocketPath(pid);
-    if (socket) return socket;
+    if (socket && (await isSocketAlive(socket))) return socket;
   }
   return null;
 }
 
+// A hard timeout is kept as a backstop alongside the isSocketAlive probe
+// above (not a substitute for it): the probe catches the common case cheaply,
+// but a socket that dies in the gap between the probe and this call would
+// otherwise still hang the request for the reason explained above.
+const NVIM_REMOTE_TIMEOUT_MS = 5_000;
+
 function nvimRemote(socket: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile("nvim", ["--server", socket, ...args], (err, _stdout, stderr) => {
-      if (err) reject(new Error(stderr.trim() || err.message));
-      else resolve();
-    });
+    execFile(
+      "nvim",
+      ["--server", socket, ...args],
+      { timeout: NVIM_REMOTE_TIMEOUT_MS, killSignal: "SIGKILL" },
+      (err, _stdout, stderr) => {
+        if (err) reject(new Error(stderr.trim() || err.message));
+        else resolve();
+      },
+    );
   });
 }
 
@@ -1094,18 +1145,20 @@ export async function openFileInWindow(session: string, filePath: string, line?:
 
   // Look for nvim already running in some other window before falling back
   // to typing into an idle shell or spawning a fresh window — reusing it
-  // means the file lands next to whatever the user's already editing.
-  // Only each window's own active pane is considered (mirroring the
-  // current-window check above); ties broken by lowest window index for a
-  // deterministic pick.
+  // means the file lands next to whatever the user's already editing. Scans
+  // every pane, not just each window's active one — an nvim sitting in a
+  // split's background pane is a real, common case and shouldn't cost a new
+  // window just because it isn't the pane currently in view (confirmed the
+  // deferred-keystroke path below already targets a pane by id regardless of
+  // whether it's active, so this was only an artificial restriction on the
+  // *search*, not a limit of the reuse mechanism itself). Command match stays
+  // nvim-only, not EDITOR_COMMANDS/vim: this branch's fast path
+  // (tryNvimRpcOpen) only works through nvim's RPC socket, so matching vim
+  // here would only route it to the slower keystroke fallback. Ties broken by
+  // lowest window index, then lowest pane index, for a deterministic pick.
   const otherNvimPane = (await listSessionPanes(session))
-    .filter(
-      (p) =>
-        p.paneActive &&
-        p.windowIndex !== pane.windowIndex &&
-        p.command.replace(/^-/, "") === "nvim",
-    )
-    .sort((a, b) => a.windowIndex - b.windowIndex)[0];
+    .filter((p) => p.windowIndex !== pane.windowIndex && p.command.replace(/^-/, "") === "nvim")
+    .sort((a, b) => a.windowIndex - b.windowIndex || a.paneIndex - b.paneIndex)[0];
 
   if (otherNvimPane) {
     if (await tryNvimRpcOpen(otherNvimPane.pid, filePath, line)) {
@@ -1144,7 +1197,23 @@ export async function openFileInWindow(session: string, filePath: string, line?:
     pane.cwd,
     `nvim ${nvimCliArg}`,
   ]);
-  return { windowIndex: Number(out.trim()) };
+  const spawnedIndex = Number(out.trim());
+
+  // new-window returning an index is not proof the window is still there by
+  // the time the caller acts on it — if the spawned nvim exits immediately
+  // (a permission error, a crash) tmux closes the window with it
+  // (remain-on-exit is off), and the client's next call (open-tab's
+  // select-window) would otherwise hit tmux's raw "can't find window: N".
+  // Confirmed live: a command that exits at once leaves the index dangling
+  // within well under a second. Catch that here, where the real cause (the
+  // editor exiting) is still knowable, instead of surfacing tmux's opaque
+  // error two requests later.
+  try {
+    await tmux(["display-message", "-t", `=${session}:${spawnedIndex}`, "-p", "#{window_index}"]);
+  } catch {
+    throw new Error(`nvim exited immediately while opening ${filePath}`);
+  }
+  return { windowIndex: spawnedIndex };
 }
 
 // Completes a deferred open (see OpenFileResult.deferredPane) by injecting

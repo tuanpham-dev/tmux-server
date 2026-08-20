@@ -7,6 +7,18 @@ import type {
   TmuxSession,
 } from "./types";
 
+// Carries the HTTP status alongside the server's error message so a caller
+// can distinguish a specific failure (e.g. 404 "the window is already gone")
+// from any other — see openWindowTab's use of this for a vanished window.
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
@@ -17,7 +29,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       // non-JSON error body; keep the status message
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status);
   }
   // Check the body itself, not just status === 204: any success response can
   // legitimately have an empty body (e.g. a plain res.end()), and res.json()

@@ -25,6 +25,15 @@ const MIN_PANE_PX = 120;
 
 interface Props {
   panel: PanelState;
+  // The current project's tabs only — drives the tab strip and the empty
+  // state. The body below still renders every tab across every project (see
+  // the module comment); visibleTabs never needs to reach it directly.
+  visibleTabs: PanelTab[];
+  // The resolved active tab id for the current project (activeTab's own id,
+  // already validated against visibleTabs by useBottomPanel), or null if the
+  // current project has no tabs. Distinct from any other project's own
+  // remembered active tab, which stays intact but isn't this.
+  activeTabId: string | null;
   panelFocused: boolean;
   sessions: TmuxSession[];
   settings: AppSettings;
@@ -59,6 +68,8 @@ interface Props {
 
 export default function BottomPanel({
   panel,
+  visibleTabs,
+  activeTabId,
   panelFocused,
   sessions,
   settings,
@@ -185,12 +196,12 @@ export default function BottomPanel({
       <div className="bottom-panel-header">
         <span className="bottom-panel-title">TERMINAL</span>
         <div className="tab-strip" ref={tabStripRef}>
-          {panel.tabs.map((tab) => (
+          {visibleTabs.map((tab) => (
             <div
               key={tab.id}
               role="button"
               tabIndex={0}
-              className={`tab${tab.id === panel.activeTabId ? " active" : ""}`}
+              className={`tab${tab.id === activeTabId ? " active" : ""}`}
               title={tab.panes.map(paneLabel).join("  |  ")}
               onClick={() => onSelectTab(tab.id)}
               onKeyDown={(e) => {
@@ -238,7 +249,7 @@ export default function BottomPanel({
           <button
             className="panel-action"
             title="Split Terminal Right"
-            disabled={panel.activeTabId === null}
+            disabled={activeTabId === null}
             onClick={onSplit}
           >
             <Icon name="split-horizontal" />
@@ -249,11 +260,17 @@ export default function BottomPanel({
         </div>
       </div>
       <div className="bottom-panel-body">
-        {panel.tabs.length === 0 && (
-          <div className="placeholder">No terminals. Use + to open one.</div>
+        {visibleTabs.length === 0 && (
+          <div className="placeholder">No terminals in this project. Use + to open one.</div>
         )}
         {panel.tabs.map((tab) => {
-          const tabVisible = tab.id === panel.activeTabId;
+          // Every project's tabs stay mounted here (see the module comment);
+          // tabVisible naturally covers only the current project's active
+          // tab, since activeTabId can equal at most one tab across all of
+          // them — every other project's tabs, including their own last-
+          // active one, resolve to display:none without needing a separate
+          // project filter in this loop.
+          const tabVisible = tab.id === activeTabId;
           const nodes: React.ReactNode[] = [];
           tab.panes.forEach((pane, i) => {
             const paneVisible = tabVisible;
