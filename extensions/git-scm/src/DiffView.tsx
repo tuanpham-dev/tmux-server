@@ -156,6 +156,11 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
   // (in the toolbar) delivers all of them together in one message.
   const [pendingComments, setPendingComments] = useState<PendingComment[]>([]);
   const nextPendingId = useRef(0);
+  // Each pending comment shows as a small numbered badge; clicking one
+  // toggles its full card open (multiple can be open at once).
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
 
   const closeComment = useCallback(() => {
     setCommentOpen(false);
@@ -204,6 +209,9 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
     setSelection(null);
     closeComment();
     setPendingComments([]);
+    setExpandedIds(new Set());
+    setEditingId(null);
+    setEditText("");
     fetchDiff();
   }, [filePath, fetchDiff, closeComment]);
 
@@ -264,7 +272,41 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
 
   const removePendingComment = useCallback((id: number) => {
     setPendingComments((prev) => prev.filter((pc) => pc.id !== id));
+    setExpandedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setEditingId((prev) => (prev === id ? null : prev));
   }, []);
+
+  const toggleExpanded = useCallback((id: number) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const startEdit = useCallback((pc: PendingComment) => {
+    setEditingId(pc.id);
+    setEditText(pc.text);
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditingId(null);
+    setEditText("");
+  }, []);
+
+  const saveEdit = useCallback(() => {
+    const text = editText.trim();
+    if (editingId === null || !text) return;
+    setPendingComments((prev) => prev.map((pc) => (pc.id === editingId ? { ...pc, text } : pc)));
+    setEditingId(null);
+    setEditText("");
+  }, [editingId, editText]);
 
   const sendAllComments = useCallback(async () => {
     if (pendingComments.length === 0) return;
@@ -394,22 +436,83 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
                       </span>
                       <span className="git-diff-line-text">{line.text}</span>
                     </div>
-                    {commentsHere.map((pc) => (
-                      <div key={pc.id} className="git-diff-inline-comment">
-                        <div className="git-diff-inline-comment-header">
-                          <span className="git-diff-inline-comment-range">{rangeLabel(hunk, pc)}</span>
+                    {commentsHere.map((pc) => {
+                      const number = pendingComments.findIndex((p) => p.id === pc.id) + 1;
+                      const expanded = expandedIds.has(pc.id);
+                      const editing = editingId === pc.id;
+                      return (
+                        <div key={pc.id} className="git-diff-comment-marker">
                           <button
                             type="button"
-                            className="icon-button"
-                            title="Remove this comment"
-                            onClick={() => removePendingComment(pc.id)}
+                            className="git-diff-comment-badge"
+                            title={pc.text}
+                            onClick={() => toggleExpanded(pc.id)}
                           >
-                            <Icon name="close" />
+                            {number}
                           </button>
+                          {expanded && (
+                            <div className="git-diff-inline-comment">
+                              <div className="git-diff-inline-comment-header">
+                                <span className="git-diff-inline-comment-range">{rangeLabel(hunk, pc)}</span>
+                                <div className="git-diff-inline-comment-actions">
+                                  {!editing && (
+                                    <button
+                                      type="button"
+                                      className="icon-button"
+                                      title="Edit this comment"
+                                      onClick={() => startEdit(pc)}
+                                    >
+                                      <Icon name="edit" />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="icon-button"
+                                    title="Remove this comment"
+                                    onClick={() => removePendingComment(pc.id)}
+                                  >
+                                    <Icon name="close" />
+                                  </button>
+                                </div>
+                              </div>
+                              {editing ? (
+                                <div className="git-diff-comment-edit">
+                                  <textarea
+                                    autoFocus
+                                    value={editText}
+                                    onChange={(e) => setEditText(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Escape") {
+                                        e.preventDefault();
+                                        cancelEdit();
+                                      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                        e.preventDefault();
+                                        saveEdit();
+                                      }
+                                    }}
+                                  />
+                                  <div className="git-diff-comment-buttons">
+                                    <button
+                                      type="button"
+                                      className="git-diff-btn-primary"
+                                      disabled={!editText.trim()}
+                                      onClick={saveEdit}
+                                    >
+                                      Save
+                                    </button>
+                                    <button type="button" className="git-diff-btn-ghost" onClick={cancelEdit}>
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="git-diff-inline-comment-text">{pc.text}</div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        <div className="git-diff-inline-comment-text">{pc.text}</div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     {showComposer && (
                       <div className="git-diff-comment-anchor">
                         {!commentOpen && (

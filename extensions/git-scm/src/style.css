@@ -675,15 +675,23 @@
   border-radius: 4px;
 }
 
+/* Matches the app's own form-input convention (.git-credential-input above,
+   search extension's .search-text-input) rather than an ad hoc style. */
 .git-diff-comment-box textarea {
   resize: vertical;
   min-height: 48px;
-  font: inherit;
-  background: var(--bg);
+  font-family: inherit;
+  font-size: 13px;
+  background: var(--input-bg);
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 4px 6px;
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  padding: 5px 6px;
+  outline: none;
+}
+
+.git-diff-comment-box textarea:focus {
+  border-color: var(--focus-border);
 }
 
 .git-diff-comment-error {
@@ -760,12 +768,39 @@
   padding: 0 10px 6px;
 }
 
-/* --- Inline comment cards (GitHub-review style) — anchored to the diff line
-   where their range ends, instead of listed separately, so it's obvious at a
-   glance which lines a comment is about. */
+/* --- Inline comment markers (GitHub-review style) — a small numbered badge
+   anchored to the diff line where the comment's range ends; clicking it
+   toggles the full card below, instead of the card always taking up space
+   inline (or being listed separately), so it's obvious at a glance which
+   lines a comment is about without every comment's text competing for room. */
+
+.git-diff-comment-marker {
+  margin: 2px 10px;
+}
+
+/* Weighted like the host app's own numbered badge convention
+   (client/src/styles.css's .window-decoration-badge on session rows), sized
+   a bit larger for standalone legibility here (it isn't sitting next to
+   other row content the way that one is). */
+.git-diff-comment-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  background: var(--fg-accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
 
 .git-diff-inline-comment {
-  margin: 4px 10px;
+  margin-top: 4px;
   padding: 6px 8px;
   background: var(--sidebar-header-bg);
   border: 1px solid var(--border);
@@ -787,10 +822,39 @@
   font-family: var(--terminal-font, monospace);
 }
 
+.git-diff-inline-comment-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .git-diff-inline-comment-text {
   color: var(--fg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.git-diff-comment-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.git-diff-comment-edit textarea {
+  resize: vertical;
+  min-height: 48px;
+  font-family: inherit;
+  font-size: 13px;
+  background: var(--input-bg);
+  color: var(--fg);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  padding: 5px 6px;
+  outline: none;
+}
+
+.git-diff-comment-edit textarea:focus {
+  border-color: var(--focus-border);
 }
 
 /* --- Merge banner --- */

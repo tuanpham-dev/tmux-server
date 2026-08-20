@@ -110,8 +110,19 @@ const INSPECT_SCRIPT = `<script>(function(){
     STYLE_PROPS.forEach(function (p) { styles[p] = cs[p]; });
     var html = el.outerHTML;
     if (html.length > 4000) html = html.slice(0, 4000) + "…";
+    // Viewport-relative rect — the host positions its comment popover with
+    // this directly (live-preview-frame fills its host 1:1, no offset math
+    // needed on the host side, see client.tsx).
+    var r = el.getBoundingClientRect();
     window.parent.postMessage(
-      { __livePreviewPicked: { selector: selectorFor(el), outerHTML: html, styles: styles } },
+      {
+        __livePreviewPicked: {
+          selector: selectorFor(el),
+          outerHTML: html,
+          styles: styles,
+          rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+        },
+      },
       "*",
     );
   }
