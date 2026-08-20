@@ -76,6 +76,7 @@ The command palette also lists seven project/terminal actions — **Project: New
 - **`Ctrl`+click** (`Cmd`+click on Mac) a URL, local file path, or hyperlink in the terminal to open it; add `Shift` to open a file in its preview viewer instead of the editor.
 - **Drag** in the terminal makes a tmux copy-mode selection; **Shift+drag** makes a normal browser text selection.
 - **Shift+scroll** (or a trackpad's horizontal scroll) sends horizontal scroll events to `nvim`.
+- **OSC 52 clipboard forwarding** — `xterm-engine` writes any OSC 52 clipboard-set sequence a pane emits (a yank in `nvim` via a plugin like `vim-oscyank`, tmux's own copy-mode with `set-clipboard on`, etc.) straight to the browser clipboard. Requires `set -g set-clipboard on` in `tmux.conf` so tmux passes the sequence through instead of swallowing it; the query form (`...;?`) is intentionally left unanswered since the engine has no clipboard-read access to reply with.
 
 All of the above are defaults — remap any of them, including extension-contributed commands, from Settings → Keyboard.
 

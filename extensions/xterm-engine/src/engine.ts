@@ -10,6 +10,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type FontWeight } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { cellFromPoint, joinedSelectionText } from "@tmux-server/engine-support";
+import { copyText } from "../../_shared/clipboard";
 import { buildXtermLinkProvider, stitchXtermLine } from "./links";
 import type {
   CellPosition,
@@ -204,6 +205,24 @@ export async function createXtermEngine(
   );
 
   const dataSub = term.onData(onData);
+
+  // OSC 52 clipboard forwarding — lets an app in the pane (nvim's osc52
+  // clipboard provider, tmux's own set-clipboard passthrough, etc) push a
+  // yank straight into the browser clipboard via the same copyText() the
+  // UI's own copy actions use. Payload is "<selection-char>;<base64>";
+  // the query form ("...;?") is left unanswered since this engine has no
+  // clipboard-read access to reply with.
+  const oscHandlerDisposable = term.parser.registerOscHandler(52, (data) => {
+    const payload = data.slice(data.indexOf(";") + 1);
+    if (!payload || payload === "?") return true;
+    try {
+      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+      void copyText(new TextDecoder().decode(bytes));
+    } catch {
+      // Malformed base64 — ignore rather than throwing out of the parser.
+    }
+    return true;
+  });
 
   // Predictive keyboards (Gboard etc.) deliver nothing through onData at
   // all until a word actually commits (space, punctuation, a suggestion
@@ -531,6 +550,7 @@ export async function createXtermEngine(
       term.textarea?.removeEventListener("compositionend", onCompositionEndCleanup);
       term.textarea?.removeEventListener("beforeinput", onBeforeInput as EventListener);
       dataSub.dispose();
+      oscHandlerDisposable.dispose();
       renderSub.dispose();
       renderListeners.clear();
       linkProviderDisposable.dispose();
