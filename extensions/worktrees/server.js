@@ -52,6 +52,25 @@ async function repoRoot(cwd) {
   }
 }
 
+// Unlike repoRoot, resolves to the MAIN worktree's path even when cwd is
+// itself inside a linked worktree — show-toplevel returns whichever worktree
+// cwd is in, not the repo's root, so creating a worktree from inside another
+// worktree would otherwise nest the new one under that parent worktree
+// instead of the repo root (git worktree list is identical from any worktree
+// of the same repo, so this is one extra read-only call, not a behavior
+// change for /list or /remove, which don't have this bug). parseWorktrees
+// documents the first record as always the main worktree.
+async function mainRepoRoot(cwd) {
+  const anyRoot = await repoRoot(cwd);
+  if (!anyRoot) return null;
+  try {
+    const worktrees = parseWorktrees(await git(["worktree", "list", "--porcelain"], anyRoot));
+    return worktrees.find((wt) => wt.main)?.path ?? anyRoot;
+  } catch {
+    return anyRoot;
+  }
+}
+
 // The shared .git directory (identical for every worktree of a repo, unlike
 // --git-dir which points at .git/worktrees/<name> inside a linked worktree) —
 // where info/exclude lives.
@@ -277,7 +296,11 @@ export function activate({ router, log, getSettings }) {
       res.status(400).json({ error: "cwd (absolute path) and branch are required" });
       return;
     }
-    const repo = await repoRoot(cwd);
+    // mainRepoRoot, not repoRoot: cwd may itself be inside a linked worktree
+    // (creating a second worktree while already in one), and the {repo}
+    // template below must always resolve against the repo root, not
+    // whichever worktree happens to be active.
+    const repo = await mainRepoRoot(cwd);
     if (!repo) {
       res.status(400).json({ error: `${cwd} is not inside a git repository` });
       return;
