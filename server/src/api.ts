@@ -13,7 +13,7 @@ import {
   ensureDir,
   exists,
   expandHome,
-  fuzzyMatch,
+  fuzzyScore,
   getGitRoot,
   isDirectory,
   isFile,
@@ -632,9 +632,9 @@ api.get("/fs/files", async (req, res) => {
       return;
     }
     const cap = q ? FS_MATCH_CAP : FS_FILES_CAP;
-    const match = q ? (rel: string) => fuzzyMatch(q, rel) : undefined;
-    const repoFiles = await listRepoFiles(dirPath, cap, match);
-    const { files, truncated } = repoFiles ?? (await walkFiles(dirPath, cap, match));
+    const score = q ? (rel: string) => fuzzyScore(q, rel) : undefined;
+    const repoFiles = await listRepoFiles(dirPath, cap, score);
+    const { files, truncated } = repoFiles ?? (await walkFiles(dirPath, cap, score));
     res.json({ path: dirPath, files, truncated });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });

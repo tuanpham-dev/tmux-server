@@ -68,16 +68,35 @@ interface Entry {
 
 // Subsequence match (VS Code Ctrl+P style): every query character must
 // appear in the text in order, not necessarily contiguous, so "twsh" matches
-// "tw-search:zsh".
-function fuzzyMatch(query: string, text: string): boolean {
-  if (!query) return true;
-  let qi = 0;
+// "tw-search:zsh". Returns null on no match, otherwise a score where higher
+// is a better match — consecutive runs and matches right after a path/word
+// separator score higher, so "term" ranks "TerminalView" above
+// "src/other-mismatch". Kept in sync with the server copy in
+// server/src/files.ts, which uses it to rank file search results.
+const SEPARATORS = new Set(["/", "-", "_", ".", " "]);
+
+function fuzzyScore(query: string, text: string): number | null {
+  if (!query) return 0;
   const q = query.toLowerCase();
   const t = text.toLowerCase();
+  let qi = 0;
+  let score = 0;
+  let run = 0;
+  let lastTi = -1;
   for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) qi++;
+    if (t[ti] !== q[qi]) continue;
+    if (lastTi === ti - 1) {
+      run++;
+      score += run * 5;
+    } else {
+      run = 0;
+    }
+    if (ti === 0 || SEPARATORS.has(t[ti - 1])) score += 10;
+    lastTi = ti;
+    qi++;
   }
-  return qi === q.length;
+  if (qi !== q.length) return null;
+  return score - t.length * 0.1;
 }
 
 export default function QuickSwitcher({
@@ -214,13 +233,16 @@ export default function QuickSwitcher({
   }, [isCommandMode, query, registryTick]);
 
   // Command mode ("> …"): fuzzy-match the part after ">" against every
-  // palette command's label instead of the tab/window/session/file list.
+  // palette command's label instead of the tab/window/session/file list,
+  // ranked best-match-first rather than the commands' declaration order.
   const commandEntries = useMemo<Entry[]>(() => {
     if (!isCommandMode) return [];
     const q = query.slice(1).trim();
     return commands
-      .filter((c) => fuzzyMatch(q, c.label))
-      .map((c) => ({
+      .map((c) => ({ c, score: fuzzyScore(q, c.label) }))
+      .filter((m): m is { c: PaletteCommand; score: number } => m.score !== null)
+      .sort((a, b) => b.score - a.score)
+      .map(({ c }) => ({
         key: `command:${c.id}`,
         label: c.label,
         group: "command" as const,
@@ -234,7 +256,7 @@ export default function QuickSwitcher({
     () =>
       isCommandMode
         ? commandEntries
-        : [...entries.filter((e) => fuzzyMatch(query, e.label)), ...providerEntries, ...fileEntries],
+        : [...entries.filter((e) => fuzzyScore(query, e.label) !== null), ...providerEntries, ...fileEntries],
     [isCommandMode, commandEntries, entries, providerEntries, fileEntries, query],
   );
 

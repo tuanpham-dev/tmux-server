@@ -55,18 +55,39 @@ export async function getGitRoot(dirPath: string): Promise<string | null> {
 }
 
 // Subsequence match (VS Code Ctrl+P style): every query character must appear
-// in the text in order, not necessarily contiguous. Kept in sync with the
-// client copy in client/src/components/QuickSwitcher.tsx so server-filtered
-// file search ranks identically to the old client-side filtering.
-export function fuzzyMatch(query: string, text: string): boolean {
-  if (!query) return true;
-  let qi = 0;
+// in the text in order, not necessarily contiguous. Returns null on no match,
+// otherwise a score where higher is a better match — consecutive runs and
+// matches right after a path/word separator score higher, scattered matches
+// score lower, so "config" ranks "src/config.ts" above
+// "src/some-other-configuration.ts". Kept in sync with the client copy in
+// client/src/components/QuickSwitcher.tsx so server-filtered file search
+// ranks identically to the client-side filtering used for other groups.
+const SEPARATORS = new Set(["/", "-", "_", ".", " "]);
+
+export function fuzzyScore(query: string, text: string): number | null {
+  if (!query) return 0;
   const q = query.toLowerCase();
   const t = text.toLowerCase();
+  let qi = 0;
+  let score = 0;
+  let run = 0;
+  let lastTi = -1;
   for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) qi++;
+    if (t[ti] !== q[qi]) continue;
+    if (lastTi === ti - 1) {
+      run++;
+      score += run * 5;
+    } else {
+      run = 0;
+    }
+    if (ti === 0 || SEPARATORS.has(t[ti - 1])) score += 10;
+    lastTi = ti;
+    qi++;
   }
-  return qi === q.length;
+  if (qi !== q.length) return null;
+  // Tie-break toward shorter, tighter matches (e.g. an exact filename over a
+  // long path that happens to contain the same subsequence).
+  return score - t.length * 0.1;
 }
 
 export interface FsEntry {
@@ -94,15 +115,18 @@ const MAX_WALK_VISITED = 50_000;
 
 // Recursive fallback for the quick switcher's file search when rootDir isn't
 // inside a git repo (so there's no .gitignore-aware `git ls-files` to lean
-// on). Walks depth-first, skipping ".git", and stops as soon as it hits cap so
-// a huge non-git directory can't stall the request. With `match`, only paths
-// the predicate accepts are collected (server-side filtering), up to cap.
+// on). Walks depth-first, skipping ".git". With `score`, every match within
+// the scan budget is collected and ranked (see rankMatches) rather than
+// returning the first `cap` encountered in walk order, so a good match deep
+// in the tree isn't shadowed by weaker matches the walk happens to visit
+// first. Without `score` (full listing), stops as soon as it hits cap.
 export async function walkFiles(
   rootDir: string,
   cap: number,
-  match?: (rel: string) => boolean,
+  score?: (rel: string) => number | null,
 ): Promise<{ files: string[]; truncated: boolean }> {
   const files: string[] = [];
+  const scored: { rel: string; score: number }[] = [];
   let truncated = false;
   let visited = 0;
 
@@ -120,12 +144,14 @@ export async function walkFiles(
       const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         await walk(path.join(dirPath, entry.name), rel);
-      } else {
-        if (match && ++visited > MAX_WALK_VISITED) {
+      } else if (score) {
+        if (++visited > MAX_WALK_VISITED) {
           truncated = true;
           return;
         }
-        if (match && !match(rel)) continue;
+        const s = score(rel);
+        if (s !== null) scored.push({ rel, score: s });
+      } else {
         if (files.length >= cap) {
           truncated = true;
           return;
@@ -136,7 +162,23 @@ export async function walkFiles(
   }
 
   await walk(rootDir, "");
+  if (score) return rankMatches(scored, cap, truncated);
   return { files, truncated };
+}
+
+// Sorts scored matches best-first and caps to `cap`, folding in whether the
+// underlying scan already stopped early (a truncated scan may be missing
+// matches that would have outranked what we kept).
+function rankMatches(
+  scored: { rel: string; score: number }[],
+  cap: number,
+  scanTruncated: boolean,
+): { files: string[]; truncated: boolean } {
+  scored.sort((a, b) => b.score - a.score);
+  return {
+    files: scored.slice(0, cap).map((m) => m.rel),
+    truncated: scanTruncated || scored.length > cap,
+  };
 }
 
 // Joins baseDir + relativePath, rejecting any relative path that is absolute
@@ -272,11 +314,13 @@ export async function movePath(src: string, destDir: string): Promise<string | n
 // the caller can fall back to a plain directory walk. Run with cwd =
 // dirPath (not the repo root) so git scopes and returns paths relative to
 // dirPath itself, matching what the fallback walker would produce. With
-// `match`, only paths the predicate accepts are collected, up to cap.
+// `score`, every match is collected and ranked (see rankMatches) instead of
+// taking the first `cap` in git's listing order, so a strong match later in
+// the listing isn't shadowed by weaker matches earlier in it.
 export async function listRepoFiles(
   dirPath: string,
   cap: number,
-  match?: (rel: string) => boolean,
+  score?: (rel: string) => number | null,
 ): Promise<{ files: string[]; truncated: boolean } | null> {
   try {
     await git(["rev-parse", "--show-toplevel"], dirPath);
@@ -291,11 +335,20 @@ export async function listRepoFiles(
     return null;
   }
 
+  if (score) {
+    const scored: { rel: string; score: number }[] = [];
+    for (const token of out.split("\0")) {
+      if (!token) continue;
+      const s = score(token);
+      if (s !== null) scored.push({ rel: token, score: s });
+    }
+    return rankMatches(scored, cap, false);
+  }
+
   const files: string[] = [];
   let truncated = false;
   for (const token of out.split("\0")) {
     if (!token) continue;
-    if (match && !match(token)) continue;
     if (files.length >= cap) {
       truncated = true;
       break;
