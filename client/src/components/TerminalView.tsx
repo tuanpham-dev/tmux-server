@@ -28,6 +28,7 @@ import {
 } from "../mouseReports";
 import { isOpenGesture, openUrl } from "../terminalLinks";
 import type { MenuItem } from "../types";
+import { oversizeReason, uploadMaxBytes } from "../upload";
 
 // Expands the pasteDropUploadDir setting for one upload: {cwd} is the pane's
 // working directory, {gitroot} the git repo root containing it (the repo-less
@@ -401,6 +402,8 @@ export default function TerminalView({
   uploadConflictRef.current = settings.uploadConflict;
   const pasteDropUploadDirRef = useRef(settings.pasteDropUploadDir);
   pasteDropUploadDirRef.current = settings.pasteDropUploadDir;
+  const uploadMaxSizeRef = useRef(settings.uploadMaxSizeMb);
+  uploadMaxSizeRef.current = settings.uploadMaxSizeMb;
 
   useEffect(() => {
     // Theme still resolving (first load, extension theme JSON in flight) —
@@ -594,6 +597,17 @@ export default function TerminalView({
       // local-echo feature itself. Destination is settings.pasteDropUploadDir
       // (default /tmp) with {cwd}/{gitroot} expanded per pane — see
       // resolveUploadDir.
+      // Size gate shared by every upload path this pane has (paste, drop,
+      // and the {image} touch key): an oversized file is reported and
+      // skipped rather than streamed to the server. 0 = no limit — see
+      // settings.uploadMaxSizeMb.
+      const withinUploadLimit = (blob: Blob, displayName: string): boolean => {
+        const reason = oversizeReason(blob.size, uploadMaxBytes(uploadMaxSizeRef.current));
+        if (!reason) return true;
+        onErrorRef.current(`${displayName}: ${reason}`);
+        return false;
+      };
+
       const uploadAndType = async (blob: Blob, filename: string) => {
         const destDir = cwdRef.current;
         if (!destDir) return;
@@ -642,10 +656,17 @@ export default function TerminalView({
         }
       };
 
-      uploadImageRef.current = (file) =>
+      uploadImageRef.current = (file) => {
+        if (!withinUploadLimit(file, file.name)) return;
         uploadAndType(file, uniqueUploadName(file.name, file.type));
-      uploadImagesRef.current = (files) =>
-        uploadAndTypeMany(files.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })));
+      };
+      uploadImagesRef.current = (files) => {
+        const allowed = files.filter((f) => withinUploadLimit(f, f.name));
+        if (allowed.length === 0) return;
+        uploadAndTypeMany(
+          allowed.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })),
+        );
+      };
 
       const engine = await create({
         screen,
@@ -1782,12 +1803,17 @@ export default function TerminalView({
           .map((it) => ({ blob: it.getAsFile(), type: it.type }))
           .filter((b): b is { blob: File; type: string } => b.blob !== null);
         if (blobs.length === 0) return;
+        // preventDefault before the size filter: the paste was unambiguously
+        // an image paste, so it must not fall through to the engine as text
+        // just because the limit rejected every item.
         e.preventDefault();
         e.stopPropagation();
-        if (blobs.length === 1) {
-          uploadAndType(blobs[0].blob, uniqueUploadName(undefined, blobs[0].type));
+        const allowed = blobs.filter((b) => withinUploadLimit(b.blob, b.blob.name || "pasted image"));
+        if (allowed.length === 0) return;
+        if (allowed.length === 1) {
+          uploadAndType(allowed[0].blob, uniqueUploadName(undefined, allowed[0].type));
         } else {
-          uploadAndTypeMany(blobs.map((b, i) => ({ blob: b.blob, name: uniqueUploadName(undefined, b.type, i) })));
+          uploadAndTypeMany(allowed.map((b, i) => ({ blob: b.blob, name: uniqueUploadName(undefined, b.type, i) })));
         }
       };
       screen.addEventListener("paste", onPaste, true);
@@ -1809,10 +1835,12 @@ export default function TerminalView({
         const files = Array.from(e.dataTransfer?.files ?? []);
         if (files.length === 0) return;
         e.preventDefault();
-        if (files.length === 1) {
-          uploadAndType(files[0], uniqueUploadName(files[0].name, files[0].type));
+        const allowed = files.filter((f) => withinUploadLimit(f, f.name));
+        if (allowed.length === 0) return;
+        if (allowed.length === 1) {
+          uploadAndType(allowed[0], uniqueUploadName(allowed[0].name, allowed[0].type));
         } else {
-          uploadAndTypeMany(files.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })));
+          uploadAndTypeMany(allowed.map((f, i) => ({ blob: f, name: uniqueUploadName(f.name, f.type, i) })));
         }
       };
       terminalBodyRef.current!.addEventListener("dragover", onDragOver);

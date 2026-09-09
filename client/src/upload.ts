@@ -88,13 +88,44 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function formatMb(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+// settings.uploadMaxSizeMb as a byte count; 0 (the default) stays 0, which
+// every caller reads as "no limit".
+export function uploadMaxBytes(maxSizeMb: number): number {
+  return maxSizeMb > 0 ? maxSizeMb * 1024 * 1024 : 0;
+}
+
+// Returns the skip reason for a file the size limit rejects, or null when
+// it's allowed. Shared by every upload entry point (the FILES tree's
+// drop/picker below, TerminalView's terminal paste/drop) so an oversized
+// file is refused with the same wording wherever it was dropped.
+export function oversizeReason(size: number, maxBytes: number): string | null {
+  if (maxBytes <= 0 || size <= maxBytes) return null;
+  return `too large (${formatMb(size)} MB, limit ${formatMb(maxBytes)} MB)`;
+}
+
 export async function uploadAll(
   items: DroppedItems,
   destDir: string,
   conflictSetting: "rename" | "overwrite" | "ask",
+  maxBytes: number,
   callbacks: UploadCallbacks = {},
 ): Promise<UploadOutcome> {
   const errors: UploadOutcome["errors"] = [];
+
+  // Size-filter up front so oversized files never reach the wire and the
+  // progress total below reflects only what's actually being sent — a
+  // folder drop with one huge file still uploads the rest, reporting the
+  // skip like any other per-file failure.
+  const files: DroppedFile[] = [];
+  for (const item of items.files) {
+    const reason = oversizeReason(item.file.size, maxBytes);
+    if (reason) errors.push({ relativePath: item.relativePath, message: reason });
+    else files.push(item);
+  }
 
   // Create directories (including empty ones) before files, so a file whose
   // parent was an empty sibling dir still has somewhere to land.
@@ -106,11 +137,11 @@ export async function uploadAll(
     }
   }
 
-  const totalBytes = items.files.reduce((sum, f) => sum + f.file.size, 0);
+  const totalBytes = files.reduce((sum, f) => sum + f.file.size, 0);
   let doneBytes = 0;
   const apiConflict = conflictSetting === "ask" ? "fail" : conflictSetting;
 
-  for (const { file, relativePath } of items.files) {
+  for (const { file, relativePath } of files) {
     const onFileProgress = (loaded: number) => {
       callbacks.onProgress?.(doneBytes + loaded, totalBytes, relativePath);
     };

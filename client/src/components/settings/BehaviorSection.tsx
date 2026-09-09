@@ -138,6 +138,25 @@ export default function BehaviorSection() {
       </label>
 
       <label className="settings-row">
+        <span className="settings-label">Maximum upload file size (MB)</span>
+        <div className="settings-hint">
+          Files larger than this are skipped when dropped on a terminal or the FILES tree (and on
+          paste or Upload…), and reported instead of uploaded. 0 means no limit.
+        </div>
+        <input
+          className="dialog-input"
+          type="number"
+          min={0}
+          step={1}
+          value={settings.uploadMaxSizeMb}
+          onChange={(e) => {
+            const value = Number(e.target.value);
+            set("uploadMaxSizeMb", Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
+          }}
+        />
+      </label>
+
+      <label className="settings-row">
         <span className="settings-label">Image paste/drop upload directory</span>
         <div className="settings-hint">
           {"{cwd} expands to the pane's directory, {gitroot} to its git repo root; empty means {cwd}/uploads"}

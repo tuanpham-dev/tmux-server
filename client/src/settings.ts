@@ -56,6 +56,13 @@ export interface AppSettings {
   // engines' raw per-row selection text.
   copyJoinWrappedLines: boolean;
   uploadConflict: "rename" | "overwrite" | "ask";
+  // Largest single file accepted by an upload, in MB. 0 means no limit —
+  // same 0-disables convention as notifyCommandMinDuration. Enforced client
+  // side before any bytes go on the wire (upload.ts's uploadAll for the
+  // FILES tree, TerminalView's paste/drop path for a terminal pane), so an
+  // oversized file is reported as a skip instead of streaming a multi-GB
+  // drag onto the server.
+  uploadMaxSizeMb: number;
   // Destination directory for image paste/drop and the {image} touch key
   // (plans/mobile-image-upload-key.md) — an absolute path used as-is for
   // every upload, regardless of the pane's cwd. Empty falls back to the
@@ -139,6 +146,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   minimumContrastRatio: 4.5,
   copyJoinWrappedLines: true,
   uploadConflict: "rename",
+  uploadMaxSizeMb: 0,
   pasteDropUploadDir: "/tmp",
   localEchoWhen: "claude",
   confirmBeforeKill: true,

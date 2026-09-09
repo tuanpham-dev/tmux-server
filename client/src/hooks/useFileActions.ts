@@ -10,7 +10,7 @@ import {
 } from "../extensions";
 import type { AppSettings } from "../settings";
 import type { MenuItem } from "../types";
-import { collectDropped, uploadAll, type DroppedItems } from "../upload";
+import { collectDropped, uploadAll, uploadMaxBytes, type DroppedItems } from "../upload";
 
 // Used only by refreshClipboardMirror's poll-driven update below, to keep
 // the same state object identity (and skip the re-render it'd otherwise
@@ -310,12 +310,16 @@ export function useFileActions(
   const handleUpload = useCallback(
     async (items: DroppedItems, destDir: string) => {
       if (items.files.length === 0 && items.dirs.length === 0) return;
+      const maxBytes = uploadMaxBytes(settingsRef.current.uploadMaxSizeMb);
       setUploadProgress({
         currentName: "",
         loadedBytes: 0,
+        // Oversized files are dropped by uploadAll, not sent — but the first
+        // onProgress call corrects this total anyway, and a drop that's
+        // entirely oversized finishes before it can be seen.
         totalBytes: items.files.reduce((sum, f) => sum + f.file.size, 0),
       });
-      const result = await uploadAll(items, destDir, settingsRef.current.uploadConflict, {
+      const result = await uploadAll(items, destDir, settingsRef.current.uploadConflict, maxBytes, {
         onProgress: (loadedBytes, totalBytes, currentName) => {
           setUploadProgress({ currentName, loadedBytes, totalBytes });
         },
