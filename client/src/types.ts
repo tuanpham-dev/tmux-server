@@ -173,6 +173,11 @@ export interface MenuItem {
     title: string;
     onClick: () => void;
   };
+  // A nested list opened from this row (the gear menu's Panes and Theme
+  // lists). A row with a submenu has no action of its own: its onClick is
+  // never called, and pointing at it — or tapping it, where there is no
+  // hover — opens the child list beside it instead.
+  submenu?: MenuItem[];
 }
 
 // Per-project tab-group UI state (useTabGroups' tabGroupState), keyed by

@@ -11,6 +11,12 @@ const FRAME_OPEN_FAIL = 3; // server -> client, payload: utf8 error code
 const FRAME_DATA = 4; // both directions, payload: raw bytes
 const FRAME_CLOSE = 5; // both directions, peer's TCP side ended
 const FRAME_WINDOW = 6; // both directions, payload: uint32 BE bytes consumed
+// client -> server, payload: utf8 JSON array of the remote ports the client
+// currently has bound locally. Sent on connect and whenever --all's poll
+// changes that set, so the app can say whether a port is reachable at
+// localhost:<port>. Purely informational: nothing is authorized by it, and a
+// client that never sends it (an older CLI) just reports no ports.
+const FRAME_PORTS = 7;
 
 // Per-channel flow-control credit. Caps memory per channel without one
 // stalled channel blocking the others sharing the WebSocket.
@@ -56,8 +62,28 @@ function errCode(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Every connected tunnel client and the ports it says it has bound. The
+// server has no other way to know: channels only open when a local
+// connection actually arrives, so they say nothing about what is merely
+// listening. Module-level because /api/tunnel-status reads it from outside
+// any one socket's closure.
+const tunnels = new Map<WebSocket, Set<number>>();
+
+export interface TunnelStatus {
+  connected: boolean;
+  // The union across every connected client.
+  ports: number[];
+}
+
+export function tunnelStatus(): TunnelStatus {
+  const ports = new Set<number>();
+  for (const reported of tunnels.values()) for (const port of reported) ports.add(port);
+  return { connected: tunnels.size > 0, ports: [...ports].sort((a, b) => a - b) };
+}
+
 export function handleTunnel(ws: WebSocket): void {
   const channels = new Map<number, Channel>();
+  tunnels.set(ws, new Set());
   // Channel ids with a tmux-ownership check in flight — guards against a
   // duplicate FRAME_OPEN for the same id (channels.has(id) can't catch it,
   // since the channel isn't created until the check resolves).
@@ -180,10 +206,32 @@ export function handleTunnel(ws: WebSocket): void {
       case FRAME_WINDOW:
         grantWindow(frame.channel, frame.payload);
         break;
+      case FRAME_PORTS:
+        reportPorts(frame.payload);
+        break;
       default:
         break;
     }
   });
+
+  // Malformed payloads are ignored rather than closing the tunnel: this
+  // frame carries a status readout, and a bad one must not cost the user
+  // their forwarding.
+  const reportPorts = (payload: Buffer) => {
+    const reported = tunnels.get(ws);
+    if (!reported) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload.toString("utf8"));
+    } catch {
+      return;
+    }
+    if (!Array.isArray(parsed)) return;
+    reported.clear();
+    for (const value of parsed) {
+      if (Number.isInteger(value) && value >= 1 && value <= 65535) reported.add(value as number);
+    }
+  };
 
   const pingTimer = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) ws.ping();
@@ -196,6 +244,7 @@ export function handleTunnel(ws: WebSocket): void {
 
   ws.on("close", () => {
     clearInterval(pingTimer);
+    tunnels.delete(ws);
     for (const ch of channels.values()) ch.socket.destroy();
     channels.clear();
   });

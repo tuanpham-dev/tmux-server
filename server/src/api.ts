@@ -1,8 +1,8 @@
 import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, unlink } from "node:fs/promises";
+import { freemem, tmpdir, totalmem } from "node:os";
 import path from "node:path";
 import { Router, urlencoded, type Response } from "express";
 import {
@@ -37,6 +37,8 @@ import {
 } from "./extensions.js";
 import { hasReceivedEvents, paneHistory, recordEnd, recordStart } from "./commandEvents.js";
 import { broadcastOpenTarget, broadcastOpenUrl, subscribeOpenUrl } from "./openUrl.js";
+import { getTunnelablePorts } from "./ports.js";
+import { tunnelStatus } from "./wsTunnel.js";
 import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { shellIntegrationPath, shellIntegrationSourceLine } from "./shellIntegration.js";
@@ -102,9 +104,43 @@ function sendFsError(res: Response, err: unknown): void {
   }
 }
 
+// MemAvailable is the kernel's own estimate of what a new workload could
+// claim without swapping — a far better "used" figure than total - free,
+// which counts page cache as used and makes every healthy Linux box look
+// full. /proc is Linux-only, so os.freemem() (which IS total - free) stands
+// in elsewhere, with the same shape and a coarser meaning.
+async function readMemory(): Promise<{ memTotalBytes: number; memUsedBytes: number }> {
+  try {
+    const meminfo = await readFile("/proc/meminfo", "utf8");
+    const field = (name: string): number | null => {
+      const match = meminfo.match(new RegExp(`^${name}:\\s+(\\d+) kB$`, "m"));
+      return match ? Number(match[1]) * 1024 : null;
+    };
+    const total = field("MemTotal");
+    const available = field("MemAvailable");
+    if (total !== null && available !== null) {
+      return { memTotalBytes: total, memUsedBytes: Math.max(0, total - available) };
+    }
+  } catch {
+    // Not Linux, or /proc unreadable — fall through.
+  }
+  return { memTotalBytes: totalmem(), memUsedBytes: Math.max(0, totalmem() - freemem()) };
+}
+
 api.get("/sessions", async (_req, res) => {
   try {
     res.json(await listSessions());
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// Lightweight host stats for the status bar: memory pressure. The port count
+// belongs to the ports extension (it owns that readout), and the terminal
+// count is derived client side from the sessions poll the app already runs.
+api.get("/system-stats", async (_req, res) => {
+  try {
+    res.json(await readMemory());
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
@@ -553,6 +589,26 @@ api.get("/tunnel-auth", (req, res) => {
     cookie: req.headers.cookie ?? null,
     authorization: req.headers.authorization ?? null,
   });
+});
+
+// What the app needs to say whether a port is reachable at localhost:<port>:
+// whether any tunnel client is connected, which ports it reports having
+// bound, and whether that covers everything currently listening.
+// `allForwarded` is the honest form of "all forwarded" — --all skips a port
+// it cannot bind locally, so a connected tunnel is not a complete one.
+api.get("/tunnel-status", async (_req, res) => {
+  try {
+    const status = tunnelStatus();
+    const listening = await getTunnelablePorts();
+    const forwarded = new Set(status.ports);
+    res.json({
+      ...status,
+      allForwarded:
+        status.connected && listening.size > 0 && [...listening].every((p) => forwarded.has(p)),
+    });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
 });
 
 // Probed by the client's AuthGate on boot. Reaching this handler at all

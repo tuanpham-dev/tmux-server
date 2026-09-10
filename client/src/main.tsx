@@ -13,7 +13,7 @@ import { ensureContrastRatio } from "./contrast";
 import { isSyntheticSelectStart, markSyntheticSelectStart } from "./engines/types";
 import { cellFromPoint } from "./mouseReports";
 import { sendWithInkSafeEnters, whenMatches } from "./lib/terminalInput";
-import { joinedSelectionText } from "./selectionText";
+import { joinedSelectionText, unwrapParagraphs } from "./selectionText";
 import { findCandidates, isOpenGesture, MAX_STITCH_LINES, openUrl } from "./terminalLinks";
 
 // Bundled preview extensions (image/markdown/json/csv/media/pdf) are built
@@ -40,6 +40,7 @@ const engineSupport = {
   whenMatches,
   sendWithInkSafeEnters,
   joinedSelectionText,
+  unwrapParagraphs,
 };
 
 declare global {

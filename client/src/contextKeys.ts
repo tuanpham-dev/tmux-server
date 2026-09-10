@@ -17,6 +17,7 @@ export const CONTEXT_KEYS: { key: string; description: string }[] = [
   { key: "projectsListFocus", description: "The PROJECTS list has keyboard focus" },
   { key: "panelFocus", description: "The bottom terminal panel holds keyboard focus" },
   { key: "sidebarVisible", description: "The sidebar is shown" },
+  { key: "rightSidebarVisible", description: "The right sidebar is shown" },
   { key: "sidebarFocus", description: "Focus is currently within the sidebar" },
   { key: "quickSwitcherOpen", description: "The Quick Switcher overlay is open" },
   { key: "commandPaletteOpen", description: "The Quick Switcher was opened in \">\" command mode" },

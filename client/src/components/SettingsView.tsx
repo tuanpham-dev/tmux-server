@@ -22,10 +22,6 @@ interface Props {
   // shortcut twice in a row (with no navigation in between) still re-fires.
   pendingFocusExtensionId?: string | null;
   onFocusExtensionHandled?: () => void;
-  // Keyboard Shortcuts moved out to its own dedicated tab (App.tsx's
-  // keyboardView) to match VS Code — this nav entry hands off to it instead
-  // of switching to an in-dialog section.
-  onOpenKeyboardShortcuts: () => void;
 }
 
 // `ext:<id>` is a dynamic nav entry for one extension's declared
@@ -51,7 +47,6 @@ export default function SettingsView({
   onExtensionSettingsChange,
   pendingFocusExtensionId,
   onFocusExtensionHandled,
-  onOpenKeyboardShortcuts,
 }: Props) {
   const [section, setSection] = useState<Section>("terminal");
 
@@ -118,9 +113,6 @@ export default function SettingsView({
               {s.label}
             </button>
           ))}
-          <button className="settings-nav-item" onClick={onOpenKeyboardShortcuts}>
-            Keyboard Shortcuts
-          </button>
           {configurableExtensions.length > 0 && (
             <>
               <div className="settings-nav-divider" />

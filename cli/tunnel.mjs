@@ -20,6 +20,11 @@ const FRAME_OPEN_FAIL = 3; // server -> client, payload: utf8 error code
 const FRAME_DATA = 4; // both directions, payload: raw bytes
 const FRAME_CLOSE = 5; // both directions, peer's TCP side ended
 const FRAME_WINDOW = 6; // both directions, payload: uint32 BE bytes consumed
+// client -> server, payload: utf8 JSON array of the remote ports bound
+// locally right now. Sent on connect and whenever that set changes, so the
+// app can show which ports are reachable at localhost:<port>. Informational
+// only — the server authorizes nothing from it.
+const FRAME_PORTS = 7;
 
 const WINDOW_SIZE = 1024 * 1024;
 
@@ -265,6 +270,10 @@ class WsTunnel {
     this.channels = new Map();
     this.nextChannelId = 1;
     this.connecting = null;
+    // Last set handed to reportPorts, replayed on every (re)connect: the
+    // socket is opened lazily and a drop clears the server's registry, so
+    // without this the status readout would go stale until the next change.
+    this.reportedPorts = [];
   }
 
   ensureConnected() {
@@ -286,6 +295,7 @@ class WsTunnel {
     socket.on("error", () => {});
     if (head && head.length) this.parser.push(head);
     console.log(`connected to ${this.urlStr}`);
+    this._sendPorts();
   }
 
   _onSocketClosed() {
@@ -374,6 +384,23 @@ class WsTunnel {
   // opts.onListenError makes a failed local bind non-fatal (--all keeps
   // running and retries on later polls); without it the process exits, which
   // is the right behavior for explicitly requested specs.
+  // Tells the server which remote ports are bound locally right now (see
+  // FRAME_PORTS). Cheap and idempotent, so callers can just re-send the whole
+  // set whenever it changes.
+  reportPorts(ports) {
+    this.reportedPorts = [...ports];
+    // Connects if needed: with only --all running there may be no channel
+    // yet, and the report is exactly what the app is waiting for.
+    void this.ensureConnected().then(
+      () => this._sendPorts(),
+      () => {},
+    );
+  }
+
+  _sendPorts() {
+    this._send(FRAME_PORTS, 0, Buffer.from(JSON.stringify(this.reportedPorts), "utf8"));
+  }
+
   forward(localPort, remotePort, opts = {}) {
     const server = net.createServer((localSocket) => {
       const id = this.nextChannelId++;
@@ -439,6 +466,7 @@ const AUTO_POLL_MS = 3000;
 
 function startAutoForward(tunnel, urlStr, headers, skipPorts) {
   const active = new Map(); // remote port -> local net.Server
+  const reportBound = () => tunnel.reportPorts([...active.keys()].filter((p) => !bindFailed.has(p)));
   const bindFailed = new Set(); // local bind failures already reported
   let lastFetchError = null;
 
@@ -492,6 +520,10 @@ function startAutoForward(tunnel, urlStr, headers, skipPorts) {
     for (const port of bindFailed) {
       if (!current.has(port)) bindFailed.delete(port);
     }
+    // Only ports actually bound: a port in bindFailed is listening on the
+    // server but NOT reachable at localhost here, and reporting it would put
+    // a "forwarded" marker on a dead link.
+    reportBound();
   };
 
   void poll();
@@ -571,7 +603,24 @@ function main() {
   }
 
   const tunnel = new WsTunnel(args.url, args.headers);
-  for (const spec of args.specs) tunnel.forward(spec.local, spec.remote);
+  // Report a spec's remote port only once its local listener is actually up
+  // (and withdraw it if the bind fails) — the same rule --all follows, so
+  // the app never marks a port reachable at a localhost address that isn't
+  // bound.
+  const bound = new Set();
+  const reportBound = () => tunnel.reportPorts([...bound]);
+  for (const spec of args.specs) {
+    tunnel.forward(spec.local, spec.remote, {
+      onListen: () => {
+        bound.add(spec.remote);
+        reportBound();
+      },
+      onListenError: () => {
+        bound.delete(spec.remote);
+        reportBound();
+      },
+    });
+  }
   if (args.all) {
     // Explicitly requested local ports stay owned by their specs.
     startAutoForward(tunnel, args.url, args.headers, new Set(args.specs.map((s) => s.local)));

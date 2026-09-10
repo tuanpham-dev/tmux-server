@@ -37,6 +37,10 @@
   --list-active-fg: #ffffff;
   --sidebar-header-bg: var(--bg);
 
+  --statusbar-bg: var(--panel-bg);
+  --statusbar-fg: var(--fg-inactive);
+  --statusbar-border: var(--border);
+
   --scrollbar-thumb-bg: var(--hover);
   --scrollbar-thumb-hover-bg: var(--selection);
 
@@ -109,6 +113,9 @@ body {
 
 .app {
   display: flex;
+  /* Column shell: the sidebars/editor row, then the status bar spanning the
+     full width beneath both sidebars (VS Code's own arrangement). */
+  flex-direction: column;
   /* Sized from the actually-visible viewport, most reliable source first:
      --app-height is set from the visualViewport API (App.tsx), which
      tracks the on-screen keyboard and browser URL bar on every platform —
@@ -118,6 +125,161 @@ body {
   height: 100vh;
   height: 100dvh;
   height: var(--app-height, 100dvh);
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---- Status bar ---- */
+
+.status-bar {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  /* Two groups: extension items can sit at either end, core's own readouts
+     close the right one. */
+  justify-content: space-between;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  background: var(--statusbar-bg);
+  color: var(--statusbar-fg);
+  border-top: 1px solid var(--statusbar-border);
+  font-size: 12px;
+  user-select: none;
+}
+
+/* Prose that a compact bar drops — an item marks its wordy parts with this
+   and needs to know nothing else about the mode. */
+.status-bar.compact .full-only {
+  display: none;
+}
+
+/* When even the compact row overflows, the groups scroll rather than
+   clipping — the same treatment the sidebar tab strip gets. */
+.status-bar.compact .status-bar-group {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.status-bar.compact .status-bar-group::-webkit-scrollbar {
+  display: none;
+}
+
+.status-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  min-width: 0;
+  /* An empty group still has to be a drop target, or an item could never be
+     moved into it. */
+  min-height: 100%;
+  flex: 1;
+}
+
+.status-bar-group[data-side="right"] {
+  justify-content: flex-end;
+}
+
+.status-bar-slot-wrap {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.status-bar-slot {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.status-bar-slot.dragging {
+  opacity: 0.4;
+}
+
+.status-bar-drop-indicator {
+  width: 2px;
+  align-self: stretch;
+  margin: 2px 1px;
+  background: var(--accent);
+}
+
+body.status-bar-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* Anchored above the bar (it sits 22px from the bottom, so it opens upward
+   and right-aligns) — same surface and z-index rung as .context-menu. */
+.status-bar-popover {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  /* The rows carry a flexible cwd column, so without a cap a deep path
+     stretches the panel across half the window. */
+  max-width: min(460px, calc(100vw - 16px));
+  overflow: hidden;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  color: var(--fg);
+  font-size: 13px;
+}
+
+/* A list inside the popover scrolls within the panel's clamped height
+   rather than growing it (the panel's own max-height comes from the
+   measured anchor). */
+.status-bar-popover-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 60vh;
+  overflow: hidden;
+}
+
+.status-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+  padding: 0 6px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.status-bar-item .codicon {
+  font-size: 13px;
+}
+
+.status-bar-reading {
+  cursor: default;
+}
+
+.status-bar-item:not(.status-bar-reading):hover:not(:disabled) {
+  background: var(--list-hover-bg);
+  color: var(--fg);
+}
+
+.status-bar-item:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.status-bar-item:focus-visible {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
 }
 
 /* ---- Sidebar ---- */
@@ -153,12 +315,32 @@ body {
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.45);
   }
 
+  /* The right drawer slides in from the opposite edge. */
+  .sidebar-right {
+    left: auto;
+    right: 0;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.45);
+  }
+
   .sidebar-backdrop {
     display: block;
     position: fixed;
     inset: 0;
     z-index: 800;
     background: rgba(0, 0, 0, 0.4);
+  }
+
+  /* The bar stays on a phone, but compact: every item drops its prose and
+     shows just its icon and number (see .full-only below). */
+  .status-bar {
+    gap: 2px;
+  }
+
+  /* Both edge affordances are redundant on touch: the flick gesture opens
+     either drawer, and a 4px/24px edge target is a poor one. */
+  .sidebar-reopen-right,
+  body.sidebar-tab-dragging .sidebar-drop-edge {
+    display: none;
   }
 
   /* The floating sidebar no longer shares flex space with .main, so the
@@ -215,6 +397,37 @@ body.resizing {
 }
 
 .sidebar-reopen:hover {
+  background: var(--accent);
+}
+
+/* The right (secondary) sidebar. Same component, mirrored chrome: its
+   divider sits on its left edge (App renders the resize handle before it),
+   and the reopen strip's border flips with it. */
+.sidebar-right {
+  border-left: 1px solid var(--border);
+}
+
+.sidebar-reopen-right {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+/* Drop zone standing in for a sidebar that isn't on screen: inert and
+   invisible until a sidebar tab is actually being dragged, at which point
+   it becomes a full-height target on that edge. */
+.sidebar-drop-edge {
+  display: none;
+}
+
+body.sidebar-tab-dragging .sidebar-drop-edge {
+  display: block;
+  flex-shrink: 0;
+  width: 24px;
+  background: var(--list-hover-bg);
+  border-inline: 1px dashed var(--border);
+}
+
+body.sidebar-tab-dragging .sidebar-drop-edge:hover {
   background: var(--accent);
 }
 
@@ -314,9 +527,56 @@ body.resizing {
   border-right-color: var(--accent);
 }
 
+/* A section header dragged over a tab icon — this tab would become its new
+   home. Outline (not background) so it reads as a target rather than a
+   selection. */
+.sidebar-tab.panel-drop-target {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Drop indicator for a tab dragged past the last tab in a strip. */
+.sidebar-tabs-end-indicator {
+  flex-shrink: 0;
+  width: 2px;
+  align-self: stretch;
+  background: var(--accent);
+}
+
 .sidebar-tab:focus-visible {
   outline: 1px solid var(--focus-border);
   outline-offset: -1px;
+}
+
+/* Shown by a sidebar that is open but holds no tabs yet — the right one
+   before anything has been moved into it. */
+.sidebar-empty {
+  padding: 12px;
+  color: var(--fg-inactive);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Wrapper around whatever the active tab shows — the accordion, or a single
+   full-height extension panel. Carries the tab id so a dragged tab can be
+   dropped into it (becoming one of that tab's sections). */
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.sidebar-body.tab-drop-target::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  background: var(--list-hover-bg);
+  opacity: 0.5;
 }
 
 .sidebar-panels {
@@ -1741,6 +2001,27 @@ body.scrollbar-dragging {
 }
 
 /* ---- Context menu ---- */
+
+/* Wrapper only — it holds no layout of its own, so a single contains()
+   check covers the root menu and every submenu nested inside it. */
+.context-menu-root {
+  display: contents;
+}
+
+/* A submenu is the same surface, positioned beside its parent row. */
+.context-menu-item-chevron {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--fg-inactive);
+  font-size: 12px;
+}
+
+.context-menu-item.submenu-open {
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
+}
 
 .context-menu {
   position: fixed;

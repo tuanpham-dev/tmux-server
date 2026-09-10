@@ -11,6 +11,7 @@
 import * as ReactNS from "react";
 import { extensionApiBase, extensionFileUrl, fetchExtensions } from "./api";
 import type { CreateTerminalEngine } from "./engines/types";
+import type { SidebarSide } from "./lib/sidebarLayout";
 import type { ExtensionSettingsValues } from "./settings";
 import type { ExtensionInfo, MenuItem } from "./types";
 import { getFileExtension } from "./utils/fileExtension";
@@ -348,6 +349,18 @@ export interface ExtensionContext {
     id: string;
     component: ReactNS.ComponentType<AppOverlayHostProps>;
   }): void;
+  // Renders a component in the app's bottom status bar — a compact readout
+  // with an optional click action (the Claude usage extension's token
+  // counter is the motivating case). `placement` picks the bar's left or
+  // right group (default "right", where core's own readouts also live), and
+  // `order` sorts within it. The bar is hidden entirely on phones/tablets,
+  // so an item never renders there. See StatusBarItemContext.
+  registerStatusBarItem(item: {
+    id: string;
+    placement?: StatusBarItemPlacement;
+    order?: number;
+    component: ReactNS.ComponentType<StatusBarItemHostProps>;
+  }): void;
   // Renders a custom component inside this extension's Settings section,
   // below its scalar configuration controls.
   registerSettingsComponent(component: { id: string; component: ReactNS.ComponentType }): void;
@@ -663,6 +676,48 @@ export interface RegisteredAppOverlay {
   component: ReactNS.ComponentType<AppOverlayHostProps>;
 }
 
+// The context handed to a status-bar item (registerStatusBarItem). Smaller
+// than every other host context on purpose: an item is a 22px-tall readout,
+// not a panel, so it gets a way to show a menu, a way to open a popover
+// above the bar, and nothing else. Anything richer belongs in a sidebar
+// panel the item can reveal.
+export interface StatusBarItemContext {
+  // matchMedia("(pointer: coarse) and (hover: none)") — a real phone or
+  // tablet. The whole bar is hidden there, so an item that renders is on a
+  // pointer device; the flag is passed for parity with the other contexts.
+  mobilePointer: boolean;
+  // The app's shared context menu, for an item whose click is a short list
+  // of actions.
+  showMenu(x: number, y: number, items: MenuItem[]): void;
+  // Opens `content` in a floating panel anchored above the bar, clamped to
+  // the viewport (the host owns positioning and dismissal — outside click,
+  // Escape, blur). Pass the trigger's own getBoundingClientRect(). Calling
+  // it again while THIS item's popover is open closes it, so a trigger
+  // button toggles without tracking any state of its own; another item's
+  // call replaces it. closePopover() closes it outright.
+  openPopover(anchor: DOMRect, content: ReactNS.ReactNode): void;
+  closePopover(): void;
+}
+
+export interface StatusBarItemHostProps {
+  context: StatusBarItemContext;
+}
+
+// "left" and "right" are the bar's two groups; core's own readouts sit at
+// the right end, after any right-placed extension items.
+export type StatusBarItemPlacement = "left" | "right";
+
+export interface RegisteredStatusBarItem {
+  // Namespaced ext.<extensionId>.<id>.
+  id: string;
+  extensionId: string;
+  placement: StatusBarItemPlacement;
+  // Sort key within the group (ascending, default 0); ties break on id, so
+  // ordering is stable however activation happened to interleave.
+  order: number;
+  component: ReactNS.ComponentType<StatusBarItemHostProps>;
+}
+
 // A custom component rendered inside the extension's own Settings section,
 // below its scalar configuration controls — for config that outgrows the
 // scalar property renderer (the touch-keys drag-and-drop layout editor).
@@ -716,6 +771,7 @@ export const extensionTerminalEngines: RegisteredTerminalEngine[] = [];
 export const extensionQuickSwitcherProviders: RegisteredQuickSwitcherProvider[] = [];
 export const extensionTerminalAccessories: RegisteredTerminalAccessory[] = [];
 export const extensionAppOverlays: RegisteredAppOverlay[] = [];
+export const extensionStatusBarItems: RegisteredStatusBarItem[] = [];
 export const extensionSettingsComponents: RegisteredSettingsComponent[] = [];
 
 type Listener = () => void;
@@ -977,68 +1033,69 @@ export function setGetCommandsHandler(handler: (() => { id: string; label: strin
   getCommandsHandler = handler;
 }
 
-interface SidebarTabsBridge {
-  select(id: string): void;
-  getActive(): string;
+// One bridge for BOTH sidebars, registered by useSidebarLayout. Every
+// question is asked by id and answered against the live layout, so a
+// "reveal Source Control" call keeps working after the user drags that tab
+// to the other side or drops its panel into Explorer.
+interface SidebarLayoutBridge {
+  sideOfTab(tabId: string): SidebarSide | null;
+  // The tab a panel currently calls home (its own id for an untouched
+  // "tab" panel), or null if no such panel is registered.
+  tabOfPanel(panelId: string): string | null;
+  isTabVisible(tabId: string): boolean;
+  getActive(side: SidebarSide): string | null;
+  selectTab(tabId: string): void;
+  isVisible(side: SidebarSide): boolean;
+  setVisible(side: SidebarSide, visible: boolean): void;
 }
 
-let sidebarTabsBridge: SidebarTabsBridge | null = null;
-// Buffers a tab id requested while the Sidebar hasn't (re)mounted yet —
-// notably focusSidebarTab's "reveal a hidden sidebar, then select" path:
-// the visibility setState is queued but the Sidebar (and its bridge) isn't
-// back until its own next render/effect pass.
+let sidebarLayoutBridge: SidebarLayoutBridge | null = null;
+// Buffers a tab id requested before the bridge exists (the app's very first
+// render, or a reveal queued while React hasn't re-rendered yet).
 let pendingTabId: string | null = null;
 
-// Wired once from Sidebar.tsx (re-registered whenever its selectTab/
-// activeTabId identity changes) — lets core code (the FILES-tree "Find in
-// Folder…" menu item, and focusSidebarTab below) force-activate a sidebar
-// tab by its (possibly extension-namespaced) id, or read which one is
-// currently active.
-export function setSidebarTabsBridge(bridge: SidebarTabsBridge | null): void {
-  sidebarTabsBridge = bridge;
+export function setSidebarLayoutBridge(bridge: SidebarLayoutBridge | null): void {
+  sidebarLayoutBridge = bridge;
   if (bridge && pendingTabId !== null) {
     const id = pendingTabId;
     pendingTabId = null;
-    bridge.select(id);
+    bridge.selectTab(id);
   }
+}
+
+// Reveals whichever side holds `tabId` (if it's hidden) and selects it.
+function revealTab(tabId: string): SidebarSide | null {
+  const bridge = sidebarLayoutBridge;
+  if (!bridge) {
+    pendingTabId = tabId;
+    return null;
+  }
+  const side = bridge.sideOfTab(tabId);
+  if (!side) return null;
+  if (!bridge.isVisible(side)) bridge.setVisible(side, true);
+  bridge.selectTab(tabId);
+  return side;
 }
 
 export function selectSidebarTab(id: string): void {
-  if (sidebarTabsBridge) sidebarTabsBridge.select(id);
+  if (sidebarLayoutBridge) revealTab(id);
   else pendingTabId = id;
 }
 
-interface SidebarVisibility {
-  isVisible(): boolean;
-  setVisible(visible: boolean): void;
-}
-
-let sidebarVisibility: SidebarVisibility | null = null;
-
-// Wired once from App.tsx — lets focusSidebarTab below reveal a hidden
-// sidebar (and hide it again for the VS Code "re-press the active tab's
-// shortcut" toggle).
-export function setSidebarVisibleHandler(handler: SidebarVisibility | null): void {
-  sidebarVisibility = handler;
-}
-
-// Drives every "Sidebar: Focus <tab>" command (sidebar.focusExplorer and
-// any extension panel's focusBinding command, see registerSidebarPanel
-// below): hidden → reveal and switch to it; visible on a different tab →
-// switch to it; visible and already the active tab → hide the sidebar
-// (VS Code's toggle behavior).
+// Drives every "Sidebar: Focus <tab>" command: hidden → reveal and switch
+// to it; visible on a different tab → switch; visible and already active →
+// hide that side (VS Code's toggle). The side is resolved per call, so the
+// same command follows a tab dragged to the right sidebar.
 export function focusSidebarTab(id: string): void {
-  if (!sidebarVisibility) return;
-  if (!sidebarVisibility.isVisible()) {
-    sidebarVisibility.setVisible(true);
-    selectSidebarTab(id);
+  const bridge = sidebarLayoutBridge;
+  if (!bridge) return;
+  const side = bridge.sideOfTab(id);
+  if (!side) return;
+  if (bridge.isVisible(side) && bridge.getActive(side) === id) {
+    bridge.setVisible(side, false);
     return;
   }
-  if (sidebarTabsBridge?.getActive() === id) {
-    sidebarVisibility.setVisible(false);
-    return;
-  }
-  selectSidebarTab(id);
+  revealTab(id);
 }
 
 interface ProjectsFocusBridge {
@@ -1047,88 +1104,59 @@ interface ProjectsFocusBridge {
   focus(): void;
 }
 
-let projectsFocusBridge: ProjectsFocusBridge | null = null;
+// Keyed by side: each mounted Sidebar registers its own, and a focus call
+// is routed to whichever side currently shows the panel.
+const projectsFocusBridges: Partial<Record<SidebarSide, ProjectsFocusBridge | null>> = {};
 
-// Wired once from Sidebar.tsx — lets sidebar.focusProjects below (App.tsx's
-// globalHandlers) reach into the accordion panel it doesn't otherwise know
-// about, same bridge pattern as setSidebarTabsBridge above.
-export function setProjectsFocusBridge(bridge: ProjectsFocusBridge | null): void {
-  projectsFocusBridge = bridge;
-}
-
-// Same literal-id-not-import approach as SEARCH_PANEL_ID above — Sidebar.tsx
-// already imports from this module, so importing its EXPLORER_TAB_ID /
-// RUN_TAB_ID exports back would be circular.
-const EXPLORER_TAB_ID = "explorer";
-const RUN_TAB_ID = "run-view";
-const COMMANDS_TAB_ID = "commands-view";
-
-// Drives the "Sidebar: Focus Projects" command: reveal the sidebar and
-// switch to the Explorer tab if needed (reusing focusSidebarTab's own
-// reveal/switch logic, but never its toggle-hide branch — this command
-// always ends by focusing a row, not hiding the sidebar), then hand off to
-// the PROJECTS panel itself.
-export function focusProjectsPanel(): void {
-  if (!sidebarVisibility) return;
-  if (!sidebarVisibility.isVisible()) {
-    sidebarVisibility.setVisible(true);
-    selectSidebarTab(EXPLORER_TAB_ID);
-  } else if (sidebarTabsBridge?.getActive() !== EXPLORER_TAB_ID) {
-    selectSidebarTab(EXPLORER_TAB_ID);
-  }
-  projectsFocusBridge?.focus();
+export function setProjectsFocusBridge(side: SidebarSide, bridge: ProjectsFocusBridge | null): void {
+  projectsFocusBridges[side] = bridge;
 }
 
 interface ExplorerPanelFocusBridge {
   // Expands the given accordion section if collapsed, then moves keyboard
   // focus into its content — the generic counterpart of the PROJECTS bridge
-  // above, for extension panels registered with an accordion location
-  // ("explorer"/"run"). One bridge serves both accordions: panel ids are
-  // namespaced and unique, and Sidebar.tsx's collapse state/panel refs are
-  // shared across them.
+  // above. One per mounted sidebar; panel ids are unique across both.
   focus(panelId: string): void;
 }
 
-let explorerPanelFocusBridge: ExplorerPanelFocusBridge | null = null;
+const explorerPanelFocusBridges: Partial<Record<SidebarSide, ExplorerPanelFocusBridge | null>> = {};
 
-// Wired once from Sidebar.tsx — same bridge pattern as
-// setProjectsFocusBridge above.
-export function setExplorerPanelFocusBridge(bridge: ExplorerPanelFocusBridge | null): void {
-  explorerPanelFocusBridge = bridge;
+export function setExplorerPanelFocusBridge(
+  side: SidebarSide,
+  bridge: ExplorerPanelFocusBridge | null,
+): void {
+  explorerPanelFocusBridges[side] = bridge;
 }
 
-// Drives every accordion-located extension panel's "Sidebar: Focus <title>"
-// command: switch to the accordion's own tab (Explorer or Run), then hand
-// off to the section — see focusProjectsPanel's doc comment for the
-// reveal/switch logic this mirrors (see focusProjectsPanel).
-export function focusAccordionPanel(tabId: string, panelId: string): void {
-  if (!sidebarVisibility) return;
-  if (!sidebarVisibility.isVisible()) {
-    sidebarVisibility.setVisible(true);
-    selectSidebarTab(tabId);
-  } else if (sidebarTabsBridge?.getActive() !== tabId) {
-    selectSidebarTab(tabId);
-  }
-  explorerPanelFocusBridge?.focus(panelId);
+// Drives an accordion-located panel's "Sidebar: Focus <title>" command and
+// ctx.app.revealSidebarPanel: reveal the side holding the panel's tab,
+// switch to that tab, then hand off to the section itself. Never toggles
+// anything shut — a reveal always means "show it".
+export function focusAccordionPanel(panelId: string): void {
+  const bridge = sidebarLayoutBridge;
+  if (!bridge) return;
+  const tabId = bridge.tabOfPanel(panelId);
+  if (!tabId) return;
+  const side = revealTab(tabId);
+  if (!side) return;
+  if (panelId === "projects") projectsFocusBridges[side]?.focus();
+  else explorerPanelFocusBridges[side]?.focus(panelId);
 }
 
-export function focusExplorerPanel(panelId: string): void {
-  focusAccordionPanel(EXPLORER_TAB_ID, panelId);
+export function focusProjectsPanel(): void {
+  focusAccordionPanel("projects");
 }
 
-// Backs ExtensionContext.app.revealSidebarPanel: same reveal/switch logic as
-// the panel's own focus command, but a "tab" panel that's already active is
-// left open rather than toggled shut (focusSidebarTab's hide branch) — an
-// extension revealing its panel to show something always means "show it".
-export function revealSidebarPanelById(panelId: string, location: SidebarPanelLocation): void {
-  if (location === "explorer") focusExplorerPanel(panelId);
-  else if (location === "run") focusAccordionPanel(RUN_TAB_ID, panelId);
-  else if (location === "commands") focusAccordionPanel(COMMANDS_TAB_ID, panelId);
-  else {
-    if (!sidebarVisibility) return;
-    if (!sidebarVisibility.isVisible()) sidebarVisibility.setVisible(true);
-    selectSidebarTab(panelId);
-  }
+// Backs ExtensionContext.app.revealSidebarPanel. A panel that IS its own
+// tab (an untouched "tab" panel) reveals that tab; one living inside an
+// accordion reveals the tab and focuses the section.
+export function revealSidebarPanelById(panelId: string): void {
+  const bridge = sidebarLayoutBridge;
+  if (!bridge) return;
+  const tabId = bridge.tabOfPanel(panelId);
+  if (!tabId) return;
+  if (tabId === panelId) revealTab(tabId);
+  else focusAccordionPanel(panelId);
 }
 
 // "Find in Folder…" (FILES-tree folder context menu, useFileActions.ts) —
@@ -1278,11 +1306,16 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
           id: `${namespacedId}.focus`,
           label: `Sidebar: Focus ${panel.title}`,
           defaultBinding: panel.focusBinding,
+          // Where the panel lives is resolved when the command RUNS, not
+          // where it was registered: the user may have moved it into an
+          // accordion (or moved an accordion section out into its own tab),
+          // and the shortcut has to follow it.
           run: () => {
-            if (location === "explorer") focusExplorerPanel(namespacedId);
-            else if (location === "run") focusAccordionPanel(RUN_TAB_ID, namespacedId);
-            else if (location === "commands") focusAccordionPanel(COMMANDS_TAB_ID, namespacedId);
-            else focusSidebarTab(namespacedId);
+            if (sidebarLayoutBridge?.tabOfPanel(namespacedId) === namespacedId) {
+              focusSidebarTab(namespacedId);
+            } else {
+              focusAccordionPanel(namespacedId);
+            }
           },
         });
       }
@@ -1383,6 +1416,16 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       });
       notify();
     },
+    registerStatusBarItem(item) {
+      extensionStatusBarItems.push({
+        id: `ext.${ext.id}.${item.id}`,
+        extensionId: ext.id,
+        placement: item.placement ?? "right",
+        order: item.order ?? 0,
+        component: item.component,
+      });
+      notify();
+    },
     registerSettingsComponent(component) {
       extensionSettingsComponents.push({
         id: `ext.${ext.id}.${component.id}`,
@@ -1432,9 +1475,8 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       },
       revealSidebarPanel(panelId) {
         const namespaced = `ext.${ext.id}.${panelId}`;
-        const panel = extensionSidebarPanels.find((p) => p.id === namespaced);
-        if (!panel) return;
-        revealSidebarPanelById(namespaced, panel.location);
+        if (!extensionSidebarPanels.some((p) => p.id === namespaced)) return;
+        revealSidebarPanelById(namespaced);
       },
       openSessionWindow(sessionName, opts) {
         openSessionWindowHandler?.(sessionName, opts?.createCwd);
@@ -1625,6 +1667,9 @@ function deactivateClientExtension(extId: string): void {
   }
   for (let i = extensionAppOverlays.length - 1; i >= 0; i--) {
     if (extensionAppOverlays[i].extensionId === extId) extensionAppOverlays.splice(i, 1);
+  }
+  for (let i = extensionStatusBarItems.length - 1; i >= 0; i--) {
+    if (extensionStatusBarItems[i].extensionId === extId) extensionStatusBarItems.splice(i, 1);
   }
   for (let i = extensionSettingsComponents.length - 1; i >= 0; i--) {
     if (extensionSettingsComponents[i].extensionId === extId) extensionSettingsComponents.splice(i, 1);

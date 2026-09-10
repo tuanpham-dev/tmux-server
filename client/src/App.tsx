@@ -11,9 +11,17 @@ import QuickSwitcher, { type PaletteCommand } from "./components/QuickSwitcher";
 import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SplitLayout from "./components/SplitLayout";
+import StatusBar from "./components/StatusBar";
 import TerminalView from "./components/TerminalView";
-import { COMMANDS_TAB_ID, EXPLORER_TAB_ID, EXTENSIONS_TAB_ID, RUN_TAB_ID } from "./components/Sidebar";
+import {
+  COMMANDS_TAB_ID,
+  EXPLORER_TAB_ID,
+  EXTENSIONS_TAB_ID,
+  RUN_TAB_ID,
+  type SidebarSide,
+} from "./lib/sidebarLayout";
 import { getContextGetter, setContextKey } from "./contextKeys";
+import { listColorThemeOptions } from "./theme";
 import {
   extensionTabGroupMenuItems,
   focusProjectsPanel,
@@ -24,10 +32,10 @@ import {
   setGetCommandsHandler,
   setKillSessionHandler,
   setOpenSessionWindowHandler,
-  setSidebarVisibleHandler,
   useExtensionRegistry,
 } from "./extensions";
 import { useDialogs } from "./hooks/useDialogs";
+import { useSidebarLayout } from "./hooks/useSidebarLayout";
 import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
@@ -250,8 +258,25 @@ export default function App() {
     localStorage.setItem("sidebarWidth", String(sidebarWidth));
   }, [sidebarWidth]);
 
-  const [sidebarVisible, setSidebarVisible] = useState(
-    () => localStorage.getItem("sidebarVisible") !== "false",
+  const [sidebarVisible, setSidebarVisible] = useState(() => {
+    const stored = localStorage.getItem("sidebarVisible");
+    if (stored !== null) return stored !== "false";
+    // No stored preference means a first visit. On a phone the sidebar is a
+    // drawer over the terminal, so opening it by default hides the very
+    // thing the app is for; on a desktop it shares the width and starts
+    // open, as it always has. An explicit choice above always wins.
+    return !window.matchMedia("(pointer: coarse) and (hover: none)").matches;
+  });
+  // The right (secondary) sidebar mirrors the left one's width/visibility
+  // state; it simply renders nothing until a tab is dragged onto it.
+  const [sidebarRightWidth, setSidebarRightWidth] = useState(() => {
+    const stored = Number(localStorage.getItem("sidebarRightWidth"));
+    return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 260;
+  });
+  // Defaults to CLOSED (unlike the left one): it starts empty, so showing it
+  // uninvited would just take space from the editor.
+  const [rightSidebarVisible, setRightSidebarVisible] = useState(
+    () => localStorage.getItem("sidebarRightVisible") === "true",
   );
 
   // The Open Folder dialog (FolderPickerDialog) — opened by the PROJECTS
@@ -264,6 +289,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("sidebarVisible", String(sidebarVisible));
   }, [sidebarVisible]);
+
+  useEffect(() => {
+    localStorage.setItem("sidebarRightWidth", String(sidebarRightWidth));
+  }, [sidebarRightWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("sidebarRightVisible", String(rightSidebarVisible));
+  }, [rightSidebarVisible]);
 
   // Lets focusSidebarTab (driven by sidebar.focusExplorer and every
   // extension panel's own focusBinding command) reveal a hidden sidebar, or
@@ -389,8 +422,19 @@ export default function App() {
       if (Math.abs(dx) < MIN_DX_PX) return;
       if (Math.abs(dx) < Math.abs(dy) * 2) return;
       if (Math.abs(dx) / dt < MIN_VELOCITY_PX_PER_MS) return;
-      if (dx > 0 && !sidebarVisibleRef.current) setSidebarVisible(true);
-      else if (dx < 0 && sidebarVisibleRef.current) setSidebarVisible(false);
+      // Left→right: show the left sidebar, or close the right drawer if
+      // that's what's open. Right→left is the mirror image, and only opens
+      // the right drawer when it has tabs to show.
+      if (dx > 0) {
+        if (rightSidebarVisibleRef.current && rightHasTabsRef.current) {
+          setSidebarSideVisible("right", false);
+        } else if (!sidebarVisibleRef.current) setSidebarSideVisible("left", true);
+      } else if (dx < 0) {
+        if (sidebarVisibleRef.current) setSidebarSideVisible("left", false);
+        else if (rightHasTabsRef.current && !rightSidebarVisibleRef.current) {
+          setSidebarSideVisible("right", true);
+        }
+      }
     };
     const onTouchCancel = () => {
       start = null;
@@ -405,12 +449,35 @@ export default function App() {
     };
   }, []);
 
+  // Whether the right sidebar has anything to show — the flick gesture must
+  // not open an empty drawer.
+  const rightHasTabsRef = useRef(false);
+  const rightSidebarVisibleRef = useRef(rightSidebarVisible);
   useEffect(() => {
-    setSidebarVisibleHandler({
-      isVisible: () => sidebarVisibleRef.current,
-      setVisible: setSidebarVisible,
-    });
-    return () => setSidebarVisibleHandler(null);
+    rightSidebarVisibleRef.current = rightSidebarVisible;
+  }, [rightSidebarVisible]);
+
+  // Both sides' visibility as one value for useSidebarLayout, which passes
+  // it through to extensions.ts's layout bridge (so "reveal Source Control"
+  // can un-hide whichever sidebar now holds it).
+  const sidebarVisibility = useMemo(
+    () => ({ left: sidebarVisible, right: rightSidebarVisible }),
+    [sidebarVisible, rightSidebarVisible],
+  );
+  // Drawer mode: the sidebars float over the terminal instead of sharing
+  // its width (styles.css's coarse-pointer block).
+  const isMobileDrawer = () => window.matchMedia("(pointer: coarse) and (hover: none)").matches;
+  const setSidebarSideVisible = useCallback((side: SidebarSide, visible: boolean) => {
+    if (side === "left") {
+      setSidebarVisible(visible);
+      // On a phone both sidebars are drawers over the terminal, so two open
+      // at once would overlap each other. Opening one closes the other —
+      // on a desktop they share the width and both can stay open.
+      if (visible && isMobileDrawer()) setRightSidebarVisible(false);
+    } else {
+      setRightSidebarVisible(visible);
+      if (visible && isMobileDrawer()) setSidebarVisible(false);
+    }
   }, []);
 
   // Extension-registered commands/viewers/panels (extensions.ts) — commands
@@ -463,9 +530,37 @@ export default function App() {
     setCommandUsage,
     extensionRegistries,
     setExtensionRegistries,
-    sidebarTabsOrder,
-    setSidebarTabsOrder,
+    sidebarLayout: syncedSidebarLayout,
+    setSidebarLayout: setSyncedSidebarLayout,
   } = useSettingsSync(extCommands);
+
+  // Both sidebars' tabs, their per-side order, and which tab each section
+  // calls home — one owner for both sides (see useSidebarLayout). Also
+  // registers the layout bridge extensions.ts's reveal/focus helpers use.
+  const {
+    layout: sidebarLayout,
+    view: sidebarView,
+    panelState: sidebarPanelState,
+    setPanelState: setSidebarPanelState,
+    panelsById: sidebarPanelsById,
+    selectTab: selectSidebarTabById,
+    moveTab: moveSidebarTab,
+    reorderTab: reorderSidebarTab,
+    movePanel: moveSidebarPanel,
+    togglePanel: toggleSidebarPane,
+    tabDrag: sidebarTabDrag,
+    setTabDrag: setSidebarTabDrag,
+  } = useSidebarLayout(
+    extSidebarPanels,
+    syncedSidebarLayout,
+    setSyncedSidebarLayout,
+    sidebarVisibility,
+    setSidebarSideVisible,
+  );
+
+  useEffect(() => {
+    rightHasTabsRef.current = sidebarView.right.tabs.length > 0;
+  }, [sidebarView.right.tabs.length]);
 
   // What rendering consumers see (TerminalView, useThemeAssets, extension
   // viewers): on a real phone/tablet with fontSizeMobile set (≥ 8, the
@@ -861,10 +956,15 @@ export default function App() {
     };
   }, []);
 
-  const startSidebarResize = useCallback((e: React.MouseEvent) => {
+  // One handler for both sidebars: the right one measures from the window's
+  // right edge instead of its left.
+  const startSidebarResize = useCallback((e: React.MouseEvent, side: SidebarSide) => {
     e.preventDefault();
     const onMove = (ev: MouseEvent) => {
-      setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, ev.clientX)));
+      const raw = side === "left" ? ev.clientX : window.innerWidth - ev.clientX;
+      const width = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, raw));
+      if (side === "left") setSidebarWidth(width);
+      else setSidebarRightWidth(width);
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
@@ -1207,7 +1307,8 @@ export default function App() {
   // context and a palette row with no context behave identically: a no-op.
   const globalHandlers = useMemo<Record<string, () => void>>(
     () => ({
-      "sidebar.toggle": () => setSidebarVisible((v) => !v),
+      "sidebar.toggle": () => setSidebarSideVisible("left", !sidebarVisibleRef.current),
+      "sidebar.toggleRight": () => setSidebarSideVisible("right", !rightSidebarVisibleRef.current),
       "sidebar.focusExplorer": () => focusSidebarTab(EXPLORER_TAB_ID),
       "sidebar.focusRun": () => focusSidebarTab(RUN_TAB_ID),
       "sidebar.focusCommands": () => focusSidebarTab(COMMANDS_TAB_ID),
@@ -1375,6 +1476,9 @@ export default function App() {
     setContextKey("sidebarVisible", sidebarVisible);
   }, [sidebarVisible]);
   useEffect(() => {
+    setContextKey("rightSidebarVisible", rightSidebarVisible);
+  }, [rightSidebarVisible]);
+  useEffect(() => {
     setContextKey("panelFocus", panelFocused);
   }, [panelFocused]);
   useEffect(() => {
@@ -1420,6 +1524,9 @@ export default function App() {
   // strip's tooltip (below) — Sidebar.tsx formats its own copy of this same
   // binding for the button shown while expanded.
   const sidebarToggleBinding = formatBinding(resolvedBindings["sidebar.toggle"]?.[0]?.key ?? "");
+  const rightSidebarToggleBinding = formatBinding(
+    resolvedBindings["sidebar.toggleRight"]?.[0]?.key ?? "",
+  );
 
   // Bumps commandUsage[id] on every palette-invoked run (not chord
   // dispatches — see paletteCommands' comment on recording scope). Read by
@@ -1580,96 +1687,270 @@ export default function App() {
     document.title = activeTab ? `${tabLabel(activeTab)} — ${APP_NAME}` : APP_NAME;
   }, [activeTab, tabLabel]);
 
+  // The Manage menu, shared by the sidebar's gear button and (on a phone,
+  // where that button is behind a closed drawer) the status bar's own. Built
+  // here rather than in Sidebar because it spans the whole app: the palette,
+  // the three full-tab views, both sidebars, every pane, and the theme.
+  const manageMenuItems = useCallback((): MenuItem[] => {
+    // A pane's stable name — the FILES header doubles as a breadcrumb and
+    // reads out a whole path, which is no way to name a checkbox.
+    const paneName = (id: string): string => {
+      if (id === "projects") return "Projects";
+      if (id === "files") return "Explorer";
+      return extSidebarPanels.find((p) => p.id === id)?.title ?? id;
+    };
+    const paneItems: MenuItem[] = [...sidebarPanelsById.values()]
+      .map((panel) => ({
+        label: paneName(panel.id),
+        // Tracks the user's own setting, not effective visibility: a pane an
+        // extension is hiding for context would otherwise show an unchecked
+        // box whose toggle appears to do nothing.
+        checked: !sidebarLayout.hiddenPanels.includes(panel.id),
+        onClick: () => toggleSidebarPane(panel.id),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const themeItems: MenuItem[] = listColorThemeOptions(extensions).map((opt) => ({
+      label: opt.label,
+      checked: settings.colorTheme === opt.value,
+      onClick: () => setSettings((prev) => ({ ...prev, colorTheme: opt.value })),
+    }));
+    const sidebarItems: MenuItem[] = [
+      {
+        label: "Left Sidebar",
+        checked: sidebarVisible,
+        shortcutCommand: "sidebar.toggle",
+        onClick: () => setSidebarSideVisible("left", !sidebarVisible),
+      },
+      {
+        label: "Right Sidebar",
+        checked: rightSidebarVisible,
+        shortcutCommand: "sidebar.toggleRight",
+        // With nothing on that side there is nothing to show — the tab menu
+        // and a drag are how a tab gets there.
+        disabled: sidebarView.right.tabs.length === 0,
+        onClick: () => setSidebarSideVisible("right", !rightSidebarVisible),
+      },
+      {
+        label: "Bottom Panel",
+        checked: panel.visible,
+        shortcutCommand: "panel.toggle",
+        onClick: togglePanel,
+      },
+    ];
+    return [
+      {
+        label: "Command Palette",
+        icon: "search",
+        shortcutCommand: "commandPalette.toggle",
+        onClick: () => setSwitcherQuery(">"),
+      },
+      { label: "", separator: true, onClick: () => {} },
+      { label: "Settings", icon: "gear", shortcutCommand: "settings.open", onClick: openSettingsTab },
+      {
+        label: "Extensions",
+        icon: "extensions",
+        shortcutCommand: "sidebar.focusExtensions",
+        onClick: () => focusSidebarTab(EXTENSIONS_TAB_ID),
+      },
+      {
+        label: "Keyboard Shortcuts",
+        icon: "keyboard",
+        shortcutCommand: "settings.openKeyboardShortcuts",
+        onClick: openKeyboardShortcutsTab,
+      },
+      { label: "", separator: true, onClick: () => {} },
+      { label: "Sidebars", icon: "layout", onClick: () => {}, submenu: sidebarItems },
+      {
+        label: "Panes",
+        icon: "layout-sidebar-left",
+        onClick: () => {},
+        submenu: paneItems.length > 0 ? paneItems : [{ label: "No panes", disabled: true, onClick: () => {} }],
+      },
+      {
+        label: "Theme",
+        icon: "paintcan",
+        onClick: () => {},
+        submenu:
+          themeItems.length > 0
+            ? themeItems
+            : [{ label: "No themes installed", disabled: true, onClick: () => {} }],
+      },
+    ];
+  }, [
+    extSidebarPanels,
+    sidebarPanelsById,
+    sidebarLayout.hiddenPanels,
+    toggleSidebarPane,
+    extensions,
+    settings.colorTheme,
+    setSettings,
+    sidebarVisible,
+    rightSidebarVisible,
+    sidebarView.right.tabs.length,
+    setSidebarSideVisible,
+    panel.visible,
+    togglePanel,
+    openSettingsTab,
+    openKeyboardShortcutsTab,
+  ]);
+
+  // The PROJECTS tree's whole prop set, shared by the sidebars (through
+  // Sidebar) and by the status bar's terminals popover, which renders the
+  // same list with `projects` overridden to [] (no pins, no dead rows).
+  const projectListProps = useMemo(
+    () => ({
+      sessions,
+      activeSessionName: activeRealTab?.sessionName ?? null,
+      activeWindow:
+        activeRealTab?.windowIndex !== undefined
+          ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
+          : null,
+      onOpenAllWindows: openAllWindows,
+      onOpenWindow: openWindowTab,
+      onKillWindow: killWindow,
+      onKillSession: closeProject,
+      onRenameWindow: renameWindow,
+      onTogglePinSession: togglePinSession,
+      onNewWindowInSession: createWindow,
+      onOpenProject: openProject,
+      onShowMenu: showMenu,
+      sessionMenuItems,
+      deadProjectMenuItems,
+      windowMenuItems,
+      extensionWindowActions: extWindowActions,
+      resolvedBindings,
+    }),
+    [
+      sessions,
+      activeRealTab,
+      openAllWindows,
+      openWindowTab,
+      killWindow,
+      closeProject,
+      renameWindow,
+      togglePinSession,
+      createWindow,
+      openProject,
+      showMenu,
+      sessionMenuItems,
+      deadProjectMenuItems,
+      windowMenuItems,
+      extWindowActions,
+      resolvedBindings,
+    ],
+  );
+
   return (
     <div className="app">
+      <div className="app-body">
+      {/* Everything both sidebars render identically. Width, side, the
+          layout slice, and the hide button differ per instance. */}
+      {(() => null)()}
       {sidebarVisible ? (
         <>
-          <div className="sidebar-backdrop" onClick={() => setSidebarVisible(false)} />
+          <div className="sidebar-backdrop" onClick={() => setSidebarSideVisible("left", false)} />
           <Sidebar
             width={sidebarWidth}
-            sessions={sessions}
-            activeSessionName={activeRealTab?.sessionName ?? null}
-            activeWindow={
-              activeRealTab?.windowIndex !== undefined
-                ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
-                : null
-            }
-            onOpenAllWindows={openAllWindows}
-            onOpenWindow={openWindowTab}
-            onKillWindow={killWindow}
-            onKillSession={closeProject}
-            onRenameWindow={renameWindow}
-            onTogglePinSession={togglePinSession}
-            onNewWindowInSession={createWindow}
-            onOpenLazygit={openLazygit}
-            onShowMenu={showMenu}
-            sessionMenuItems={sessionMenuItems}
-            deadProjectMenuItems={deadProjectMenuItems}
-            windowMenuItems={windowMenuItems}
-            projects={projects}
-            onOpenProject={openProject}
-            onAddProject={() => setFolderPickerMode("project")}
-            recentProjectsMenu={() => recentProjectMenuItems(() => setFolderPickerMode("project"))}
-            onOpenSettings={openSettingsTab}
-            panelVisible={panel.visible}
-            onTogglePanel={togglePanel}
-            onCollapse={() => setSidebarVisible(false)}
-            filesRootDir={resolvedFilesRootDir}
-            filesRootMode={filesRootMode}
-            onFilesRootModeChange={setFilesRootMode}
-            onDropFiles={handleFileTreeDrop}
-            filesRefreshKey={filesRefreshKey}
-            onFilesRefresh={handleFilesRefresh}
-            onOpenFile={openFileOrViewer}
-            onPreviewFile={openPreviewViewerTab}
-            onEditFile={openFileInSession}
-            isPreviewable={isPreviewable}
-            fileHoverAction={fileHoverAction}
-            fileMenuItems={fileMenuItems}
-            fileTreeRootMenuItems={fileTreeRootMenuItems}
-            fileMultiMenuItems={fileMultiMenuItems}
-            deleteFileEntry={deleteFileEntry}
-            deleteFileEntries={deleteFileEntries}
-            renameFileEntry={renameFileEntry}
-            onFindInFolder={findInFolder}
-            onCreateFile={createFileInDir}
-            onCreateFolder={createFolderInDir}
-            onCopyPath={copyFilePaths}
-            onCopyRelativePath={copyFileRelativePaths}
-            prunePath={prunePath}
-            cutPaths={cutPaths}
-            onCopyEntries={copyEntries}
-            onCutEntries={cutEntries}
-            onPasteInto={pasteIntoDir}
-            onClearClipboard={clearClipboard}
-            onTransferEntries={transferEntries}
-            extensionPanels={extSidebarPanels}
-            extensionWindowActions={extWindowActions}
-            extensions={extensions}
-            onReloadExtensions={reloadExtensions}
-            extensionRegistries={extensionRegistries}
-            onExtensionRegistriesChange={setExtensionRegistries}
-            defaultRegistry={defaultRegistry}
-            syncedTabsOrder={sidebarTabsOrder}
-            onTabsOrderChange={setSidebarTabsOrder}
-            registryCatalog={registryCatalog}
-            registryLoading={registryLoading}
-            onEnsureRegistryLoaded={ensureRegistryLoaded}
-            onRefreshRegistry={refreshRegistry}
-            onOpenExtensionPage={openExtensionPageTab}
-            extensionUpdatesCount={extensionUpdatesCount}
-            resolvedBindings={resolvedBindings}
-            confirmDialog={confirmDialog}
+            side="left"
+            layout={sidebarLayout}
+            tabs={sidebarView.left.tabs}
+            activeTabId={sidebarView.left.activeTabId}
+            panelsById={sidebarPanelsById}
+            panelState={sidebarPanelState}
+            setPanelState={setSidebarPanelState}
+            onSelectTab={selectSidebarTabById}
+            manageMenuItems={manageMenuItems}
+            rightSidebarVisible={rightSidebarVisible}
+            onToggleRightSidebar={() => setSidebarSideVisible("right", !rightSidebarVisible)}
+            onReorderTab={reorderSidebarTab}
+            onMoveTab={moveSidebarTab}
+            onMovePanel={moveSidebarPanel}
+            tabDrag={sidebarTabDrag}
+            onTabDragChange={setSidebarTabDrag}
+            onCollapse={() => setSidebarSideVisible("left", false)}
+    sessions={sessions}
+    activeSessionName={activeRealTab?.sessionName ?? null}
+    activeWindow={
+    activeRealTab?.windowIndex !== undefined
+    ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
+    : null
+    }
+    onOpenAllWindows={openAllWindows}
+    onOpenWindow={openWindowTab}
+    onKillWindow={killWindow}
+    onKillSession={closeProject}
+    onRenameWindow={renameWindow}
+    onTogglePinSession={togglePinSession}
+    onNewWindowInSession={createWindow}
+    onOpenLazygit={openLazygit}
+    onShowMenu={showMenu}
+    sessionMenuItems={sessionMenuItems}
+    deadProjectMenuItems={deadProjectMenuItems}
+    windowMenuItems={windowMenuItems}
+    projects={projects}
+    onOpenProject={openProject}
+    onAddProject={() => setFolderPickerMode("project")}
+    recentProjectsMenu={() => recentProjectMenuItems(() => setFolderPickerMode("project"))}
+    panelVisible={panel.visible}
+    onTogglePanel={togglePanel}
+    filesRootDir={resolvedFilesRootDir}
+    filesRootMode={filesRootMode}
+    onFilesRootModeChange={setFilesRootMode}
+    onDropFiles={handleFileTreeDrop}
+    filesRefreshKey={filesRefreshKey}
+    onFilesRefresh={handleFilesRefresh}
+    onOpenFile={openFileOrViewer}
+    onPreviewFile={openPreviewViewerTab}
+    onEditFile={openFileInSession}
+    isPreviewable={isPreviewable}
+    fileHoverAction={fileHoverAction}
+    fileMenuItems={fileMenuItems}
+    fileTreeRootMenuItems={fileTreeRootMenuItems}
+    fileMultiMenuItems={fileMultiMenuItems}
+    deleteFileEntry={deleteFileEntry}
+    deleteFileEntries={deleteFileEntries}
+    renameFileEntry={renameFileEntry}
+    onFindInFolder={findInFolder}
+    onCreateFile={createFileInDir}
+    onCreateFolder={createFolderInDir}
+    onCopyPath={copyFilePaths}
+    onCopyRelativePath={copyFileRelativePaths}
+    prunePath={prunePath}
+    cutPaths={cutPaths}
+    onCopyEntries={copyEntries}
+    onCutEntries={cutEntries}
+    onPasteInto={pasteIntoDir}
+    onClearClipboard={clearClipboard}
+    onTransferEntries={transferEntries}
+    extensionPanels={extSidebarPanels}
+    extensionWindowActions={extWindowActions}
+    extensions={extensions}
+    onReloadExtensions={reloadExtensions}
+    extensionRegistries={extensionRegistries}
+    onExtensionRegistriesChange={setExtensionRegistries}
+    defaultRegistry={defaultRegistry}
+    registryCatalog={registryCatalog}
+    registryLoading={registryLoading}
+    onEnsureRegistryLoaded={ensureRegistryLoaded}
+    onRefreshRegistry={refreshRegistry}
+    onOpenExtensionPage={openExtensionPageTab}
+    extensionUpdatesCount={extensionUpdatesCount}
+    resolvedBindings={resolvedBindings}
+    confirmDialog={confirmDialog}
           />
-          <div className="resize-handle" onMouseDown={startSidebarResize} />
+          <div className="resize-handle" onMouseDown={(e) => startSidebarResize(e, "left")} />
         </>
       ) : (
         <div
           className="sidebar-reopen"
           title={`Show sidebar${sidebarToggleBinding ? ` (${sidebarToggleBinding})` : ""}`}
-          onClick={() => setSidebarVisible(true)}
+          onClick={() => setSidebarSideVisible("left", true)}
         />
       )}
+      {/* Drop zone standing in for a sidebar that isn't on screen — only
+          visible mid-drag (body.sidebar-tab-dragging), so a second sidebar
+          is discoverable exactly when it can be used. */}
+      {!sidebarVisible && <div className="sidebar-drop-edge" data-side="left" />}
       <main className="main">
         <SplitLayout
           tree={splitTree}
@@ -1687,7 +1968,7 @@ export default function App() {
           onReorder={moveTab}
           onMoveTabToGroup={moveTabToGroup}
           onSplitAndMoveTab={splitGroupAndMoveTab}
-          onToggleSidebar={() => setSidebarVisible((v) => !v)}
+          onToggleSidebar={() => setSidebarSideVisible("left", !sidebarVisible)}
           groupingEnabled={settings.tabGroupsBySession}
           groupKey={tabGroupKey}
           groupLabel={groupLabelForKey}
@@ -1726,7 +2007,6 @@ export default function App() {
                 onExtensionSettingsChange={setExtensionSettings}
                 pendingFocusExtensionId={pendingFocusExtensionId}
                 onFocusExtensionHandled={() => setPendingFocusExtensionId(null)}
-                onOpenKeyboardShortcuts={openKeyboardShortcutsTab}
               />
             );
           } else if (tab.keyboardView) {
@@ -1866,39 +2146,6 @@ export default function App() {
               </div>
             );
           })}
-        {panel.visible && (
-          <BottomPanel
-            panel={panel}
-            visibleTabs={panelVisibleTabs}
-            activeTabId={panelActiveTabId}
-            panelFocused={panelFocused}
-            sessions={sessions}
-            settings={effectiveSettings}
-            theme={activeTerminalTheme}
-            fontsVersion={fontsVersion}
-            bindings={resolvedBindings}
-            onSelectTab={selectPanelTab}
-            onSelectPane={selectPanelPane}
-            onCloseTab={closePanelTab}
-            onResizePanes={resizePanelPanes}
-            // The attach is already gone (shell exited, or the window was
-            // killed) — drop the pane without a detach call.
-            onPaneExit={(tabId, paneId) => removePanelPane(tabId, paneId, false)}
-            onRequestTerminal={requestPanelTerminal}
-            onRequestAttachWindow={requestPanelAttachWindow}
-            onSplit={splitActivePane}
-            onHide={hidePanel}
-            onSetHeight={setPanelHeight}
-            onError={showError}
-            onOpenFile={openFileOrViewer}
-            onOpenFileSecondary={openFileOrViewerSecondary}
-            // A tmux-native switch inside a panel pane surfaces the picked
-            // window in the *editor* area; the pane itself snaps back to the
-            // window it's pinned to (the server already reverted it).
-            onWindowSwitch={(session, windowIndex) => openWindowTab(session, windowIndex)}
-            onSessionSwitch={openSwitchedSession}
-          />
-        )}
         {extAppOverlays.length > 0 && (
           <div className="app-overlay-layer" ref={overlayLayerRef}>
             {extAppOverlays.map((o) => (
@@ -1907,6 +2154,160 @@ export default function App() {
           </div>
         )}
       </main>
+      {/* Openable even with no tabs — it then shows a hint and its own empty
+          tab strip as a drop target, which is what makes the second sidebar
+          discoverable at all (VS Code's secondary sidebar behaves the same). */}
+      {rightSidebarVisible ? (
+        <>
+          <div className="sidebar-backdrop" onClick={() => setSidebarSideVisible("right", false)} />
+          <div className="resize-handle" onMouseDown={(e) => startSidebarResize(e, "right")} />
+          <Sidebar
+            width={sidebarRightWidth}
+            side="right"
+            layout={sidebarLayout}
+            tabs={sidebarView.right.tabs}
+            activeTabId={sidebarView.right.activeTabId}
+            panelsById={sidebarPanelsById}
+            panelState={sidebarPanelState}
+            setPanelState={setSidebarPanelState}
+            onSelectTab={selectSidebarTabById}
+            manageMenuItems={manageMenuItems}
+            rightSidebarVisible={rightSidebarVisible}
+            onToggleRightSidebar={() => setSidebarSideVisible("right", !rightSidebarVisible)}
+            onReorderTab={reorderSidebarTab}
+            onMoveTab={moveSidebarTab}
+            onMovePanel={moveSidebarPanel}
+            tabDrag={sidebarTabDrag}
+            onTabDragChange={setSidebarTabDrag}
+            onCollapse={() => setSidebarSideVisible("right", false)}
+    sessions={sessions}
+    activeSessionName={activeRealTab?.sessionName ?? null}
+    activeWindow={
+    activeRealTab?.windowIndex !== undefined
+    ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
+    : null
+    }
+    onOpenAllWindows={openAllWindows}
+    onOpenWindow={openWindowTab}
+    onKillWindow={killWindow}
+    onKillSession={closeProject}
+    onRenameWindow={renameWindow}
+    onTogglePinSession={togglePinSession}
+    onNewWindowInSession={createWindow}
+    onOpenLazygit={openLazygit}
+    onShowMenu={showMenu}
+    sessionMenuItems={sessionMenuItems}
+    deadProjectMenuItems={deadProjectMenuItems}
+    windowMenuItems={windowMenuItems}
+    projects={projects}
+    onOpenProject={openProject}
+    onAddProject={() => setFolderPickerMode("project")}
+    recentProjectsMenu={() => recentProjectMenuItems(() => setFolderPickerMode("project"))}
+    panelVisible={panel.visible}
+    onTogglePanel={togglePanel}
+    filesRootDir={resolvedFilesRootDir}
+    filesRootMode={filesRootMode}
+    onFilesRootModeChange={setFilesRootMode}
+    onDropFiles={handleFileTreeDrop}
+    filesRefreshKey={filesRefreshKey}
+    onFilesRefresh={handleFilesRefresh}
+    onOpenFile={openFileOrViewer}
+    onPreviewFile={openPreviewViewerTab}
+    onEditFile={openFileInSession}
+    isPreviewable={isPreviewable}
+    fileHoverAction={fileHoverAction}
+    fileMenuItems={fileMenuItems}
+    fileTreeRootMenuItems={fileTreeRootMenuItems}
+    fileMultiMenuItems={fileMultiMenuItems}
+    deleteFileEntry={deleteFileEntry}
+    deleteFileEntries={deleteFileEntries}
+    renameFileEntry={renameFileEntry}
+    onFindInFolder={findInFolder}
+    onCreateFile={createFileInDir}
+    onCreateFolder={createFolderInDir}
+    onCopyPath={copyFilePaths}
+    onCopyRelativePath={copyFileRelativePaths}
+    prunePath={prunePath}
+    cutPaths={cutPaths}
+    onCopyEntries={copyEntries}
+    onCutEntries={cutEntries}
+    onPasteInto={pasteIntoDir}
+    onClearClipboard={clearClipboard}
+    onTransferEntries={transferEntries}
+    extensionPanels={extSidebarPanels}
+    extensionWindowActions={extWindowActions}
+    extensions={extensions}
+    onReloadExtensions={reloadExtensions}
+    extensionRegistries={extensionRegistries}
+    onExtensionRegistriesChange={setExtensionRegistries}
+    defaultRegistry={defaultRegistry}
+    registryCatalog={registryCatalog}
+    registryLoading={registryLoading}
+    onEnsureRegistryLoaded={ensureRegistryLoaded}
+    onRefreshRegistry={refreshRegistry}
+    onOpenExtensionPage={openExtensionPageTab}
+    extensionUpdatesCount={extensionUpdatesCount}
+    resolvedBindings={resolvedBindings}
+    confirmDialog={confirmDialog}
+          />
+        </>
+      ) : (
+        <>
+          <div className="sidebar-drop-edge" data-side="right" />
+          {sidebarView.right.tabs.length > 0 && (
+            <div
+              className="sidebar-reopen sidebar-reopen-right"
+              title={`Show right sidebar${rightSidebarToggleBinding ? ` (${rightSidebarToggleBinding})` : ""}`}
+              onClick={() => setSidebarSideVisible("right", true)}
+            />
+          )}
+        </>
+      )}
+      </div>
+      {/* Outside .app-body deliberately: the bottom panel spans the whole
+          window, under both sidebars, rather than only the editor column. */}
+      {panel.visible && (
+        <BottomPanel
+          panel={panel}
+          visibleTabs={panelVisibleTabs}
+          activeTabId={panelActiveTabId}
+          panelFocused={panelFocused}
+          sessions={sessions}
+          settings={effectiveSettings}
+          theme={activeTerminalTheme}
+          fontsVersion={fontsVersion}
+          bindings={resolvedBindings}
+          onSelectTab={selectPanelTab}
+          onSelectPane={selectPanelPane}
+          onCloseTab={closePanelTab}
+          onResizePanes={resizePanelPanes}
+          // The attach is already gone (shell exited, or the window was
+          // killed) — drop the pane without a detach call.
+          onPaneExit={(tabId, paneId) => removePanelPane(tabId, paneId, false)}
+          onRequestTerminal={requestPanelTerminal}
+          onRequestAttachWindow={requestPanelAttachWindow}
+          onSplit={splitActivePane}
+          onHide={hidePanel}
+          onSetHeight={setPanelHeight}
+          onError={showError}
+          onOpenFile={openFileOrViewer}
+          onOpenFileSecondary={openFileOrViewerSecondary}
+          // A tmux-native switch inside a panel pane surfaces the picked
+          // window in the *editor* area; the pane itself snaps back to the
+          // window it's pinned to (the server already reverted it).
+          onWindowSwitch={(session, windowIndex) => openWindowTab(session, windowIndex)}
+          onSessionSwitch={openSwitchedSession}
+        />
+      )}
+      {settings.showStatusBar && (
+        <StatusBar
+          sessions={sessions}
+          projectListProps={projectListProps}
+          showMenu={showMenu}
+          manageMenuItems={manageMenuItems}
+          mobilePointer={mobilePointer}
+        />
+      )}
       {menu && (
         <ContextMenu menu={menu} onClose={() => setMenu(null)} resolvedBindings={resolvedBindings} />
       )}

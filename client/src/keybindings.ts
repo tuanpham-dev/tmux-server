@@ -34,6 +34,9 @@ export interface Command {
 
 export const COMMANDS: Command[] = [
   { id: "sidebar.toggle", label: "Toggle Sidebar", defaultBindings: [{ key: "ctrl+shift+KeyB" }], scope: "global" },
+  // VS Code's secondary-sidebar chord. The right sidebar exists only once a
+  // tab has been dragged there, so this is a no-op until then.
+  { id: "sidebar.toggleRight", label: "Toggle Right Sidebar", defaultBindings: [{ key: "ctrl+alt+KeyB" }], scope: "global" },
   { id: "sidebar.focusExplorer", label: "Sidebar: Focus Explorer", defaultBindings: [{ key: "ctrl+shift+KeyE" }], scope: "global" },
   // Unbound by default: the Run tab is optional (it only exists while an
   // extension contributes a section), so it doesn't claim a chord.
@@ -88,6 +91,9 @@ export const COMMANDS: Command[] = [
   { id: "window.kill", label: "Terminal: Close Current", defaultBindings: [], scope: "global", enablement: "activeSession && activeWindow" },
   { id: "window.rename", label: "Terminal: Rename Current…", defaultBindings: [], scope: "global", enablement: "activeSession && activeWindow" },
   { id: "terminal.copy", label: "Terminal: Copy Selection", defaultBindings: [{ key: "ctrl+shift+KeyC", when: "terminalFocus" }], scope: "terminal" },
+  // Paragraph mode for ONE copy, whatever settings.copySelection is — the
+  // right-click menu shows this binding on its own "Copy as Paragraph" row.
+  { id: "terminal.copyAsParagraph", label: "Terminal: Copy Selection as Paragraph", defaultBindings: [{ key: "ctrl+shift+alt+KeyC", when: "terminalFocus" }], scope: "terminal" },
   { id: "terminal.find", label: "Terminal: Find", defaultBindings: [{ key: "ctrl+shift+KeyF", when: "terminalFocus" }], scope: "terminal" },
   { id: "terminal.newline", label: "Terminal: Insert Newline", defaultBindings: [{ key: "shift+Enter", when: "terminalFocus" }], scope: "terminal" },
   { id: "terminal.fontSizeIncrease", label: "Terminal: Increase Font Size", defaultBindings: [{ key: "ctrl+Equal" }], scope: "global" },

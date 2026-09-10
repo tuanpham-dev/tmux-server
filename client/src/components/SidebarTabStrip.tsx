@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import type { TabDragState } from "../hooks/useSidebarLayout";
+import { otherSide, type SidebarSide } from "../lib/sidebarLayout";
+import type { MenuItem } from "../types";
 import Icon from "./Icon";
 
 export interface SidebarTabInfo {
@@ -9,10 +12,25 @@ export interface SidebarTabInfo {
 }
 
 interface Props {
+  side: SidebarSide;
   tabs: SidebarTabInfo[];
   activeId: string;
   onSelect: (id: string) => void;
+  // Reorder within this strip: `toIndex` indexes this strip's own tabs.
   onReorder: (id: string, toIndex: number) => void;
+  // Move a tab to a side at an index in that side's tabs — the same call
+  // for a drop on the other strip and for the tab menu's "Move to … Sidebar".
+  onMoveToSide: (id: string, side: SidebarSide, index: number) => void;
+  // A panel header dropped onto a tab icon: rehome that section here.
+  onDropPanel: (panelId: string, tabId: string) => void;
+  // Whether a tab id is also a movable panel (an extension's own tab) — only
+  // those can be dropped into a sidebar's panel area to become a section.
+  isPanelTab: (tabId: string) => boolean;
+  onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
+  // Shared with the other strip, so whichever one is under the pointer
+  // draws the drop indicator (and the source strip dims its dragged tab).
+  drag: TabDragState | null;
+  onDragChange: (drag: TabDragState | null) => void;
 }
 
 // Long-press delay (touch/pen) before a hold starts a drag instead of letting
@@ -22,14 +40,37 @@ const LONG_PRESS_MS = 300;
 const MOVE_SLOP_PX = 8;
 const MOUSE_DRAG_THRESHOLD_PX = 5;
 
-type DropIndicator = { id: string; edge: "left" | "right" };
+// Panel-header drags use HTML5 DnD (that's what the accordion already
+// does), so a tab icon accepts them as a plain drop target — must match
+// Sidebar.tsx's PANEL_DRAG_TYPE.
+const PANEL_DRAG_TYPE = "application/x-tmux-panel";
 
-export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }: Props) {
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
+// Where a tab drag would land: moved to a side at an index, or dropped into
+// a tab's panel area to become one of its sections.
+type DropTarget =
+  | { kind: "side"; side: SidebarSide; index: number }
+  | { kind: "panel"; tabId: string };
+
+export default function SidebarTabStrip({
+  side,
+  tabs,
+  activeId,
+  onSelect,
+  onReorder,
+  onMoveToSide,
+  onDropPanel,
+  isPanelTab,
+  onShowMenu,
+  drag,
+  onDragChange,
+}: Props) {
+  const [panelDropTabId, setPanelDropTabId] = useState<string | null>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const justDraggedRef = useRef(false);
   const stripRef = useRef<HTMLDivElement | null>(null);
+
+  const dragId = drag?.draggedId ?? null;
+  const indicator = drag?.indicator ?? null;
 
   // Plain (unshifted) mouse wheel scrolls the strip horizontally too, not
   // just Shift+wheel (the browser's native horizontal-scroll gesture) —
@@ -60,26 +101,83 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
     startY: number;
     dragging: boolean;
     longPressTimer: ReturnType<typeof setTimeout> | null;
-    insertIndex: number;
+    drop: DropTarget | null;
   } | null>(null);
 
-  const computeInsertion = (clientX: number, draggedId: string): DropIndicator | null => {
-    const order = tabs.filter((t) => t.id !== draggedId);
-    if (order.length === 0) return null;
-    for (const t of order) {
-      const el = tabRefs.current.get(t.id);
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-      if (clientX < rect.left + rect.width / 2) return { id: t.id, edge: "left" };
-      if (clientX < rect.right) return { id: t.id, edge: "right" };
+  // Where the pointer currently is, in layout terms: which strip (or which
+  // empty side's drop edge) it's over, and where in it. Hit-tested through
+  // the DOM rather than this strip's own tab rects, because a drag can end
+  // on the OTHER sidebar's strip — or on the edge zone standing in for a
+  // sidebar that isn't mounted yet.
+  const hitTest = (
+    clientX: number,
+    clientY: number,
+    draggedId: string,
+  ): { indicator: TabDragState["indicator"]; drop: DropTarget } | null => {
+    const el = document.elementFromPoint(clientX, clientY);
+    const edge = el?.closest<HTMLElement>(".sidebar-drop-edge");
+    if (edge) {
+      const edgeSide = edge.dataset.side === "right" ? "right" : "left";
+      return {
+        indicator: { side: edgeSide, tabId: null, edge: "end" },
+        drop: { kind: "side", side: edgeSide, index: Number.MAX_SAFE_INTEGER },
+      };
     }
-    return { id: order[order.length - 1].id, edge: "right" };
-  };
-
-  const indicatorToIndex = (indicator: DropIndicator, draggedId: string): number => {
-    const order = tabs.filter((t) => t.id !== draggedId);
-    const idx = order.findIndex((t) => t.id === indicator.id);
-    return indicator.edge === "left" ? idx : idx + 1;
+    const strip = el?.closest<HTMLElement>(".sidebar-tabs");
+    if (!strip) {
+      const sidebar = el?.closest<HTMLElement>(".sidebar[data-side]");
+      if (!sidebar) return null;
+      const bodySide = sidebar.dataset.side === "right" ? "right" : "left";
+      // Over a sidebar's panel area, with a tab that is itself a panel: this
+      // is the "make it a section of what's showing here" drop.
+      // data-host-tab, not data-tab-id: the latter marks the strip's own tab
+      // buttons, and one attribute meaning two things invites a stray match.
+      const body = el?.closest<HTMLElement>(".sidebar-body[data-host-tab]");
+      const hostTabId = body?.dataset.hostTab;
+      if (hostTabId && hostTabId !== draggedId && isPanelTab(draggedId)) {
+        return {
+          indicator: { side: bodySide, tabId: hostTabId, edge: "body" },
+          drop: { kind: "panel", tabId: hostTabId },
+        };
+      }
+      // Anywhere else in the sidebar (its header, or an empty sidebar's
+      // body) moves the tab to that side, at the end.
+      return {
+        indicator: { side: bodySide, tabId: null, edge: "end" },
+        drop: { kind: "side", side: bodySide, index: Number.MAX_SAFE_INTEGER },
+      };
+    }
+    const stripSide = strip.dataset.side === "right" ? "right" : "left";
+    const buttons = [...strip.querySelectorAll<HTMLElement>("[data-tab-id]")].filter(
+      (b) => b.dataset.tabId !== draggedId,
+    );
+    if (buttons.length === 0) {
+      return {
+        indicator: { side: stripSide, tabId: null, edge: "end" },
+        drop: { kind: "side", side: stripSide, index: 0 },
+      };
+    }
+    for (let i = 0; i < buttons.length; i++) {
+      const rect = buttons[i].getBoundingClientRect();
+      const tabId = buttons[i].dataset.tabId!;
+      if (clientX < rect.left + rect.width / 2) {
+        return {
+          indicator: { side: stripSide, tabId, edge: "left" },
+          drop: { kind: "side", side: stripSide, index: i },
+        };
+      }
+      if (clientX < rect.right) {
+        return {
+          indicator: { side: stripSide, tabId, edge: "right" },
+          drop: { kind: "side", side: stripSide, index: i + 1 },
+        };
+      }
+    }
+    const lastId = buttons[buttons.length - 1].dataset.tabId!;
+    return {
+      indicator: { side: stripSide, tabId: lastId, edge: "right" },
+      drop: { kind: "side", side: stripSide, index: buttons.length },
+    };
   };
 
   const removeWindowListeners = () => {
@@ -92,8 +190,8 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
     const session = sessionRef.current;
     if (session?.longPressTimer) clearTimeout(session.longPressTimer);
     sessionRef.current = null;
-    setDragId(null);
-    setDropIndicator(null);
+    document.body.classList.remove("sidebar-tab-dragging");
+    onDragChange(null);
   };
 
   // Safety net: if the strip unmounts mid-drag, the gesture's own
@@ -106,6 +204,7 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
       if (session.longPressTimer) clearTimeout(session.longPressTimer);
       removeWindowListeners();
       sessionRef.current = null;
+      document.body.classList.remove("sidebar-tab-dragging");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -114,7 +213,10 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
     const session = sessionRef.current;
     if (!session || session.dragging) return;
     session.dragging = true;
-    setDragId(session.tabId);
+    // Reveals the drop edges for whichever side has no sidebar mounted, so
+    // a second sidebar is discoverable exactly when it's usable.
+    document.body.classList.add("sidebar-tab-dragging");
+    onDragChange({ draggedId: session.tabId, indicator: null });
   };
 
   const onPointerMoveWindow = (e: PointerEvent) => {
@@ -138,18 +240,24 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
       }
     }
 
-    const indicator = computeInsertion(e.clientX, session.tabId);
-    setDropIndicator(indicator);
-    if (indicator) session.insertIndex = indicatorToIndex(indicator, session.tabId);
+    const hit = hitTest(e.clientX, e.clientY, session.tabId);
+    // Off every strip and edge: keep the last indicator rather than
+    // flickering it away as the pointer crosses the terminal.
+    if (!hit) return;
+    session.drop = hit.drop;
+    onDragChange({ draggedId: session.tabId, indicator: hit.indicator });
   };
 
   const onPointerUpWindow = (e: PointerEvent) => {
     const session = sessionRef.current;
     if (!session || e.pointerId !== session.pointerId) return;
     removeWindowListeners();
-    if (session.dragging) {
+    if (session.dragging && session.drop) {
       justDraggedRef.current = true;
-      onReorder(session.tabId, session.insertIndex);
+      const drop = session.drop;
+      if (drop.kind === "panel") onDropPanel(session.tabId, drop.tabId);
+      else if (drop.side === side) onReorder(session.tabId, drop.index);
+      else onMoveToSide(session.tabId, drop.side, drop.index);
     }
     endSession();
   };
@@ -172,7 +280,7 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
       startY: e.clientY,
       dragging: false,
       longPressTimer: null,
-      insertIndex: tabs.findIndex((t) => t.id === tabId),
+      drop: null,
     };
 
     if (e.pointerType !== "mouse") {
@@ -194,16 +302,64 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
     onSelect(tabId);
   };
 
+  const handleContextMenu = (e: React.MouseEvent, tabId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const target = otherSide(side);
+    onShowMenu(e.clientX, e.clientY, [
+      {
+        label: target === "right" ? "Move to Right Sidebar" : "Move to Left Sidebar",
+        onClick: () => onMoveToSide(tabId, target, Number.MAX_SAFE_INTEGER),
+      },
+    ]);
+  };
+
+  // A tab icon doubles as a drop target for a panel-header drag, which is
+  // how a section is moved into another tab. The Extensions tab is excluded:
+  // its body is the extension manager, not an accordion.
+  const acceptsPanelDrop = (tabId: string) => tabId !== "extensions-view";
+
+  const panelDragHandlers = (tabId: string) =>
+    acceptsPanelDrop(tabId)
+      ? {
+          onDragOver: (e: React.DragEvent) => {
+            if (!e.dataTransfer.types.includes(PANEL_DRAG_TYPE)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            setPanelDropTabId(tabId);
+          },
+          onDragLeave: (e: React.DragEvent) => {
+            if (e.currentTarget === e.target) setPanelDropTabId(null);
+          },
+          onDrop: (e: React.DragEvent) => {
+            if (!e.dataTransfer.types.includes(PANEL_DRAG_TYPE)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const panelId = e.dataTransfer.getData(PANEL_DRAG_TYPE);
+            setPanelDropTabId(null);
+            if (panelId) onDropPanel(panelId, tabId);
+          },
+        }
+      : {};
+
   useEffect(() => {
     tabRefs.current.get(activeId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeId]);
 
   return (
-    <div className="sidebar-tabs" role="tablist" aria-label="Sidebar views" ref={stripRef}>
+    <div
+      className="sidebar-tabs"
+      role="tablist"
+      aria-label="Sidebar views"
+      data-side={side}
+      ref={stripRef}
+    >
       {tabs.map((tab) => {
-        const indicatorClass =
-          dropIndicator?.id === tab.id ? ` drop-indicator-${dropIndicator.edge}` : "";
+        const showsIndicator =
+          indicator?.side === side && indicator.edge !== "body" && indicator.tabId === tab.id;
+        const indicatorClass = showsIndicator ? ` drop-indicator-${indicator.edge}` : "";
         const draggingClass = dragId === tab.id ? " dragging" : "";
+        const panelDropClass = panelDropTabId === tab.id ? " panel-drop-target" : "";
         return (
           <button
             key={tab.id}
@@ -213,17 +369,25 @@ export default function SidebarTabStrip({ tabs, activeId, onSelect, onReorder }:
             }}
             role="tab"
             type="button"
+            data-tab-id={tab.id}
             aria-selected={tab.id === activeId}
             title={tab.title}
-            className={`sidebar-tab${tab.id === activeId ? " active" : ""}${indicatorClass}${draggingClass}`}
+            className={`sidebar-tab${tab.id === activeId ? " active" : ""}${indicatorClass}${draggingClass}${panelDropClass}`}
             onPointerDown={(e) => handlePointerDown(e, tab.id)}
             onClick={() => handleClick(tab.id)}
+            onContextMenu={(e) => handleContextMenu(e, tab.id)}
+            {...panelDragHandlers(tab.id)}
           >
             <Icon name={tab.icon} />
             {!!tab.badge && <span className="sidebar-tab-badge">{tab.badge}</span>}
           </button>
         );
       })}
+      {/* Trailing drop zone: a drag past the last tab (or onto an empty
+          strip) lands at the end rather than nowhere. */}
+      {indicator?.side === side && indicator.tabId === null && (
+        <span className="sidebar-tabs-end-indicator" aria-hidden="true" />
+      )}
     </div>
   );
 }

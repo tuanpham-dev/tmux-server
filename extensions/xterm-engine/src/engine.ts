@@ -9,11 +9,12 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type FontWeight } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { cellFromPoint, joinedSelectionText } from "@tmux-server/engine-support";
+import { cellFromPoint, joinedSelectionText, unwrapParagraphs } from "@tmux-server/engine-support";
 import { copyText } from "../../_shared/clipboard";
 import { buildXtermLinkProvider, stitchXtermLine } from "./links";
 import type {
   CellPosition,
+  HoveredLink,
   TerminalEngineHandle,
   TerminalEngineOptions,
   TerminalEngineSettings,
@@ -53,7 +54,7 @@ export async function createXtermEngine(
 
   let disposed = false;
   // Live settings copy for the ones consulted at event time rather than
-  // applied to term.options (copyJoinWrappedLines) — updated in setSettings.
+  // applied to term.options (the copy mode) — updated in setSettings.
   let currentSettings = initialSettings;
 
   const term = new Terminal({
@@ -153,23 +154,30 @@ export async function createXtermEngine(
   // detected file-path link.
   const activateOsc8 = (event: MouseEvent, text: string) => {
     if (!(event.ctrlKey || event.metaKey)) return;
+    const link = osc8Link(text);
+    if (link.kind === "path") onOpenFile(link.target);
+    else onOpenUrl(link.target);
+  };
+
+  // Same file:-vs-everything-else split activateOsc8 acts on, as data — so
+  // the hover report below and the activation can't drift apart.
+  const osc8Link = (text: string): HoveredLink => {
     try {
       const url = new URL(text);
       if (url.protocol === "file:") {
-        onOpenFile(decodeURIComponent(url.pathname));
-        return;
+        return { kind: "path", target: decodeURIComponent(url.pathname) };
       }
     } catch {
-      // Not a parseable URL — fall through to onOpenUrl (mailto:, custom
-      // schemes some tools emit).
+      // Not a parseable URL — treat as a URL target anyway (mailto:, custom
+      // schemes some tools emit), exactly as onOpenUrl does.
     }
-    onOpenUrl(text);
+    return { kind: "url", target: text };
   };
   term.options.linkHandler = {
     activate: activateOsc8,
     hover: (event, text) => {
       showTooltip(event, text);
-      onLinkHoverChange((e) => activateOsc8(e, text));
+      onLinkHoverChange((e) => activateOsc8(e, text), osc8Link(text));
     },
     leave: () => {
       hideTooltip();
@@ -195,7 +203,11 @@ export async function createXtermEngine(
             hoverTooltip.style.top = `${lastMouse.y - hostRect.top + 16}px`;
             hoverTooltip.style.display = "block";
           }
-          onLinkHoverChange((e) => link.activate(e, link.text));
+          onLinkHoverChange((e) => link.activate(e, link.text), {
+            kind: link.kind,
+            target: link.target,
+            line: link.line,
+          });
         } else {
           hideTooltip();
           onLinkHoverChange(null);
@@ -336,16 +348,26 @@ export async function createXtermEngine(
   // raw 0-based coords with an EXCLUSIVE end column (verified against
   // @xterm/xterm 6.0.0's CoreBrowserTerminal.getSelectionPosition), despite
   // the 1-based IBufferRange typing — exactly the shape the helper takes.
+  //
+  // copySelection picks the mode; an older host that only sets
+  // copyJoinWrappedLines maps onto "joinWrapped"/"raw". "paragraph"
+  // additionally undoes the wrapping the PROGRAM did to its own output —
+  // lossy, so it only ever runs when the user asked for it.
+  const copyMode = (): "raw" | "joinWrapped" | "paragraph" =>
+    currentSettings.copySelection ?? (currentSettings.copyJoinWrappedLines ? "joinWrapped" : "raw");
+
   const selectionForCopy = (): string => {
-    if (!currentSettings.copyJoinWrappedLines) return term.getSelection();
+    const mode = copyMode();
+    if (mode === "raw") return term.getSelection();
     const pos = term.getSelectionPosition();
     if (!pos) return term.getSelection();
-    return joinedSelectionText(term, {
+    const joined = joinedSelectionText(term, {
       startX: pos.start.x,
       startY: pos.start.y,
       endX: pos.end.x,
       endY: pos.end.y,
     });
+    return mode === "paragraph" ? unwrapParagraphs(joined) : joined;
   };
 
   // Browser-native copy (right-click → Copy, or a copy keydown no app
@@ -354,7 +376,7 @@ export async function createXtermEngine(
   // Capture on `screen` (an ancestor) runs first and overrides it with the
   // same joined text the app's copy paths produce.
   const onCopyEvent = (e: ClipboardEvent) => {
-    if (!currentSettings.copyJoinWrappedLines) return;
+    if (copyMode() === "raw") return;
     if (!term.hasSelection() || !e.clipboardData) return;
     e.clipboardData.setData("text/plain", selectionForCopy());
     e.preventDefault();
@@ -382,6 +404,7 @@ export async function createXtermEngine(
     },
     getSelection: () => selectionForCopy(),
     clearSelection: () => term.clearSelection(),
+    selectAll: () => term.selectAll(),
     clear: () => term.clear(),
     // T1 finding: xterm's own mousedown/shift-force replay path only
     // *extends* an existing selection (never starts one from blank) and

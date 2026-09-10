@@ -19,7 +19,7 @@ export interface ProjectListHandle {
   focusList: () => void;
 }
 
-interface Props {
+export interface ProjectListProps {
   sessions: TmuxSession[];
   activeSessionName: string | null;
   activeWindow: { sessionName: string; index: number } | null;
@@ -65,7 +65,7 @@ const projectRowId = (session: TmuxSession) => `project:${session.path || sessio
 // roving-tabindex keyboard navigation (useListNavigation), rebindable
 // projects.* operation shortcuts, and menu-key context menus — see
 // plans/projects-not-sessions.md and plans/project-first-ui.md.
-const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
+const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function ProjectList(
   {
     sessions,
     activeSessionName,

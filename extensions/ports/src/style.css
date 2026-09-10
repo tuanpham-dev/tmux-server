@@ -36,11 +36,6 @@
   outline-offset: -1px;
 }
 
-.port-row.selected {
-  background: var(--list-active-bg);
-  color: var(--list-active-fg);
-}
-
 .port-item {
   display: flex;
   align-items: center;
@@ -376,3 +371,42 @@
   color: var(--fg-inactive);
 }
 
+
+/* ---- Status-bar popover ---- */
+
+/* The host clamps and positions the panel; this only lays out its contents,
+   which are the panel's own rows plus a footer carrying the one command that
+   forwards everything. */
+.ports-status-popover {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 50vh;
+}
+
+.ports-status-popover .port-list {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.ports-status-popover-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.ports-status-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-inactive);
+}
+
+/* A port a connected tunnel reports having bound locally — clicking it opens
+   localhost directly rather than the proxy. */
+.port-forwarded-dot,
+.port-forwarded-icon {
+  color: var(--status-active-bg);
+}

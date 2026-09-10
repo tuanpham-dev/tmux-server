@@ -39,6 +39,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return text ? JSON.parse(text) : (undefined as T);
 }
 
+// Host stats behind the status bar. Memory only: the port count is the ports
+// extension's own readout, and the terminal count is derived client side from
+// the sessions poll.
+export interface SystemStats {
+  memTotalBytes: number;
+  memUsedBytes: number;
+}
+
+export function fetchSystemStats(): Promise<SystemStats> {
+  return request("/api/system-stats");
+}
+
 export function fetchSessions(): Promise<TmuxSession[]> {
   return request("/api/sessions");
 }

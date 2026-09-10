@@ -119,6 +119,13 @@ const CSS_VAR_KEY_CHAINS: Record<string, string[]> = {
   "--list-active-fg": ["list.activeSelectionForeground"],
   "--sidebar-header-bg": ["sideBarSectionHeader.background"],
 
+  // Deliberately --statusbar-* and not --status-*: --status-idle-bg /
+  // --status-active-bg above are the session activity dots, a different
+  // thing entirely.
+  "--statusbar-bg": ["statusBar.background"],
+  "--statusbar-fg": ["statusBar.foreground"],
+  "--statusbar-border": ["statusBar.border"],
+
   "--scrollbar-thumb-bg": ["scrollbarSlider.background"],
   "--scrollbar-thumb-hover-bg": ["scrollbarSlider.hoverBackground"],
 
