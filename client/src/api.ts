@@ -200,6 +200,42 @@ export function openFile(
   });
 }
 
+// Opens `nvim -d` on a two-sided diff in a new window of `session`. The server
+// materializes whichever side isn't a real file into a temp file — see
+// openDiffInWindow. Mirrors openFile's return: a window index to surface as a
+// tab, or null when the file landed in an existing window.
+export function openDiff(
+  session: string,
+  req: {
+    original: { content: string; label: string };
+    modified: { content: string; label: string; path?: string };
+  },
+): Promise<{ windowIndex: number | null }> {
+  return request(`/api/sessions/${encodeURIComponent(session)}/open-diff`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+}
+
+// Opens git mergetool's nvimdiff layout (LOCAL | MERGED | REMOTE, cursor in
+// MERGED) on a conflicted working file — see openMergeInWindow.
+export function openMerge(
+  session: string,
+  req: {
+    path: string;
+    ours: { content: string; label: string };
+    theirs: { content: string; label: string };
+    base?: { content: string; label: string };
+  },
+): Promise<{ windowIndex: number | null }> {
+  return request(`/api/sessions/${encodeURIComponent(session)}/open-merge`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+}
+
 // Validates terminal-link file-path candidates against the session's active
 // pane cwd — see the matching server route for the resolution rules. Result
 // array is index-aligned with `paths`; a null entry means "not a real file,

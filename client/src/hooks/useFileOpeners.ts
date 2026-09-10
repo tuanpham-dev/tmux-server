@@ -1,6 +1,9 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import * as api from "../api";
+import { resolveEditor, setNvimProvider } from "../editors";
 import {
+  setEditorHandlers,
+  setPreviewHandlers,
   extensionFileOpenInterceptors,
   findFileViewerFor,
   findPreviewCapableViewerFor,
@@ -10,6 +13,7 @@ import {
   setRefreshFilesHandler,
   type RegisteredFileViewer,
 } from "../extensions";
+import type { DiffRequest, MergeRequest } from "../extensions";
 import type { Tab } from "../types";
 
 // File-opening dispatch: FILES-tree clicks, the "Preview" escape hatch, and
@@ -28,7 +32,13 @@ export function useFileOpeners(
   openExtViewerTab: (viewerId: string, filePath: string, title?: string) => void,
   closeExtViewerTab: (viewerId: string, path: string) => void,
   setFilesRefreshKey: (updater: (k: number) => number) => void,
+  // The `editor` setting's current value — which editor handles files, diffs
+  // and merge conflicts. Held in a ref below so the dispatch functions don't
+  // change identity every time it does.
+  selectedEditor: string,
 ) {
+  const selectedEditorRef = useRef(selectedEditor);
+  selectedEditorRef.current = selectedEditor;
   // The "Preview" escape hatch (context-menu item / Shift+Enter / hover icon
   // when applicable) for a path some preview-capable viewer claims —
   // markdown/json/yaml/csv today. Preview-capable rather than resolved-
@@ -106,6 +116,114 @@ export function useFileOpeners(
     [activeRealTab, showError, refresh, openWindowTab, setActiveTabId],
   );
 
+  // Surfaces whatever window an nvim open landed in, as a tab. Shared by the
+  // diff and merge opens below, which spawn a window the same way
+  // openFileInSession's own new-window branch does.
+  const surfaceNvimWindow = useCallback(
+    async (windowIndex: number | null) => {
+      if (windowIndex === null || !activeRealTab) return;
+      await refresh();
+      await openWindowTab(activeRealTab.sessionName, windowIndex);
+    },
+    [activeRealTab, refresh, openWindowTab],
+  );
+
+  const openDiffInNvim = useCallback(
+    async (req: DiffRequest) => {
+      if (!activeRealTab) return;
+      const { windowIndex } = await api.openDiff(activeRealTab.attachName, {
+        original: req.original,
+        modified: req.modified,
+      });
+      await surfaceNvimWindow(windowIndex);
+    },
+    [activeRealTab, surfaceNvimWindow],
+  );
+
+  const openMergeInNvim = useCallback(
+    async (req: MergeRequest) => {
+      if (!activeRealTab) return;
+      const { windowIndex } = await api.openMerge(activeRealTab.attachName, {
+        path: req.path,
+        ours: req.ours,
+        theirs: req.theirs,
+        base: req.base,
+      });
+      await surfaceNvimWindow(windowIndex);
+    },
+    [activeRealTab, surfaceNvimWindow],
+  );
+
+  // Core's nvim editor, published to the resolver — the `editor` setting's
+  // default and the fallback for any capability the selected editor doesn't
+  // claim. Re-published whenever its captured tab/session changes.
+  useEffect(() => {
+    setNvimProvider({
+      openFile: async (path, line) => {
+        await openFileInSession(path, line);
+      },
+      openDiff: openDiffInNvim,
+      openMerge: openMergeInNvim,
+    });
+  }, [openFileInSession, openDiffInNvim, openMergeInNvim]);
+
+  // The one place a file open turns into "some editor showed it". Every
+  // caller that used to reach for nvim directly goes through here instead:
+  // FILES-tree click, the context menu's "Open in Editor", the quick
+  // switcher, terminal ctrl+click, and a viewer's own openInEditor prop.
+  const openFileInEditor = useCallback(
+    async (filePath: string, line?: number) => {
+      try {
+        const editor = await resolveEditor("file", selectedEditorRef.current);
+        if (!editor) return;
+        await editor.openFile(filePath, line);
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [showError],
+  );
+
+  // Both resolve false when nothing claims the capability, which tells the
+  // caller (git-scm) to fall back to its own view.
+  const openDiffInEditor = useCallback(
+    async (req: DiffRequest): Promise<boolean> => {
+      try {
+        const editor = await resolveEditor("diff", selectedEditorRef.current);
+        if (!editor?.openDiff) return false;
+        await editor.openDiff(req);
+        return true;
+      } catch (err) {
+        showError(err);
+        return true;
+      }
+    },
+    [showError],
+  );
+
+  const openMergeInEditor = useCallback(
+    async (req: MergeRequest): Promise<boolean> => {
+      try {
+        const editor = await resolveEditor("merge", selectedEditorRef.current);
+        if (!editor?.openMerge) return false;
+        await editor.openMerge(req);
+        return true;
+      } catch (err) {
+        showError(err);
+        return true;
+      }
+    },
+    [showError],
+  );
+
+  useEffect(() => {
+    setEditorHandlers({
+      openInEditor: (path, line) => void openFileInEditor(path, line),
+      openDiff: openDiffInEditor,
+      openMerge: openMergeInEditor,
+    });
+  }, [openFileInEditor, openDiffInEditor, openMergeInEditor]);
+
   // FILES-tree click dispatch: any path a "default"-mode viewer claims
   // (image/media/pdf today) opens directly in its viewer tab — nvim on
   // binary content is useless. Everything else (including markdown/json/
@@ -130,9 +248,9 @@ export function useFileOpeners(
           // fall through to the next interceptor / the editor
         }
       }
-      openFileInSession(filePath, line);
+      void openFileInEditor(filePath, line);
     },
-    [extFileViewers, openExtViewerTab, openFileInSession],
+    [extFileViewers, openExtViewerTab, openFileInEditor],
   );
 
   // ctx.app.openFileTab(path) (extensions.ts) routes through the exact same
@@ -144,6 +262,12 @@ export function useFileOpeners(
 
   // ctx.app.openViewerTab/refreshFiles (extensions.ts) — see
   // openExtViewerTab's title param and filesRefreshKey in App.
+  // Lets an extension offer the same "show the rendered version" action the
+  // FILES tree does — an editor tab showing a .md file, say.
+  useEffect(() => {
+    setPreviewHandlers({ canPreview: isPreviewable, openPreview: openPreviewViewerTab });
+  }, [isPreviewable, openPreviewViewerTab]);
+
   useEffect(() => {
     setOpenViewerTabHandler(openExtViewerTab);
     setCloseViewerTabHandler(closeExtViewerTab);
@@ -172,8 +296,13 @@ export function useFileOpeners(
     openPreviewViewerTab,
     isPreviewable,
     fileHoverAction,
+    // The editor-aware opener every consumer should use. openFileInSession
+    // stays exported only for callers that specifically mean nvim.
+    openFileInEditor,
     openFileInSession,
     openFileOrViewer,
     openFileOrViewerSecondary,
+    openDiffInEditor,
+    openMergeInEditor,
   };
 }

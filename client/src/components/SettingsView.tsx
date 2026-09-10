@@ -5,6 +5,7 @@ import type { ExtensionInfo } from "../types";
 import BehaviorSection from "./settings/BehaviorSection";
 import { SettingsProvider } from "./settings/context";
 import ExtensionConfigSection from "./settings/ExtensionConfigSection";
+import EditorSection from "./settings/EditorSection";
 import TerminalSection from "./settings/TerminalSection";
 import UiSection from "./settings/UiSection";
 
@@ -33,10 +34,11 @@ interface Props {
 // installing, and managing extensions themselves lives in the sidebar's
 // Extensions tab (ExtensionsPanel), not here — see
 // plans/extension-registry-and-extensions-tab.md.
-type Section = "terminal" | "behavior" | "ui" | `ext:${string}`;
+type Section = "terminal" | "editor" | "behavior" | "ui" | `ext:${string}`;
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "terminal", label: "Terminal" },
+  { id: "editor", label: "Editor" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
 ];
@@ -139,6 +141,7 @@ export default function SettingsView({
 
         <div className="settings-content">
           {section === "terminal" && <TerminalSection />}
+          {section === "editor" && <EditorSection />}
           {section === "behavior" && <BehaviorSection />}
           {section === "ui" && <UiSection />}
           {activeExtension && <ExtensionConfigSection ext={activeExtension} />}

@@ -94,6 +94,21 @@ interface TerminalEngineContribution {
   label: string;
 }
 
+// contributes.editors — an extension that can open files, git diffs, and/or
+// merge conflicts (see the client's editors/index.ts resolution). Declared
+// statically here, like terminalEngines, so the Settings picker can list
+// every installed editor without running any extension's client code; the
+// implementation arrives separately via ctx.registerEditor at activation.
+export type EditorCapability = "file" | "diff" | "merge";
+
+interface EditorContribution {
+  id: string;
+  label: string;
+  capabilities: EditorCapability[];
+}
+
+const EDITOR_CAPABILITIES: EditorCapability[] = ["file", "diff", "merge"];
+
 // VS Code's contributes.configuration shape. `type` supports the four
 // primitive kinds a plain HTML control can render; `array`/`object`
 // properties (and anything else malformed) are dropped during normalization
@@ -135,6 +150,7 @@ interface ExtensionManifest {
     // one ordered property list.
     configuration?: ConfigurationContribution | ConfigurationContribution[];
     terminalEngines?: TerminalEngineContribution[];
+    editors?: EditorContribution[];
   };
   tmuxServer?: {
     client?: string;
@@ -220,6 +236,12 @@ export interface ExtensionInfo {
   // needs) without running any extension's client code. See
   // TerminalEngineContribution.
   terminalEngines: { id: string; label: string }[];
+  // Declared, not activated — same contract as terminalEngines above, for
+  // the Settings editor picker and the client's per-capability resolution.
+  // An entry declaring no recognized capability is dropped: it could never
+  // be resolved for anything, so listing it would only offer the user a
+  // choice that silently falls back to nvim.
+  editors: { id: string; label: string; capabilities: EditorCapability[] }[];
   // Extension-relative path to the client ESM entry, or null if this
   // extension has no client contribution — the client dynamic-imports it
   // via extensionFileUrl(id, clientEntry). hasServer stays a plain boolean:
@@ -363,6 +385,16 @@ function toInfo(
     terminalEngines: (manifest.contributes?.terminalEngines ?? [])
       .filter((e) => typeof e.id === "string" && e.id && typeof e.label === "string" && e.label)
       .map((e) => ({ id: e.id, label: e.label })),
+    editors: (manifest.contributes?.editors ?? [])
+      .filter((e) => typeof e.id === "string" && e.id && typeof e.label === "string" && e.label)
+      .map((e) => ({
+        id: e.id,
+        label: e.label,
+        capabilities: (Array.isArray(e.capabilities) ? e.capabilities : []).filter((c): c is EditorCapability =>
+          EDITOR_CAPABILITIES.includes(c),
+        ),
+      }))
+      .filter((e) => e.capabilities.length > 0),
     clientEntry: manifest.tmuxServer?.client ?? null,
     hasClient: Boolean(manifest.tmuxServer?.client),
     hasServer: Boolean(manifest.tmuxServer?.server),

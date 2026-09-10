@@ -1,5 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import * as api from "../api";
+import { resolveEditor } from "../editors";
 import {
   extensionFileOpenInterceptors,
   findFileViewerFor,
@@ -24,11 +25,24 @@ export function useOpenTarget(
   openWindowTab: (session: string, index: number) => Promise<string | null>,
   refresh: () => Promise<void>,
   showError: (err: unknown) => void,
+  // The `editor` setting — a CLI/deep-link open lands in the same editor a
+  // FILES-tree click would (see useFileOpeners' openFileInEditor).
+  selectedEditor: string,
 ) {
+  const selectedEditorRef = useRef(selectedEditor);
+  selectedEditorRef.current = selectedEditor;
   const openInEditor = useCallback(
     async (path: string, projectCwd: string, line: number | undefined) => {
       const session = await openProject(projectCwd);
       if (!session) return;
+      // A non-nvim editor renders in a tab of its own and needs no session —
+      // but the project still had to be opened above, so the file lands in
+      // the same project context a click would have used.
+      const editor = await resolveEditor("file", selectedEditorRef.current);
+      if (editor && editor.extensionId !== null) {
+        await editor.openFile(path, line);
+        return;
+      }
       const { windowIndex, deferredPane } = await api.openFile(session, path, undefined, line);
       if (windowIndex !== null) {
         await refresh();

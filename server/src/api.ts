@@ -52,6 +52,8 @@ import {
   killWindowTab,
   listSessionPanes,
   listSessions,
+  openDiffInWindow,
+  openMergeInWindow,
   openFileInPaneWithKeys,
   paneSessionInfo,
   openLazygitWindow,
@@ -502,6 +504,64 @@ api.post("/sessions/:name/open-file", async (req, res) => {
     }
     const result = await openFileInWindow(req.params.name, filePath, line);
     res.status(200).json(result);
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// Reads one side of a diff/merge out of a request body: content and label are
+// required, `path` optional and expanded. Returns null when the shape is wrong,
+// so the route can 400 rather than write a temp file full of "undefined".
+function readEditorSide(raw: unknown, allowPath: boolean): { content: string; label: string; path?: string } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const side = raw as { content?: unknown; label?: unknown; path?: unknown };
+  if (typeof side.content !== "string" || typeof side.label !== "string" || !side.label) return null;
+  if (!allowPath || typeof side.path !== "string" || !side.path) {
+    return { content: side.content, label: side.label };
+  }
+  return { content: side.content, label: side.label, path: expandHome(side.path) };
+}
+
+// nvim's half of the `editor` setting's diff capability — see
+// openDiffInWindow. The client sends both sides as text (git-scm resolved them
+// from the index/HEAD); only the modified side may name a real working file,
+// which is the one nvim is allowed to edit.
+api.post("/sessions/:name/open-diff", async (req, res) => {
+  const original = readEditorSide(req.body?.original, false);
+  const modified = readEditorSide(req.body?.modified, true);
+  if (!original || !modified) {
+    res.status(400).json({ error: "original and modified sides with content and label are required" });
+    return;
+  }
+  try {
+    if (modified.path && !(await isFile(modified.path))) {
+      res.status(400).json({ error: "modified.path is not a file" });
+      return;
+    }
+    res.status(200).json(await openDiffInWindow(req.params.name, { original, modified }));
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// nvim's half of the merge capability — the mergetool nvimdiff layout over a
+// conflicted working file. See openMergeInWindow.
+api.post("/sessions/:name/open-merge", async (req, res) => {
+  const rawPath = typeof req.body?.path === "string" ? req.body.path : "";
+  const ours = readEditorSide(req.body?.ours, false);
+  const theirs = readEditorSide(req.body?.theirs, false);
+  const base = req.body?.base === undefined ? undefined : readEditorSide(req.body?.base, false);
+  if (!rawPath || !ours || !theirs || base === null) {
+    res.status(400).json({ error: "path, ours, and theirs are required" });
+    return;
+  }
+  const filePath = expandHome(rawPath);
+  try {
+    if (!(await isFile(filePath))) {
+      res.status(400).json({ error: "path is not a file" });
+      return;
+    }
+    res.status(200).json(await openMergeInWindow(req.params.name, { path: filePath, ours, theirs, base }));
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
   }

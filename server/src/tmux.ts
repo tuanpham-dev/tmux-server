@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile, readlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, readlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { getGitRoot } from "./files.js";
 import { openShimPath } from "./openUrl.js";
 import { isServerOnlyVar, spawnEnv } from "./spawnEnv.js";
@@ -1212,6 +1214,131 @@ export async function openFileInWindow(session: string, filePath: string, line?:
     await tmux(["display-message", "-t", `=${session}:${spawnedIndex}`, "-p", "#{window_index}"]);
   } catch {
     throw new Error(`nvim exited immediately while opening ${filePath}`);
+  }
+  return { windowIndex: spawnedIndex };
+}
+
+// ---- Diff / merge in nvim ----
+// The `editor` setting's nvim provider handles diffs and conflicts too, not
+// just plain files (see client/src/editors/index.ts). Both are `nvim -d` in a
+// fresh window; the only real work here is that a diff side is usually *not*
+// a file on disk (index or HEAD content), so it has to be materialized first.
+
+// Writes each side to its own file under a fresh temp directory, named after
+// the real file so nvim's filetype detection — and therefore its syntax
+// highlighting — still works. Deliberately never cleaned up: there's no exit
+// signal for a window the user closes whenever they like, and these are small
+// text files under the OS temp directory, which the OS reaps on its own
+// schedule.
+async function materializeEditorTemp(files: { name: string; content: string }[]): Promise<string[]> {
+  const dir = path.join(tmpdir(), `tmux-server-editor-${randomUUID()}`);
+  await mkdir(dir, { recursive: true });
+  return Promise.all(
+    files.map(async (file) => {
+      const target = path.join(dir, file.name);
+      await writeFile(target, file.content, "utf8");
+      return target;
+    }),
+  );
+}
+
+// A filesystem-safe file name that keeps `reference`'s extension, so a temp
+// side of a diff highlights the same way the real file does. The label
+// ("HEAD", "Index") becomes the stem, which is also what nvim shows in the
+// window's status line.
+function tempSideName(label: string, reference: string): string {
+  const base = path.basename(reference);
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot) : "";
+  const stem = label.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "side";
+  return `${stem}${ext}`;
+}
+
+export interface EditorSide {
+  content: string;
+  label: string;
+  path?: string;
+}
+
+// Opens `nvim -d left right` in a new window: the left (original) side is
+// always read-only, and the right side is the real working file when the
+// caller gave one, else a read-only temp file too (a staged diff, whose right
+// side is index content rather than anything on disk).
+export async function openDiffInWindow(
+  session: string,
+  req: { original: EditorSide; modified: EditorSide },
+): Promise<{ windowIndex: number | null }> {
+  const pane = await getActivePane(session);
+  const reference = req.modified.path ?? req.modified.label;
+  const sides: { name: string; content: string }[] = [
+    { name: tempSideName(req.original.label, reference), content: req.original.content },
+  ];
+  if (!req.modified.path) {
+    sides.push({ name: tempSideName(req.modified.label, reference), content: req.modified.content });
+  }
+  const temps = await materializeEditorTemp(sides);
+  const originalPath = temps[0];
+  const modifiedPath = req.modified.path ?? temps[1];
+
+  // Window 1 (the original) is always read-only. Without a working file the
+  // right side is index/HEAD text as well, so lock that too rather than let
+  // an edit go nowhere. Cursor ends in the right-hand window either way.
+  const lockRight = req.modified.path ? "" : " | 2wincmd w | setlocal readonly nomodifiable";
+  const nvimCmd = `nvim -d -c ${shellQuote(
+    `1wincmd w | setlocal readonly nomodifiable${lockRight} | 2wincmd w`,
+  )} ${shellQuote(originalPath)} ${shellQuote(modifiedPath)}`;
+  return spawnEditorWindow(session, pane.cwd, nvimCmd, `diff of ${path.basename(reference)}`);
+}
+
+// Opens git mergetool's nvimdiff layout on a conflicted working file:
+// LOCAL | MERGED | REMOTE, with the two outer windows read-only and the
+// cursor in MERGED — the file itself, conflict markers and all.
+export async function openMergeInWindow(
+  session: string,
+  req: { path: string; ours: EditorSide; theirs: EditorSide; base?: EditorSide },
+): Promise<{ windowIndex: number | null }> {
+  const pane = await getActivePane(session);
+  const sides = [
+    { name: tempSideName(req.ours.label, req.path), content: req.ours.content },
+    { name: tempSideName(req.theirs.label, req.path), content: req.theirs.content },
+  ];
+  // The base isn't in the three-window layout, but writing it means `:diffthis`
+  // on a fourth split is one command away for a three-way read.
+  if (req.base) sides.push({ name: tempSideName(req.base.label, req.path), content: req.base.content });
+  const [oursPath, theirsPath] = await materializeEditorTemp(sides);
+
+  const nvimCmd = `nvim -d -c ${shellQuote(
+    "1wincmd w | setlocal readonly nomodifiable | 3wincmd w | setlocal readonly nomodifiable | 2wincmd w",
+  )} ${shellQuote(oursPath)} ${shellQuote(req.path)} ${shellQuote(theirsPath)}`;
+  return spawnEditorWindow(session, pane.cwd, nvimCmd, `merge of ${path.basename(req.path)}`);
+}
+
+// Shared tail of both: spawn a detached window running `command` and confirm
+// it survived, with the same -d/-c/-P reasoning (and the same
+// exited-immediately check) openFileInWindow's own new-window branch documents.
+async function spawnEditorWindow(
+  session: string,
+  cwd: string,
+  command: string,
+  description: string,
+): Promise<{ windowIndex: number | null }> {
+  const out = await tmux([
+    "new-window",
+    "-d",
+    "-P",
+    "-F",
+    "#{window_index}",
+    "-t",
+    `=${session}:`,
+    "-c",
+    cwd,
+    command,
+  ]);
+  const spawnedIndex = Number(out.trim());
+  try {
+    await tmux(["display-message", "-t", `=${session}:${spawnedIndex}`, "-p", "#{window_index}"]);
+  } catch {
+    throw new Error(`nvim exited immediately while opening the ${description}`);
   }
   return { windowIndex: spawnedIndex };
 }

@@ -15,6 +15,7 @@ to read).
   - [`activate(ctx)` / `deactivate()`](#activatectx--deactivate)
   - [Commands](#commands--registercommand)
   - [File viewers](#file-viewers--registerfileviewer)
+  - [Editors](#editors--registereditor)
   - [Sidebar panels](#sidebar-panels--registersidebarpanel)
   - [Window actions](#window-actions--registerwindowaction)
   - [File decorations](#file-decorations--registerfiledecorationprovider)
@@ -179,6 +180,28 @@ weights/styles/unicode-ranges of one font (include a bold face — xterm
 renders bold cells with it); entries with distinct families bundle
 companion fonts (e.g. a Nerd Font symbols face) that ride along in the
 stack when the group is picked. Reference: `extensions/ibm-plex-mono`.
+
+### `contributes.editors`
+
+```jsonc
+"contributes": {
+  "editors": [
+    { "id": "monaco", "label": "Monaco (Text Editor)", "capabilities": ["file", "diff", "merge"] }
+  ]
+}
+```
+
+Declares that this extension can act as **the** editor — what opens a file, a
+git diff, or a merge conflict — for the app-wide `editor` setting. Data-only,
+like `terminalEngines`: the Settings picker lists every installed editor from
+this declaration without running any extension code, and the implementation
+arrives separately from [`registerEditor`](#editors--registereditor) at
+activation. The stored setting value is the namespaced `ext.<extensionId>.<id>`.
+
+`capabilities` is what this editor can open. Anything it leaves out falls back
+to nvim, which core provides and which handles all three — so an editor that
+only declares `"file"` simply never receives diffs or conflicts. An entry
+declaring none of the three is dropped.
 
 ### `contributes.configuration`
 
@@ -487,6 +510,56 @@ synthetic-selection marker) come from the
 [`@tmux-server/engine-support` shim](#sharing-the-host-runtime).
 References: `xterm-engine`, `ghostty-engine`.
 
+### Editors — `registerEditor`
+
+```ts
+ctx.registerEditor({
+  id: string,          // the editor setting stores "ext.<extId>.<id>"
+  label: string,       // Settings → Editor select text
+  capabilities: ("file" | "diff" | "merge")[],
+  openFile(path: string, line?: number): Promise<void>,
+  openDiff?(req: DiffRequest): Promise<void>,
+  openMerge?(req: MergeRequest): Promise<void>,
+});
+```
+
+Supplies the implementation behind this extension's
+[`contributes.editors`](#contributeseditors) declaration. Each callback opens
+whatever UI it likes — in practice a tab of the extension's own registered
+viewer, via `ctx.app.openViewerTab`.
+
+Resolution is **per capability**, not per editor. When the user selects this
+editor, a file open calls `openFile`, but a diff only reaches `openDiff` if
+`"diff"` is declared *and* the callback exists; otherwise it falls through to
+nvim, the core-provided editor that claims all three and can't be uninstalled.
+Declare only what you implement.
+
+`DiffRequest` and `MergeRequest` carry content rather than git revisions, so an
+editor needs no git access of its own:
+
+```ts
+interface DiffRequest {
+  title: string;
+  original: { content: string; label: string };
+  // `path` set = the modified side is a real file the editor may save to.
+  // Absent = read-only, with readOnlyReason (when given) explaining why.
+  modified: { content: string; label: string; path?: string; readOnlyReason?: string };
+}
+
+interface MergeRequest {
+  title: string;
+  path: string;   // the conflicted working file, markers and all
+  ours: { content: string; label: string };
+  theirs: { content: string; label: string };
+  base?: { content: string; label: string };
+  markResolved: () => Promise<void>;  // stage it, once no markers remain
+}
+```
+
+Registrations are dropped when the extension deactivates, so disabling the
+selected editor sends the next open back to nvim. Reference: the optional
+`text-editor` extension (Monaco).
+
 ### Terminal accessories — `registerTerminalAccessory`
 
 ```ts
@@ -670,6 +743,37 @@ Read-only queries against the *active* icon theme's resolver — the same
 icons the FILES tree shows — so a panel can render file rows that match.
 `IconResult` is `{ kind: "none" }` or a resolvable icon (see
 `extensions/_shared/FileIcon.tsx` for a ready-made renderer).
+
+```ts
+ctx.app.openInEditor(path: string, line?: number): void
+```
+Opens a path in whichever editor the `editor` setting selects — nvim by
+default. This is `openFileTab`'s dispatch minus the viewer matching: use it
+when you specifically mean "edit this", not "show this however the app
+normally would".
+
+```ts
+ctx.app.openDiff(req: DiffRequest): Promise<boolean>
+ctx.app.openMerge(req: MergeRequest): Promise<boolean>
+```
+Shows a two-sided diff, or opens a conflicted working file, in the selected
+editor. Both resolve **`false`** when no editor claims that capability, which
+is your cue to fall back to your own view — `git-scm` keeps its unified diff
+and conflict resolver for exactly that, and offers them as a secondary action
+either way. See [`registerEditor`](#editors--registereditor) for the request
+shapes.
+
+```ts
+ctx.app.canPreview(path: string): boolean
+ctx.app.openPreview(path: string): void
+```
+Whether some registered viewer can show a *rendered* preview of this path
+(Markdown, JSON/YAML, CSV…), and opening it. The same question the FILES tree
+asks before drawing its hover Preview icon, and the same action that icon
+performs. Unlike `openViewerTab` this reaches **another** extension's viewer,
+which is the point — an editor tab showing a `.md` file has no way to render it
+itself. `openPreview` is a no-op when nothing can preview the path, so an
+extension can offer the action wherever `canPreview` says yes.
 
 ```ts
 ctx.app.consumeFindInFolderGlob(): string | null

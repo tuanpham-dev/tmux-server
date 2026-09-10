@@ -29,7 +29,7 @@ function sameClipboard(
 // setFilesRefreshKey as a parameter rather than owning that state itself —
 // useSessions' onAfterRefresh callback and useFileOpeners' extension wiring
 // both need the setter before this hook (which depends on their outputs:
-// openFileInSession/openPreviewViewerTab) can be called, so the state has
+// openFileInEditor/openPreviewViewerTab) can be called, so the state has
 // to live in App instead.
 export function useFileActions(
   showError: (err: unknown) => void,
@@ -38,7 +38,9 @@ export function useFileActions(
   settingsRef: MutableRefObject<AppSettings>,
   setFilesRefreshKey: Dispatch<SetStateAction<number>>,
   extFileViewers: RegisteredFileViewer[],
-  openFileInSession: (filePath: string, line?: number) => Promise<void>,
+  // Opens in whichever editor the `editor` setting selects — nvim by
+  // default. See useFileOpeners' openFileInEditor.
+  openFileInEditor: (filePath: string, line?: number) => Promise<void>,
   openPreviewViewerTab: (filePath: string) => void,
 ) {
   const [uploadProgress, setUploadProgress] = useState<{
@@ -445,7 +447,7 @@ export function useFileActions(
       // content isn't useful) via their own registration.
       const defaultViewer = !isDir ? findFileViewerFor(entryPath, extFileViewers, "default") : null;
       if (defaultViewer?.editorFallback) {
-        items.push({ label: "Open in Editor", onClick: () => openFileInSession(entryPath) });
+        items.push({ label: "Open in Editor", onClick: () => openFileInEditor(entryPath) });
       }
       // Markdown/JSON/YAML/CSV get an explicit path to the rendered view.
       // Preview-capable (not resolved-"preview"-mode) so the item survives
@@ -496,7 +498,7 @@ export function useFileActions(
       copyFilePath,
       copyFileRelativePath,
       downloadFileEntry,
-      openFileInSession,
+      openFileInEditor,
       openPreviewViewerTab,
       deleteFileEntry,
       extFileViewers,

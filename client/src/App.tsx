@@ -745,7 +745,7 @@ export default function App() {
     openPreviewViewerTab,
     isPreviewable,
     fileHoverAction,
-    openFileInSession,
+    openFileInEditor,
     openFileOrViewer,
     openFileOrViewerSecondary,
   } = useFileOpeners(
@@ -758,6 +758,7 @@ export default function App() {
     openExtViewerTab,
     closeExtViewerTab,
     setFilesRefreshKey,
+    settings.editor,
   );
 
   // Group key/label with the project resolver baked in — one chip per
@@ -987,6 +988,7 @@ export default function App() {
     openWindowTab,
     refresh,
     showError,
+    settings.editor,
   );
   openTargetRef.current = handleOpenTarget;
 
@@ -1570,7 +1572,7 @@ export default function App() {
     settingsRef,
     setFilesRefreshKey,
     extFileViewers,
-    openFileInSession,
+    openFileInEditor,
     openPreviewViewerTab,
   );
   refreshClipboardMirrorRef.current = refreshClipboardMirror;
@@ -1622,7 +1624,7 @@ export default function App() {
             onFilesRefresh={handleFilesRefresh}
             onOpenFile={openFileOrViewer}
             onPreviewFile={openPreviewViewerTab}
-            onEditFile={openFileInSession}
+            onEditFile={openFileInEditor}
             isPreviewable={isPreviewable}
             fileHoverAction={fileHoverAction}
             fileMenuItems={fileMenuItems}
@@ -1770,7 +1772,7 @@ export default function App() {
                   filePath={tab.extViewerPath}
                   active={visible}
                   toolbarTarget={groupActionsEls[groupId] ?? null}
-                  openInEditor={openFileInSession}
+                  openInEditor={openFileInEditor}
                   showMenu={showMenu}
                   fontSize={effectiveSettings.fontSize}
                   reloadKey={tab.extViewerReloadKey}

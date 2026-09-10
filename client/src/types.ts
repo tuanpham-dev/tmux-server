@@ -294,6 +294,8 @@ export interface RegistrySourceResult {
   entries: RegistryCatalogEntry[];
 }
 
+export type EditorCapability = "file" | "diff" | "merge";
+
 export interface ExtensionInfo {
   id: string;
   displayName: string;
@@ -314,6 +316,13 @@ export interface ExtensionInfo {
   // (see extensions.ts's registerTerminalEngine — both namespace it
   // identically: ext.<extensionId>.<id>).
   terminalEngines: { id: string; label: string }[];
+  // Declared, not activated — the same contract terminalEngines has, for
+  // editors (see client/src/editors/index.ts). Lets the Settings picker list
+  // every installed editor, and lets resolution know which extension owns a
+  // stored editor id, without running any extension's client code.
+  // `capabilities` is what this editor can open: files, git diffs, merge
+  // conflicts. Anything it doesn't declare falls back to nvim.
+  editors: { id: string; label: string; capabilities: EditorCapability[] }[];
   clientEntry: string | null;
   hasClient: boolean;
   hasServer: boolean;

@@ -9,6 +9,11 @@ export interface AppSettings {
   // namespaced extension engine id (ext.<extensionId>.<engineId>) — both
   // engines are bundled extensions now; see client/src/engines/index.ts.
   terminalEngine: string;
+  // Which editor opens files, git diffs and merge conflicts: the bare id
+  // "nvim" (core's tmux-pane editor, the default and the per-capability
+  // fallback) or a namespaced extension editor id (ext.<extensionId>.<id>,
+  // declared via contributes.editors). See client/src/editors/index.ts.
+  editor: string;
   fontFamily: string;
   fontSize: number;
   // Terminal font size used instead of fontSize on real phones/tablets
@@ -133,6 +138,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // safe default. Ghostty moved to the optional registry, so it's no longer
   // shipped; install it from the Extensions tab to select it here.
   terminalEngine: "ext.tmux-server.xterm-engine.xterm",
+  // nvim — today's behavior for every existing install.
+  editor: "nvim",
   fontFamily: "'IBM Plex Mono', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace",
   fontSize: 14,
   fontSizeMobile: 0,

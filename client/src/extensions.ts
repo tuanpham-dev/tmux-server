@@ -12,7 +12,7 @@ import * as ReactNS from "react";
 import { extensionApiBase, extensionFileUrl, fetchExtensions } from "./api";
 import type { CreateTerminalEngine } from "./engines/types";
 import type { ExtensionSettingsValues } from "./settings";
-import type { ExtensionInfo, MenuItem } from "./types";
+import type { EditorCapability, ExtensionInfo, MenuItem } from "./types";
 import { getFileExtension } from "./utils/fileExtension";
 import { getFileIconResult, getFolderIconResult, subscribeIconTheme } from "./utils/iconThemes";
 import type { IconResult } from "./utils/iconThemes";
@@ -324,6 +324,20 @@ export interface ExtensionContext {
   // engines/types) — TerminalView resolves the engine setting against this
   // registry after extensions settle. See engines/index.ts.
   registerTerminalEngine(engine: { id: string; label: string; create: CreateTerminalEngine }): void;
+  // Supplies an editor for the `editor` setting — the implementation behind
+  // this extension's contributes.editors declaration (which is what the
+  // Settings picker lists). Declare only the capabilities actually
+  // implemented: resolution falls back to nvim per capability, so an editor
+  // that omits openDiff simply never receives diffs. Open your own tab from
+  // these callbacks via ctx.app.openViewerTab.
+  registerEditor(editor: {
+    id: string;
+    label: string;
+    capabilities: EditorCapability[];
+    openFile(path: string, line?: number): Promise<void>;
+    openDiff?(req: DiffRequest): Promise<void>;
+    openMerge?(req: MergeRequest): Promise<void>;
+  }): void;
   // Contributes result rows to the quick switcher (non-command mode),
   // alongside the core tab/window/session/file sources. Same sync-from-
   // cache + refresh() contract as the decoration providers.
@@ -412,6 +426,27 @@ export interface ExtensionContext {
     // caller owns the prompt, so an extension that already confirmed a larger
     // destructive action doesn't double-prompt. Confirm before calling.
     killSession(sessionName: string): void;
+    // Opens a path in whichever editor the `editor` setting selects (nvim by
+    // default) — the same dispatch a FILES-tree click ends in, minus the
+    // viewer matching. `line` jumps there when the editor supports it.
+    openInEditor(path: string, line?: number): void;
+    // Shows a two-sided diff in the selected editor. Resolves false when no
+    // editor claims the "diff" capability, which is the caller's cue to fall
+    // back to its own view — git-scm keeps its unified DiffView for exactly
+    // that, and as a secondary action either way.
+    openDiff(req: DiffRequest): Promise<boolean>;
+    // Opens a conflicted working file in the selected editor. Same false
+    // contract as openDiff.
+    openMerge(req: MergeRequest): Promise<boolean>;
+    // Whether some registered viewer can show a *rendered* preview of this
+    // path — markdown, JSON/YAML, CSV and the like. The same question the
+    // FILES tree asks before drawing its hover Preview icon.
+    canPreview(path: string): boolean;
+    // Opens that preview, if there is one. A no-op otherwise, so a caller can
+    // simply offer the action wherever canPreview says yes. Unlike
+    // openViewerTab this reaches *another* extension's viewer, which is the
+    // point: an editor showing a .md file has no way to render it itself.
+    openPreview(path: string): void;
     // One-shot: returns (and clears) a pending "files to include" glob
     // pushed by the FILES-tree "Find in Folder…" menu item, or null if
     // none is pending. Only the search extension's activate() is expected
@@ -691,6 +726,52 @@ export interface RegisteredTerminalEngine {
   create: CreateTerminalEngine;
 }
 
+// ---- Editors ----
+// The seam behind the `editor` setting: which editor opens a file, a git
+// diff, or a merge conflict. Mirrors the terminal-engine seam — extensions
+// declare editors in their manifest (contributes.editors, so the Settings
+// picker lists them without activating anything) and supply the
+// implementation here at activation. Resolution is per *capability*, not per
+// editor: see client/src/editors/index.ts.
+
+// A two-sided diff to show. Carries content rather than a git revision so an
+// editor needs no git access of its own — whoever asks (git-scm today) has
+// already resolved both sides to text.
+export interface DiffRequest {
+  title: string;
+  original: { content: string; label: string };
+  // `path` set means the modified side is a real file on disk the editor may
+  // save to. When it's absent the side is read-only, and readOnlyReason (when
+  // given) explains why — see git-scm's staged-diff rule.
+  modified: { content: string; label: string; path?: string; readOnlyReason?: string };
+}
+
+// A conflicted working file to resolve. `path` is the real file, markers and
+// all — the editor edits it in place, as VS Code does. ours/theirs/base are
+// the merge stages, for a side-by-side compare action.
+export interface MergeRequest {
+  title: string;
+  path: string;
+  ours: { content: string; label: string };
+  theirs: { content: string; label: string };
+  base?: { content: string; label: string };
+  // Called once the file has no conflict markers left and is saved — git-scm
+  // passes a `git add` of this path.
+  markResolved: () => Promise<void>;
+}
+
+export interface RegisteredEditor {
+  // Namespaced ext.<extensionId>.<id> — what the `editor` setting stores.
+  // The core nvim provider uses the bare id "nvim" and a null extensionId.
+  id: string;
+  extensionId: string | null;
+  label: string;
+  capabilities: EditorCapability[];
+  openFile(path: string, line?: number): Promise<void>;
+  openDiff?(req: DiffRequest): Promise<void>;
+  openMerge?(req: MergeRequest): Promise<void>;
+}
+
 // A file-open interceptor gets a shot at every path that would otherwise
 // fall through to nvim (after "default"-mode viewer matching, before
 // openFileInSession — see useFileOpeners.openFileOrViewer). Returning true
@@ -713,6 +794,7 @@ export const extensionTabGroupMenuItems: RegisteredTabGroupMenuItem[] = [];
 export const extensionFileDecorationProviders: RegisteredFileDecorationProvider[] = [];
 export const extensionSessionDecorationProviders: RegisteredSessionDecorationProvider[] = [];
 export const extensionTerminalEngines: RegisteredTerminalEngine[] = [];
+export const extensionEditors: RegisteredEditor[] = [];
 export const extensionQuickSwitcherProviders: RegisteredQuickSwitcherProvider[] = [];
 export const extensionTerminalAccessories: RegisteredTerminalAccessory[] = [];
 export const extensionAppOverlays: RegisteredAppOverlay[] = [];
@@ -925,6 +1007,35 @@ export function setOpenViewerTabHandler(
   handler: (namespacedViewerId: string, path: string, title?: string) => void,
 ): void {
   openViewerTabHandler = handler;
+}
+
+let canPreviewHandler: ((path: string) => boolean) | null = null;
+let openPreviewHandler: ((path: string) => void) | null = null;
+
+// Wired once from App.tsx to useFileOpeners' isPreviewable/openPreviewViewerTab
+// — see ExtensionContext.app.canPreview/openPreview.
+export function setPreviewHandlers(handlers: {
+  canPreview: (path: string) => boolean;
+  openPreview: (path: string) => void;
+}): void {
+  canPreviewHandler = handlers.canPreview;
+  openPreviewHandler = handlers.openPreview;
+}
+
+let openInEditorHandler: ((path: string, line?: number) => void) | null = null;
+let openDiffHandler: ((req: DiffRequest) => Promise<boolean>) | null = null;
+let openMergeHandler: ((req: MergeRequest) => Promise<boolean>) | null = null;
+
+// Wired once from App.tsx to useFileOpeners' editor-dispatch functions — see
+// ExtensionContext.app.openInEditor/openDiff/openMerge.
+export function setEditorHandlers(handlers: {
+  openInEditor: (path: string, line?: number) => void;
+  openDiff: (req: DiffRequest) => Promise<boolean>;
+  openMerge: (req: MergeRequest) => Promise<boolean>;
+}): void {
+  openInEditorHandler = handlers.openInEditor;
+  openDiffHandler = handlers.openDiff;
+  openMergeHandler = handlers.openMerge;
 }
 
 let refreshFilesHandler: (() => void) | null = null;
@@ -1357,6 +1468,18 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       });
       notify();
     },
+    registerEditor(editor) {
+      extensionEditors.push({
+        id: `ext.${ext.id}.${editor.id}`,
+        extensionId: ext.id,
+        label: editor.label,
+        capabilities: editor.capabilities,
+        openFile: editor.openFile,
+        openDiff: editor.openDiff,
+        openMerge: editor.openMerge,
+      });
+      notify();
+    },
     registerQuickSwitcherProvider(provider) {
       extensionQuickSwitcherProviders.push({
         id: `ext.${ext.id}.${provider.id}`,
@@ -1415,6 +1538,24 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       },
       refreshFiles() {
         refreshFilesHandler?.();
+      },
+      openInEditor(path, line) {
+        openInEditorHandler?.(path, line);
+      },
+      canPreview(path) {
+        return canPreviewHandler?.(path) ?? false;
+      },
+      openPreview(path) {
+        openPreviewHandler?.(path);
+      },
+      // Defaults to false (not handled) when App hasn't wired the handler
+      // yet, so a caller racing startup falls back to its own view rather
+      // than silently opening nothing.
+      openDiff(req) {
+        return openDiffHandler?.(req) ?? Promise.resolve(false);
+      },
+      openMerge(req) {
+        return openMergeHandler?.(req) ?? Promise.resolve(false);
       },
       setSidebarBadge(panelId, badge) {
         const namespaced = `ext.${ext.id}.${panelId}`;
@@ -1616,6 +1757,9 @@ function deactivateClientExtension(extId: string): void {
   }
   for (let i = extensionTerminalEngines.length - 1; i >= 0; i--) {
     if (extensionTerminalEngines[i].extensionId === extId) extensionTerminalEngines.splice(i, 1);
+  }
+  for (let i = extensionEditors.length - 1; i >= 0; i--) {
+    if (extensionEditors[i].extensionId === extId) extensionEditors.splice(i, 1);
   }
   for (let i = extensionQuickSwitcherProviders.length - 1; i >= 0; i--) {
     if (extensionQuickSwitcherProviders[i].extensionId === extId) extensionQuickSwitcherProviders.splice(i, 1);
