@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { setContextKey } from "../contextKeys";
 import {
   getRootDecorations,
   setExplorerPanelFocusBridge,
+  setNewWorktreeBridge,
   setProjectsFocusBridge,
   type RegisteredSidebarPanel,
   type RegisteredWindowAction,
@@ -32,7 +33,7 @@ import type {
 import ExtensionsPanel from "./ExtensionsPanel";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
-import ProjectList, { type ProjectListHandle } from "./ProjectList";
+import ProjectList, { type ProjectListHandle, type ProjectListProps } from "./ProjectList";
 import SidebarTabStrip, { type SidebarTabInfo } from "./SidebarTabStrip";
 
 
@@ -50,32 +51,14 @@ import SidebarTabStrip, { type SidebarTabInfo } from "./SidebarTabStrip";
 
 interface Props {
   width: number;
-  sessions: TmuxSession[];
-  activeSessionName: string | null;
-  // The window a window-tab is pinned to, when the active tab is one — used
-  // to highlight that exact row instead of tmux's own (possibly diverged)
-  // active-window flag.
-  activeWindow: { sessionName: string; index: number } | null;
-  onOpenAllWindows: (session: string) => void;
-  onOpenWindow: (session: string, index: number) => void;
-  onKillWindow: (session: string, index: number) => void;
-  // Backs ProjectList's projects.kill/rename/togglePin keyboard dispatch —
-  // the same functions App.tsx already wires to the global session.*
-  // commands (which act on the active tab), here acting on whichever row
-  // has keyboard focus in the list instead.
-  onKillSession: (name: string) => void;
-  onRenameWindow: (session: string, win: TmuxWindow) => void;
-  onTogglePinSession: (name: string) => void;
-  onNewWindowInSession: (session: string) => void;
+  // Everything the PROJECTS tree needs, as one bundle. App builds it once
+  // and hands the same object to this sidebar and to the status bar's
+  // terminals popover, so the two can't drift — and so a change to the tree
+  // (a new level, a new action) doesn't ripple through this component's
+  // prop list. See plans/worktrees-into-projects.md.
+  projectListProps: ProjectListProps;
   onOpenLazygit: () => void;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
-  sessionMenuItems: (name: string) => MenuItem[];
-  deadProjectMenuItems: (cwd: string) => MenuItem[];
-  windowMenuItems: (session: string, window: TmuxWindow) => MenuItem[];
-  projects: Project[];
-  // Opens (or creates) the session rooted in this folder — dead-row clicks
-  // and the recent-projects dropdown both land here.
-  onOpenProject: (cwd: string) => void;
   // Opens the folder-picker dialog (App owns it) — the panel header's "+".
   onAddProject: () => void;
   // Builds the recent-projects dropdown items on demand (App wires in the
@@ -181,23 +164,9 @@ interface Props {
 
 export default function Sidebar({
   width,
-  sessions,
-  activeSessionName,
-  activeWindow,
-  onOpenAllWindows,
-  onOpenWindow,
-  onKillWindow,
-  onKillSession,
-  onRenameWindow,
-  onTogglePinSession,
-  onNewWindowInSession,
+  projectListProps,
   onOpenLazygit,
   onShowMenu,
-  sessionMenuItems,
-  deadProjectMenuItems,
-  windowMenuItems,
-  projects,
-  onOpenProject,
   onAddProject,
   recentProjectsMenu,
   manageMenuItems,
@@ -234,7 +203,6 @@ export default function Sidebar({
   onClearClipboard,
   onTransferEntries,
   extensionPanels,
-  extensionWindowActions,
   extensions,
   onReloadExtensions,
   extensionRegistries,
@@ -451,6 +419,16 @@ export default function Sidebar({
     return () => setExplorerPanelFocusBridge(side, null);
   }, []);
 
+  // Lets the worktrees extension's palette commands open the tree's create
+  // form on this side. Stable identity so ProjectList's effect registers
+  // once, not on every render.
+  const registerNewWorktreeBridge = useCallback(
+    (open: ((runCommandIndex?: number) => void) | null) => {
+      setNewWorktreeBridge(side, open ? { open } : null);
+    },
+    [side],
+  );
+
   const panelTitle = (id: PanelId): string => {
     if (id === "projects") return "Projects";
     if (id === "files") return filesRootDir ?? "Files";
@@ -519,24 +497,8 @@ export default function Sidebar({
       return (
         <ProjectList
           ref={projectListRef}
-          sessions={sessions}
-          activeSessionName={activeSessionName}
-          activeWindow={activeWindow}
-          projects={projects}
-          onOpenAllWindows={onOpenAllWindows}
-          onOpenWindow={onOpenWindow}
-          onKillWindow={onKillWindow}
-          onKillSession={onKillSession}
-          onRenameWindow={onRenameWindow}
-          onTogglePinSession={onTogglePinSession}
-          onNewWindowInSession={onNewWindowInSession}
-          onOpenProject={onOpenProject}
-          onShowMenu={onShowMenu}
-          sessionMenuItems={sessionMenuItems}
-          deadProjectMenuItems={deadProjectMenuItems}
-          windowMenuItems={windowMenuItems}
-          extensionWindowActions={extensionWindowActions}
-          resolvedBindings={resolvedBindings}
+          {...projectListProps}
+          registerNewWorktreeBridge={registerNewWorktreeBridge}
         />
       );
     }

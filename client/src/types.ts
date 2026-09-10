@@ -220,6 +220,49 @@ export interface FsGitRoot {
   root: string;
 }
 
+// One git worktree of a repository, as the PROJECTS tree's middle level shows
+// it. `path` is `~`-shortened like every other path the client sees, so it
+// compares directly against TmuxSession.path. `main` marks the repository's
+// own checkout — always first, never removable, and the identity of the
+// project row the others nest under.
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  main: boolean;
+  dirty: boolean;
+}
+
+// A local branch and the worktree that currently has it checked out — git
+// refuses one branch in two worktrees, so the create form offers only the
+// unattached ones.
+export interface WorktreeBranch {
+  name: string;
+  checkedOutAt: string | null;
+}
+
+// A repository as the tree groups by it: `repo` is the main worktree's path
+// (the group key every session in any of its worktrees shares).
+export interface RepoInfo {
+  repo: string;
+  worktrees: WorktreeInfo[];
+  branches: WorktreeBranch[];
+}
+
+export interface WorktreeLookup {
+  results: {
+    path: string;
+    // null when this path isn't inside a git repository at all — a normal
+    // answer for a session started outside one, not an error.
+    repo: string | null;
+    worktrees: WorktreeInfo[];
+    branches: WorktreeBranch[];
+  }[];
+}
+
 export interface ExtensionThemeContribution {
   label: string;
   path: string;

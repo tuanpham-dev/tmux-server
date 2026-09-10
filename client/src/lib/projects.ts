@@ -1,4 +1,4 @@
-import type { Project, TmuxSession } from "../types";
+import type { Project, RepoInfo, TmuxSession, WorktreeInfo } from "../types";
 
 // A project's display name is always derived from its folder — never stored,
 // so renaming the folder is renaming the project. Works on the `~`-shortened
@@ -23,6 +23,15 @@ export function sessionNameForProject(cwd: string, existingSessionNames: Iterabl
   }
 }
 
+// The session name a worktree proposes for its branch. tmux session names
+// can't contain "." or ":" (its own target syntax), whitespace makes them
+// awkward to type, and "/" would read as a path. Kept byte-identical to what
+// the worktrees extension used, so a session it created still matches the
+// worktree it was created for.
+export function sessionNameForBranch(branch: string): string {
+  return branch.replace(/[.:/\s]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 // How many unpinned entries the recents list keeps — pinned entries never
 // count against (or get evicted by) the cap.
 const RECENTS_CAP = 15;
@@ -41,44 +50,173 @@ export function bumpRecent(projects: Project[], cwd: string): Project[] {
     .filter((p) => p.pinned || ++unpinned <= RECENTS_CAP);
 }
 
-// One row of the PROJECTS panel: a live project — its primary tmux session
-// plus any further sessions rooted in the same folder, merged so one folder
-// never shows two look-alike rows (flagged pinned when a pinned project's
-// folder matches) — or a dead pinned project, kept visible so one click
-// restores its session in exactly that folder. Unpinned projects never
-// produce rows — they live only in the recents dropdown.
-export type ProjectRow =
-  | { dead: false; session: TmuxSession; extraSessions: TmuxSession[]; pinned: boolean }
-  | { dead: true; cwd: string };
+// The PROJECTS tree, three levels deep: project → worktree → terminal.
+//
+// A project is a *repository* wherever git says so — every session inside any
+// of that repository's worktrees hangs off one row, instead of appearing as
+// unrelated siblings named after their checkout folders. A session outside a
+// repository keeps the old shape exactly: its own row, terminals directly
+// beneath. See plans/worktrees-into-projects.md.
 
-// Live projects first (tmux order of their primary session — every live
-// session shows, registered or not; same-path sessions merge, first one
-// primary; pathless sessions never merge), then a dead row for each pinned
-// project whose folder no live session is rooted in, MRU-first. Matching is
-// by session_path, so an out-of-band `tmux rename-session` can't orphan a
-// pin.
-export function projectRows(sessions: TmuxSession[], projects: Project[]): ProjectRow[] {
+// One worktree under a project. `sessions` are the tmux sessions rooted at or
+// under it — several is normal (the extension this replaces picked a single
+// owner; the tree shows them all, the same way same-folder sessions already
+// merge into one row).
+export interface WorktreeNode {
+  key: string;
+  // The repository this worktree belongs to. git commands are run from here
+  // rather than from the worktree itself, which may be missing (prunable).
+  repo: string;
+  worktree: WorktreeInfo;
+  label: string;
+  pinned: boolean;
+  sessions: TmuxSession[];
+}
+
+// One project row. Either a live project — a repository with worktrees, or a
+// plain folder whose sessions sit directly under it — or a dead pinned
+// project, kept visible so one click restores its session in exactly that
+// folder.
+//
+// `sessions` and `worktrees` are mutually exclusive in practice: a repository
+// project puts every session on a worktree node, a plain-folder project has
+// no worktrees. `cwd` is the folder the row opens (null only for a pathless
+// session, which has no folder to open).
+export interface ProjectNode {
+  key: string;
+  cwd: string | null;
+  label: string;
+  pinned: boolean;
+  dead: boolean;
+  sessions: TmuxSession[];
+  worktrees: WorktreeNode[];
+}
+
+// A repository's worktree level is only worth showing when there is more than
+// one worktree: a single-checkout project would otherwise pay an indent and a
+// row for information it doesn't have. The level appears the moment a second
+// worktree exists.
+function hasWorktreeLevel(repo: RepoInfo | undefined): repo is RepoInfo {
+  return repo !== undefined && repo.worktrees.length > 1;
+}
+
+// Which worktree a folder sits in: the longest worktree path that the folder
+// is at or under. Longest wins because the default location nests worktrees
+// *inside* the repository, so `~/app` is a prefix of `~/app/.worktrees/x` and
+// the shorter match would swallow the nested one.
+export function worktreeForPath(worktrees: WorktreeInfo[], cwd: string): WorktreeInfo | undefined {
+  let best: WorktreeInfo | undefined;
+  for (const wt of worktrees) {
+    if (cwd !== wt.path && !cwd.startsWith(wt.path + "/")) continue;
+    if (!best || wt.path.length > best.path.length) best = wt;
+  }
+  return best;
+}
+
+// A worktree's display name: its branch, else a short detached head, else the
+// checkout's folder name.
+export function worktreeLabel(wt: WorktreeInfo): string {
+  if (wt.branch) return wt.branch;
+  if (wt.detached) return `(detached ${wt.head?.slice(0, 7) ?? "?"})`;
+  return projectName(wt.path);
+}
+
+// Live projects first, in the tmux order of the first session that put each
+// one on screen, then a dead row for each pinned project no live session is
+// rooted in, MRU-first. Matching is by path throughout, so an out-of-band
+// `tmux rename-session` can't orphan a pin.
+export function projectTree(
+  sessions: TmuxSession[],
+  projects: Project[],
+  repoIndex: Map<string, RepoInfo>,
+): ProjectNode[] {
   const pinnedCwds = new Set(projects.filter((p) => p.pinned).map((p) => p.cwd));
-  const rows: ProjectRow[] = [];
-  const byPath = new Map<string, Extract<ProjectRow, { dead: false }>>();
+  const nodes: ProjectNode[] = [];
+  // Repository projects, keyed by repo root; plain-folder projects, keyed by
+  // the folder itself. A path always starts with "/" or "~" and a pathless
+  // session falls back to its name, so the namespaces can't collide.
+  const byKey = new Map<string, ProjectNode>();
+
   for (const session of sessions) {
-    const primary = session.path ? byPath.get(session.path) : undefined;
-    if (primary) {
-      primary.extraSessions.push(session);
+    const repo = session.path ? repoIndex.get(session.path) : undefined;
+    if (hasWorktreeLevel(repo)) {
+      let node = byKey.get(repo.repo);
+      if (!node) {
+        node = {
+          key: repo.repo,
+          cwd: repo.repo,
+          label: projectName(repo.repo),
+          pinned: pinnedCwds.has(repo.repo),
+          dead: false,
+          sessions: [],
+          // Every worktree of the repository, including ones with no session
+          // — that is how a worktree stays reachable after its session dies,
+          // and what the retired WORKTREES pane used to show.
+          worktrees: repo.worktrees.map((wt) => ({
+            key: wt.path,
+            repo: repo.repo,
+            worktree: wt,
+            label: worktreeLabel(wt),
+            // The main worktree IS the repository's folder, so its pin is
+            // already showing on the project row above it. Repeating it two
+            // rows apart in the same subtree reads as two pins, not one.
+            pinned: pinnedCwds.has(wt.path) && wt.path !== repo.repo,
+            sessions: [],
+          })),
+        };
+        byKey.set(repo.repo, node);
+        nodes.push(node);
+      }
+      const owner = worktreeForPath(repo.worktrees, session.path);
+      const target = owner ? node.worktrees.find((w) => w.key === owner.path) : undefined;
+      // A session inside the repository but under no worktree git reports
+      // (a stale path, a listing race) still belongs to the project rather
+      // than vanishing — it hangs off the project row directly.
+      if (target) target.sessions.push(session);
+      else node.sessions.push(session);
       continue;
     }
-    const row: Extract<ProjectRow, { dead: false }> = {
-      dead: false,
-      session,
-      extraSessions: [],
+    // Not in a repository, or a repository with a single worktree: today's
+    // behaviour, unchanged. Same-folder sessions merge into one node;
+    // pathless sessions never merge.
+    const key = session.path || session.name;
+    const existing = session.path ? byKey.get(key) : undefined;
+    if (existing) {
+      existing.sessions.push(session);
+      continue;
+    }
+    const node: ProjectNode = {
+      key,
+      cwd: session.path || null,
+      label: session.path ? projectName(session.path) : session.name,
       pinned: pinnedCwds.has(session.path),
+      dead: false,
+      sessions: [session],
+      worktrees: [],
     };
-    if (session.path) byPath.set(session.path, row);
-    rows.push(row);
+    if (session.path) byKey.set(key, node);
+    nodes.push(node);
   }
-  const livePaths = new Set(sessions.map((s) => s.path));
+
+  // A folder already on screen as a worktree of a live project never also
+  // gets a dead row — the worktree row carries the pin instead, so one folder
+  // is never two rows.
+  const onScreen = new Set<string>();
+  for (const node of nodes) {
+    if (node.cwd) onScreen.add(node.cwd);
+    for (const wt of node.worktrees) onScreen.add(wt.key);
+  }
   for (const p of [...projects].sort((a, b) => b.lastOpened - a.lastOpened)) {
-    if (p.pinned && !livePaths.has(p.cwd)) rows.push({ dead: true, cwd: p.cwd });
+    if (!p.pinned || onScreen.has(p.cwd)) continue;
+    nodes.push({
+      key: p.cwd,
+      cwd: p.cwd,
+      label: projectName(p.cwd),
+      pinned: true,
+      dead: true,
+      sessions: [],
+      worktrees: [],
+    });
   }
-  return rows;
+  return nodes;
 }

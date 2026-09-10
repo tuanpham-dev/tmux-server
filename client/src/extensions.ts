@@ -411,6 +411,10 @@ export interface ExtensionContext {
     // command that opens a panel's UI must never end with it hidden. No-ops
     // if that panel was never registered.
     revealSidebarPanel(panelId: string): void;
+    // Opens the PROJECTS tree's create-worktree form, revealing the tree
+    // first. runCommandIndex preselects one of the configured worktree run
+    // commands (the worktreeRunCommands setting); omit it for none.
+    newWorktree(opts?: { runCommandIndex?: number }): void;
     // Opens a tmux session's active window as a window-tab. When no session
     // by that name exists, opts.createCwd creates it there first (same
     // create-then-open path the sidebar's own pinned-session restore uses);
@@ -1112,6 +1116,34 @@ export function setProjectsFocusBridge(side: SidebarSide, bridge: ProjectsFocusB
   projectsFocusBridges[side] = bridge;
 }
 
+interface NewWorktreeBridge {
+  // Opens the PROJECTS tree's inline create-worktree form on the active
+  // project (or the first repository project), optionally preselecting one
+  // of the configured run commands by index.
+  open(runCommandIndex?: number): void;
+}
+
+const newWorktreeBridges: Partial<Record<SidebarSide, NewWorktreeBridge | null>> = {};
+
+export function setNewWorktreeBridge(side: SidebarSide, bridge: NewWorktreeBridge | null): void {
+  newWorktreeBridges[side] = bridge;
+}
+
+// Backs ExtensionContext.app.newWorktree: reveal the PROJECTS panel, then
+// hand off to the tree on whichever side is showing it. Worktrees used to be
+// an extension's own panel; this is what its commands drive now that the
+// tree owns them. See plans/worktrees-into-projects.md.
+export function openNewWorktreeForm(runCommandIndex?: number): void {
+  const bridge = sidebarLayoutBridge;
+  if (!bridge) return;
+  const tabId = bridge.tabOfPanel("projects");
+  if (!tabId) return;
+  const side = revealTab(tabId);
+  if (!side) return;
+  projectsFocusBridges[side]?.focus();
+  newWorktreeBridges[side]?.open(runCommandIndex);
+}
+
 interface ExplorerPanelFocusBridge {
   // Expands the given accordion section if collapsed, then moves keyboard
   // focus into its content — the generic counterpart of the PROJECTS bridge
@@ -1472,6 +1504,9 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
         if (!panel) return;
         panel.hidden = !visible;
         notify();
+      },
+      newWorktree(opts) {
+        openNewWorktreeForm(opts?.runCommandIndex);
       },
       revealSidebarPanel(panelId) {
         const namespaced = `ext.${ext.id}.${panelId}`;

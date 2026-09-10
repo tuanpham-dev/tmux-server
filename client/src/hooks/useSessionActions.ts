@@ -1,11 +1,18 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import * as api from "../api";
 import { copyText } from "../clipboard";
-import { bumpRecent, projectName, sessionNameForProject } from "../lib/projects";
+import {
+  bumpRecent,
+  projectName,
+  sessionNameForBranch,
+  sessionNameForProject,
+  type ProjectNode,
+  type WorktreeNode,
+} from "../lib/projects";
 import { isRealTab, tabVirtualPath } from "../lib/tabs";
 import type { SplitDirection } from "../lib/splits";
 import type { AppSettings } from "../settings";
-import type { MenuItem, Project, Tab, TmuxSession, TmuxWindow } from "../types";
+import type { MenuItem, Project, Tab, TmuxSession, TmuxWindow, WorktreeBranch } from "../types";
 
 // createWindow's server call returns void (see server/src/tmux.ts), so the
 // window it just created isn't known until the next session list fetch —
@@ -16,6 +23,26 @@ import type { MenuItem, Project, Tab, TmuxSession, TmuxWindow } from "../types";
 async function findActiveWindowIndex(sessionName: string): Promise<number | undefined> {
   const freshSessions = await api.fetchSessions();
   return freshSessions.find((s) => s.name === sessionName)?.windows.find((w) => w.active)?.index;
+}
+
+// Types a command into a session that was created moments ago. The session
+// does not exist the instant openProject resolves (tmux is caught up on the
+// next poll), so a 404 is retried rather than surfaced.
+async function sendTextWithRetries(
+  sessionName: string,
+  text: string,
+  retries = 12,
+  delayMs = 400,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await api.sendTextToSession(sessionName, text, true);
+      return;
+    } catch (err) {
+      if (attempt >= retries) throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
 }
 
 // Session/window CRUD, project open/close/pin/recents (the projects
@@ -59,7 +86,7 @@ export function useSessionActions(
   // session's name (undefined on failure) — useOpenTarget's file-open path
   // needs it as the open-file API's session target.
   const openProject = useCallback(
-    async (cwd: string): Promise<string | undefined> => {
+    async (cwd: string, preferredName?: string): Promise<string | undefined> => {
       try {
         const live = sessions.find((s) => s.path === cwd);
         if (live) {
@@ -69,11 +96,15 @@ export function useSessionActions(
           if (activeIndex !== undefined) await openWindowTab(live.name, activeIndex);
           return live.name;
         }
-        const created = await api.createSession(
-          sessionNameForProject(cwd, sessions.map((s) => s.name)),
-          cwd,
-          true,
-        );
+        // A worktree passes its branch's name (sessionNameForBranch) so the
+        // session reads as the branch rather than as the checkout folder,
+        // which for a custom worktree location may not resemble it at all.
+        // Still uniquified against the live names, the same as the default.
+        const taken = sessions.map((s) => s.name);
+        const name = preferredName
+          ? sessionNameForProject(preferredName, taken)
+          : sessionNameForProject(cwd, taken);
+        const created = await api.createSession(name, cwd, true);
         setProjects((prev) => bumpRecent(prev, cwd));
         await refresh();
         const activeIndex = created.windows.find((w) => w.active)?.index;
@@ -91,17 +122,27 @@ export function useSessionActions(
   // session_path — rename-proof). Pinning a session in a folder that was
   // never opened as a project registers it; unpinning keeps the entry in
   // recents, it only stops surviving session death.
+  // Pins/unpins a folder directly. Worktree rows need this: a worktree with
+  // no session has no session name to key off, but it is still a folder the
+  // registry can hold.
+  const togglePinProject = useCallback(
+    (cwd: string) => {
+      if (!cwd) return;
+      setProjects((prev) => {
+        const existing = prev.find((p) => p.cwd === cwd);
+        if (existing) return prev.map((p) => (p.cwd === cwd ? { ...p, pinned: !p.pinned } : p));
+        return [...prev, { cwd, pinned: true, lastOpened: Date.now() }];
+      });
+    },
+    [setProjects],
+  );
+
   const togglePinSession = useCallback(
     (name: string) => {
       const path = sessions.find((s) => s.name === name)?.path;
-      if (!path) return;
-      setProjects((prev) => {
-        const existing = prev.find((p) => p.cwd === path);
-        if (existing) return prev.map((p) => (p.cwd === path ? { ...p, pinned: !p.pinned } : p));
-        return [...prev, { cwd: path, pinned: true, lastOpened: Date.now() }];
-      });
+      if (path) togglePinProject(path);
     },
-    [sessions, setProjects],
+    [sessions, togglePinProject],
   );
 
   const unpinProject = useCallback(
@@ -153,17 +194,13 @@ export function useSessionActions(
   // Closes the whole project a session belongs to: every live session
   // rooted in the same folder dies (a pathless session is just itself).
   // Confirm wording scales with what's actually being closed.
-  const closeProject = useCallback(
-    async (name: string) => {
-      const target = sessions.find((s) => s.name === name);
-      const members =
-        target?.path !== undefined && target.path !== ""
-          ? sessions.filter((s) => s.path === target.path)
-          : target
-            ? [target]
-            : [];
+  // Kills a named set of sessions behind one confirm, with wording that
+  // scales to what is actually being closed. Shared by closeProject (a whole
+  // folder) and the tree's worktree rows (one worktree's sessions), so both
+  // ask the same question the same way.
+  const closeSessions = useCallback(
+    async (label: string, members: TmuxSession[]) => {
       if (members.length === 0) return;
-      const label = target!.path ? projectName(target!.path) : name;
       const terminals = members.reduce((n, s) => n + s.windows.length, 0);
       const detail =
         members.length > 1
@@ -178,7 +215,24 @@ export function useSessionActions(
         return;
       for (const s of members) await killSessionNow(s.name);
     },
-    [confirmDialog, killSessionNow, settingsRef, sessions],
+    [confirmDialog, killSessionNow, settingsRef],
+  );
+
+  // Closes the whole project a session belongs to: every live session
+  // rooted in the same folder dies (a pathless session is just itself).
+  const closeProject = useCallback(
+    async (name: string) => {
+      const target = sessions.find((s) => s.name === name);
+      const members =
+        target?.path !== undefined && target.path !== ""
+          ? sessions.filter((s) => s.path === target.path)
+          : target
+            ? [target]
+            : [];
+      if (members.length === 0) return;
+      await closeSessions(target!.path ? projectName(target!.path) : name, members);
+    },
+    [closeSessions, sessions],
   );
 
   const createWindow = useCallback(
@@ -256,40 +310,230 @@ export function useSessionActions(
     [refresh, showError, confirmDialog, tabs, closeTab, settingsRef, sessions],
   );
 
-  // Menu for a live session row. Pin state is the project registry's flag
-  // for the session's folder (session_path) — see togglePinSession above.
-  const sessionMenuItems = useCallback(
-    (name: string): MenuItem[] => {
-      const path = sessions.find((s) => s.name === name)?.path;
-      const pinned = path !== undefined && projects.some((p) => p.cwd === path && p.pinned);
-      return [
-        { label: "Open All Terminals", onClick: () => openAllWindows(name) },
-        { label: "New Terminal", onClick: () => createWindow(name) },
-        pinned
-          ? { label: "Unpin Project", onClick: () => togglePinSession(name) }
-          : { label: "Pin Project", onClick: () => togglePinSession(name) },
-        { label: "Close Project", danger: true, onClick: () => closeProject(name) },
-      ];
+  // ---- The PROJECTS tree's rows ----
+  //
+  // Project and worktree rows are both "a folder with some sessions under
+  // it", so their actions are the same handful with different targets. See
+  // plans/worktrees-into-projects.md.
+
+  // Every session under a project row, wherever it sits — directly on the
+  // row for a plain folder, on its worktrees for a repository.
+  const sessionsUnder = (node: ProjectNode): TmuxSession[] => [
+    ...node.sessions,
+    ...node.worktrees.flatMap((w) => w.sessions),
+  ];
+
+  // A worktree row's click: focus its most-recent terminal, or start a
+  // session in it — named after its branch, not the checkout folder.
+  const openWorktree = useCallback(
+    async (node: WorktreeNode) => {
+      const live = node.sessions[0];
+      if (live) {
+        const activeIndex = live.windows.find((w) => w.active)?.index ?? live.windows[0]?.index;
+        if (activeIndex !== undefined) await openWindowTab(live.name, activeIndex);
+        setProjects((prev) => bumpRecent(prev, node.worktree.path));
+        return;
+      }
+      const branch = node.worktree.branch;
+      await openProject(node.worktree.path, branch ? sessionNameForBranch(branch) : undefined);
+    },
+    [openWindowTab, openProject, setProjects],
+  );
+
+  const newTerminalInWorktree = useCallback(
+    async (node: WorktreeNode) => {
+      const live = node.sessions[0];
+      if (live) await createWindow(live.name, node.worktree.path);
+      else await openWorktree(node);
+    },
+    [createWindow, openWorktree],
+  );
+
+  const newTerminalInProject = useCallback(
+    async (node: ProjectNode) => {
+      // A repository row has no sessions of its own once they all live on
+      // worktrees; its main worktree is the folder "new terminal here" means.
+      const live = node.sessions[0] ?? node.worktrees.find((w) => w.worktree.main)?.sessions[0];
+      if (live) await createWindow(live.name);
+      else if (node.cwd) await openProject(node.cwd);
+    },
+    [createWindow, openProject],
+  );
+
+  // Menu for a project row: a plain folder, a repository header, or a dead
+  // pinned project. Pin state is the registry's flag for the row's folder.
+  const projectMenuItems = useCallback(
+    (node: ProjectNode): MenuItem[] => {
+      if (node.dead) {
+        const cwd = node.cwd ?? node.key;
+        return [
+          { label: "Open Project", onClick: () => openProject(cwd) },
+          { label: "Unpin Project", onClick: () => unpinProject(cwd) },
+          { label: "Remove from Recent", onClick: () => removeRecentProject(cwd) },
+        ];
+      }
+      const all = sessionsUnder(node);
+      const items: MenuItem[] = [];
+      if (node.sessions.length > 0) {
+        items.push({ label: "Open All Terminals", onClick: () => openAllWindows(node.sessions[0].name) });
+      } else if (node.cwd) {
+        items.push({ label: "Open Project", onClick: () => void openProject(node.cwd!) });
+      }
+      items.push({ label: "New Terminal", onClick: () => void newTerminalInProject(node) });
+      if (node.cwd) {
+        items.push({
+          label: node.pinned ? "Unpin Project" : "Pin Project",
+          onClick: () => togglePinProject(node.cwd!),
+        });
+      }
+      if (all.length > 0) {
+        items.push({ label: "Close Project", danger: true, onClick: () => void closeSessions(node.label, all) });
+      }
+      return items;
     },
     [
-      sessions,
-      projects,
-      togglePinSession,
+      openProject,
+      unpinProject,
+      removeRecentProject,
       openAllWindows,
-      createWindow,
-      closeProject,
+      newTerminalInProject,
+      togglePinProject,
+      closeSessions,
     ],
   );
 
-  // Menu for a dead pinned-project row: no live tmux state to act on, so
-  // only open/unpin/forget apply.
-  const deadProjectMenuItems = useCallback(
-    (cwd: string): MenuItem[] => [
-      { label: "Open Project", onClick: () => openProject(cwd) },
-      { label: "Unpin Project", onClick: () => unpinProject(cwd) },
-      { label: "Remove from Recent", onClick: () => removeRecentProject(cwd) },
-    ],
-    [openProject, unpinProject, removeRecentProject],
+  // The local branches a repository's create form offers. Fetched on demand
+  // (not on the tree's poll): only the form ever wants them.
+  const loadWorktreeBranches = useCallback(async (cwd: string): Promise<WorktreeBranch[]> => {
+    try {
+      const { results } = await api.getWorktrees([cwd], { branches: true });
+      return results[0]?.branches ?? [];
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Creates the checkout, opens a session rooted in it named after the
+  // branch, and optionally runs a command in that session. The command is
+  // not awaited — the form shouldn't stay busy for the retry window, and the
+  // session exists only moments after openProject returns, so the send
+  // retries rather than failing on the first 404.
+  const createWorktreeSession = useCallback(
+    async (opts: {
+      cwd: string;
+      branch: string;
+      base?: string;
+      mode: "new" | "existing";
+      sessionName?: string;
+      runCommand?: string;
+    }): Promise<void> => {
+      let created: { path: string; branch: string };
+      try {
+        created = await api.createWorktree({
+          cwd: opts.cwd,
+          branch: opts.branch,
+          base: opts.base,
+          mode: opts.mode,
+          location: settingsRef.current.worktreeLocation,
+        });
+      } catch (err) {
+        showError(err);
+        return;
+      }
+      const name = await openProject(
+        created.path,
+        opts.sessionName?.trim() || sessionNameForBranch(created.branch),
+      );
+      if (!name || !opts.runCommand) return;
+      void sendTextWithRetries(name, opts.runCommand).catch((err: unknown) => showError(err));
+    },
+    [openProject, showError, settingsRef],
+  );
+
+  // Removes a worktree, optionally killing its sessions first. The three
+  // confirmations spell out what survives: the branch always does, and a
+  // session left running would be sitting in a deleted directory.
+  const removeWorktree = useCallback(
+    async (node: WorktreeNode, alsoKillSessions: boolean): Promise<void> => {
+      const wt = node.worktree;
+      const names = node.sessions.map((s) => s.name).join(", ");
+      const message = alsoKillSessions
+        ? `Kill ${node.sessions.length > 1 ? `sessions "${names}"` : `session "${names}"`} and remove the worktree at ${wt.path}?\n\nThe branch "${node.label}" is kept.`
+        : node.sessions.length > 0
+          ? `Remove the worktree at ${wt.path}?\n\n${node.sessions.length > 1 ? `Sessions "${names}" are` : `Session "${names}" is`} left running — their shells will be sitting in a deleted directory. The branch "${node.label}" is kept.`
+          : `Remove the worktree at ${wt.path}?\n\nThe branch "${node.label}" is kept.`;
+      if (!(await confirmDialog(message, alsoKillSessions ? "Kill & Remove" : "Remove Worktree"))) return;
+      if (alsoKillSessions) for (const s of node.sessions) await killSessionNow(s.name);
+      try {
+        await api.removeWorktree({ cwd: node.repo, path: wt.path });
+        await refresh();
+        return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // git refuses to drop a worktree with modified/untracked files; that
+        // is the one case worth a second, explicit prompt rather than an
+        // error banner.
+        if (!/use --force|contains modified or untracked/i.test(message)) {
+          showError(err);
+          return;
+        }
+        const forced = await confirmDialog(
+          `${wt.path} has uncommitted changes.\n\nRemove it anyway? The changes are discarded and can't be recovered.`,
+          "Force Remove",
+        );
+        if (!forced) return;
+        try {
+          await api.removeWorktree({ cwd: node.repo, path: wt.path, force: true });
+          await refresh();
+        } catch (forceErr) {
+          showError(forceErr);
+        }
+      }
+    },
+    [confirmDialog, killSessionNow, refresh, showError],
+  );
+
+  // Menu for a worktree row: the session side, then the git side.
+  const worktreeMenuItems = useCallback(
+    (node: WorktreeNode): MenuItem[] => {
+      const items: MenuItem[] = [
+        {
+          label: node.sessions.length > 0 ? "Open Session" : "Start Session Here",
+          onClick: () => void openWorktree(node),
+        },
+        { label: "New Terminal", onClick: () => void newTerminalInWorktree(node) },
+        {
+          label: node.pinned ? "Unpin Project" : "Pin Project",
+          onClick: () => togglePinProject(node.worktree.path),
+        },
+      ];
+      if (node.sessions.length > 0) {
+        items.push({
+          label: "Close Project",
+          danger: true,
+          onClick: () => void closeSessions(node.label, node.sessions),
+        });
+      }
+      // The main worktree is the repository itself — git refuses to remove
+      // it, so the entries aren't offered.
+      if (!node.worktree.main) {
+        items.push({ label: "", separator: true, onClick: () => {} });
+        if (node.sessions.length > 0) {
+          items.push({
+            label: "Kill Sessions & Remove Worktree…",
+            danger: true,
+            onClick: () => void removeWorktree(node, true),
+          });
+        }
+        items.push({
+          label: "Remove Worktree…",
+          danger: true,
+          onClick: () => void removeWorktree(node, false),
+        });
+      }
+      return items;
+    },
+    [openWorktree, newTerminalInWorktree, togglePinProject, closeSessions, removeWorktree],
   );
 
   // The recent-projects header dropdown: every registered folder MRU-first,
@@ -413,8 +657,14 @@ export function useSessionActions(
     killWindow,
     togglePinSession,
     openProject,
-    sessionMenuItems,
-    deadProjectMenuItems,
+    projectMenuItems,
+    worktreeMenuItems,
+    createWorktreeSession,
+    loadWorktreeBranches,
+    openWorktree,
+    newTerminalInProject,
+    newTerminalInWorktree,
+    togglePinProject,
     recentProjectMenuItems,
     windowMenuItems,
     tabMenuItems,

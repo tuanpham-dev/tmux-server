@@ -94,6 +94,16 @@ export interface AppSettings {
   // instead of round-tripping through the PTY per keystroke. "" disables
   // it entirely. Desktop and non-matching panes are unaffected regardless.
   localEchoWhen: string;
+  // Where the PROJECTS tree creates new worktrees. {repo} is the repository
+  // root, {branch} the branch name with path separators replaced by "-". A
+  // relative path resolves against the repository root. When the location is
+  // inside the repository, its top folder is added to .git/info/exclude so it
+  // stays out of git status (your committed .gitignore is never modified).
+  worktreeLocation: string;
+  // Commands the create-worktree form offers to run in the new session, as a
+  // JSON array of {name, command}. The command is typed into the session and
+  // submitted right after it's created. "[]" disables the picker.
+  worktreeRunCommands: string;
   // Gates the "Kill Session"/"Kill Window" confirm dialogs. Unsaved-changes
   // confirms (dirty CSV tabs) are never gated — that's data loss, not a
   // preference.
@@ -169,6 +179,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uploadMaxSizeMb: 0,
   pasteDropUploadDir: "/tmp",
   localEchoWhen: "claude",
+  worktreeLocation: "{repo}/.worktrees/{branch}",
+  worktreeRunCommands: JSON.stringify([
+    { name: "Claude Code", command: "claude" },
+    { name: "Claude Code (skip permissions)", command: "claude --dangerously-skip-permissions" },
+  ]),
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",
@@ -391,6 +406,31 @@ export function projectsFromPins(parsed: unknown): Project[] {
       .filter((p) => isPlainObject(p) && typeof p.cwd === "string" && p.cwd !== "")
       .map((p) => ({ cwd: (p as { cwd: string }).cwd, pinned: true, lastOpened: Date.now() })),
   );
+}
+
+// One-time adoption of the worktrees extension's configuration, from back
+// when worktrees lived in an extension rather than in the PROJECTS tree (see
+// plans/worktrees-into-projects.md). A value the user actually customised is
+// carried over; an app setting they have already changed is never
+// overwritten. Reads both the namespaced and bare extension ids, since the
+// host namespaces panel/config ids by publisher.
+export function adoptWorktreeExtensionSettings(
+  settings: AppSettings,
+  extensionSettings: ExtensionSettingsValues | undefined,
+): AppSettings {
+  if (!extensionSettings) return settings;
+  const ext = extensionSettings["tmux-server.worktrees"] ?? extensionSettings["worktrees"];
+  if (!ext) return settings;
+  const next = { ...settings };
+  const location = ext["worktrees.location"];
+  if (typeof location === "string" && location.trim() && next.worktreeLocation === DEFAULT_SETTINGS.worktreeLocation) {
+    next.worktreeLocation = location.trim();
+  }
+  const agents = ext["worktrees.agents"];
+  if (typeof agents === "string" && agents.trim() && next.worktreeRunCommands === DEFAULT_SETTINGS.worktreeRunCommands) {
+    next.worktreeRunCommands = agents.trim();
+  }
+  return next;
 }
 
 export function loadProjects(): Project[] {

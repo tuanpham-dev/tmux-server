@@ -27,6 +27,15 @@ import {
   walkFiles,
 } from "./files.js";
 import {
+  createWorktree,
+  listWorktrees,
+  removeWorktree,
+  repoIdentity,
+  WorktreeError,
+  type Branch,
+  type WorktreeInfo,
+} from "./gitWorktrees.js";
+import {
   emitApiMutation,
   extensionHookMiddleware,
   installFromTsixFile,
@@ -663,6 +672,116 @@ api.get("/fs/git-root", async (req, res) => {
     res.json({ root: shortenHome(root ?? dirPath) });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// ---- git worktrees ----
+//
+// Backs the PROJECTS tree's middle level: which repository each session's
+// folder belongs to, and every worktree of that repository (including ones
+// with no session, which is how a worktree stays reachable after its session
+// dies). See plans/worktrees-into-projects.md.
+//
+// Paths cross this boundary `~`-shortened in both directions — expandHome on
+// the way in, shortenHome on the way out — so nothing above the API line ever
+// handles an absolute path.
+
+function shortenWorktrees(worktrees: WorktreeInfo[]): WorktreeInfo[] {
+  return worktrees.map((wt) => ({ ...wt, path: shortenHome(wt.path) }));
+}
+
+function shortenBranches(branches: Branch[]): Branch[] {
+  return branches.map((b) => ({ ...b, checkedOutAt: b.checkedOutAt ? shortenHome(b.checkedOutAt) : null }));
+}
+
+// One or more `path` params, each answered with its repository and that
+// repository's worktrees. `dirty=1` adds per-worktree uncommitted-changes
+// state (one `git status` each — the expensive half of the tree's poll);
+// `branches=1` adds the local branch list the create form's pickers need.
+//
+// The git work is deduplicated by repository: N session paths inside one repo
+// cost one `git worktree list`, not N. A path that isn't in a repository
+// answers `repo: null` — a normal answer for a session started outside one,
+// not an error.
+api.get("/git/worktrees", async (req, res) => {
+  const raw = req.query.path;
+  const paths = (Array.isArray(raw) ? raw : [raw]).filter((p): p is string => typeof p === "string" && p !== "");
+  if (paths.length === 0) {
+    res.status(400).json({ error: "at least one path is required" });
+    return;
+  }
+  const wantDirty = req.query.dirty === "1";
+  const wantBranches = req.query.branches === "1";
+  try {
+    // repoIdentity is one `git rev-parse` per path and is shared by every
+    // worktree of a repo, so it decides which paths can share one listing.
+    const byIdentity = new Map<string, Awaited<ReturnType<typeof listWorktrees>>>();
+    const results = [];
+    for (const p of [...new Set(paths)]) {
+      const dirPath = expandHome(p);
+      const identity = await repoIdentity(dirPath);
+      if (!identity) {
+        results.push({ path: p, repo: null, worktrees: [], branches: [] });
+        continue;
+      }
+      let listing = byIdentity.get(identity);
+      if (!listing) {
+        listing = await listWorktrees(dirPath, { dirty: wantDirty, branches: wantBranches });
+        byIdentity.set(identity, listing);
+      }
+      results.push({
+        path: p,
+        repo: listing.repo === null ? null : shortenHome(listing.repo),
+        worktrees: shortenWorktrees(listing.worktrees),
+        branches: shortenBranches(listing.branches),
+      });
+    }
+    res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// Creates a worktree and stops there — the session rooted in it is the
+// client's to create, so the tree can name it and record it as a project in
+// one flow.
+api.post("/git/worktrees/create", async (req, res) => {
+  const { cwd, branch, base, mode, location } = req.body ?? {};
+  if (typeof cwd !== "string" || !cwd || typeof branch !== "string" || !branch.trim()) {
+    res.status(400).json({ error: "cwd and branch are required" });
+    return;
+  }
+  try {
+    const created = await createWorktree({
+      cwd: expandHome(cwd),
+      branch,
+      base: typeof base === "string" ? base : undefined,
+      mode: mode === "existing" ? "existing" : "new",
+      location: typeof location === "string" ? location : undefined,
+    });
+    res.json({ path: shortenHome(created.path), branch: created.branch });
+  } catch (err) {
+    res.status(err instanceof WorktreeError ? err.status : 500).json({ error: errMessage(err) });
+  }
+});
+
+// Removes a worktree's checkout, keeping its branch. Sessions inside it are
+// the caller's to kill first — this route never touches tmux.
+api.post("/git/worktrees/remove", async (req, res) => {
+  const { cwd, path: target, force } = req.body ?? {};
+  if (typeof cwd !== "string" || !cwd || typeof target !== "string" || !target) {
+    res.status(400).json({ error: "cwd and path are required" });
+    return;
+  }
+  try {
+    const removed = await removeWorktree({
+      cwd: expandHome(cwd),
+      path: expandHome(target),
+      force: force === true,
+    });
+    res.json({ removed: shortenHome(removed.removed) });
+  } catch (err) {
+    res.status(err instanceof WorktreeError ? err.status : 500).json({ error: errMessage(err) });
   }
 });
 

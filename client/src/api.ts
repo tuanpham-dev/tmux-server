@@ -5,6 +5,7 @@ import type {
   FsListing,
   RegistrySourceResult,
   TmuxSession,
+  WorktreeLookup,
 } from "./types";
 import { formatMb } from "./formatSize";
 
@@ -197,6 +198,51 @@ export function listFiles(dirPath: string, query?: string): Promise<FsFilesListi
 // isn't inside a repo — roots the FILES panel / quick-switcher search.
 export function getGitRoot(dirPath: string): Promise<FsGitRoot> {
   return request(`/api/fs/git-root?path=${encodeURIComponent(dirPath)}`);
+}
+
+// Which repository each path belongs to, and every worktree of that
+// repository — the PROJECTS tree's middle level. The server deduplicates the
+// git work by repository, so asking about every session path at once costs
+// one listing per repo rather than one per path. `dirty` adds a `git status`
+// per worktree; `branches` adds the create form's branch pickers.
+export function getWorktrees(
+  paths: string[],
+  opts: { dirty?: boolean; branches?: boolean } = {},
+): Promise<WorktreeLookup> {
+  const query = paths.map((p) => `path=${encodeURIComponent(p)}`);
+  if (opts.dirty) query.push("dirty=1");
+  if (opts.branches) query.push("branches=1");
+  return request(`/api/git/worktrees?${query.join("&")}`);
+}
+
+// Creates the checkout only — the caller creates the session rooted in it, so
+// the tree can name that session and record the folder as a project.
+export function createWorktree(body: {
+  cwd: string;
+  branch: string;
+  base?: string;
+  mode: "new" | "existing";
+  location?: string;
+}): Promise<{ path: string; branch: string }> {
+  return request("/api/git/worktrees/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// Removes a worktree's checkout, keeping its branch. Kill any sessions inside
+// it first — this never touches tmux.
+export function removeWorktree(body: {
+  cwd: string;
+  path: string;
+  force?: boolean;
+}): Promise<{ removed: string }> {
+  return request("/api/git/worktrees/remove", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export function openFile(

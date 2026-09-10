@@ -46,6 +46,7 @@ import { useBottomPanel } from "./hooks/useBottomPanel";
 import { useOpenTarget } from "./hooks/useOpenTarget";
 import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
+import { useWorktrees } from "./hooks/useWorktrees";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
@@ -171,6 +172,13 @@ export default function App() {
   }, []);
 
   const { sessions, refresh, sessionsLoadedRef } = useSessions(showError, onSessionsRefreshed);
+
+  // Which repository each session folder belongs to, and that repository's
+  // worktrees — the PROJECTS tree's middle level. Mounted once here so the
+  // sidebar's tree and the status bar's terminals popover read one poll
+  // rather than two. See plans/worktrees-into-projects.md.
+  const sessionPaths = useMemo(() => sessions.map((s) => s.path).filter(Boolean), [sessions]);
+  const { repoIndex } = useWorktrees(sessionPaths);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   // Each editor group's own TabBar right-side actions container — an image
@@ -1051,8 +1059,13 @@ export default function App() {
     killWindow,
     togglePinSession,
     openProject,
-    sessionMenuItems,
-    deadProjectMenuItems,
+    projectMenuItems,
+    worktreeMenuItems,
+    createWorktreeSession,
+    loadWorktreeBranches,
+    openWorktree,
+    newTerminalInProject,
+    newTerminalInWorktree,
     recentProjectMenuItems,
     windowMenuItems,
     tabMenuItems,
@@ -1797,6 +1810,22 @@ export default function App() {
   // The PROJECTS tree's whole prop set, shared by the sidebars (through
   // Sidebar) and by the status bar's terminals popover, which renders the
   // same list with `projects` overridden to [] (no pins, no dead rows).
+  // worktreeRunCommands is a JSON-string setting (the documented pattern for
+  // richer-than-scalar configuration): malformed JSON or a non-array just
+  // means no picker, not an error.
+  const worktreeRunCommands = useMemo(() => {
+    try {
+      const parsed = JSON.parse(settings.worktreeRunCommands);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (p): p is { name: string; command: string } =>
+          typeof p === "object" && p !== null && typeof p.name === "string" && typeof p.command === "string",
+      );
+    } catch {
+      return [];
+    }
+  }, [settings.worktreeRunCommands]);
+
   const projectListProps = useMemo(
     () => ({
       sessions,
@@ -1813,9 +1842,16 @@ export default function App() {
       onTogglePinSession: togglePinSession,
       onNewWindowInSession: createWindow,
       onOpenProject: openProject,
+      onOpenWorktree: openWorktree,
+      onNewTerminalInProject: newTerminalInProject,
+      onNewTerminalInWorktree: newTerminalInWorktree,
+      onCreateWorktree: createWorktreeSession,
+      loadBranches: loadWorktreeBranches,
+      worktreeRunCommands,
       onShowMenu: showMenu,
-      sessionMenuItems,
-      deadProjectMenuItems,
+      repoIndex,
+      projectMenuItems,
+      worktreeMenuItems,
       windowMenuItems,
       extensionWindowActions: extWindowActions,
       resolvedBindings,
@@ -1831,13 +1867,27 @@ export default function App() {
       togglePinSession,
       createWindow,
       openProject,
+      openWorktree,
+      newTerminalInProject,
+      newTerminalInWorktree,
+      createWorktreeSession,
+      loadWorktreeBranches,
+      worktreeRunCommands,
       showMenu,
-      sessionMenuItems,
-      deadProjectMenuItems,
+      repoIndex,
+      projectMenuItems,
+      worktreeMenuItems,
       windowMenuItems,
       extWindowActions,
       resolvedBindings,
     ],
+  );
+
+  // The sidebar tree shows pins and dead projects, so it gets the registry;
+  // the status bar's terminals popover deliberately passes none.
+  const sidebarProjectListProps = useMemo(
+    () => ({ ...projectListProps, projects }),
+    [projectListProps, projects],
   );
 
   return (
@@ -1868,27 +1918,9 @@ export default function App() {
             tabDrag={sidebarTabDrag}
             onTabDragChange={setSidebarTabDrag}
             onCollapse={() => setSidebarSideVisible("left", false)}
-    sessions={sessions}
-    activeSessionName={activeRealTab?.sessionName ?? null}
-    activeWindow={
-    activeRealTab?.windowIndex !== undefined
-    ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
-    : null
-    }
-    onOpenAllWindows={openAllWindows}
-    onOpenWindow={openWindowTab}
-    onKillWindow={killWindow}
-    onKillSession={closeProject}
-    onRenameWindow={renameWindow}
-    onTogglePinSession={togglePinSession}
-    onNewWindowInSession={createWindow}
+    projectListProps={sidebarProjectListProps}
     onOpenLazygit={openLazygit}
     onShowMenu={showMenu}
-    sessionMenuItems={sessionMenuItems}
-    deadProjectMenuItems={deadProjectMenuItems}
-    windowMenuItems={windowMenuItems}
-    projects={projects}
-    onOpenProject={openProject}
     onAddProject={() => setFolderPickerMode("project")}
     recentProjectsMenu={() => recentProjectMenuItems(() => setFolderPickerMode("project"))}
     panelVisible={panel.visible}
@@ -2180,27 +2212,9 @@ export default function App() {
             tabDrag={sidebarTabDrag}
             onTabDragChange={setSidebarTabDrag}
             onCollapse={() => setSidebarSideVisible("right", false)}
-    sessions={sessions}
-    activeSessionName={activeRealTab?.sessionName ?? null}
-    activeWindow={
-    activeRealTab?.windowIndex !== undefined
-    ? { sessionName: activeRealTab.sessionName, index: activeRealTab.windowIndex }
-    : null
-    }
-    onOpenAllWindows={openAllWindows}
-    onOpenWindow={openWindowTab}
-    onKillWindow={killWindow}
-    onKillSession={closeProject}
-    onRenameWindow={renameWindow}
-    onTogglePinSession={togglePinSession}
-    onNewWindowInSession={createWindow}
+    projectListProps={sidebarProjectListProps}
     onOpenLazygit={openLazygit}
     onShowMenu={showMenu}
-    sessionMenuItems={sessionMenuItems}
-    deadProjectMenuItems={deadProjectMenuItems}
-    windowMenuItems={windowMenuItems}
-    projects={projects}
-    onOpenProject={openProject}
     onAddProject={() => setFolderPickerMode("project")}
     recentProjectsMenu={() => recentProjectMenuItems(() => setFolderPickerMode("project"))}
     panelVisible={panel.visible}

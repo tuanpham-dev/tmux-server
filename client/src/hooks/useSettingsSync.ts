@@ -8,6 +8,7 @@ import {
   loadExtensionRegistries,
   loadExtensionSettings,
   loadKeybindingOverrides,
+  adoptWorktreeExtensionSettings,
   loadProjects,
   loadSettings,
   loadSidebarLayout,
@@ -175,7 +176,14 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
       .then((doc) => {
         if (cancelled) return;
         if (doc.settings && typeof doc.settings === "object") {
-          setSettings(migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }));
+          // Worktree settings used to live in the worktrees extension; a
+          // value the user customised there is adopted here once.
+          setSettings(
+            adoptWorktreeExtensionSettings(
+              migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }),
+              doc.extensionSettings as ExtensionSettingsValues | undefined,
+            ),
+          );
         }
         if (doc.keybindings && typeof doc.keybindings === "object") {
           setKeybindingOverrides(migrateKeybindingOverrides(doc.keybindings));

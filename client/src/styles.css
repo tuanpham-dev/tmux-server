@@ -790,8 +790,15 @@ body.resizing-row {
   align-items: center;
 }
 
-.session-row:hover {
+/* Hover has to stay readable on top of two other surfaces: the active
+   project's block tint, and the active row itself — which in most themes is
+   the same value as the hover colour, so hovering it used to do nothing at
+   all. Lifting hover past that value by blending it toward the foreground
+   keeps it visible on every theme, light or dark. */
+.session-row:hover,
+.session-row.active:hover {
   background: var(--list-hover-bg);
+  background: color-mix(in srgb, var(--list-hover-bg), var(--fg) 10%);
 }
 
 .session-item {
@@ -800,7 +807,10 @@ body.resizing-row {
   gap: 6px;
   flex: 1;
   min-width: 0;
-  padding: 5px 12px 5px 6px;
+  /* --row-depth is set per row by ProjectList: 0 for a project row, 1 for a
+     worktree row under it. One variable indents every level of the tree, so
+     adding a level is a number, not a new rule. */
+  padding: 5px 12px 5px calc(8px + var(--row-depth, 0) * 14px);
   background: none;
   border: none;
   color: var(--fg-bright);
@@ -821,9 +831,9 @@ body.resizing-row {
   border: none;
   color: var(--fg-inactive);
   line-height: 1;
-  width: 20px;
-  height: 20px;
-  min-width: 20px;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
   margin-right: 6px;
   border-radius: 4px;
   cursor: pointer;
@@ -831,7 +841,7 @@ body.resizing-row {
 }
 
 .row-add-button .codicon {
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .session-row:hover .row-add-button {
@@ -856,6 +866,20 @@ body.resizing-row {
   font-size: 13px;
 }
 
+/* ---- Icon scale inside the PROJECTS tree ----
+   The type ladder here runs 11.5 / 13 / 12.5px, so icons drawn for a 14px
+   row now sit a size too large beside it. Scoped to .session-list: the file
+   tree, tab bar and menus share these classes and keep their own scale. */
+
+.session-list .chevron {
+  width: 12px;
+  min-width: 12px;
+}
+
+.session-list .chevron .codicon {
+  font-size: 11px;
+}
+
 .chevron:hover {
   color: var(--fg-bright);
 }
@@ -865,11 +889,17 @@ body.resizing-row {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 4px 12px 4px 34px;
+  /* The deepest level, so the quietest: dimmed by blending toward the
+     background rather than by a fixed grey, which keeps it legible on light
+     themes as well as dark ones. */
+  color: var(--fg-inactive);
+  color: color-mix(in srgb, var(--fg) 70%, var(--bg));
+  /* Terminal rows sit one step in from their parent: 36px directly under a
+     project, one more indent under a worktree. */
+  padding: 4px 12px 4px calc(36px + var(--row-depth, 0) * 16px);
   background: none;
   border: none;
-  color: var(--fg);
-  font-size: 13.5px;
+  font-size: 12.5px;
   text-align: left;
   cursor: pointer;
   /* Long-press opens the app context menu (useLongPressMenu); suppress the
@@ -879,6 +909,7 @@ body.resizing-row {
 
 .window-item:hover {
   background: var(--list-hover-bg);
+  background: color-mix(in srgb, var(--list-hover-bg), var(--fg) 10%);
 }
 
 .session-item:focus-visible,
@@ -943,9 +974,9 @@ body.resizing-row {
   border: none;
   color: var(--fg-inactive);
   line-height: 1;
-  width: 20px;
-  height: 20px;
-  min-width: 20px;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
   border-radius: 4px;
   cursor: pointer;
   margin-left: auto;
@@ -954,7 +985,7 @@ body.resizing-row {
 
 .window-kill-button .codicon,
 .window-action-button .codicon {
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .window-item:hover .window-kill-button,
@@ -982,16 +1013,216 @@ body.resizing-row {
   background: var(--list-active-bg);
 }
 
+/* Re-stated after .session-row.active, which is deliberately declared after
+   :hover — without this the active row would swallow its own hover. */
+.session-row.active:hover {
+  background: var(--list-hover-bg);
+  background: color-mix(in srgb, var(--list-hover-bg), var(--fg) 10%);
+}
+
 .session-item.active {
   color: var(--list-active-fg);
 }
 
+/* ---- Project rows read as captions ----
+   A project row names a group rather than being an item in it, so it takes
+   the treatment the pane header above it already uses: small, bold, upper
+   case. See plans/worktrees-into-projects.md. */
+
+.project-item .session-name {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--fg-inactive);
+  color: color-mix(in srgb, var(--fg) 76%, var(--bg));
+}
+
+/* The label is uppercased; the path beside it is not. Paths are
+   case-sensitive, so shouting one would misrepresent the folder it names. */
+.project-item .item-cwd {
+  text-transform: none;
+  font-size: 11px;
+}
+
+/* Uppercase bold is wider than the same name in lowercase, so on a narrow
+   sidebar the two halves of the row started fighting and the *name* lost.
+   The name is the row's identity and the path is context, so the name sizes
+   to its content and the path gives way first. */
+.project-item .session-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.session-item.active .session-name {
+  color: var(--list-active-fg);
+}
+
+/* ---- The active project's block ----
+   Its project row, its worktrees and every terminal under them sit on one
+   raised surface, so "where am I" reads as a shape rather than as a single
+   highlighted row buried among its own children. Derived from the theme's
+   own hover colour, so all six installed themes get a sane tint. */
+
+.session-list-ul > li[data-block] {
+  background: var(--list-hover-bg);
+  background: color-mix(in srgb, var(--list-hover-bg) 45%, transparent);
+  /* Clips a hovered first or last row back to the block's rounded ends. */
+  overflow: hidden;
+}
+
+.session-list-ul > li[data-block="start"],
+.session-list-ul > li[data-block="solo"] {
+  border-top-left-radius: 5px;
+  border-top-right-radius: 5px;
+}
+
+.session-list-ul > li[data-block="end"],
+.session-list-ul > li[data-block="solo"] {
+  border-bottom-left-radius: 5px;
+  border-bottom-right-radius: 5px;
+}
+
 .session-dot {
-  width: 8px;
-  height: 8px;
-  min-width: 8px;
+  width: 7px;
+  height: 7px;
+  min-width: 7px;
   border-radius: 50%;
   border: 1px solid var(--fg-inactive);
+}
+
+/* ---- Worktree rows (the PROJECTS tree's middle level) ---- */
+
+/* The middle level. It inherits .session-item's size, so it is pulled back
+   here to sit between the project caption above it and the terminals below. */
+.worktree-item {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--fg);
+}
+
+.worktree-icon {
+  flex: none;
+  color: var(--fg-inactive);
+}
+
+/* The codicon stylesheet sizes every glyph via `.codicon[class*="codicon-"]`,
+   which outranks a single class — so anything resizing a codicon has to be
+   at least as specific, or it silently does nothing. */
+.session-list .codicon.worktree-icon {
+  font-size: 11px;
+}
+
+/* Keeps a session-less worktree's label aligned with its siblings', which
+   have a real chevron in this slot. */
+.chevron-empty {
+  visibility: hidden;
+}
+
+/* A multi-line settings input (the worktree run-command list), matching
+   .dialog-input's chrome but able to breathe. */
+.settings-textarea {
+  font-family: var(--mono-font, monospace);
+  font-size: 12px;
+  resize: vertical;
+  min-height: 48px;
+}
+
+/* The inline create-worktree form, sitting under its project row. Indented
+   with the same --row-depth the rows use, so it lines up with the worktrees
+   it is about to join. */
+.worktree-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 8px calc(6px + var(--row-depth, 0) * 16px);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.worktree-form-error {
+  font-size: 12px;
+  color: var(--error);
+  word-break: break-word;
+}
+
+.worktree-form-modes {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.worktree-form-modes label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.worktree-form-input {
+  background: var(--input-bg);
+  color: var(--input-fg);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  padding: 3px 6px;
+  font-size: 13px;
+  font-family: inherit;
+  min-width: 0;
+}
+
+.worktree-form-input:focus {
+  outline: 1px solid var(--focus-border);
+  outline-offset: -1px;
+}
+
+.worktree-form-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.worktree-form-buttons button {
+  flex: 1;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 2px;
+  border: 1px solid var(--button-border, transparent);
+  background: var(--button-bg);
+  color: var(--button-fg);
+  cursor: pointer;
+}
+
+.worktree-form-buttons button[type="button"] {
+  background: var(--button-secondary-bg, var(--list-hover-bg));
+  color: var(--button-secondary-fg, var(--fg));
+}
+
+.worktree-form-buttons button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.worktree-dirty {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning, #cca700);
+}
+
+.worktree-tag {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--list-active-bg);
+  color: var(--fg-dim);
+}
+
+.worktree-tag-warn {
+  color: var(--error);
 }
 
 .session-dot.attached {
@@ -1016,13 +1247,15 @@ body.resizing-row {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 13px;
-  min-width: 13px;
+  width: 11px;
+  min-width: 11px;
   color: var(--fg-inactive);
 }
 
-.pin-indicator .codicon {
-  font-size: 12px;
+/* pin-indicator is set on the Icon itself, not on a wrapper around one, so
+   the glyph and the class are the same element. */
+.session-list .codicon.pin-indicator {
+  font-size: 10px;
 }
 
 /* A pinned session with no live tmux session behind it — no chevron/window
@@ -1030,7 +1263,9 @@ body.resizing-row {
    inactive, restored via its own click/context-menu actions instead. */
 .dead-session-item {
   opacity: 0.55;
-  padding-left: 20px;
+  /* No padding override: now that every project row is a caption, they all
+     start at the same left edge. This row's pin icon fills the slot a live
+     row spends on its chevron. */
 }
 
 .dead-session-item:hover {
