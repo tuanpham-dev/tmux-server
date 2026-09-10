@@ -44,6 +44,23 @@ let serverFetch: ((path: string, init?: RequestInit) => Promise<Response>) | nul
 let getActiveContext: (() => ActiveContext) | null = null;
 let onDidChangeContext: ((cb: (ctx: ActiveContext) => void) => () => void) | null = null;
 let openViewerTab: ((viewerId: string, path: string, opts?: { title?: string }) => void) | null = null;
+let openDiffInEditor:
+  | ((req: {
+      title: string;
+      original: { content: string; label: string };
+      modified: { content: string; label: string; path?: string; readOnlyReason?: string };
+    }) => Promise<boolean>)
+  | null = null;
+let openMergeInEditor:
+  | ((req: {
+      title: string;
+      path: string;
+      ours: { content: string; label: string };
+      theirs: { content: string; label: string };
+      base?: { content: string; label: string } | null;
+      markResolved: () => Promise<void>;
+    }) => Promise<boolean>)
+  | null = null;
 let openFileTab: ((path: string) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
 let setSidebarBadge: ((panelId: string, badge: number | null) => void) | null = null;
@@ -1316,21 +1333,92 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
   // not activeCwd (the pane's cwd) — entry.path is always root-relative
   // (server /status resolves it that way), so joining against a pane cwd
   // that's a subdirectory of the repo would double that prefix and 404.
-  const openDiff = (entry: FileEntry, staged: boolean) => {
+  // This panel's own unified patch view — the fallback when no editor claims
+  // the diff capability, and the "Open in Git Diff View" secondary action.
+  const openGitDiffView = (entry: FileEntry, staged: boolean) => {
     if (!status?.root) return;
     const untracked = entry.status === "untracked";
     const key = encodeDiffKey(status.root, entry.path, staged, untracked, entry.origPath);
     const title = `${basenameOf(entry.path)} (${staged ? "Staged" : "Working Tree"})`;
     openViewerTab?.("diff", key, { title });
   };
+
+  // The primary action: hand both sides to whichever editor the app's `editor`
+  // setting selects (nvim opens `nvim -d`, Monaco a diff editor). Falls back to
+  // the view above whenever that can't happen — an older host, no editor with
+  // the capability, or a side this route refuses (binary, too large).
+  const openDiff = (entry: FileEntry, staged: boolean) => {
+    if (!status?.root) return;
+    const root = status.root;
+    if (!openDiffInEditor) {
+      openGitDiffView(entry, staged);
+      return;
+    }
+    const untracked = entry.status === "untracked";
+    const title = `${basenameOf(entry.path)} (${staged ? "Staged" : "Working Tree"})`;
+    const params = new URLSearchParams({
+      cwd: root,
+      path: entry.path,
+      staged: staged ? "1" : "0",
+      untracked: untracked ? "1" : "0",
+    });
+    if (entry.origPath) params.set("origPath", entry.origPath);
+    void apiGetJson<{
+      original: { content: string; label: string };
+      modified: { content: string; label: string; path?: string; readOnlyReason?: string };
+    }>(`/diff-sides?${params}`)
+      .then(async (sides) => {
+        const handled = await openDiffInEditor!({ title, original: sides.original, modified: sides.modified });
+        if (!handled) openGitDiffView(entry, staged);
+      })
+      .catch(() => openGitDiffView(entry, staged));
+  };
   const openInEditor = (entry: FileEntry) => {
     if (!status?.root) return;
     openFileTab?.(`${status.root}/${entry.path}`);
   };
-  const openConflictResolver = (entry: FileEntry) => {
+  // This panel's own block-list resolver — the fallback when no editor claims
+  // the merge capability, and the "Resolve in Git Merge View" secondary action.
+  const openGitMergeView = (entry: FileEntry) => {
     if (!status?.root) return;
     const key = encodeConflictKey(status.root, entry.path);
     openViewerTab?.("conflict", key, { title: `${basenameOf(entry.path)} (Merge)` });
+  };
+
+  // The primary action: hand the conflicted file to whichever editor the app's
+  // `editor` setting selects. Monaco opens it with inline blocks and per-block
+  // accept actions; nvim opens git mergetool's three-window layout. Falls back
+  // to the view above on an older host, a refused file (binary, too large), or
+  // no editor with the capability.
+  const openConflictResolver = (entry: FileEntry) => {
+    if (!status?.root) return;
+    const root = status.root;
+    if (!openMergeInEditor) {
+      openGitMergeView(entry);
+      return;
+    }
+    const params = new URLSearchParams({ cwd: root, path: entry.path });
+    void apiGetJson<{
+      base: { content: string; label: string } | null;
+      ours: { content: string; label: string };
+      theirs: { content: string; label: string };
+    }>(`/conflict-stages?${params}`)
+      .then(async (stages) => {
+        const handled = await openMergeInEditor!({
+          title: `${basenameOf(entry.path)} (Merge)`,
+          path: `${root}/${entry.path}`,
+          ours: stages.ours,
+          theirs: stages.theirs,
+          base: stages.base,
+          // What "Mark as Resolved" does — the same staging the panel's own
+          // resolver performs when its file is fully decided.
+          markResolved: async () => {
+            await stage([entry.path]);
+          },
+        });
+        if (!handled) openGitMergeView(entry);
+      })
+      .catch(() => openGitMergeView(entry));
   };
 
   // COMMITS row click — reuses DiffView via the key's commitHash field
@@ -1478,12 +1566,14 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     if (entry.status === "conflicted") {
       return [
         { label: "Resolve in Merge Editor", onClick: () => openConflictResolver(entry) },
+        { label: "Resolve in Git Merge View", onClick: () => openGitMergeView(entry) },
         { label: "Open in Editor", onClick: () => openInEditor(entry) },
         { label: "Stage Changes", onClick: () => stage([entry.path]) },
       ];
     }
     const items: MenuItem[] = [
       { label: "Open Diff", onClick: () => openDiff(entry, staged) },
+      { label: "Open in Git Diff View", onClick: () => openGitDiffView(entry, staged) },
       { label: "Open in Editor", onClick: () => openInEditor(entry) },
     ];
     if (groupKey === "staged") {
@@ -2632,6 +2722,22 @@ export function activate(ctx: {
     onDidChangeContext: (cb: (ctx: ActiveContext) => void) => () => void;
     openFileTab: (path: string) => void;
     openViewerTab: (viewerId: string, path: string, opts?: { title?: string }) => void;
+    // Present only on hosts with the pluggable `editor` setting. Resolves
+    // false when no editor claims the diff capability, which is the cue to
+    // fall back to DiffView below.
+    openDiff?: (req: {
+      title: string;
+      original: { content: string; label: string };
+      modified: { content: string; label: string; path?: string; readOnlyReason?: string };
+    }) => Promise<boolean>;
+    openMerge?: (req: {
+      title: string;
+      path: string;
+      ours: { content: string; label: string };
+      theirs: { content: string; label: string };
+      base?: { content: string; label: string } | null;
+      markResolved: () => Promise<void>;
+    }) => Promise<boolean>;
     refreshFiles: () => void;
     setSidebarBadge: (panelId: string, badge: number | null) => void;
     getFileIcon: (fileName: string) => IconResult;
@@ -2646,6 +2752,8 @@ export function activate(ctx: {
   getActiveContext = ctx.app.getActiveContext;
   onDidChangeContext = ctx.app.onDidChangeContext;
   openViewerTab = ctx.app.openViewerTab;
+  openDiffInEditor = ctx.app.openDiff ?? null;
+  openMergeInEditor = ctx.app.openMerge ?? null;
   openFileTab = ctx.app.openFileTab;
   refreshFiles = ctx.app.refreshFiles;
   setSidebarBadge = ctx.app.setSidebarBadge;

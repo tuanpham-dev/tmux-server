@@ -861,6 +861,65 @@ export function activate({ router, log, host }) {
     }
   });
 
+  // The three merge stages of a conflicted path as plain text, for whichever
+  // editor the app's `editor` setting selects (ctx.app.openMerge). The editor
+  // edits the *working file* — markers and all, as VS Code does — and these are
+  // what its "compare the two sides" action shows. /conflict above stays for
+  // git-scm's own block-list resolver, the fallback and secondary action.
+  router.get("/conflict-stages", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const relPath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relPath) {
+      res.status(400).json({ error: "path is required" });
+      return;
+    }
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      if (!resolveSafePath(root, relPath)) {
+        res.status(400).json({ error: "path escapes the repository root" });
+        return;
+      }
+      // Stage 1 is the common ancestor and is absent for an add/add conflict;
+      // 2 and 3 are ours and theirs, and a missing one there means the side
+      // deleted the file (a modify/delete conflict), which reads as empty.
+      const stage = async (n) => {
+        try {
+          return await git(["show", `:${n}:${relPath}`], root);
+        } catch {
+          return null;
+        }
+      };
+      const [base, ours, theirs] = await Promise.all([stage(1), stage(2), stage(3)]);
+      if (ours === null && theirs === null) {
+        res.status(400).json({ error: "path has no merge stages — is it actually conflicted?" });
+        return;
+      }
+      const guard = (text, what) => {
+        const buf = Buffer.from(text, "utf8");
+        if (buf.length > MAX_CONFLICT_FILE_SIZE) return `${what} is too large to merge here`;
+        if (looksBinary(buf)) return `${what} looks binary`;
+        return null;
+      };
+      const refusal =
+        guard(ours ?? "", "The current side") ??
+        guard(theirs ?? "", "The incoming side") ??
+        (base === null ? null : guard(base, "The base"));
+      if (refusal) {
+        res.status(415).json({ error: refusal });
+        return;
+      }
+      res.json({
+        base: base === null ? null : { content: base, label: "Base" },
+        ours: { content: ours ?? "", label: "Current" },
+        theirs: { content: theirs ?? "", label: "Incoming" },
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Overwrites a conflicted file's working-tree content with the resolved
   // text. expectedHash must match /conflict's hash of the content this
   // resolution was computed from — guards against clobbering a change made
@@ -1127,6 +1186,99 @@ export function activate({ router, log, host }) {
   // caught and turned into an empty list below, same "no error, empty
   // state" convention /status already uses for "not a git repository".
   const LOG_FORMAT = "%H%x1f%an%x1f%at%x1f%s%x1e";
+
+  // Both sides of a file's diff as plain text, for whichever editor the app's
+  // `editor` setting selects (ctx.app.openDiff — see docs/EXTENSION_API.md).
+  // The unified /diff above stays for git-scm's own DiffView, which is both
+  // the fallback when no editor claims the capability and the secondary
+  // action either way; this route exists because a real editor wants two
+  // documents, not a patch.
+  //
+  // Which two documents mirrors what /diff shows for the same row:
+  //   unstaged  index (:0) -> working file      (working file is editable)
+  //   staged    HEAD       -> index (:0)
+  //   untracked (empty)    -> working file      (editable)
+  // A rename reads its original side from origPath, same as /diff does.
+  router.get("/diff-sides", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const relPath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relPath) {
+      res.status(400).json({ error: "path is required" });
+      return;
+    }
+    const staged = req.query.staged === "1";
+    const untracked = req.query.untracked === "1";
+    const origPath = typeof req.query.origPath === "string" && req.query.origPath ? req.query.origPath : relPath;
+
+    // A side is refused rather than truncated: an editor showing half a file
+    // would be worse than falling back to the unified patch view.
+    const guard = (text, what) => {
+      const buf = Buffer.from(text, "utf8");
+      if (buf.length > MAX_CONFLICT_FILE_SIZE) return `${what} is too large to diff here`;
+      if (looksBinary(buf)) return `${what} looks binary`;
+      return null;
+    };
+
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      const abs = resolveSafePath(root, relPath);
+      if (!abs) {
+        res.status(400).json({ error: "path escapes the repository root" });
+        return;
+      }
+
+      // git show exits non-zero when the path isn't in that tree yet (a file
+      // staged as new has no HEAD blob) — that's an empty original side, not
+      // an error.
+      const showOrEmpty = async (rev) => {
+        try {
+          return { content: await git(["show", rev], root), missing: false };
+        } catch {
+          return { content: "", missing: true };
+        }
+      };
+
+      let original;
+      let modified;
+      if (untracked) {
+        original = { content: "", label: "Empty" };
+        modified = { content: fs.readFileSync(abs, "utf8"), label: "Working Tree", path: abs };
+      } else if (staged) {
+        const head = await showOrEmpty(`HEAD:${origPath}`);
+        const index = await git(["show", `:0:${relPath}`], root);
+        original = { content: head.content, label: head.missing ? "HEAD (new file)" : "HEAD" };
+        modified = { content: index, label: "Index" };
+        // The right side is index content, which isn't a file on disk. Saving
+        // is still useful — but only when the working tree still matches the
+        // index, where writing it back changes nothing the user didn't type.
+        // Once the working tree has drifted, writing index-based text over it
+        // would silently discard those unstaged changes, so the side is
+        // read-only and says why.
+        const working = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
+        if (working !== null && working === index) {
+          modified.path = abs;
+        } else {
+          modified.readOnlyReason =
+            "The working tree has unstaged changes beyond the index — open the Working Tree diff to edit.";
+        }
+      } else {
+        const index = await showOrEmpty(`:0:${origPath}`);
+        original = { content: index.content, label: index.missing ? "Index (new file)" : "Index" };
+        modified = { content: fs.readFileSync(abs, "utf8"), label: "Working Tree", path: abs };
+      }
+
+      const refusal = guard(original.content, "The original side") ?? guard(modified.content, "The modified side");
+      if (refusal) {
+        res.status(415).json({ error: refusal });
+        return;
+      }
+      res.json({ original, modified });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   router.get("/log", async (req, res) => {
     const cwd = requireCwd(req, res);
