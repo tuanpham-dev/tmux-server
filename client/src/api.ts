@@ -6,6 +6,7 @@ import type {
   RegistrySourceResult,
   TmuxSession,
 } from "./types";
+import { formatMb } from "./formatSize";
 
 // Carries the HTTP status alongside the server's error message so a caller
 // can distinguish a specific failure (e.g. 404 "the window is already gone")
@@ -311,6 +312,25 @@ export function saveFileText(targetPath: string, content: string): Promise<{ pat
   return uploadFile(dir, name, new Blob([content], { type: "text/plain" }), "overwrite");
 }
 
+// A 413 never comes from /api/upload itself — that route streams the request
+// body straight to disk with no size limit of its own (verified: a 200MB body
+// lands fine). It comes from whatever sits in front of the server: a reverse
+// proxy, tunnel, or CDN capping request bodies, none of which this app can
+// see or configure. Their reply is that proxy's own HTML error page, so the
+// generic handler below would surface a bare "413 Request Entity Too Large"
+// with nothing actionable in it — hence a typed error carrying the size that
+// was actually refused, which is the number the user needs to pick a limit.
+export class UploadTooLargeError extends Error {
+  constructor(public readonly size: number) {
+    super(
+      `too large for the server (${formatMb(size)} MB refused with 413) — a proxy in ` +
+        `front of it caps request size. Set "Maximum upload file size" in Settings → ` +
+        `Behavior to catch these before uploading.`,
+    );
+    this.name = "UploadTooLargeError";
+  }
+}
+
 // Thrown when the server refuses to upload because the destination already
 // exists and the caller asked for "fail" conflict semantics (used to drive
 // the ask-before-overwrite flow).
@@ -343,6 +363,10 @@ export function uploadFile(
     xhr.onload = () => {
       if (xhr.status === 409) {
         reject(new UploadConflictError());
+        return;
+      }
+      if (xhr.status === 413) {
+        reject(new UploadTooLargeError(file.size));
         return;
       }
       if (xhr.status >= 200 && xhr.status < 300) {

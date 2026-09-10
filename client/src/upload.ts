@@ -1,4 +1,5 @@
 import * as api from "./api";
+import { formatMb } from "./formatSize";
 
 export interface DroppedFile {
   file: File;
@@ -86,10 +87,6 @@ export interface UploadOutcome {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function formatMb(bytes: number): string {
-  return (bytes / (1024 * 1024)).toFixed(1);
 }
 
 // settings.uploadMaxSizeMb as a byte count; 0 (the default) stays 0, which
