@@ -252,7 +252,7 @@ export function useSidebarLayout(
     const map = new Map<string, PanelLike>();
     for (const id of BUILTIN_PANEL_IDS) map.set(id, { id, location: "explorer" });
     for (const p of extensionPanels) {
-      map.set(p.id, { id: p.id, location: p.location, hidden: p.hidden });
+      map.set(p.id, { id: p.id, location: p.location, hidden: p.hidden, defaultTab: p.defaultTab });
     }
     return map;
   }, [extensionPanels]);
@@ -264,7 +264,11 @@ export function useSidebarLayout(
   useEffect(() => {
     setLayout((prev) => {
       const known = new Set([...prev.left, ...prev.right]);
-      const added = extensionPanels.filter((p) => p.location === "tab" && !known.has(p.id));
+      // A defaultTab pane is excluded: it belongs to another panel's tab and
+      // has no tab of its own, so it must never take a slot in the strip.
+      const added = extensionPanels.filter(
+        (p) => p.location === "tab" && !p.defaultTab && !known.has(p.id),
+      );
       if (added.length === 0) return prev;
       return { ...prev, left: [...prev.left, ...added.map((p) => p.id)] };
     });

@@ -4,7 +4,8 @@ A VS Code-style SOURCE CONTROL panel for the active directory's git repository: 
 
 ## Contributes
 
-- **Sidebar panel:** SOURCE CONTROL — staged/unstaged/conflicted file lists, stage/unstage/discard, commit message box (Ctrl/Cmd+Enter to commit, Amend toggle to rewrite HEAD instead of composing a new commit), a branch button (switch or create a local branch), a COMMITS section (recent history with unpushed markers, click a commit for its full diff, Load More), and a More Actions (`…`) menu for Pull/Push/Fetch/Stash/Pop Stash.
+- **Sidebar panel:** SOURCE CONTROL — staged/unstaged/conflicted file lists, stage/unstage/discard, commit message box (Ctrl/Cmd+Enter to commit, Amend toggle to rewrite HEAD instead of composing a new commit), a branch button (switch or create a local branch), and a More Actions (`…`) menu for Pull/Push/Fetch/Stash/Pop Stash.
+- **COMMITS pane:** recent history with unpushed markers, click a commit for its full diff, Load More, and a refresh button in its header. It's a pane of the SOURCE CONTROL panel — stacked below it in the same tab, with its own collapse state and a splitter to size the two against each other. Drag its header onto another tab's icon (or right-click it) to move it into the Explorer, the Run tab, or the other sidebar; "Reset Location" puts it back under SOURCE CONTROL.
 - **Diff viewer:** click a file to open its working-tree or staged diff, or a COMMITS row to open that commit's diff; Shift+click a file opens it in the editor instead.
 - **Merge conflict resolver:** click a conflicted file to accept Current/Incoming/Both per block (or Accept All), then Save and Mark as Resolved — used for merge, rebase, cherry-pick/revert conflicts, and a stash pop that lands in conflict.
 - **File tree git status:** modified/added/untracked/renamed/deleted badges in the FILES tree (see Settings → UI → "Git status in file tree" to toggle), plus a branch-name pill on the FILES tree root.

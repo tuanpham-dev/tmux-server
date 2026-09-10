@@ -10,6 +10,7 @@ import {
   isTabVisible,
   moveTabToSide,
   moveTargetsForPanel,
+  ownTabForPanel,
   movePanelToTab,
   resolveActive,
   sanitizeLayout,
@@ -300,5 +301,70 @@ describe("user-hidden panes", () => {
     // Explorer still shows — it is the fallback tab, and its emptiness is
     // what the sidebar's hint explains.
     expect(isTabVisible(EXPLORER_TAB_ID, order, byId, l)).toBe(true);
+  });
+});
+
+
+// git-scm ships COMMITS as a PANE OF the SOURCE CONTROL panel — stacked
+// under it in the same tab, movable anywhere else, but never a tab of its
+// own. That is the case defaultTab exists for.
+describe("a pane of another panel", () => {
+  const COMMITS = "ext.tmux-server.git-scm.commits";
+  const commits: PanelLike = { id: COMMITS, location: "tab", defaultTab: GIT };
+  const withCommits = new Map(byId).set(COMMITS, commits);
+  const orderWithCommits = [...order, COMMITS];
+  // Deliberately NOT added to either side's tab list: owning no tab, it
+  // never takes a slot in the strip (see useSidebarLayout's reconciliation).
+  const base = layout;
+
+  it("stacks under its host panel in the host's tab", () => {
+    expect(defaultTabForPanel(commits)).toBe(GIT);
+    expect(tabOfPanel(base(), commits)).toBe(GIT);
+    expect(sectionsForTab(orderWithCommits, withCommits, base(), GIT)).toEqual([GIT, COMMITS]);
+  });
+
+  it("owns no tab, so it can never become one", () => {
+    expect(ownTabForPanel(commits)).toBe("");
+    const targets = moveTargetsForPanel(base(), commits, orderWithCommits, withCommits);
+    expect(targets.map((t) => t.tabId)).not.toContain(COMMITS);
+    expect(isTabVisible(COMMITS, orderWithCommits, withCommits, base())).toBe(false);
+    expect(visibleTabsForSide(base(), "left", orderWithCommits, withCommits)).not.toContain(COMMITS);
+  });
+
+  it("never offers the tab it is already in", () => {
+    const targets = moveTargetsForPanel(base(), commits, orderWithCommits, withCommits);
+    expect(targets.map((t) => t.tabId)).not.toContain(GIT);
+  });
+
+  it("still moves into any other tab, and resets back to its host", () => {
+    const moved = movePanelToTab(base(), commits, EXPLORER_TAB_ID);
+    expect(tabOfPanel(moved, commits)).toBe(EXPLORER_TAB_ID);
+    expect(sectionsForTab(orderWithCommits, withCommits, moved, EXPLORER_TAB_ID)).toEqual([
+      "projects",
+      "files",
+      COMMITS,
+    ]);
+    // "Reset Location" names defaultTabForPanel, so it drops the override.
+    const reset = movePanelToTab(moved, commits, defaultTabForPanel(commits));
+    expect(reset.panelHome[COMMITS]).toBeUndefined();
+    expect(tabOfPanel(reset, commits)).toBe(GIT);
+  });
+
+  it("follows its host tab to the right sidebar", () => {
+    const moved = moveTabToSide(base(), GIT, "right", 0);
+    expect(sideOfTab(moved, GIT)).toBe("right");
+    expect(sectionsForTab(orderWithCommits, withCommits, moved, GIT)).toEqual([GIT, COMMITS]);
+  });
+
+  it("keeps the host tab alive on its own once the pane is moved away", () => {
+    const moved = movePanelToTab(base(), commits, EXPLORER_TAB_ID);
+    expect(sectionsForTab(orderWithCommits, withCommits, moved, GIT)).toEqual([GIT]);
+    expect(isTabVisible(GIT, orderWithCommits, withCommits, moved)).toBe(true);
+  });
+
+  it("leaves an ordinary tab panel owning its own tab", () => {
+    expect(defaultTabForPanel(byId.get(SEARCH)!)).toBe(SEARCH);
+    expect(ownTabForPanel(byId.get(SEARCH)!)).toBe(SEARCH);
+    expect(ownTabForPanel(byId.get(PORTS)!)).toBe("");
   });
 });

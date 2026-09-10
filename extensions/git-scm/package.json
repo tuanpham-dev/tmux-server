@@ -4,7 +4,7 @@
   "publisher": "tmux-server",
   "version": "1.2.0",
   "displayName": "Git",
-  "description": "Built-in VS Code-style Source Control panel: stage, commit, amend, push/pull/fetch, branch switching, stash, commit history, and diff view (bundled — see extensions/build.mjs).",
+  "description": "Built-in VS Code-style Source Control panel: stage, commit, amend, push/pull/fetch, branch switching, stash, a COMMITS history pane, and diff view (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {

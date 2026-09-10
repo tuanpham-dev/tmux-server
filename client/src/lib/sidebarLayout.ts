@@ -42,6 +42,14 @@ export interface PanelLike {
   // (ctx.app.setSidebarPanelVisible) — absent, not forgotten: it keeps its
   // stored order/home.
   hidden?: boolean;
+  // This section lives inside ANOTHER panel's tab and has no tab of its own
+  // — it is a pane of that panel, not a panel in its own right. Lets one
+  // extension ship two stacked sections in one tab (git-scm's SOURCE
+  // CONTROL + COMMITS), each independently collapsible, resizable and
+  // movable, without the second one turning into a tab-strip entry nobody
+  // asked for. It can still be dragged to any OTHER tab; what it can't do
+  // is stand alone (see ownTabForPanel).
+  defaultTab?: string;
 }
 
 export interface SidebarLayout {
@@ -71,6 +79,16 @@ export function otherSide(side: SidebarSide): SidebarSide {
   return side === "left" ? "right" : "left";
 }
 
+// The tab a panel can always stand up for itself — its own id, since for
+// the "tab" location the tab id and the panel id are the same string. That
+// sameness is what lets "move Search into Explorer" and "move it back" be
+// the same operation. Empty for a panel with no tab to own: an accordion
+// section, or a defaultTab pane, which is a section of somebody else's tab
+// wherever it goes.
+export function ownTabForPanel(panel: PanelLike): string {
+  return panel.location === "tab" && !panel.defaultTab ? panel.id : "";
+}
+
 // Where a panel lives when the user has never moved it.
 export function defaultTabForPanel(panel: PanelLike): string {
   switch (panel.location) {
@@ -81,10 +99,9 @@ export function defaultTabForPanel(panel: PanelLike): string {
     case "commands":
       return COMMANDS_TAB_ID;
     default:
-      // A "tab" panel is its own tab — the tab id and the panel id are the
-      // same string, which is what lets "move Search into Explorer" and
-      // "move it back" be the same operation.
-      return panel.id;
+      // Its own tab (see ownTabForPanel), unless the panel registered as a
+      // pane of another one, whose tab is then its home.
+      return panel.defaultTab ?? panel.id;
   }
 }
 
@@ -273,8 +290,12 @@ export function moveTargetsForPanel(
       targets.push({ tabId, side });
     }
   }
-  const own = defaultTabForPanel(panel);
-  if (panel.location === "tab" && !targets.some((t) => t.tabId === own)) {
+  // Not defaultTabForPanel: an ordinary tab panel currently living in an
+  // accordion has a tab of its own to go back to, and that tab is invisible
+  // (nothing homes there) while it's away, so the loop above never finds
+  // it. A defaultTab pane owns no tab and so adds nothing here.
+  const own = ownTabForPanel(panel);
+  if (own && !targets.some((t) => t.tabId === own)) {
     targets.push({ tabId: own, side: sideOfTab(layout, own) ?? "left" });
   }
   return targets.filter((t) => t.tabId !== tabOfPanel(layout, panel));

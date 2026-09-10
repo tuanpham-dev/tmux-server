@@ -109,17 +109,11 @@ function writeViewMode(mode: ViewMode) {
   localStorage.setItem(VIEW_MODE_KEY, mode);
 }
 
-// ---- COMMITS section (collapse state, like viewMode above) ----
-const COMMITS_COLLAPSED_KEY = "gitScm.commitsCollapsed";
-
-function readCommitsCollapsed(): boolean {
-  return localStorage.getItem(COMMITS_COLLAPSED_KEY) === "1";
-}
-
-function writeCommitsCollapsed(collapsed: boolean) {
-  localStorage.setItem(COMMITS_COLLAPSED_KEY, collapsed ? "1" : "0");
-}
-
+// ---- COMMITS ----
+// No collapse state here, unlike viewMode above: COMMITS is its own sidebar
+// pane now (see activate's second registerSidebarPanel), so the host's
+// accordion owns collapsing it, remembers that per user, and lets it be
+// dragged out of the Source Control tab entirely.
 interface CommitEntry {
   hash: string;
   author: string;
@@ -694,6 +688,59 @@ function setPollCwd(cwd: string | null) {
   restartFetchTimer();
 }
 
+// ---- COMMITS store ----
+// Module-level for the same reason the status poller above is, plus one
+// more: COMMITS is now its own sidebar pane, and the host UNMOUNTS a
+// collapsed pane outright. Holding the list, the paging limit and the
+// in-flight flag out here means collapsing the pane (or switching tabs, or
+// dragging it to the other sidebar) doesn't throw away Load More pages the
+// user already waited for — and it gives GitPanel's post-mutation refresh a
+// way to reach the pane, now that no prop runs between them.
+const COMMITS_PAGE = 20;
+
+interface CommitsState {
+  commits: CommitEntry[];
+  limit: number;
+  loading: boolean;
+  // The repo the list describes. Switching repos resets the paging limit
+  // rather than paging into a fresh history at someone else's offset.
+  root: string | null;
+}
+
+let commitsState: CommitsState = { commits: [], limit: COMMITS_PAGE, loading: false, root: null };
+const commitsListeners = new Set<(state: CommitsState) => void>();
+
+function setCommitsState(next: CommitsState) {
+  commitsState = next;
+  commitsListeners.forEach((cb) => cb(next));
+}
+
+async function fetchCommits(root: string, limit: number) {
+  const cwd = pollCwd;
+  if (!cwd) return;
+  setCommitsState({ ...commitsState, root, limit, loading: true });
+  try {
+    const data = await apiGetJson<{ commits: CommitEntry[] }>(
+      `/log?cwd=${encodeURIComponent(cwd)}&limit=${limit}`,
+    );
+    // A repo switch mid-flight makes this response the wrong history —
+    // drop it and let the switch's own fetch win.
+    if (commitsState.root !== root) return;
+    setCommitsState({ commits: data.commits, limit, loading: false, root });
+  } catch {
+    // Best-effort — keep the last-good list; the panel's error banner is
+    // reserved for the change-list status fetch.
+    if (commitsState.root === root) setCommitsState({ ...commitsState, loading: false });
+  }
+}
+
+// Called after any mutating operation (commit, pull, discard…). A no-op
+// until the pane has fetched once, so a user who never opens COMMITS never
+// pays for a `git log` on every stage.
+function refreshCommits() {
+  if (commitsState.root) fetchCommits(commitsState.root, commitsState.limit);
+}
+
 // ---- Background fetch ----
 // Off by default (gitScm.fetchInterval: 0 — see readFetchInterval). When
 // enabled, silently POSTs /fetch on an interval so ahead/behind counts stay
@@ -921,10 +968,6 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
   const [clickAction, setClickAction] = useState(readClickAction);
   const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(readCollapsedDirs);
-  const [commits, setCommits] = useState<CommitEntry[]>([]);
-  const [commitsLimit, setCommitsLimit] = useState(20);
-  const [commitsLoading, setCommitsLoading] = useState(false);
-  const [commitsCollapsed, setCommitsCollapsed] = useState<boolean>(readCommitsCollapsed);
   // Create New Branch… inline form (same "buffer in local state, submit or
   // Escape" convention as the credential form below).
   const [creatingBranch, setCreatingBranch] = useState(false);
@@ -1128,50 +1171,14 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     refreshStatus();
   }, []);
 
-  // COMMITS section data — a separate fetch from the shared status poller
-  // (status only carries the change groups + ahead/behind counts), scoped
-  // to this panel instance rather than module-level since the section only
-  // matters while the SOURCE CONTROL tab is actually open.
-  const fetchCommits = useCallback(
-    async (limit: number) => {
-      if (!activeCwd) return;
-      setCommitsLoading(true);
-      try {
-        const data = await apiGetJson<{ commits: CommitEntry[] }>(
-          `/log?cwd=${encodeURIComponent(activeCwd)}&limit=${limit}`,
-        );
-        setCommits(data.commits);
-      } catch {
-        // Best-effort — keep the last-good list; the panel's error banner
-        // is reserved for the change-list status fetch.
-      } finally {
-        setCommitsLoading(false);
-      }
-    },
-    [activeCwd],
-  );
-
-  useEffect(() => {
-    if (!status?.root) return;
-    fetchCommits(commitsLimit);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.root, commitsLimit]);
-
-  const loadMoreCommits = () => setCommitsLimit((prev) => prev + 20);
-
-  const toggleCommitsCollapsed = () => {
-    setCommitsCollapsed((prev) => {
-      const next = !prev;
-      writeCommitsCollapsed(next);
-      return next;
-    });
-  };
-
   const afterMutate = useCallback(async () => {
     refreshStatus();
     refreshFiles?.();
-    fetchCommits(commitsLimit);
-  }, [fetchCommits, commitsLimit]);
+    // COMMITS lives in its own pane now — this reaches it through the
+    // shared store rather than a local fetch, so history stays current
+    // whether or not that pane is expanded, or even on this side.
+    refreshCommits();
+  }, []);
 
   const runOp = useCallback(
     async (fn: () => Promise<void>) => {
@@ -1419,14 +1426,6 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
         if (!handled) openGitMergeView(entry);
       })
       .catch(() => openGitMergeView(entry));
-  };
-
-  // COMMITS row click — reuses DiffView via the key's commitHash field
-  // (see encodeDiffKey/decodeDiffKey) rather than a dedicated viewer.
-  const openCommitDiff = (commit: CommitEntry) => {
-    if (!status?.root) return;
-    const key = encodeDiffKey(status.root, "", false, false, undefined, commit.hash);
-    openViewerTab?.("diff", key, { title: `${commit.hash.slice(0, 7)} ${commit.subject}` });
   };
 
   // Shift+click always opens the OTHER action from gitScm.clickAction's
@@ -1763,13 +1762,6 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
   // Amend needs no staged changes (it's rewriting HEAD, not composing a new
   // commit from the index) — an ordinary commit still requires at least one.
   const canCommit = !busy && message.trim().length > 0 && (amend || staged.length > 0);
-  // COMMITS rows are newest-first (git log's default order), so the first
-  // `ahead` entries are exactly the not-yet-pushed commits for a linear
-  // history — an approximation that can mislabel right after a fetch that
-  // hasn't been merged in yet, accepted as good enough over an extra
-  // `git rev-list @{u}..HEAD` call per /log fetch.
-  const unpushedCount = status.upstream ? ahead : 0;
-
   // Renders one group's tree recursively. `makeFileProps` and `makeDirActions`
   // capture whatever differs per group (openEntry's staged flag, which
   // actions a row/dir gets) — everything else (indentation, collapse
@@ -2366,34 +2358,99 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
         {staged.length === 0 && unstaged.length === 0 && conflicted.length === 0 && (
           <div className="git-empty">No changes.</div>
         )}
-
-        {commits.length > 0 && (
-          <div className="git-group">
-            <div className="git-group-header git-commits-header" onClick={toggleCommitsCollapsed}>
-              <Icon name={commitsCollapsed ? "chevron-right" : "chevron-down"} className="git-dir-row-chevron" />
-              <span className="git-group-title">COMMITS</span>
-              <span className="git-group-count">{commits.length}</span>
-            </div>
-            {!commitsCollapsed && (
-              <>
-                {commits.map((commit, i) => (
-                  <CommitRow
-                    key={commit.hash}
-                    commit={commit}
-                    unpushed={i < unpushedCount}
-                    onClick={() => openCommitDiff(commit)}
-                  />
-                ))}
-                <button className="git-commits-load-more" disabled={commitsLoading} onClick={loadMoreCommits}>
-                  {commitsLoading ? "Loading…" : "Load More"}
-                </button>
-              </>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
+}
+
+// ---- CommitsPanel (the COMMITS pane) ----
+// Registered as a second sidebar panel homed, by default, in the Source
+// Control tab — so it arrives stacked under SOURCE CONTROL as its own
+// collapsible pane, and the user can drag it into Explorer, the right
+// sidebar, or a tab of its own. It shares GitPanel's status stream (for the
+// repo root and the ahead/upstream counts behind the unpushed dots) and the
+// module-level COMMITS store above, and owns nothing else — which is why
+// unmounting it, as the host does whenever the pane is collapsed, costs
+// nothing.
+function CommitsPanel({ actionsTarget }: PanelProps) {
+  const [status, setStatus] = useState<StatusResponse | null>(() => currentStatus);
+  const [{ commits, limit, loading, root: loadedRoot }, setState] = useState<CommitsState>(
+    () => commitsState,
+  );
+
+  useEffect(() => {
+    setStatus(currentStatus);
+    statusListeners.add(setStatus);
+    setState(commitsState);
+    commitsListeners.add(setState);
+    return () => {
+      statusListeners.delete(setStatus);
+      commitsListeners.delete(setState);
+    };
+  }, []);
+
+  const root = status?.root ?? null;
+
+  // First mount in a repo, and every repo switch, starts from page one.
+  // Re-expanding the pane in the SAME repo hits the store's cached list
+  // instead, keeping whatever Load More depth was already paid for.
+  useEffect(() => {
+    if (root && root !== commitsState.root) fetchCommits(root, COMMITS_PAGE);
+  }, [root]);
+
+  const loadMore = () => {
+    if (root) fetchCommits(root, limit + COMMITS_PAGE);
+  };
+
+  // COMMITS rows are newest-first (git log's default order), so the first
+  // `ahead` entries are exactly the not-yet-pushed commits for a linear
+  // history — an approximation that can mislabel right after a fetch that
+  // hasn't been merged in yet, accepted as good enough over an extra
+  // `git rev-list @{u}..HEAD` call per /log fetch.
+  const unpushedCount = status?.upstream ? (status.ahead ?? 0) : 0;
+
+  const headerActions = (
+    <button
+      className="icon-button"
+      title="Refresh commits"
+      disabled={loading || !root}
+      onClick={() => refreshCommits()}
+    >
+      <Icon name="refresh" />
+    </button>
+  );
+
+  return (
+    <div className="git-panel git-commits-panel">
+      {actionsTarget && createPortal(headerActions, actionsTarget)}
+      {!root ? (
+        <div className="git-empty">Not a git repository.</div>
+      ) : commits.length === 0 ? (
+        <div className="git-empty">{loading || loadedRoot !== root ? "Loading…" : "No commits yet."}</div>
+      ) : (
+        <div className="git-commits-list">
+          {commits.map((commit, i) => (
+            <CommitRow
+              key={commit.hash}
+              commit={commit}
+              unpushed={i < unpushedCount}
+              onClick={() => openCommitDiff(root, commit)}
+            />
+          ))}
+          <button className="git-commits-load-more" disabled={loading} onClick={loadMore}>
+            {loading ? "Loading…" : "Load More"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A COMMITS row click — reuses DiffView via the key's commitHash field
+// (see encodeDiffKey/decodeDiffKey) rather than a dedicated viewer.
+function openCommitDiff(root: string, commit: CommitEntry) {
+  const key = encodeDiffKey(root, "", false, false, undefined, commit.hash);
+  openViewerTab?.("diff", key, { title: `${commit.hash.slice(0, 7)} ${commit.subject}` });
 }
 
 // ---- ConflictView (registerFileViewer component, extensions: []) ----
@@ -2700,7 +2757,11 @@ export function activate(ctx: {
     title: string;
     icon?: string;
     focusBinding?: string;
-    component: typeof GitPanel;
+    location?: "tab" | "explorer" | "run" | "commands";
+    // Another of THIS extension's panels, by its unnamespaced id, whose tab
+    // this one starts out inside — see the host's registerSidebarPanel.
+    defaultTab?: string;
+    component: typeof GitPanel | typeof CommitsPanel;
   }) => void;
   registerFileViewer: (v: {
     id: string;
@@ -2769,6 +2830,19 @@ export function activate(ctx: {
     icon: "source-control",
     focusBinding: "ctrl+shift+KeyG",
     component: GitPanel,
+  });
+  // Its own pane rather than a section inside GitPanel: it collapses,
+  // resizes and moves on its own, and defaultTab: "git" is what puts it
+  // under SOURCE CONTROL to start with instead of standing up a tab nobody
+  // asked for. Registered second so it lands below (see the host's
+  // append-only panel-order reconciliation).
+  ctx.registerSidebarPanel({
+    id: "commits",
+    title: "Commits",
+    icon: "git-commit",
+    location: "tab",
+    defaultTab: "git",
+    component: CommitsPanel,
   });
   // extensions: [] — never auto-matched to a file; reached only via
   // ctx.app.openViewerTab from GitPanel's row clicks (see openEntry above).
@@ -2867,6 +2941,8 @@ export function deactivate() {
   decorSeen.clear();
   pollCwd = null;
   currentStatus = null;
+  commitsState = { commits: [], limit: COMMITS_PAGE, loading: false, root: null };
+  commitsListeners.clear();
   setSidebarBadge?.("git", null);
   getFileIcon = null;
   getFolderIcon = null;

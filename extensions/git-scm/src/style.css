@@ -464,10 +464,15 @@
   min-width: 14px;
 }
 
-/* --- Commits section --- */
+/* --- Commits pane --- */
 
-.git-commits-header {
-  cursor: pointer;
+/* The pane's scroll area. Deliberately not .git-groups: no marquee
+   selection runs in here (CommitRow carries no data-path), so it needs the
+   scrolling without that container's positioning context. */
+.git-commits-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .git-commit-row {

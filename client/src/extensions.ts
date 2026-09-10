@@ -135,6 +135,9 @@ export interface RegisteredSidebarPanel {
   // panel with no active cwd. Set via ctx.app.setSidebarPanelVisible, not at
   // registration time, same as badge above.
   hidden?: boolean;
+  // The already-namespaced id of the tab this section lives in, when it is
+  // another panel's rather than one of its own. See PanelLike.defaultTab.
+  defaultTab?: string;
   // Accordion sections only: default placement weight. Consulted the one
   // time a panel's id first joins the stored accordion order (Sidebar.tsx's
   // reconciliation) — an ordered panel is inserted before same-location
@@ -253,6 +256,16 @@ export interface ExtensionContext {
     // accordion section inside the Explorer or Run tab. See
     // SidebarPanelLocation.
     location?: SidebarPanelLocation;
+    // Renders this panel as a PANE OF another panel of THIS extension,
+    // named by that panel's unnamespaced registration id (git-scm's
+    // "commits" passes "git"). The two become stacked, separately
+    // collapsible sections of that one tab, and this one can be dragged to
+    // any other tab afterwards — but it never gets a tab-strip entry of its
+    // own, so use it for a section that only makes sense next to its host,
+    // not for a second standalone panel. Cross-extension homing isn't
+    // offered: the target tab may not exist yet (or at all) at activation
+    // time.
+    defaultTab?: string;
     // Accordion locations only: collapsed by default for users with no
     // stored accordion state for this panel.
     defaultCollapsed?: boolean;
@@ -1431,11 +1444,16 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
     registerSidebarPanel(panel) {
       const namespacedId = `ext.${ext.id}.${panel.id}`;
       const location = panel.location ?? "tab";
+      // Namespaced the same way the target's own registration was, so an
+      // extension names its sibling by the plain id it registered it under.
+      const defaultTab =
+        location === "tab" && panel.defaultTab ? `ext.${ext.id}.${panel.defaultTab}` : undefined;
       extensionSidebarPanels.push({
         id: namespacedId,
         title: panel.title,
         icon: panel.icon,
         location,
+        defaultTab,
         defaultCollapsed: panel.defaultCollapsed,
         order: panel.order,
         component: panel.component,
@@ -1443,8 +1461,9 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       // Tab panels: opt-in only — most don't warrant a dedicated shortcut
       // cluttering the palette/keybinding list. Accordion sections: always
       // registered (unbound when no focusBinding), matching the built-in
-      // SESSIONS/FILES sections' always-present focus commands.
-      if (panel.focusBinding || location !== "tab") {
+      // SESSIONS/FILES sections' always-present focus commands. A defaultTab
+      // panel renders as a section like those, so it's treated like one.
+      if (panel.focusBinding || location !== "tab" || defaultTab) {
         extensionCommands.push({
           id: `${namespacedId}.focus`,
           label: `Sidebar: Focus ${panel.title}`,
