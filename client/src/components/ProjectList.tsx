@@ -1,4 +1,13 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getContextGetter } from "../contextKeys";
 import { getWindowDecorations, useExtensionRegistryVersion } from "../extensions";
@@ -81,10 +90,6 @@ export interface ProjectListProps {
 // which is also why every non-root row carries one.
 type Row =
   | { kind: "project"; id: string; node: ProjectNode; parentId: null; depth: 0 }
-  // The inline create-worktree form, sitting under its project row. Not a
-  // navigable row: it holds real inputs, so it is kept out of rowIds and the
-  // roving tabindex leaves its fields alone.
-  | { kind: "form"; id: string; node: ProjectNode; parentId: string; depth: 1 }
   | { kind: "worktree"; id: string; node: WorktreeNode; parentId: string; depth: 1 }
   | {
       kind: "window";
@@ -95,6 +100,11 @@ type Row =
       // 0 directly under a project (today's position), 1 under a worktree.
       depth: 0 | 1;
     };
+
+// The create-worktree popover's offset from its anchor, and the margin it
+// keeps from the viewport edge — the same two numbers ContextMenu uses.
+const POPOVER_GAP = 4;
+const POPOVER_EDGE = 4;
 
 const windowRowId = (sessionName: string, index: number) => `window:${sessionName}:${index}`;
 // Keyed by repo root for repository projects and by folder for plain ones
@@ -143,9 +153,10 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   // Ephemeral, and shared by both collapsible kinds — project rows and
   // worktree rows are both just ids in here.
   const [collapsedRows, setCollapsedRows] = useState<Set<string>>(new Set());
-  // Which project's create-worktree form is open (its node key), and its
-  // fields. One at a time: opening another closes the first.
-  const [formFor, setFormFor] = useState<string | null>(null);
+  // The open create-worktree popover: which project it is for, and the
+  // viewport rect of the control it was opened from, which it anchors to.
+  // One at a time — opening another closes the first.
+  const [formFor, setFormFor] = useState<{ key: string; anchor: DOMRect } | null>(null);
   const [form, setForm] = useState({ mode: "new" as "new" | "existing", branch: "", base: "", sessionName: "", run: "" });
   const [formBranches, setFormBranches] = useState<WorktreeBranch[]>([]);
   const [formBusy, setFormBusy] = useState(false);
@@ -175,10 +186,19 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     [sessions, projects, repoIndex],
   );
 
+  // `anchor` is the viewport rect the popover hangs off — the row's own "+"
+  // button for a menu pick. The palette command has no pointer to anchor to,
+  // so it passes none and falls back to the project row itself.
   const openCreateForm = useCallback(
-    (node: ProjectNode) => {
+    (node: ProjectNode, anchor?: DOMRect) => {
       if (!node.cwd) return;
-      setFormFor(node.key);
+      const fallback = () =>
+        containerRef.current
+          ?.querySelector(`[data-row-id="${CSS.escape(projectRowId(node))}"]`)
+          ?.getBoundingClientRect();
+      const rect = anchor ?? fallback();
+      if (!rect) return;
+      setFormFor({ key: node.key, anchor: rect });
       setForm({ mode: "new", branch: "", base: "", sessionName: "", run: "" });
       sessionEditedRef.current = false;
       setFormError(null);
@@ -198,8 +218,63 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   // A project that stops being a repository (its last worktree removed, or
   // its sessions gone) takes its form with it.
   useEffect(() => {
-    if (formFor !== null && !nodes.some((n) => n.key === formFor)) setFormFor(null);
+    if (formFor !== null && !nodes.some((n) => n.key === formFor.key)) setFormFor(null);
   }, [nodes, formFor]);
+
+  // Where the popover actually lands: below its anchor, clamped into the
+  // viewport. Measured after layout because the height depends on which
+  // fields are showing (the base input only exists in "new branch" mode).
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [popoverPos, setPopoverPos] = useState({ x: 0, y: 0 });
+  useLayoutEffect(() => {
+    const el = popoverRef.current;
+    if (!formFor || !el) return;
+    const { innerWidth, innerHeight } = window;
+    const rect = el.getBoundingClientRect();
+    const anchor = formFor.anchor;
+    // Flips above the anchor when there is no room below — the tree's lower
+    // rows are exactly where a repo with many terminals puts its "+".
+    const below = anchor.bottom + POPOVER_GAP;
+    const y =
+      below + rect.height > innerHeight - POPOVER_EDGE
+        ? Math.max(POPOVER_EDGE, anchor.top - rect.height - POPOVER_GAP)
+        : below;
+    setPopoverPos({
+      x: Math.max(POPOVER_EDGE, Math.min(anchor.left, innerWidth - rect.width - POPOVER_EDGE)),
+      y,
+    });
+  }, [formFor, form.mode, formError, worktreeRunCommands.length]);
+
+  // Click-outside and Escape close it. Capture phase on both pointer kinds,
+  // for the same reason ContextMenu does it that way: the terminal view
+  // cancels these events at capture on its own element, so a bubble-phase
+  // listener would never see a press that lands there.
+  useEffect(() => {
+    if (!formFor) return;
+    const onOutsidePress = (e: MouseEvent | TouchEvent) => {
+      if (popoverRef.current?.contains(e.target as Node)) return;
+      closeCreateForm();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeCreateForm();
+    };
+    window.addEventListener("mousedown", onOutsidePress, true);
+    window.addEventListener("touchstart", onOutsidePress, true);
+    window.addEventListener("keydown", onKeyDown);
+    // A scroll or resize moves the anchor out from under it; re-anchoring a
+    // form mid-typing would be worse than dismissing, and matches the menu.
+    const onReflow = () => closeCreateForm();
+    window.addEventListener("resize", onReflow);
+    containerRef.current?.addEventListener("scroll", onReflow);
+    const list = containerRef.current;
+    return () => {
+      window.removeEventListener("mousedown", onOutsidePress, true);
+      window.removeEventListener("touchstart", onOutsidePress, true);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onReflow);
+      list?.removeEventListener("scroll", onReflow);
+    };
+  }, [formFor, closeCreateForm]);
 
   const submitCreateForm = useCallback(
     async (node: ProjectNode) => {
@@ -265,9 +340,6 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       const id = projectRowId(node);
       const blockStart = out.length;
       out.push({ kind: "project", id, node, parentId: null, depth: 0 });
-      if (formFor === node.key) {
-        out.push({ kind: "form", id: `form:${node.key}`, node, parentId: id, depth: 1 });
-      }
       if (node.dead || collapsedRows.has(id)) {
         if (node.key === activeProjectKey) pos.set(id, "solo");
         continue;
@@ -286,23 +358,26 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       if (last !== blockStart) pos.set(out[last].id, "end");
     }
     return { rows: out, blockPos: pos };
-  }, [nodes, collapsedRows, formFor, activeProjectKey]);
+  }, [nodes, collapsedRows, activeProjectKey]);
 
   // The bridge below runs outside React's data flow, so it reads the live
   // tree through a ref rather than closing over a render's copy.
-  const treeRef = useRef({ nodes, activeSessionName });
-  treeRef.current = { nodes, activeSessionName };
+  const treeRef = useRef({ nodes, activeSessionName, repoIndex });
+  treeRef.current = { nodes, activeSessionName, repoIndex };
 
   useEffect(() => {
     if (!registerNewWorktreeBridge) return;
     registerNewWorktreeBridge((runCommandIndex?: number) => {
-      const { nodes: live, activeSessionName: active } = treeRef.current;
+      const { nodes: live, activeSessionName: active, repoIndex: repos } = treeRef.current;
       const owns = (n: ProjectNode) =>
         [...n.sessions, ...n.worktrees.flatMap((w) => w.sessions)].some((s) => s.name === active);
+      // Same test as canCreateWorktree, off the ref: this callback is
+      // registered once and would otherwise pin the first render's repoIndex.
+      const canCreate = (n: ProjectNode) =>
+        !n.dead && !!n.cwd && (n.worktrees.length > 0 || repos.has(n.cwd));
       // The project you're working in, else the first one that has a
       // repository to create in.
-      const target =
-        live.find((n) => canCreateWorktree(n) && owns(n)) ?? live.find((n) => canCreateWorktree(n));
+      const target = live.find((n) => canCreate(n) && owns(n)) ?? live.find((n) => canCreate(n));
       if (!target) return;
       openCreateForm(target);
       if (runCommandIndex !== undefined) {
@@ -313,9 +388,13 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   }, [registerNewWorktreeBridge, openCreateForm]);
 
   const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
-  // The form is a real input surface, not a list row: keeping it out of
-  // rowIds leaves the roving tabindex (and every arrow key) alone.
-  const rowIds = useMemo(() => rows.filter((r) => r.kind !== "form").map((r) => r.id), [rows]);
+  const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
+  // The project the open popover belongs to. Null once that project is gone,
+  // which the effect above turns into a close on the same render.
+  const formNode = useMemo(
+    () => (formFor ? (nodes.find((n) => n.key === formFor.key) ?? null) : null),
+    [nodes, formFor],
+  );
   // Which rows have something to collapse — project rows with children, and
   // worktree rows with terminals.
   const isCollapsible = (row: Row): boolean =>
@@ -324,7 +403,16 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
 
   // A project row offers the create form only when it actually has a
   // repository to create in — a plain folder has no worktrees to add to.
-  const canCreateWorktree = (node: ProjectNode) => !node.dead && node.worktrees.length > 0 && !!node.cwd;
+  //
+  // `node.worktrees` can't answer that on its own: it is only populated once
+  // the repository has more than one worktree (see hasWorktreeLevel in
+  // lib/projects.ts), so gating on it alone means the very first worktree of
+  // a repository can never be created from here. repoIndex is the real
+  // answer — it holds every session folder that resolved to a repository —
+  // and a single-worktree project's cwd IS its session path, the key it is
+  // stored under.
+  const canCreateWorktree = (node: ProjectNode) =>
+    !node.dead && !!node.cwd && (node.worktrees.length > 0 || repoIndex.has(node.cwd));
 
   // Set right after useListNavigation below (same render) — lets onCollapse
   // move focus to a row's parent without a circular reference to the hook
@@ -344,7 +432,6 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
         onOpenWorktree(row.node);
         return;
       }
-      if (row.kind === "form") return;
       const node = row.node;
       if (node.dead) {
         if (node.cwd) onOpenProject(node.cwd);
@@ -430,7 +517,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   // The sessions a row's operation shortcuts act on: its own for a terminal,
   // the node's for a project or worktree row.
   const sessionsOfRow = (row: Row): TmuxSession[] =>
-    row.kind === "window" ? [row.session] : row.kind === "form" ? [] : row.node.sessions;
+    row.kind === "window" ? [row.session] : row.node.sessions;
 
   // projects.* operation commands (rebindable) — dispatched here, ahead of
   // the hook's own onKeyDown, exactly the split FileTree.tsx uses for
@@ -569,7 +656,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
             onShowMenu(rect.left, rect.bottom + 4, [
               { label: "New Terminal", onClick: () => onNewTerminalInProject(node) },
-              { label: "New Worktree…", onClick: () => openCreateForm(node) },
+              { label: "New Worktree…", onClick: () => openCreateForm(node, rect) },
             ]);
           }}
         >
@@ -579,11 +666,11 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     );
   };
 
-  // The inline create-worktree form. It sits under its project row rather
-  // than in a dialog so the tree it is about stays visible while you fill it
-  // in.
-  const renderCreateForm = (row: Extract<Row, { kind: "form" }>) => {
-    const node = row.node;
+  // The create-worktree popover, anchored to whatever opened it. A popover
+  // rather than a modal so the tree it is about stays visible while you fill
+  // it in, and rather than an inline row so it never pushes the tree around
+  // under the pointer.
+  const renderCreateForm = (node: ProjectNode) => {
     const attached = new Set(
       formBranches.filter((b) => b.checkedOutAt).map((b) => b.name),
     );
@@ -591,6 +678,13 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     // mode offers only the unattached ones.
     const options = form.mode === "existing" ? formBranches.filter((b) => !attached.has(b.name)) : formBranches;
     return (
+      <div
+        ref={popoverRef}
+        className="worktree-popover"
+        role="dialog"
+        aria-label="New worktree"
+        style={{ left: popoverPos.x, top: popoverPos.y }}
+      >
       <form
         className="worktree-form"
         onSubmit={(e) => {
@@ -691,6 +785,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
           </button>
         </div>
       </form>
+      </div>
     );
   };
 
@@ -805,20 +900,20 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
         {rows.map((row) => (
           <li
             key={row.id}
+            data-row-id={row.id}
             data-block={blockPos.get(row.id)}
             style={{ "--row-depth": row.depth } as React.CSSProperties}
           >
             {row.kind === "project"
               ? renderProjectRow(row)
-              : row.kind === "form"
-                ? renderCreateForm(row)
-                : row.kind === "worktree"
-                  ? renderWorktreeRow(row)
-                  : renderWindowRow(row)}
+              : row.kind === "worktree"
+                ? renderWorktreeRow(row)
+                : renderWindowRow(row)}
           </li>
         ))}
         {rows.length === 0 && <li className="session-empty">No projects open</li>}
       </ul>
+      {formFor && formNode && renderCreateForm(formNode)}
     </div>
   );
 });

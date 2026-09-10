@@ -1127,16 +1127,25 @@ body.resizing-row {
   min-height: 48px;
 }
 
-/* The inline create-worktree form, sitting under its project row. Indented
-   with the same --row-depth the rows use, so it lines up with the worktrees
-   it is about to join. */
+/* The create-worktree popover, anchored to the "+" it was opened from and
+   dismissed by a press outside it. Same surface as .context-menu, which is
+   what it sits next to and replaces in the flow. */
+.worktree-popover {
+  position: fixed;
+  z-index: 1000;
+  width: 260px;
+  max-width: calc(100vw - 16px);
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
 .worktree-form {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 12px 8px calc(6px + var(--row-depth, 0) * 16px);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+  padding: 8px;
 }
 
 .worktree-form-error {
