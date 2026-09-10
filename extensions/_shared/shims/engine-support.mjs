@@ -16,5 +16,6 @@ export const {
   whenMatches,
   sendWithInkSafeEnters,
   joinedSelectionText,
+  unwrapParagraphs,
 } = ES;
 export default ES;

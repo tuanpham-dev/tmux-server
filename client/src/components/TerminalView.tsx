@@ -11,13 +11,19 @@ import {
   type TerminalAccessoryContext,
   type TerminalCommandEvent,
 } from "../extensions";
-import { isSyntheticSelectStart, type TerminalEngineHandle, type TerminalTheme } from "../engines/types";
+import {
+  isSyntheticSelectStart,
+  type HoveredLink,
+  type TerminalEngineHandle,
+  type TerminalTheme,
+} from "../engines/types";
 import { bindingMatches, serializeEvent, type Keybinding } from "../keybindings";
 import { resolveGitRootDir } from "../hooks/useGitRootDir";
 import { LocalEcho, normalizeSpaces, wrapModeForCommand } from "../localEcho";
 import { inputDebug } from "../inputDebug";
 import type { AppSettings } from "../settings";
 import { whenMatches } from "../lib/terminalInput";
+import { unwrapParagraphs } from "../selectionText";
 import { rangeAt } from "../touchSelect";
 import SearchBar from "./SearchBar";
 import TouchSelection from "./TouchSelection";
@@ -216,6 +222,13 @@ export default function TerminalView({
   // reaches tmux (which would e.g. re-trigger nvim's own <C-LeftMouse>
   // tag-jump binding).
   const linkActivateRef = useRef<((e: MouseEvent) => void) | null>(null);
+  // What that hovered link points at, when the engine reports it (optional
+  // in the seam, so an engine built against the older contract leaves this
+  // null and the right-click menu falls back to detecting a link from the
+  // visible text under the pointer). Unlike linkActivateRef's opaque
+  // callback, this carries the real target — an OSC 8 hyperlink's URI is
+  // not its visible text — so a menu can label and copy it.
+  const hoveredLinkRef = useRef<HoveredLink | null>(null);
   // True from a swallowed ctrl+mousedown on a hovered link until its
   // matching mouseup — see onCapture's link-interception branch below.
   const linkPressArmedRef = useRef(false);
@@ -361,6 +374,24 @@ export default function TerminalView({
   // touch handler (created once in the mount effect) always calls the current
   // one.
   const pasteFromClipboardRef = useRef<() => void>(() => {});
+  // Copies the current selection, optionally as one paragraph per block —
+  // see copySelectionAs in the render body. Held in a ref so the mount-time
+  // key handler and the (later-defined) context menu both reach the live
+  // closure.
+  const copySelectionAsRef = useRef<(mode: "default" | "paragraph") => void>(() => {});
+  // Consulted at event time by the mouse capture layer (a setting read
+  // through a mount-time listener must come from a ref, same pattern as
+  // pasteDropUploadDirRef).
+  const rightClickBehaviorRef = useRef(settings.rightClickBehavior);
+  rightClickBehaviorRef.current = settings.rightClickBehavior;
+  // Set by the swallowed right mousedown, consumed by the contextmenu
+  // handler that follows it. Non-null means "this contextmenu belongs to a
+  // press we kept" — a press that was forwarded to a mouse-aware program
+  // leaves it null, so no menu opens on top of that program.
+  const rightClickPendingRef = useRef<{ x: number; y: number } | null>(null);
+  // Opens the terminal's context menu at a viewport point — see
+  // openContextMenuAt in the render body.
+  const openContextMenuAtRef = useRef<(clientX: number, clientY: number) => void>(() => {});
   // Voice transcripts (Phase 5) route through this instead — set to the
   // mount effect's sendTextOrEcho, the same local-echo-or-direct fork image
   // paste/drop already uses (Phase 3), so spoken text lands in the buffered
@@ -681,7 +712,8 @@ export default function TerminalView({
           letterSpacing: initialSettings.current.letterSpacing,
           minimumContrastRatio: initialSettings.current.minimumContrastRatio,
           textThickness: initialSettings.current.textThickness,
-          copyJoinWrappedLines: initialSettings.current.copyJoinWrappedLines,
+          copyJoinWrappedLines: initialSettings.current.copySelection !== "raw",
+          copySelection: initialSettings.current.copySelection,
         },
         theme,
         isVisible: () => visibleRef.current,
@@ -690,8 +722,9 @@ export default function TerminalView({
         onOpenUrl: openUrl,
         onOpenFile: (path, line) => onOpenFileRef.current?.(path, line),
         onOpenFileSecondary: (path, line) => onOpenFileSecondaryRef.current?.(path, line),
-        onLinkHoverChange: (activate) => {
+        onLinkHoverChange: (activate, link) => {
           linkActivateRef.current = activate;
+          hoveredLinkRef.current = activate ? (link ?? null) : null;
         },
       });
       if (disposed) {
@@ -1106,14 +1139,33 @@ export default function TerminalView({
       // without re-mounting the terminal).
       engine.onKeyEvent((e) => {
         if (e.type !== "keydown") return false;
+        // Shift+F10 / the Menu key — the platform keyboard gesture for a
+        // context menu, anchored on the cursor cell rather than the pointer.
+        // Ahead of serializeEvent's guard below: the Menu key has no
+        // rebindable combo of its own, so it would be dropped there.
+        if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+          e.preventDefault();
+          const rect = screen.getBoundingClientRect();
+          const metrics = engine.getCellMetrics();
+          const cursor = engine.getCursor();
+          openContextMenuAtRef.current(
+            rect.left + (cursor.col + 1) * metrics.width,
+            rect.top + (cursor.row + 1) * metrics.height,
+          );
+          return true;
+        }
         const combo = serializeEvent(e);
         if (!combo) return false;
         const b = bindingsRef.current;
         const get = getContextGetter(e);
         if (bindingMatches(b["terminal.copy"], combo, get)) {
           e.preventDefault();
-          const selection = engine.getSelection();
-          if (selection) copyText(selection).catch((err) => onErrorRef.current(err));
+          copySelectionAsRef.current("default");
+          return true;
+        }
+        if (bindingMatches(b["terminal.copyAsParagraph"], combo, get)) {
+          e.preventDefault();
+          copySelectionAsRef.current("paragraph");
           return true;
         }
         if (bindingMatches(b["terminal.find"], combo, get)) {
@@ -1294,6 +1346,26 @@ export default function TerminalView({
         if (e.type === "mousemove") {
           lastMouse.x = e.clientX;
           lastMouse.y = e.clientY;
+        }
+
+        // Right button, before the link-open branch below so that a
+        // ctrl+right-click (the Mac context-menu gesture) opens the menu
+        // rather than arming a link open. Whether the press is kept or
+        // forwarded to a program that has mouse reporting on is the
+        // rightClickBehavior setting's whole job; a kept press is swallowed
+        // here and answered by the contextmenu event that follows it.
+        if (e.type === "mousedown" && e.button === 2) {
+          const mode = rightClickBehaviorRef.current;
+          const forwardWanted = tracking() && (mode === "forward" ? !e.shiftKey : e.shiftKey);
+          if (!forwardWanted) {
+            e.preventDefault();
+            e.stopPropagation();
+            // The swallowed mousedown would normally be what focuses the
+            // engine's hidden textarea — do it ourselves.
+            engine.focusInput();
+            rightClickPendingRef.current = { x: e.clientX, y: e.clientY };
+            return;
+          }
         }
 
         // Ctrl+click / Ctrl+Shift+click (Cmd equivalents on mac) on a
@@ -1606,7 +1678,30 @@ export default function TerminalView({
       // touch selection (and during the 700ms ghost-mouse suppression window
       // below); native text-selection UI has no place here either way.
       const onContextMenu = (e: Event) => {
-        if (activeSel || performance.now() < suppressMouseUntil) e.preventDefault();
+        // The browser's own menu never belongs over a terminal (App.tsx
+        // suppresses it app-wide too); this app's menu takes its place.
+        e.preventDefault();
+        const pending = rightClickPendingRef.current;
+        rightClickPendingRef.current = null;
+        // A touch long-press (which owns its own link menu), the ghost-mouse
+        // window after a swipe, or a press that was forwarded to a
+        // mouse-aware program all leave `pending` null — nothing to open.
+        if (activeSel || performance.now() < suppressMouseUntil || !pending) return;
+        // Paste mode still opens the menu where a menu is the more useful
+        // answer: over a link, or with a selection to act on. The link test
+        // is the click point's own text (candidateAtPoint), not the engine's
+        // hover state — a right-click can land on a link the pointer never
+        // hovered over, e.g. straight after focusing the pane elsewhere.
+        if (
+          rightClickBehaviorRef.current === "paste" &&
+          !hoveredLinkRef.current &&
+          !candidateAtPointRef.current(pending.x, pending.y) &&
+          !engineRef.current?.getSelection()
+        ) {
+          pasteFromClipboardRef.current();
+          return;
+        }
+        openContextMenuAtRef.current(pending.x, pending.y);
       };
       screen.addEventListener("contextmenu", onContextMenu, true);
 
@@ -1970,7 +2065,8 @@ export default function TerminalView({
       letterSpacing: settings.letterSpacing,
       minimumContrastRatio: settings.minimumContrastRatio,
       textThickness: settings.textThickness,
-      copyJoinWrappedLines: settings.copyJoinWrappedLines,
+      copyJoinWrappedLines: settings.copySelection !== "raw",
+      copySelection: settings.copySelection,
     });
     refitRef.current?.();
   }, [settings]);
@@ -2063,6 +2159,133 @@ export default function TerminalView({
       touchSelEndRect = cellRect(last.col, last.row);
     }
   }
+
+  // The link/word candidate under a viewport point, from the visible text —
+  // the same detection the touch long-press uses. Synchronous, so it can
+  // also answer "is the pointer on a link?" for a decision that has to be
+  // made before any path resolution (paste-mode right-click). A path
+  // candidate here is only a candidate: whether the file exists is settled
+  // by resolvePaths.
+  const candidateAtPoint = (clientX: number, clientY: number) => {
+    const engine = engineRef.current;
+    if (!engine) return null;
+    const cell = engine.cellFromPoint(clientX, clientY);
+    const col = cell.col - 1;
+    const row = cell.row - 1;
+    const stitched = engine.readStitchedLine(row);
+    if (!stitched) return null;
+    return rangeAt(stitched.text, (row - stitched.startLine) * engine.cols + col)?.candidate ?? null;
+  };
+  const candidateAtPointRef = useRef(candidateAtPoint);
+  candidateAtPointRef.current = candidateAtPoint;
+
+  // Builds and opens the terminal's right-click menu at a viewport point.
+  // What's under the pointer decides the link rows: the engine's own
+  // hovered link when it reports one (authoritative — an OSC 8 hyperlink's
+  // target isn't its visible text, and a path link is already resolved),
+  // otherwise the same text hit-test the touch long-press uses, whose path
+  // candidates still need resolving against the pane's cwd. That resolve is
+  // async, so a path menu opens a tick later rather than offering an "Open
+  // File" that might not exist — the same tradeoff the touch link menu
+  // makes.
+  const openContextMenuAt = (clientX: number, clientY: number) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const hasSelection = !!engine.getSelection();
+
+    const show = (link: HoveredLink | null) => {
+      const items: MenuItem[] = [];
+      if (link?.kind === "url") {
+        items.push({ label: "Open Link", onClick: () => openUrl(link.target) });
+        items.push({
+          label: "Copy Link",
+          onClick: () => {
+            copyText(link.target).catch((err) => onErrorRef.current(err));
+          },
+        });
+        items.push({ separator: true, label: "", onClick: () => {} });
+      } else if (link?.kind === "path") {
+        items.push({ label: "Open File", onClick: () => onOpenFileRef.current?.(link.target, link.line) });
+        if (isPreviewableRef.current?.(link.target)) {
+          items.push({ label: "Preview", onClick: () => onPreviewFileRef.current?.(link.target) });
+        }
+        items.push({
+          label: "Copy Path",
+          onClick: () => {
+            copyText(link.target).catch((err) => onErrorRef.current(err));
+          },
+        });
+        items.push({ separator: true, label: "", onClick: () => {} });
+      }
+      items.push({
+        label: "Copy",
+        shortcutCommand: "terminal.copy",
+        disabled: !hasSelection,
+        onClick: () => copySelectionAsRef.current("default"),
+      });
+      items.push({
+        label: "Copy as Paragraph",
+        shortcutCommand: "terminal.copyAsParagraph",
+        disabled: !hasSelection,
+        onClick: () => copySelectionAsRef.current("paragraph"),
+      });
+      items.push({ label: "Paste", onClick: () => pasteFromClipboardRef.current() });
+      // Omitted rather than shown dead when the engine can't do it (the
+      // seam's selectAll is optional).
+      if (engine.selectAll) {
+        items.push({ label: "Select All", onClick: () => engineRef.current?.selectAll?.() });
+      }
+      items.push({ separator: true, label: "", onClick: () => {} });
+      items.push({
+        label: "Clear",
+        shortcutCommand: "terminal.clear",
+        onClick: () => engineRef.current?.clear(),
+      });
+      showMenuRef.current?.(clientX, clientY, items);
+    };
+
+    const hovered = hoveredLinkRef.current;
+    if (hovered) {
+      show(hovered);
+      return;
+    }
+    const candidate = candidateAtPoint(clientX, clientY);
+    if (!candidate) {
+      show(null);
+      return;
+    }
+    if (candidate.kind === "url") {
+      show({ kind: "url", target: candidate.target });
+      return;
+    }
+    api
+      .resolvePaths(attachNameRef.current, [candidate.target])
+      .then((r) => {
+        const resolved = r.results[0];
+        show(resolved ? { kind: "path", target: resolved, line: candidate.line } : null);
+      })
+      .catch(() => show(null));
+  };
+  openContextMenuAtRef.current = openContextMenuAt;
+
+  // Copies the selection. The engine already applied the user's copy mode
+  // (settings.copySelection) in getSelection, so "default" just copies that
+  // text; "paragraph" additionally undoes the wrapping the PROGRAM did to
+  // its own output, for a one-off Copy as Paragraph regardless of the mode.
+  // unwrapParagraphs is idempotent, so re-applying it over an engine that
+  // already did (mode "paragraph") is a no-op — which is also what keeps
+  // paragraph mode working on an engine built against the older settings
+  // contract, since that engine ignores copySelection entirely. In "raw"
+  // mode the base text still carries a break at every wrap column, so a
+  // mid-word wrap gains a space here; joining those needs the terminal's
+  // own wrap knowledge, which raw mode is explicitly opting out of.
+  const copySelectionAs = (mode: "default" | "paragraph") => {
+    const selection = engineRef.current?.getSelection();
+    if (!selection) return;
+    const text = mode === "paragraph" ? unwrapParagraphs(selection) : selection;
+    copyText(text).catch((err) => onErrorRef.current(err));
+  };
+  copySelectionAsRef.current = copySelectionAs;
 
   // Reads the clipboard and pastes it into the terminal — as a bracketed paste
   // when the pane's program has DEC mode 2004 on (so a multi-line clipboard

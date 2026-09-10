@@ -40,6 +40,18 @@ export default function UiSection() {
         </select>
       </label>
 
+      <label className="settings-row checkbox-row">
+        <input
+          type="checkbox"
+          checked={settings.showStatusBar}
+          onChange={(e) => set("showStatusBar", e.target.checked)}
+        />
+        <span>Show status bar</span>
+      </label>
+      <div className="settings-hint">
+        RAM in use, open terminals, and listening ports, along the bottom of the window. Always hidden on
+        phones and tablets.
+      </div>
     </>
   );
 }

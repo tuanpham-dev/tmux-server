@@ -63,4 +63,11 @@ declare module "@tmux-server/engine-support" {
     buffer: { active: { getLine(y: number): SelectionBufferLine | null | undefined } };
   }
   export function joinedSelectionText(term: SelectionTextTerminal, range: SelectionRangeExclusive): string;
+
+  // Joins the line breaks a PROGRAM made while word-wrapping its own output
+  // (a renderer like Ink emits a real "\n" plus a continuation indent).
+  // Deliberately lossy — code and command output collapse to one line per
+  // block — so apply it only for the "paragraph" copy mode or a per-copy
+  // "Copy as Paragraph" action, never on the default copy path. Idempotent.
+  export function unwrapParagraphs(text: string): string;
 }

@@ -5,7 +5,16 @@
 // properties). Plain ESM, no build step — ctx.React is how it gets React
 // without bundling its own copy.
 export function activate(ctx) {
-  const { React, registerCommand, registerFileViewer, registerSidebarPanel, app, serverFetch, settings } = ctx;
+  const {
+    React,
+    registerCommand,
+    registerFileViewer,
+    registerSidebarPanel,
+    registerStatusBarItem,
+    app,
+    serverFetch,
+    settings,
+  } = ctx;
 
   // Reads this extension's current setting values (declared default,
   // overridden by whatever the user set in Settings → Hello Extension) and
@@ -75,6 +84,31 @@ export function activate(ctx) {
         { style: { padding: 16, fontFamily: "monospace", whiteSpace: "pre-wrap", color: "var(--fg)" } },
         React.createElement("h3", { style: { marginTop: 0 } }, `.demo viewer — ${filePath}`),
         text,
+      );
+    },
+  });
+
+  // A status-bar readout whose click opens a popover above the bar. The host
+  // owns the popover's placement and dismissal; calling openPopover again
+  // from the same item closes it, so no open/closed state is tracked here.
+  registerStatusBarItem({
+    id: "helloStatus",
+    placement: "left",
+    component: function HelloStatusItem({ context }) {
+      return React.createElement(
+        "button",
+        {
+          className: "status-bar-item",
+          "data-menu-trigger": "true",
+          title: "Hello Extension",
+          onClick: (e) =>
+            context.openPopover(
+              e.currentTarget.getBoundingClientRect(),
+              React.createElement("div", { style: { padding: 12 } }, buildGreeting()),
+            ),
+        },
+        React.createElement("span", { className: "codicon codicon-smiley" }),
+        React.createElement("span", null, "Hello"),
       );
     },
   });

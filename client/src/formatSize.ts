@@ -5,3 +5,9 @@
 export function formatMb(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1);
 }
+
+// Byte counts as GB, for the status bar's memory readout. One decimal keeps
+// the number stable enough to read at a glance while it drifts.
+export function formatGb(bytes: number): string {
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1);
+}

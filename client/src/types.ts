@@ -173,6 +173,11 @@ export interface MenuItem {
     title: string;
     onClick: () => void;
   };
+  // A nested list opened from this row (the gear menu's Panes and Theme
+  // lists). A row with a submenu has no action of its own: its onClick is
+  // never called, and pointing at it — or tapping it, where there is no
+  // hover — opens the child list beside it instead.
+  submenu?: MenuItem[];
 }
 
 // Per-project tab-group UI state (useTabGroups' tabGroupState), keyed by
@@ -213,6 +218,49 @@ export interface FsFilesListing {
 
 export interface FsGitRoot {
   root: string;
+}
+
+// One git worktree of a repository, as the PROJECTS tree's middle level shows
+// it. `path` is `~`-shortened like every other path the client sees, so it
+// compares directly against TmuxSession.path. `main` marks the repository's
+// own checkout — always first, never removable, and the identity of the
+// project row the others nest under.
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  main: boolean;
+  dirty: boolean;
+}
+
+// A local branch and the worktree that currently has it checked out — git
+// refuses one branch in two worktrees, so the create form offers only the
+// unattached ones.
+export interface WorktreeBranch {
+  name: string;
+  checkedOutAt: string | null;
+}
+
+// A repository as the tree groups by it: `repo` is the main worktree's path
+// (the group key every session in any of its worktrees shares).
+export interface RepoInfo {
+  repo: string;
+  worktrees: WorktreeInfo[];
+  branches: WorktreeBranch[];
+}
+
+export interface WorktreeLookup {
+  results: {
+    path: string;
+    // null when this path isn't inside a git repository at all — a normal
+    // answer for a session started outside one, not an error.
+    repo: string | null;
+    worktrees: WorktreeInfo[];
+    branches: WorktreeBranch[];
+  }[];
 }
 
 export interface ExtensionThemeContribution {

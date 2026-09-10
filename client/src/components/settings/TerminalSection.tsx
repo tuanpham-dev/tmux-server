@@ -168,14 +168,40 @@ export default function TerminalSection() {
         <span>Cursor blink</span>
       </label>
 
-      <label className="settings-row checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.copyJoinWrappedLines}
-          onChange={(e) => set("copyJoinWrappedLines", e.target.checked)}
-        />
-        <span>Join soft-wrapped lines when copying</span>
+      <label className="settings-row">
+        <span className="settings-label">When copying a selection</span>
+        <select
+          className="dialog-input settings-select"
+          value={settings.copySelection}
+          onChange={(e) => set("copySelection", e.target.value as AppSettings["copySelection"])}
+        >
+          <option value="raw">Keep lines as shown</option>
+          <option value="joinWrapped">Join soft-wrapped lines</option>
+          <option value="paragraph">Join into paragraphs</option>
+        </select>
       </label>
+      <label className="settings-row">
+        <span className="settings-label">Right-click in the terminal</span>
+        <select
+          className="dialog-input settings-select"
+          value={settings.rightClickBehavior}
+          onChange={(e) => set("rightClickBehavior", e.target.value as AppSettings["rightClickBehavior"])}
+        >
+          <option value="menu">Show the context menu</option>
+          <option value="forward">Send to mouse-aware programs</option>
+          <option value="paste">Paste</option>
+        </select>
+      </label>
+      <div className="settings-hint">
+        With <em>Show the context menu</em>, hold Shift to send the click to a program using the mouse (vim,
+        htop) instead; with the other two, hold Shift to get the menu.
+      </div>
+
+      <div className="settings-hint">
+        Joining soft-wrapped lines undoes wraps the terminal made. Joining into paragraphs also undoes a
+        program's own word-wrap, which collapses code and command output into one line — Copy as Paragraph
+        does the same for a single copy without changing this.
+      </div>
 
       <label className="settings-row">
         <span className="settings-label">Local echo when</span>

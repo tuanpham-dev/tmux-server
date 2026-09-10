@@ -7,7 +7,7 @@
 // (serverFetch for this extension's own /list & /kill routes) arrive via
 // module-level bridge variables set once in activate() — same pattern as
 // the search and git-scm extensions.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import "./style.css";
 import { copyText } from "../../_shared/clipboard";
@@ -135,9 +135,11 @@ function authHeaders(auth: TunnelAuth): { name: string; value: string }[] {
 
 // Builds the copy-pasteable tunnel command. When `mask` is set, header values
 // are replaced with a placeholder for on-screen display; `mask: false` is
-// what actually gets copied to the clipboard. `ports: "all"` builds the
-// --all auto-forward variant (see cli/tunnel.mjs) instead of a fixed list.
-function buildCommand(origin: string, ports: number[] | "all", auth: TunnelAuth, mask: boolean): string {
+// what actually gets copied to the clipboard. Always the --all auto-forward
+// variant (see cli/tunnel.mjs): forwarding a fixed snapshot of ports went
+// stale the moment a dev server restarted on a new port, so the panel no
+// longer asks which ports you meant.
+function buildCommand(origin: string, auth: TunnelAuth, mask: boolean): string {
   const headers = authHeaders(auth).map((h) => ({ ...h, value: mask ? MASK : h.value }));
   const curlArgs = headers.map((h) => `-H ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
   const nodeArgs = headers.map((h) => `--header ${shellQuote(`${h.name}: ${h.value}`)}`).join(" ");
@@ -146,8 +148,7 @@ function buildCommand(origin: string, ports: number[] | "all", auth: TunnelAuth,
   // path that breaks on Windows. --input-type=module because stdin scripts
   // default to CommonJS.
   const curl = `curl -s ${curlArgs ? `${curlArgs} ` : ""}${origin}/tunnel.mjs`;
-  const portArgs = ports === "all" ? "--all" : ports.join(" ");
-  const node = `node --input-type=module - --url ${origin} ${nodeArgs ? `${nodeArgs} ` : ""}${portArgs}`;
+  const node = `node --input-type=module - --url ${origin} ${nodeArgs ? `${nodeArgs} ` : ""}--all`;
   return `${curl} | ${node}`;
 }
 
@@ -704,6 +705,78 @@ function PortProxyView({ filePath, active, toolbarTarget }: PortProxyProps) {
   );
 }
 
+// Tunnel state, for the status-bar readout and the forwarded markers. A
+// port is only "forwarded" once a connected tunnel client has reported
+// binding it locally — the CLI skips ports it can't bind, so mere
+// connectedness would put a live-looking marker on a dead localhost link.
+interface TunnelStatus {
+  connected: boolean;
+  ports: number[];
+  allForwarded: boolean;
+}
+
+const NO_TUNNEL: TunnelStatus = { connected: false, ports: [], allForwarded: false };
+
+function fetchTunnelStatus(): Promise<TunnelStatus> {
+  return fetch("/api/tunnel-status").then((res) => readJson<TunnelStatus>(res));
+}
+
+// The ports list plus the tunnel state, on one timer — the panel and the
+// status-bar item both need exactly this, and two components polling the
+// same two endpoints on two intervals would double the traffic for nothing.
+function usePortsFeed(): { ports: ListeningPort[]; tunnel: TunnelStatus; error: string | null; reload: () => void } {
+  const [ports, setPorts] = useState<ListeningPort[]>([]);
+  const [tunnel, setTunnel] = useState<TunnelStatus>(NO_TUNNEL);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const load = useCallback(() => {
+    fetchPorts()
+      .then((next) => {
+        if (!mountedRef.current) return;
+        setPorts(next);
+        setError(null);
+      })
+      .catch((err) => {
+        if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
+      });
+    // A failed tunnel-status read means "no tunnel" rather than an error —
+    // it is decoration, not the panel's purpose.
+    fetchTunnelStatus()
+      .then((next) => {
+        if (mountedRef.current) setTunnel(next);
+      })
+      .catch(() => {
+        if (mountedRef.current) setTunnel(NO_TUNNEL);
+      });
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(() => {
+      if (!document.hidden) load();
+    }, POLL_MS);
+    const onVisibility = () => {
+      if (!document.hidden) load();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [load, refreshKey]);
+
+  return { ports, tunnel, error, reload: () => setRefreshKey((k) => k + 1) };
+}
+
 interface PanelProps {
   actionsTarget?: HTMLDivElement | null;
   showMenu?: (x: number, y: number, items: MenuItem[]) => void;
@@ -715,13 +788,10 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
   const bindMenu = useLongPressMenu();
   const [ports, setPorts] = useState<ListeningPort[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
   const [copied, setCopied] = useState(false);
   const [copiedPort, setCopiedPort] = useState<number | null>(null);
-  const [copiedAll, setCopiedAll] = useState(false);
   const [auth, setAuth] = useState<TunnelAuth>(NO_AUTH);
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(NO_PROXY_CONFIG);
-  const [revealed, setRevealed] = useState(false);
   const [killing, setKilling] = useState<Set<number>>(new Set());
   const [clickAction, setClickAction] = useState(readClickAction);
 
@@ -750,11 +820,7 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
         if (!mountedRef.current) return;
         setPorts(next);
         setError(null);
-        const live = new Set(next.map((p) => p.port));
-        setSelected((prev) => {
-          const pruned = new Set([...prev].filter((port) => live.has(port)));
-          return pruned.size === prev.size ? prev : pruned;
-        });
+
       })
       .catch((err) => {
         if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
@@ -813,47 +879,14 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
     };
   }, [refreshKey, loadPorts]);
 
-  // Re-mask whenever the underlying auth headers change (e.g. a rotated
-  // session cookie), so a stale reveal doesn't linger on screen.
-  useEffect(() => {
-    setRevealed(false);
-  }, [auth]);
-
-  const toggle = (port: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(port)) next.delete(port);
-      else next.add(port);
-      return next;
-    });
-  };
-
-  const selectedPorts = [...selected].sort((a, b) => a - b);
-  const hasAuthHeaders = auth.cookie !== null || auth.authorization !== null;
   const origin = window.location.origin;
-  const displayCommand =
-    selectedPorts.length > 0 ? buildCommand(origin, selectedPorts, auth, !revealed) : null;
 
   const onCopy = () => {
-    if (selectedPorts.length === 0) return;
-    const realCommand = buildCommand(origin, selectedPorts, auth, false);
+    const realCommand = buildCommand(origin, auth, false);
     copyText(realCommand)
       .then(() => {
         setCopied(true);
         window.setTimeout(() => setCopied(false), 1500);
-      })
-      .catch(() => {});
-  };
-
-  // Copies the --all auto-forward script (see cli/tunnel.mjs) — independent
-  // of the port list/selection above, since --all forwards whatever's
-  // listening at the time it runs rather than a fixed snapshot.
-  const onCopyAll = () => {
-    const command = buildCommand(origin, "all", auth, false);
-    copyText(command)
-      .then(() => {
-        setCopiedAll(true);
-        window.setTimeout(() => setCopiedAll(false), 1500);
       })
       .catch(() => {});
   };
@@ -923,7 +956,7 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
     rowIds,
     onActivate: (id) => {
       const p = portsById.get(id);
-      if (p) toggle(p.port);
+      if (p) onOpenPort(p.port);
     },
     onContextMenuKey: (id, rect) => {
       const p = portsById.get(id);
@@ -938,10 +971,10 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
           <>
             <button
               className="icon-button"
-              title={copiedAll ? "Copied" : "Copy auto-forward-all script"}
-              onClick={onCopyAll}
+              title={copied ? "Copied" : "Copy the command that forwards every port"}
+              onClick={onCopy}
             >
-              <Icon name={copiedAll ? "check" : "copy"} />
+              <Icon name={copied ? "check" : "copy"} />
             </button>
             <button
               className="icon-button"
@@ -958,11 +991,11 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
         {ports.map((p) => {
           const rowProps = nav.getRowProps(portRowId(p.port));
           return (
-            <li key={p.port} className={`port-row${selected.has(p.port) ? " selected" : ""}`}>
+            <li key={p.port} className="port-row">
               <button
                 className="port-item"
                 title={p.pid ? `pid ${p.pid}` : undefined}
-                onClick={() => toggle(p.port)}
+                onClick={() => onOpenPort(p.port)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   nav.focusRow(portRowId(p.port));
@@ -1017,23 +1050,6 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
           <li className="session-empty">No listening ports in tmux sessions</li>
         )}
       </ul>
-      {displayCommand && (
-        <div className="port-command">
-          <code className="port-command-box">{displayCommand}</code>
-          {hasAuthHeaders && (
-            <button
-              className="icon-button"
-              title={revealed ? "Hide auth header values" : "Reveal auth header values"}
-              onClick={() => setRevealed((prev) => !prev)}
-            >
-              <Icon name={revealed ? "eye-closed" : "eye"} />
-            </button>
-          )}
-          <button className="port-copy-button" onClick={onCopy}>
-            {copied ? "Copied" : "Copy"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -1059,6 +1075,12 @@ interface ExtensionContext {
     mode: "default" | "preview";
     component: typeof PortProxyView;
   }): void;
+  registerStatusBarItem(item: {
+    id: string;
+    placement?: "left" | "right";
+    order?: number;
+    component: (props: StatusItemProps) => ReturnType<typeof PortsStatusItem>;
+  }): void;
   serverFetch(path: string, init?: RequestInit): Promise<Response>;
   assetUrl(relPath: string): string;
   settings: SettingsApi;
@@ -1068,28 +1090,150 @@ interface ExtensionContext {
   };
 }
 
+// The status-bar readout: how many ports are listening, whether a tunnel is
+// carrying them, and a popover listing them with the one command that
+// forwards everything. Lives here rather than in core so the readout appears
+// only while this extension is enabled, and so it can use the extension's own
+// data, settings and proxy config.
+interface StatusItemProps {
+  context: {
+    openPopover(anchor: DOMRect, content: ReactNode): void;
+    closePopover(): void;
+  };
+}
+
+function PortsStatusItem({ context }: StatusItemProps) {
+  const { ports, tunnel } = usePortsFeed();
+  const [auth, setAuth] = useState<TunnelAuth>(NO_AUTH);
+  const [copiedPort, setCopiedPort] = useState<number | null>(null);
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(NO_PROXY_CONFIG);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    fetchTunnelAuth()
+      .then(setAuth)
+      .catch(() => setAuth(NO_AUTH));
+    fetchProxyConfig()
+      .then(setProxyConfig)
+      .catch(() => setProxyConfig(NO_PROXY_CONFIG));
+  }, []);
+
+  const forwarded = new Set(tunnel.ports);
+  const openPort = (port: number) => {
+    // A forwarded port is reachable directly, which beats the proxy: no path
+    // rewriting, no subdomain, and absolute asset paths just work.
+    if (forwarded.has(port)) window.open(`http://localhost:${port}/`, "_blank", "noopener");
+    else window.open(proxyUrl(port, proxyConfig), "_blank", "noopener");
+  };
+
+  const onCopy = () => {
+    copyText(buildCommand(window.location.origin, auth, false))
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
+  };
+
+  const onCopyPortUrl = (port: number) => {
+    copyText(proxyUrl(port, proxyConfig))
+      .then(() => {
+        setCopiedPort(port);
+        window.setTimeout(() => setCopiedPort(null), 1500);
+      })
+      .catch(() => {});
+  };
+
+  const content = (
+    <div className="ports-status-popover">
+      <ul className="port-list">
+        {ports.map((p) => (
+          <li key={p.port} className="port-row">
+            <button
+              className="port-item"
+              title={
+                forwarded.has(p.port)
+                  ? `Forwarded — open http://localhost:${p.port}/`
+                  : `Open port ${p.port}`
+              }
+              onClick={() => openPort(p.port)}
+            >
+              {forwarded.has(p.port) && <Icon name="plug" className="port-forwarded-dot" />}
+              <span className="port-number">{p.port}</span>
+              {p.process && <span className="port-process">{p.process}</span>}
+              <span className="port-session">{p.session}</span>
+            </button>
+            {/* Same two row actions the panel offers, minus Kill: the status
+                bar is for reaching a port, not for ending one. */}
+            <div className="port-actions">
+              <button
+                className="icon-button port-action-button"
+                title={forwarded.has(p.port) ? "Open at localhost" : "Open"}
+                tabIndex={-1}
+                onClick={() => openPort(p.port)}
+              >
+                <Icon name="link-external" />
+              </button>
+              <button
+                className="icon-button port-action-button"
+                title={copiedPort === p.port ? "Copied" : "Copy URL"}
+                tabIndex={-1}
+                onClick={() => onCopyPortUrl(p.port)}
+              >
+                <Icon name={copiedPort === p.port ? "check" : "copy"} />
+              </button>
+            </div>
+          </li>
+        ))}
+        {ports.length === 0 && <li className="session-empty">No listening ports in tmux sessions</li>}
+      </ul>
+      <div className="ports-status-popover-footer">
+        <span className="ports-status-hint">
+          {tunnel.allForwarded
+            ? "All ports forwarded to this machine."
+            : tunnel.connected
+              ? "Tunnel connected — run the command again to pick up new ports."
+              : "Run the forward command locally to reach every port at localhost."}
+        </span>
+        <button
+          className="icon-button"
+          title={copied ? "Copied" : "Copy the command that forwards every port"}
+          onClick={onCopy}
+        >
+          <Icon name={copied ? "check" : "copy"} />
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <button
+      className="status-bar-item"
+      data-menu-trigger="true"
+      aria-haspopup="dialog"
+      title={
+        tunnel.allForwarded
+          ? `${ports.length} listening port${ports.length === 1 ? "" : "s"}, all forwarded to this machine`
+          : `${ports.length} listening port${ports.length === 1 ? "" : "s"} in tmux sessions`
+      }
+      // openPopover toggles: the host keys it on this item's id.
+      onClick={(e) => context.openPopover(e.currentTarget.getBoundingClientRect(), content)}
+    >
+      <Icon name="plug" className={tunnel.allForwarded ? "port-forwarded-icon" : undefined} />
+      <span>{ports.length}</span>
+    </button>
+  );
+}
+
 export function activate(ctx: ExtensionContext): void {
   serverFetch = ctx.serverFetch;
   extSettings = ctx.settings;
   getActiveContext = ctx.app.getActiveContext;
   openViewerTab = ctx.app.openViewerTab;
   removeStylesheet = injectStylesheet(ctx.assetUrl, "dist/client.css");
-  ctx.registerSidebarPanel({
-    id: "ports",
-    title: "Ports",
-    icon: "plug",
-    location: "run",
-    order: 20,
-    // Expanded by default now that it shares the Run tab with TASKS instead
-    // of competing with SESSIONS/FILES for Explorer height (where it started
-    // collapsed, matching the built-in panel's pre-extraction default).
-    // Users with stored accordion state keep whatever they had — the id is
-    // unchanged, and panelState is shared across both accordions.
-    defaultCollapsed: false,
-    component: PortsPanel,
-  });
-  // extensions: [] — never auto-matched to a file extension, only reached
-  // via app.openViewerTab (see onOpenPort/openInApp above).
+  // No sidebar panel any more: the status-bar item and its popover are the
+  // whole surface (the panel component is still what that popover renders).
+  ctx.registerStatusBarItem({ id: "ports", placement: "right", order: 10, component: PortsStatusItem });
   ctx.registerFileViewer({
     id: "portProxy",
     extensions: [],

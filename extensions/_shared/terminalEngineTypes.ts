@@ -48,7 +48,15 @@ export interface TerminalEngineSettings {
   textThickness: number;
   // Join soft-wrapped rows when extracting selection text for copy — see
   // client/src/selectionText.ts (shared via @tmux-server/engine-support).
+  // Derived from copySelection below (it is `copySelection !== "raw"`) and
+  // kept because engines shipped outside this repo read it; a new engine
+  // should read copySelection instead.
   copyJoinWrappedLines: boolean;
+  // How copied selection text is assembled. Optional so an engine built
+  // against the older contract still type-checks (it just never sees
+  // "paragraph" and falls back to copyJoinWrappedLines above; the app
+  // applies unwrapParagraphs itself on its own copy paths).
+  copySelection?: "raw" | "joinWrapped" | "paragraph";
 }
 
 // 1-based cell-grid coordinates — matches the SGR mouse-report wire format
@@ -65,6 +73,17 @@ export interface CellPosition {
 export interface ScreenPosition {
   col: number;
   row: number;
+}
+
+// What the pointer is currently over, when it's over a link — reported
+// alongside the activation callback by onLinkHoverChange below. `target` is
+// the real destination (an OSC 8 URI, or a path the engine already resolved
+// through resolvePaths), never the visible cell text.
+export interface HoveredLink {
+  kind: "url" | "path";
+  target: string;
+  // 1-based line number from a "path:line[:col]" link, when it had one.
+  line?: number;
 }
 
 export interface TerminalEngineOptions {
@@ -93,7 +112,13 @@ export interface TerminalEngineOptions {
   // mouse-capture layer knows whether a hovered link's activation callback
   // is armed for an open-gesture (ctrl/cmd) click. Hover tooltip DOM,
   // positioning, and show/hide are the engine's own concern.
-  onLinkHoverChange: (activate: ((e: MouseEvent) => void) | null) => void;
+  // The second argument describes WHAT is hovered, so the host can label a
+  // context menu ("Open Link" vs "Open File") and copy the real target —
+  // an OSC 8 hyperlink's URI is not its visible text, and a path link has
+  // already been resolved by the engine. Optional so an engine built
+  // against the older contract still satisfies this type; the host then
+  // falls back to detecting a link from the visible text under the pointer.
+  onLinkHoverChange: (activate: ((e: MouseEvent) => void) | null, link?: HoveredLink | null) => void;
 }
 
 // Everything TerminalView calls on a live engine instance. Kept narrow and
@@ -114,6 +139,9 @@ export interface TerminalEngineHandle {
   focusInput(): void;
   getSelection(): string;
   clearSelection(): void;
+  // Selects the whole buffer (the right-click menu's "Select All").
+  // Optional: an engine that can't do it simply omits the menu row.
+  selectAll?(): void;
   // Clears the terminal's own local buffer (terminal.clear keybinding) —
   // unrelated to tmux scrollback, which the server owns.
   clear(): void;

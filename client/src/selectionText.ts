@@ -42,19 +42,38 @@ export interface SelectionTextTerminal {
 }
 
 // A row continues onto the next when its final column holds real content.
-// Prefer cell inspection: a width-0 cell is a wide char's spacer (the wide
-// char spans INTO the last column — filled), and empty chars mean an
-// unwritten cell (not filled) — xterm's translateToString can't make that
-// distinction (it pads unwritten cells to " " but yields "" for spacers,
-// while ghostty-web yields "" for unwritten cells too). The string
-// fallback, for lines without getCell, therefore treats both "" and " "
-// as not filled.
+// Prefer cell inspection, which distinguishes three cases the rendered
+// string cannot (verified against @xterm/xterm's Constants.ts and
+// BufferLine.translateToString):
+//   - width 0: a wide char's spacer, i.e. the wide char spans INTO the last
+//     column — filled;
+//   - getChars() "": the NULL_CELL, a cell never written to (width 1, and
+//     translateToString renders it as WHITESPACE_CELL_CHAR " ") — not
+//     filled;
+//   - getChars() " ": a REAL space the program wrote. A greedy wrapper
+//     breaking between words puts one here, so the row did run to the edge
+//     — filled. But a row the program padded with spaces also ends in one,
+//     and joining that would splice unrelated rows; the two are told apart
+//     by the column before it, since wrapped text runs up to the edge while
+//     padding is a run of blanks.
+// The string fallback, for lines without getCell (ghostty-web), cannot make
+// any of these distinctions — it yields " " for both an unwritten cell and
+// a written space — so it keeps treating both as not filled.
 function rowFilledToEdge(line: SelectionBufferLine, cols: number): boolean {
-  const cell = line.getCell?.(cols - 1);
-  if (cell) {
+  const getCell = line.getCell?.bind(line);
+  const cell = getCell?.(cols - 1);
+  if (getCell && cell) {
     if (cell.getWidth() === 0) return true;
     const chars = cell.getChars();
-    return chars !== "" && chars !== " ";
+    if (chars === "") return false;
+    if (chars !== " ") return true;
+    // Written space in the last column: real content only if the column
+    // before it also holds real content (a wide char's spacer counts).
+    const before = getCell(cols - 2);
+    if (!before) return false;
+    if (before.getWidth() === 0) return true;
+    const beforeChars = before.getChars();
+    return beforeChars !== "" && beforeChars !== " ";
   }
   const tail = line.translateToString(false, cols - 1, cols);
   return tail !== "" && tail !== " ";
@@ -84,4 +103,51 @@ export function joinedSelectionText(term: SelectionTextTerminal, range: Selectio
   }
   endLine();
   return lines.join("\n");
+}
+
+// A line that opens a list item — "- ", "* ", "+ ", "• ", "1. ", "2) ".
+// Load-bearing for unwrapParagraphs below: without it, consecutive bullets
+// would collapse into one run-on line.
+const LIST_MARKER_RE = /^(?:[-*+•]|\d+[.)])\s/;
+
+// Joins the line breaks a PROGRAM made while word-wrapping its own output,
+// which joinedSelectionText above cannot: a wrap the terminal introduced is
+// visible in the buffer (the row ran to the last column), but a renderer
+// like Ink emits a real "\n" plus a continuation indent, and no
+// terminal-level signal distinguishes that from a newline the program meant
+// to keep. So this is deliberately LOSSY — code, `ls` output and log lines
+// all collapse to one line per block — and never runs on the default copy
+// path; it backs the per-copy "Copy as Paragraph" action and the opt-in
+// "paragraph" copy mode.
+//
+// Within a run of non-blank lines every line is joined to the previous with
+// a single space and its leading indent dropped. Two rules start a new
+// line instead: a blank line (paragraph separator, preserved), and a line
+// opening a list item. Idempotent — running it on its own output is a
+// no-op.
+export function unwrapParagraphs(text: string): string {
+  const out: string[] = [];
+  let current: string | null = null;
+  const flush = () => {
+    if (current !== null) out.push(current.replace(/\s+$/, ""));
+    current = null;
+  };
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (line.trim() === "") {
+      flush();
+      out.push("");
+      continue;
+    }
+    // The paragraph's own first line keeps its indent (an indented list
+    // item or code line stays where it is); only continuations lose theirs.
+    if (current === null || LIST_MARKER_RE.test(line.trimStart())) {
+      flush();
+      current = line;
+      continue;
+    }
+    current += ` ${line.trimStart()}`;
+  }
+  flush();
+  return out.join("\n");
 }

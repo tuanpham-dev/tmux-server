@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getContextGetter } from "../contextKeys";
 import { getWindowDecorations, useExtensionRegistryVersion } from "../extensions";
@@ -7,8 +7,8 @@ import { useGitRootDirs } from "../hooks/useGitRootDir";
 import { useListNavigation } from "../hooks/useListNavigation";
 import { useLongPressMenu } from "../hooks/useLongPressMenu";
 import { bindingMatches, recorderState, serializeEvent, type Keybinding } from "../keybindings";
-import { projectName, projectRows } from "../lib/projects";
-import type { MenuItem, Project, TmuxSession, TmuxWindow } from "../types";
+import { projectTree, sessionNameForBranch, type ProjectNode, type WorktreeNode } from "../lib/projects";
+import type { MenuItem, Project, RepoInfo, TmuxSession, TmuxWindow, WorktreeBranch } from "../types";
 import Icon from "./Icon";
 
 export interface ProjectListHandle {
@@ -19,11 +19,15 @@ export interface ProjectListHandle {
   focusList: () => void;
 }
 
-interface Props {
+export interface ProjectListProps {
   sessions: TmuxSession[];
   activeSessionName: string | null;
   activeWindow: { sessionName: string; index: number } | null;
   projects: Project[];
+  // Which repository each session folder belongs to, and that repository's
+  // worktrees — the tree's middle level. An empty map renders the flat
+  // two-level tree, which is also what a folder outside any repository gets.
+  repoIndex: Map<string, RepoInfo>;
   onOpenAllWindows: (session: string) => void;
   onOpenWindow: (session: string, index: number) => void;
   onKillWindow: (session: string, index: number) => void;
@@ -35,42 +39,83 @@ interface Props {
   // folder — see useSessionActions' openProject. Live project rows route
   // their click here too: it focuses the most-recent terminal.
   onOpenProject: (cwd: string) => void;
+  // A worktree row's click: focus its most-recent terminal, or start a
+  // session in it named after its branch when it has none.
+  onOpenWorktree: (node: WorktreeNode) => void;
+  onNewTerminalInProject: (node: ProjectNode) => void;
+  onNewTerminalInWorktree: (node: WorktreeNode) => void;
+  // Creates a worktree in this project's repository and opens a session in
+  // it. Resolves when the checkout exists; the row appears on the tree's
+  // next poll.
+  onCreateWorktree: (opts: {
+    cwd: string;
+    branch: string;
+    base?: string;
+    mode: "new" | "existing";
+    sessionName?: string;
+    runCommand?: string;
+  }) => Promise<void>;
+  // The repository's local branches, fetched when the create form opens —
+  // they aren't part of the tree's poll.
+  loadBranches: (cwd: string) => Promise<WorktreeBranch[]>;
+  // Commands the create form offers to run in the new session (the
+  // worktreeRunCommands setting, already parsed).
+  worktreeRunCommands: { name: string; command: string }[];
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
-  sessionMenuItems: (name: string) => MenuItem[];
-  deadProjectMenuItems: (cwd: string) => MenuItem[];
+  projectMenuItems: (node: ProjectNode) => MenuItem[];
+  worktreeMenuItems: (node: WorktreeNode) => MenuItem[];
   windowMenuItems: (session: string, win: TmuxWindow) => MenuItem[];
   extensionWindowActions: RegisteredWindowAction[];
   resolvedBindings: Record<string, Keybinding[]>;
+  // Lets the host open this tree's create-worktree form from outside (the
+  // worktrees extension's palette commands). Only the sidebar's instance
+  // registers one — the status bar's popover copy stays a viewer.
+  registerNewWorktreeBridge?: (open: ((runCommandIndex?: number) => void) | null) => void;
 }
 
-// A single flattened, keyboard-navigable row: live projects (their primary
-// session plus any same-folder extras, merged) nest their terminal rows —
-// one per tmux window across all of the project's sessions; a dead row is a
-// pinned project with no live session rooted in its folder. `parentId`
-// backs ArrowLeft on a terminal row (jump to its parent), which
-// useListNavigation's generic onCollapse can't derive on its own since it
-// has no notion of tree depth.
+// A single flattened, keyboard-navigable row. Project rows hold either their
+// own terminals (a plain folder, or a repository with one worktree) or a
+// worktree level; worktree rows hold terminals. `parentId` backs ArrowLeft
+// (jump to the row above in the tree), which useListNavigation's generic
+// onCollapse can't derive on its own since it has no notion of depth —
+// which is also why every non-root row carries one.
 type Row =
-  | { kind: "dead"; id: string; cwd: string }
-  | { kind: "project"; id: string; session: TmuxSession; extraSessions: TmuxSession[]; pinned: boolean }
-  | { kind: "window"; id: string; session: TmuxSession; window: TmuxWindow; parentId: string };
+  | { kind: "project"; id: string; node: ProjectNode; parentId: null; depth: 0 }
+  // The inline create-worktree form, sitting under its project row. Not a
+  // navigable row: it holds real inputs, so it is kept out of rowIds and the
+  // roving tabindex leaves its fields alone.
+  | { kind: "form"; id: string; node: ProjectNode; parentId: string; depth: 1 }
+  | { kind: "worktree"; id: string; node: WorktreeNode; parentId: string; depth: 1 }
+  | {
+      kind: "window";
+      id: string;
+      session: TmuxSession;
+      window: TmuxWindow;
+      parentId: string;
+      // 0 directly under a project (today's position), 1 under a worktree.
+      depth: 0 | 1;
+    };
 
 const windowRowId = (sessionName: string, index: number) => `window:${sessionName}:${index}`;
-// Keyed by folder for pathed projects (stable across session renames), by
-// session name for pathless ones — a path always starts with "/" or "~", so
-// the two namespaces can't collide.
-const projectRowId = (session: TmuxSession) => `project:${session.path || session.name}`;
+// Keyed by repo root for repository projects and by folder for plain ones
+// (both stable across session renames), by session name for pathless
+// sessions — a path always starts with "/" or "~", so the two namespaces
+// can't collide.
+const projectRowId = (node: ProjectNode) => `project:${node.key}`;
+const worktreeRowId = (node: WorktreeNode) => `worktree:${node.key}`;
 
-// The PROJECTS panel's tree (live projects + dead pinned projects), plus
-// roving-tabindex keyboard navigation (useListNavigation), rebindable
-// projects.* operation shortcuts, and menu-key context menus — see
-// plans/projects-not-sessions.md and plans/project-first-ui.md.
-const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
+// The PROJECTS panel's tree — project → worktree → terminal, plus dead pinned
+// projects — with roving-tabindex keyboard navigation (useListNavigation),
+// rebindable projects.* operation shortcuts, and menu-key context menus. See
+// plans/projects-not-sessions.md, plans/project-first-ui.md and
+// plans/worktrees-into-projects.md.
+const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function ProjectList(
   {
     sessions,
     activeSessionName,
     activeWindow,
     projects,
+    repoIndex,
     onOpenAllWindows,
     onOpenWindow,
     onKillWindow,
@@ -79,16 +124,36 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
     onTogglePinSession,
     onNewWindowInSession,
     onOpenProject,
+    onOpenWorktree,
+    onNewTerminalInProject,
+    onNewTerminalInWorktree,
+    onCreateWorktree,
+    loadBranches,
+    worktreeRunCommands,
     onShowMenu,
-    sessionMenuItems,
-    deadProjectMenuItems,
+    projectMenuItems,
+    worktreeMenuItems,
     windowMenuItems,
     extensionWindowActions,
     resolvedBindings,
+    registerNewWorktreeBridge,
   },
   ref,
 ) {
-  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  // Ephemeral, and shared by both collapsible kinds — project rows and
+  // worktree rows are both just ids in here.
+  const [collapsedRows, setCollapsedRows] = useState<Set<string>>(new Set());
+  // Which project's create-worktree form is open (its node key), and its
+  // fields. One at a time: opening another closes the first.
+  const [formFor, setFormFor] = useState<string | null>(null);
+  const [form, setForm] = useState({ mode: "new" as "new" | "existing", branch: "", base: "", sessionName: "", run: "" });
+  const [formBranches, setFormBranches] = useState<WorktreeBranch[]>([]);
+  const [formBusy, setFormBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  // Until the user edits the session name it tracks the branch, so the
+  // common case needs no second edit.
+  const sessionEditedRef = useRef(false);
+  const branchInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Touch/pen long-press → the same context menu right-click opens.
   const bindMenu = useLongPressMenu();
@@ -96,8 +161,8 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
   // getWindowDecorations below reads the registry imperatively per row.
   useExtensionRegistryVersion();
 
-  const toggleProjectCollapsed = (key: string) => {
-    setCollapsedProjects((prev) => {
+  const toggleCollapsed = (key: string) => {
+    setCollapsedRows((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -105,7 +170,61 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
     });
   };
 
-  const listRows = projectRows(sessions, projects);
+  const nodes = useMemo(
+    () => projectTree(sessions, projects, repoIndex),
+    [sessions, projects, repoIndex],
+  );
+
+  const openCreateForm = useCallback(
+    (node: ProjectNode) => {
+      if (!node.cwd) return;
+      setFormFor(node.key);
+      setForm({ mode: "new", branch: "", base: "", sessionName: "", run: "" });
+      sessionEditedRef.current = false;
+      setFormError(null);
+      setFormBranches([]);
+      void loadBranches(node.cwd).then(setFormBranches);
+      // The input mounts with the form; focus after paint.
+      window.setTimeout(() => branchInputRef.current?.focus(), 0);
+    },
+    [loadBranches],
+  );
+
+  const closeCreateForm = useCallback(() => {
+    setFormFor(null);
+    setFormError(null);
+  }, []);
+
+  // A project that stops being a repository (its last worktree removed, or
+  // its sessions gone) takes its form with it.
+  useEffect(() => {
+    if (formFor !== null && !nodes.some((n) => n.key === formFor)) setFormFor(null);
+  }, [nodes, formFor]);
+
+  const submitCreateForm = useCallback(
+    async (node: ProjectNode) => {
+      const branch = form.branch.trim();
+      if (!node.cwd || !branch || formBusy) return;
+      setFormBusy(true);
+      setFormError(null);
+      try {
+        await onCreateWorktree({
+          cwd: node.cwd,
+          branch,
+          base: form.mode === "new" ? form.base.trim() || undefined : undefined,
+          mode: form.mode,
+          sessionName: form.sessionName.trim() || undefined,
+          runCommand: form.run ? worktreeRunCommands[Number(form.run)]?.command : undefined,
+        });
+        closeCreateForm();
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setFormBusy(false);
+      }
+    },
+    [form, formBusy, onCreateWorktree, worktreeRunCommands, closeCreateForm],
+  );
 
   // Terminal rows show each window's cwd collapsed to its git repo root
   // (matching the FILES panel), falling back to the live cwd for windows not
@@ -115,96 +234,177 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
   const allCwds = useMemo(() => sessions.flatMap((s) => s.windows.map((w) => w.cwd)), [sessions]);
   const { rootOf } = useGitRootDirs(allCwds);
 
-  // A project row's label is its folder's name — the tmux session name is
-  // backend detail, demoted to the tooltip. Pathless sessions (nothing to
-  // derive from) keep their session name as the label.
-  const rowLabel = (s: TmuxSession) => (s.path ? projectName(s.path) : s.name);
+  // The project the active terminal lives in. Its whole block — the project
+  // row, its worktrees and every terminal under them — sits on a raised
+  // surface, so "where am I" reads as one shape rather than one highlighted
+  // row buried among its own children.
+  const activeProjectKey = useMemo(() => {
+    if (!activeSessionName) return null;
+    const owner = nodes.find((n) =>
+      [...n.sessions, ...n.worktrees.flatMap((w) => w.sessions)].some((s) => s.name === activeSessionName),
+    );
+    return owner?.key ?? null;
+  }, [nodes, activeSessionName]);
 
-  // Flattened in the exact visual order the tree renders below — kept in
-  // sync by construction since both this and the JSX walk the same
-  // listRows/collapsedProjects.
-  const rows = useMemo<Row[]>(() => {
+  // Flattened in the exact visual order the tree renders — and the *only*
+  // walk: the JSX below maps this array rather than re-deriving the same
+  // structure a second time, so the two can't drift out of sync.
+  // `blockPos` rides alongside it, marking where each row of the active
+  // project's block sits so the surface can round its own ends.
+  const { rows, blockPos } = useMemo<{ rows: Row[]; blockPos: Map<string, string> }>(() => {
     const out: Row[] = [];
-    for (const row of listRows) {
-      if (row.dead) {
-        out.push({ kind: "dead", id: `dead:${row.cwd}`, cwd: row.cwd });
-        continue;
-      }
-      const id = projectRowId(row.session);
-      out.push({ kind: "project", id, session: row.session, extraSessions: row.extraSessions, pinned: row.pinned });
-      if (!collapsedProjects.has(id)) {
-        for (const s of [row.session, ...row.extraSessions]) {
-          for (const w of s.windows) {
-            out.push({ kind: "window", id: windowRowId(s.name, w.index), session: s, window: w, parentId: id });
-          }
+    const pos = new Map<string, string>();
+    const pushWindows = (list: TmuxSession[], parentId: string, depth: 0 | 1) => {
+      for (const s of list) {
+        for (const w of s.windows) {
+          out.push({ kind: "window", id: windowRowId(s.name, w.index), session: s, window: w, parentId, depth });
         }
       }
+    };
+    for (const node of nodes) {
+      const id = projectRowId(node);
+      const blockStart = out.length;
+      out.push({ kind: "project", id, node, parentId: null, depth: 0 });
+      if (formFor === node.key) {
+        out.push({ kind: "form", id: `form:${node.key}`, node, parentId: id, depth: 1 });
+      }
+      if (node.dead || collapsedRows.has(id)) {
+        if (node.key === activeProjectKey) pos.set(id, "solo");
+        continue;
+      }
+      pushWindows(node.sessions, id, 0);
+      for (const wt of node.worktrees) {
+        const wtId = worktreeRowId(wt);
+        out.push({ kind: "worktree", id: wtId, node: wt, parentId: id, depth: 1 });
+        if (collapsedRows.has(wtId)) continue;
+        pushWindows(wt.sessions, wtId, 1);
+      }
+      if (node.key !== activeProjectKey) continue;
+      const last = out.length - 1;
+      for (let i = blockStart; i <= last; i++) pos.set(out[i].id, "mid");
+      pos.set(out[blockStart].id, blockStart === last ? "solo" : "start");
+      if (last !== blockStart) pos.set(out[last].id, "end");
     }
-    return out;
-  }, [listRows, collapsedProjects]);
+    return { rows: out, blockPos: pos };
+  }, [nodes, collapsedRows, formFor, activeProjectKey]);
+
+  // The bridge below runs outside React's data flow, so it reads the live
+  // tree through a ref rather than closing over a render's copy.
+  const treeRef = useRef({ nodes, activeSessionName });
+  treeRef.current = { nodes, activeSessionName };
+
+  useEffect(() => {
+    if (!registerNewWorktreeBridge) return;
+    registerNewWorktreeBridge((runCommandIndex?: number) => {
+      const { nodes: live, activeSessionName: active } = treeRef.current;
+      const owns = (n: ProjectNode) =>
+        [...n.sessions, ...n.worktrees.flatMap((w) => w.sessions)].some((s) => s.name === active);
+      // The project you're working in, else the first one that has a
+      // repository to create in.
+      const target =
+        live.find((n) => canCreateWorktree(n) && owns(n)) ?? live.find((n) => canCreateWorktree(n));
+      if (!target) return;
+      openCreateForm(target);
+      if (runCommandIndex !== undefined) {
+        setForm((f) => ({ ...f, run: String(runCommandIndex) }));
+      }
+    });
+    return () => registerNewWorktreeBridge(null);
+  }, [registerNewWorktreeBridge, openCreateForm]);
 
   const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
-  const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);
+  // The form is a real input surface, not a list row: keeping it out of
+  // rowIds leaves the roving tabindex (and every arrow key) alone.
+  const rowIds = useMemo(() => rows.filter((r) => r.kind !== "form").map((r) => r.id), [rows]);
+  // Which rows have something to collapse — project rows with children, and
+  // worktree rows with terminals.
+  const isCollapsible = (row: Row): boolean =>
+    (row.kind === "project" && !row.node.dead && (row.node.sessions.length > 0 || row.node.worktrees.length > 0)) ||
+    (row.kind === "worktree" && row.node.sessions.length > 0);
+
+  // A project row offers the create form only when it actually has a
+  // repository to create in — a plain folder has no worktrees to add to.
+  const canCreateWorktree = (node: ProjectNode) => !node.dead && node.worktrees.length > 0 && !!node.cwd;
 
   // Set right after useListNavigation below (same render) — lets onCollapse
-  // move focus to a terminal row's parent without a circular reference to
-  // the hook it's passed into, same ref-indirection useGlobalKeybindings
-  // uses for globalCommandsRef.
+  // move focus to a row's parent without a circular reference to the hook
+  // it's passed into, same ref-indirection useGlobalKeybindings uses for
+  // globalCommandsRef.
   const focusRowRef = useRef<(id: string) => void>(() => {});
 
   const onActivate = useCallback(
     (id: string) => {
       const row = rowsById.get(id);
       if (!row) return;
-      if (row.kind === "dead") onOpenProject(row.cwd);
-      else if (row.kind === "project") {
+      if (row.kind === "window") {
+        onOpenWindow(row.session.name, row.window.index);
+        return;
+      }
+      if (row.kind === "worktree") {
+        onOpenWorktree(row.node);
+        return;
+      }
+      if (row.kind === "form") return;
+      const node = row.node;
+      if (node.dead) {
+        if (node.cwd) onOpenProject(node.cwd);
+        return;
+      }
+      if (node.sessions.length > 0) {
         // Focus the project's most-recent terminal (openProject's live
         // branch) rather than tmux's open-every-window; Open All Terminals
         // stays in the context menu.
-        if (row.session.path) onOpenProject(row.session.path);
-        else onOpenAllWindows(row.session.name);
-      } else onOpenWindow(row.session.name, row.window.index);
+        if (node.cwd) onOpenProject(node.cwd);
+        else onOpenAllWindows(node.sessions[0].name);
+        return;
+      }
+      // A repository row whose terminals all live on worktrees is a group
+      // header: it has nothing of its own to open, so Enter folds it.
+      if (node.worktrees.length > 0) toggleCollapsed(row.id);
     },
-    [rowsById, onOpenProject, onOpenAllWindows, onOpenWindow],
+    [rowsById, onOpenProject, onOpenAllWindows, onOpenWindow, onOpenWorktree],
   );
 
   const onExpand = useCallback(
     (id: string) => {
       const row = rowsById.get(id);
-      if (!row) return;
-      if (row.kind === "project" && collapsedProjects.has(row.id)) {
-        toggleProjectCollapsed(row.id);
-      }
+      if (row && isCollapsible(row) && collapsedRows.has(row.id)) toggleCollapsed(row.id);
     },
-    [rowsById, collapsedProjects],
+    [rowsById, collapsedRows],
   );
 
   const onCollapse = useCallback(
     (id: string) => {
       const row = rowsById.get(id);
       if (!row) return;
-      if (row.kind === "project" && !collapsedProjects.has(row.id)) {
-        toggleProjectCollapsed(row.id);
-      } else if (row.kind === "window") {
+      if (isCollapsible(row) && !collapsedRows.has(row.id)) {
+        toggleCollapsed(row.id);
+      } else if (row.parentId) {
         focusRowRef.current(row.parentId);
       }
     },
-    [rowsById, collapsedProjects],
+    [rowsById, collapsedRows],
+  );
+
+  const menuItemsFor = useCallback(
+    (row: Row): MenuItem[] =>
+      row.kind === "window"
+        ? windowMenuItems(row.session.name, row.window)
+        : row.kind === "worktree"
+          ? worktreeMenuItems(row.node)
+          : row.kind === "project"
+            ? projectMenuItems(row.node)
+            : [],
+    [projectMenuItems, worktreeMenuItems, windowMenuItems],
   );
 
   const onContextMenuKey = useCallback(
     (id: string, rect: DOMRect) => {
       const row = rowsById.get(id);
       if (!row) return;
-      const items =
-        row.kind === "dead"
-          ? deadProjectMenuItems(row.cwd)
-          : row.kind === "project"
-            ? sessionMenuItems(row.session.name)
-            : windowMenuItems(row.session.name, row.window);
-      onShowMenu(rect.left + 8, rect.bottom, items);
+      onShowMenu(rect.left + 8, rect.bottom, menuItemsFor(row));
     },
-    [rowsById, sessionMenuItems, deadProjectMenuItems, windowMenuItems, onShowMenu],
+    [rowsById, menuItemsFor, onShowMenu],
   );
 
   const nav = useListNavigation({
@@ -227,6 +427,11 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
     [nav, rowIds],
   );
 
+  // The sessions a row's operation shortcuts act on: its own for a terminal,
+  // the node's for a project or worktree row.
+  const sessionsOfRow = (row: Row): TmuxSession[] =>
+    row.kind === "window" ? [row.session] : row.kind === "form" ? [] : row.node.sessions;
+
   // projects.* operation commands (rebindable) — dispatched here, ahead of
   // the hook's own onKeyDown, exactly the split FileTree.tsx uses for
   // files.*: list-widget keys (arrows/Enter/Space, handled by
@@ -240,15 +445,17 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
         const get = getContextGetter(e.nativeEvent);
         const matches = (id: string) => bindingMatches(resolvedBindings[id], combo, get);
         const row = nav.focusedId ? rowsById.get(nav.focusedId) : undefined;
+        const rowSessions = row ? sessionsOfRow(row) : [];
 
         if (row && matches("projects.kill")) {
           e.preventDefault();
           if (row.kind === "window") onKillWindow(row.session.name, row.window.index);
-          else if (row.kind === "project") onKillSession(row.session.name);
+          else if (rowSessions[0]) onKillSession(rowSessions[0].name);
           return;
         }
-        // Rename applies to terminal rows only — projects have no rename
-        // (a project's name is its folder's; session names are cosmetic).
+        // Rename applies to terminal rows only — projects and worktrees have
+        // no rename (a project's name is its folder's, a worktree's is its
+        // branch's; session names are cosmetic).
         if (row && matches("projects.rename")) {
           if (row.kind === "window") {
             e.preventDefault();
@@ -257,18 +464,16 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
           }
         }
         if (row && matches("projects.newWindow")) {
-          const sessionName = row.kind === "window" || row.kind === "project" ? row.session.name : null;
-          if (sessionName) {
-            e.preventDefault();
-            onNewWindowInSession(sessionName);
-            return;
-          }
+          e.preventDefault();
+          if (row.kind === "worktree") onNewTerminalInWorktree(row.node);
+          else if (row.kind === "project") onNewTerminalInProject(row.node);
+          else if (row.kind === "window") onNewWindowInSession(row.session.name);
+          return;
         }
         if (row && matches("projects.togglePin")) {
-          const sessionName = row.kind === "window" || row.kind === "project" ? row.session.name : null;
-          if (sessionName) {
+          if (rowSessions[0]) {
             e.preventDefault();
-            onTogglePinSession(sessionName);
+            onTogglePinSession(rowSessions[0].name);
             return;
           }
         }
@@ -282,12 +487,250 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
       className="chevron"
       onClick={(e) => {
         e.stopPropagation();
-        toggleProjectCollapsed(key);
+        toggleCollapsed(key);
       }}
     >
-      <Icon name={collapsedProjects.has(key) ? "chevron-right" : "chevron-down"} />
+      <Icon name={collapsedRows.has(key) ? "chevron-right" : "chevron-down"} />
     </span>
   );
+
+  // Every row shares this: right-click and long-press open the same menu, and
+  // both move the roving focus onto the row first so the keyboard and the
+  // pointer agree on what's selected.
+  const menuBindings = (row: Row) => ({
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault();
+      nav.focusRow(row.id);
+      onShowMenu(e.clientX, e.clientY, menuItemsFor(row));
+    },
+    ...bindMenu((x: number, y: number) => {
+      nav.focusRow(row.id);
+      onShowMenu(x, y, menuItemsFor(row));
+    }),
+  });
+
+  const renderProjectRow = (row: Extract<Row, { kind: "project" }>) => {
+    const node = row.node;
+    const rowProps = nav.getRowProps(row.id);
+    if (node.dead) {
+      const cwd = node.cwd ?? node.key;
+      return (
+        <div className="session-row">
+          <button
+            className="session-item project-item dead-session-item"
+            title={`${cwd} (not running — click to open)`}
+            onClick={() => onOpenProject(cwd)}
+            {...menuBindings(row)}
+            tabIndex={rowProps.tabIndex}
+            ref={rowProps.ref}
+            onFocus={rowProps.onFocus}
+          >
+            <Icon name="pinned" className="pin-indicator" />
+            <span className="session-name">{node.label}</span>
+            <span className="item-cwd">{cwd}</span>
+          </button>
+          <button className="row-add-button" title="Open project" tabIndex={-1} onClick={() => onOpenProject(cwd)}>
+            <Icon name="add" />
+          </button>
+        </div>
+      );
+    }
+    const members = [...node.sessions, ...node.worktrees.flatMap((w) => w.sessions)];
+    const isActive = activeSessionName !== null && members.some((m) => m.name === activeSessionName);
+    const anyAttached = members.some((m) => m.attached > 0);
+    const tmuxNames = members.map((m) => m.name).join(", ");
+    const tooltip = `${node.cwd ?? node.label}${tmuxNames ? ` (tmux: ${tmuxNames})` : ""}`;
+    return (
+      <div className={`session-row${isActive ? " active" : ""}`}>
+        <button
+          className={`session-item project-item${isActive ? " active" : ""}`}
+          title={tooltip}
+          onClick={() => onActivate(row.id)}
+          {...menuBindings(row)}
+          tabIndex={rowProps.tabIndex}
+          ref={rowProps.ref}
+          onFocus={rowProps.onFocus}
+        >
+          {chevron(row.id)}
+          <span className={`session-dot${anyAttached ? " attached" : ""}`} />
+          {node.pinned && <Icon name="pinned" className="pin-indicator" />}
+          <span className="session-name">{node.label}</span>
+          {node.cwd && <span className="item-cwd">{node.cwd}</span>}
+        </button>
+        <button
+          className="row-add-button"
+          title={canCreateWorktree(node) ? "New…" : "New Terminal"}
+          tabIndex={-1}
+          onClick={(e) => {
+            if (!canCreateWorktree(node)) {
+              onNewTerminalInProject(node);
+              return;
+            }
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            onShowMenu(rect.left, rect.bottom + 4, [
+              { label: "New Terminal", onClick: () => onNewTerminalInProject(node) },
+              { label: "New Worktree…", onClick: () => openCreateForm(node) },
+            ]);
+          }}
+        >
+          <Icon name="add" />
+        </button>
+      </div>
+    );
+  };
+
+  // The inline create-worktree form. It sits under its project row rather
+  // than in a dialog so the tree it is about stays visible while you fill it
+  // in.
+  const renderCreateForm = (row: Extract<Row, { kind: "form" }>) => {
+    const node = row.node;
+    const attached = new Set(
+      formBranches.filter((b) => b.checkedOutAt).map((b) => b.name),
+    );
+    // git refuses to check one branch out in two worktrees, so existing-branch
+    // mode offers only the unattached ones.
+    const options = form.mode === "existing" ? formBranches.filter((b) => !attached.has(b.name)) : formBranches;
+    return (
+      <form
+        className="worktree-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submitCreateForm(node);
+        }}
+        onKeyDown={(e) => {
+          // The tree's own key handling would otherwise steal typing.
+          e.stopPropagation();
+          if (e.key === "Escape") closeCreateForm();
+        }}
+      >
+        {formError && <div className="worktree-form-error">{formError}</div>}
+        <div className="worktree-form-modes">
+          <label>
+            <input
+              type="radio"
+              name={`worktree-mode-${node.key}`}
+              checked={form.mode === "new"}
+              onChange={() => setForm((f) => ({ ...f, mode: "new" }))}
+            />
+            New branch
+          </label>
+          <label>
+            <input
+              type="radio"
+              name={`worktree-mode-${node.key}`}
+              checked={form.mode === "existing"}
+              onChange={() => setForm((f) => ({ ...f, mode: "existing" }))}
+            />
+            Existing
+          </label>
+        </div>
+        <input
+          ref={branchInputRef}
+          className="worktree-form-input"
+          list={`worktree-branches-${node.key}`}
+          placeholder={form.mode === "new" ? "New branch name" : "Branch to check out"}
+          value={form.branch}
+          onChange={(e) => {
+            const branch = e.target.value;
+            setForm((f) => ({
+              ...f,
+              branch,
+              sessionName: sessionEditedRef.current ? f.sessionName : sessionNameForBranch(branch),
+            }));
+          }}
+        />
+        <datalist id={`worktree-branches-${node.key}`}>
+          {options.map((b) => (
+            <option key={b.name} value={b.name} />
+          ))}
+        </datalist>
+        {form.mode === "new" && (
+          <input
+            className="worktree-form-input"
+            list={`worktree-bases-${node.key}`}
+            placeholder="Base (defaults to current branch)"
+            value={form.base}
+            onChange={(e) => setForm((f) => ({ ...f, base: e.target.value }))}
+          />
+        )}
+        <datalist id={`worktree-bases-${node.key}`}>
+          {formBranches.map((b) => (
+            <option key={b.name} value={b.name} />
+          ))}
+        </datalist>
+        <input
+          className="worktree-form-input"
+          placeholder="Session name"
+          value={form.sessionName}
+          onChange={(e) => {
+            sessionEditedRef.current = true;
+            setForm((f) => ({ ...f, sessionName: e.target.value }));
+          }}
+        />
+        {worktreeRunCommands.length > 0 && (
+          <select
+            className="worktree-form-input"
+            aria-label="Run command"
+            value={form.run}
+            onChange={(e) => setForm((f) => ({ ...f, run: e.target.value }))}
+          >
+            <option value="">Run: nothing</option>
+            {worktreeRunCommands.map((preset, i) => (
+              <option key={preset.name + i} value={i}>
+                Run: {preset.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <div className="worktree-form-buttons">
+          <button type="submit" disabled={!form.branch.trim() || formBusy}>
+            Create
+          </button>
+          <button type="button" onClick={closeCreateForm}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
+  };
+
+  const renderWorktreeRow = (row: Extract<Row, { kind: "worktree" }>) => {
+    const node = row.node;
+    const wt = node.worktree;
+    const rowProps = nav.getRowProps(row.id);
+    const isActive = activeSessionName !== null && node.sessions.some((s) => s.name === activeSessionName);
+    const anyAttached = node.sessions.some((s) => s.attached > 0);
+    const tmuxNames = node.sessions.map((s) => s.name).join(", ");
+    return (
+      <div className={`session-row${isActive ? " active" : ""}`}>
+        <button
+          className={`session-item worktree-item${isActive ? " active" : ""}`}
+          title={`${wt.path}${tmuxNames ? ` (tmux: ${tmuxNames})` : " (no session)"}`}
+          onClick={() => onOpenWorktree(node)}
+          {...menuBindings(row)}
+          tabIndex={rowProps.tabIndex}
+          ref={rowProps.ref}
+          onFocus={rowProps.onFocus}
+        >
+          {node.sessions.length > 0 ? chevron(row.id) : <span className="chevron chevron-empty" />}
+          <Icon name={wt.main ? "repo" : "git-branch"} className="worktree-icon" />
+          {node.pinned && <Icon name="pinned" className="pin-indicator" />}
+          <span className={`session-dot${anyAttached ? " attached" : ""}`} />
+          <span className="session-name">{node.label}</span>
+          {wt.dirty && <span className="worktree-dirty" title="Uncommitted changes" />}
+          {wt.prunable && <span className="worktree-tag worktree-tag-warn">missing</span>}
+        </button>
+        <button
+          className="row-add-button"
+          title="New Terminal"
+          tabIndex={-1}
+          onClick={() => onNewTerminalInWorktree(node)}
+        >
+          <Icon name="add" />
+        </button>
+      </div>
+    );
+  };
 
   const renderWindowRow = (row: Extract<Row, { kind: "window" }>) => {
     const { session: s, window: w } = row;
@@ -296,22 +739,14 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
         ? activeWindow.sessionName === s.name && activeWindow.index === w.index
         : w.active;
     const rowProps = nav.getRowProps(row.id);
+    const ctx = { sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command };
     return (
       <div
-        key={row.id}
         role="button"
         className={`window-item${isActive ? " active-window" : ""}`}
-        title={`${rowLabel(s)} · ${w.name} — ${w.cwd}${w.activity ? " (new output)" : ""} (tmux: ${s.name}:${w.index})`}
+        title={`${s.name} · ${w.name} — ${w.cwd}${w.activity ? " (new output)" : ""} (tmux: ${s.name}:${w.index})`}
         onClick={() => onOpenWindow(s.name, w.index)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          nav.focusRow(row.id);
-          onShowMenu(e.clientX, e.clientY, windowMenuItems(s.name, w));
-        }}
-        {...bindMenu((x, y) => {
-          nav.focusRow(row.id);
-          onShowMenu(x, y, windowMenuItems(s.name, w));
-        })}
+        {...menuBindings(row)}
         tabIndex={rowProps.tabIndex}
         ref={rowProps.ref}
         onFocus={rowProps.onFocus}
@@ -319,29 +754,22 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
         {w.activity && <span className="activity-dot" />}
         <span className="window-label">{w.name}</span>
         <span className="item-cwd">{rootOf(w.cwd)}</span>
-        {getWindowDecorations({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command }).map(
-          ({ provider, decoration }) => (
-            <button
-              key={provider.id}
-              className={`window-decoration-badge${decoration.className ? ` ${decoration.className}` : ""}`}
-              title={decoration.tooltip ?? decoration.badge}
-              tabIndex={-1}
-              onClick={(e) => {
-                e.stopPropagation();
-                provider.onClick?.(
-                  (e.currentTarget as HTMLElement).getBoundingClientRect(),
-                  { sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command },
-                );
-              }}
-            >
-              {decoration.badge}
-            </button>
-          ),
-        )}
+        {getWindowDecorations(ctx).map(({ provider, decoration }) => (
+          <button
+            key={provider.id}
+            className={`window-decoration-badge${decoration.className ? ` ${decoration.className}` : ""}`}
+            title={decoration.tooltip ?? decoration.badge}
+            tabIndex={-1}
+            onClick={(e) => {
+              e.stopPropagation();
+              provider.onClick?.((e.currentTarget as HTMLElement).getBoundingClientRect(), ctx);
+            }}
+          >
+            {decoration.badge}
+          </button>
+        ))}
         {extensionWindowActions
-          .filter((action) =>
-            action.isVisible({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command }),
-          )
+          .filter((action) => action.isVisible(ctx))
           .map((action) => (
             <button
               key={action.id}
@@ -350,7 +778,7 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
               tabIndex={-1}
               onClick={(e) => {
                 e.stopPropagation();
-                action.onClick({ sessionName: s.name, windowIndex: w.index, cwd: w.cwd, command: w.command });
+                action.onClick(ctx);
               }}
             >
               <Icon name={action.icon} />
@@ -374,102 +802,22 @@ const ProjectList = forwardRef<ProjectListHandle, Props>(function ProjectList(
   return (
     <div className="session-list" ref={containerRef} onKeyDown={handleKeyDown}>
       <ul className="session-list-ul">
-        {listRows.map((row) => {
-          if (row.dead) {
-            const id = `dead:${row.cwd}`;
-            const rowProps = nav.getRowProps(id);
-            return (
-              <li key={id}>
-                <div className="session-row">
-                  <button
-                    className="session-item dead-session-item"
-                    title={`${row.cwd} (not running — click to open)`}
-                    onClick={() => onOpenProject(row.cwd)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      nav.focusRow(id);
-                      onShowMenu(e.clientX, e.clientY, deadProjectMenuItems(row.cwd));
-                    }}
-                    {...bindMenu((x, y) => {
-                      nav.focusRow(id);
-                      onShowMenu(x, y, deadProjectMenuItems(row.cwd));
-                    })}
-                    tabIndex={rowProps.tabIndex}
-                    ref={rowProps.ref}
-                    onFocus={rowProps.onFocus}
-                  >
-                    <Icon name="pinned" className="pin-indicator" />
-                    <span className="session-name">{projectName(row.cwd)}</span>
-                    <span className="item-cwd">{row.cwd}</span>
-                  </button>
-                  <button
-                    className="row-add-button"
-                    title="Open project"
-                    tabIndex={-1}
-                    onClick={() => onOpenProject(row.cwd)}
-                  >
-                    <Icon name="add" />
-                  </button>
-                </div>
-              </li>
-            );
-          }
-          const s = row.session;
-          const id = projectRowId(s);
-          const members = [s, ...row.extraSessions];
-          const isActiveProject =
-            activeSessionName !== null && members.some((m) => m.name === activeSessionName);
-          const anyAttached = members.some((m) => m.attached > 0);
-          const tooltip = `${s.path || s.name} (tmux: ${members.map((m) => m.name).join(", ")})`;
-          const rowProps = nav.getRowProps(id);
-          return (
-            <li key={id}>
-              <div className={`session-row${isActiveProject ? " active" : ""}`}>
-                <button
-                  className={`session-item${isActiveProject ? " active" : ""}`}
-                  title={tooltip}
-                  onClick={() => {
-                    if (s.path) onOpenProject(s.path);
-                    else onOpenAllWindows(s.name);
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    nav.focusRow(id);
-                    onShowMenu(e.clientX, e.clientY, sessionMenuItems(s.name));
-                  }}
-                  {...bindMenu((x, y) => {
-                    nav.focusRow(id);
-                    onShowMenu(x, y, sessionMenuItems(s.name));
-                  })}
-                  tabIndex={rowProps.tabIndex}
-                  ref={rowProps.ref}
-                  onFocus={rowProps.onFocus}
-                >
-                  {chevron(id)}
-                  <span className={`session-dot${anyAttached ? " attached" : ""}`} />
-                  {row.pinned && <Icon name="pinned" className="pin-indicator" />}
-                  <span className="session-name">{rowLabel(s)}</span>
-                  {s.path && <span className="item-cwd">{s.path}</span>}
-                </button>
-                <button
-                  className="row-add-button"
-                  title="New Terminal"
-                  tabIndex={-1}
-                  onClick={() => onNewWindowInSession(s.name)}
-                >
-                  <Icon name="add" />
-                </button>
-              </div>
-              {!collapsedProjects.has(id) &&
-                members.flatMap((m) =>
-                  m.windows.map((w) =>
-                    renderWindowRow({ kind: "window", id: windowRowId(m.name, w.index), session: m, window: w, parentId: id }),
-                  ),
-                )}
-            </li>
-          );
-        })}
-        {listRows.length === 0 && <li className="session-empty">No projects open</li>}
+        {rows.map((row) => (
+          <li
+            key={row.id}
+            data-block={blockPos.get(row.id)}
+            style={{ "--row-depth": row.depth } as React.CSSProperties}
+          >
+            {row.kind === "project"
+              ? renderProjectRow(row)
+              : row.kind === "form"
+                ? renderCreateForm(row)
+                : row.kind === "worktree"
+                  ? renderWorktreeRow(row)
+                  : renderWindowRow(row)}
+          </li>
+        ))}
+        {rows.length === 0 && <li className="session-empty">No projects open</li>}
       </ul>
     </div>
   );

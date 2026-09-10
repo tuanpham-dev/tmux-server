@@ -55,11 +55,29 @@ export interface AppSettings {
   // colors on the blue selection background and becomes unreadable.
   // ghostty engine: shim (its extension's renderer shims). xterm engine: native option.
   minimumContrastRatio: number;
-  // Join soft-wrapped rows into one logical line when copying. tmux redraws
-  // destroy the engines' wrap flags, so without this a wrapped line copies
-  // with a "\n" at every wrap column (selectionText.ts). Off restores the
-  // engines' raw per-row selection text.
-  copyJoinWrappedLines: boolean;
+  // What a copied selection looks like (selectionText.ts).
+  //   "raw": the engines' own per-row text, newline at every wrap column.
+  //   "joinWrapped" (default): joins rows the TERMINAL wrapped — tmux
+  //     redraws destroy the engines' wrap flags, so without this a wrapped
+  //     line copies with a "\n" at every wrap column. Lossless: newlines the
+  //     program itself emitted are preserved, so code and lists survive.
+  //   "paragraph": additionally joins the line breaks a PROGRAM made while
+  //     word-wrapping its own output (unwrapParagraphs). Lossy — a code
+  //     block collapses to one line — which is why it isn't the default;
+  //     prefer the per-copy "Copy as Paragraph" action.
+  copySelection: "raw" | "joinWrapped" | "paragraph";
+  // What a plain (unshifted) right-click in a terminal does.
+  //   "menu" (default): opens the terminal context menu; Shift+right-click
+  //     is forwarded to a program that has mouse reporting on (vim, htop).
+  //   "forward": the reverse — a mouse-aware program gets the plain click,
+  //     Shift+right-click opens the menu. With no mouse reporting active
+  //     there is nothing to forward to, so the menu opens either way.
+  //   "paste": pastes the clipboard (Windows Terminal habit), except over a
+  //     link or with text selected, where the menu is more useful.
+  rightClickBehavior: "menu" | "forward" | "paste";
+  // The bottom status bar (RAM, terminals, listening ports). Hidden on
+  // touch devices regardless — a phone has no room for it.
+  showStatusBar: boolean;
   uploadConflict: "rename" | "overwrite" | "ask";
   // Largest single file accepted by an upload, in MB. 0 means no limit —
   // same 0-disables convention as notifyCommandMinDuration. Enforced client
@@ -81,6 +99,16 @@ export interface AppSettings {
   // instead of round-tripping through the PTY per keystroke. "" disables
   // it entirely. Desktop and non-matching panes are unaffected regardless.
   localEchoWhen: string;
+  // Where the PROJECTS tree creates new worktrees. {repo} is the repository
+  // root, {branch} the branch name with path separators replaced by "-". A
+  // relative path resolves against the repository root. When the location is
+  // inside the repository, its top folder is added to .git/info/exclude so it
+  // stays out of git status (your committed .gitignore is never modified).
+  worktreeLocation: string;
+  // Commands the create-worktree form offers to run in the new session, as a
+  // JSON array of {name, command}. The command is typed into the session and
+  // submitted right after it's created. "[]" disables the picker.
+  worktreeRunCommands: string;
   // Gates the "Kill Session"/"Kill Window" confirm dialogs. Unsaved-changes
   // confirms (dirty CSV tabs) are never gated — that's data loss, not a
   // preference.
@@ -151,11 +179,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   lineHeight: 1,
   letterSpacing: 0,
   minimumContrastRatio: 4.5,
-  copyJoinWrappedLines: true,
+  copySelection: "joinWrapped",
+  rightClickBehavior: "menu",
+  showStatusBar: true,
   uploadConflict: "rename",
   uploadMaxSizeMb: 0,
   pasteDropUploadDir: "/tmp",
   localEchoWhen: "claude",
+  worktreeLocation: "{repo}/.worktrees/{branch}",
+  worktreeRunCommands: JSON.stringify([
+    { name: "Claude Code", command: "claude" },
+    { name: "Claude Code (skip permissions)", command: "claude --dangerously-skip-permissions" },
+  ]),
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",
@@ -208,6 +243,13 @@ export function migrateSettings(settings: AppSettings): AppSettings {
   // newSessionCwd → defaultProjectsFolder rename: a stored blob written by a
   // pre-rename build carries the old key (invisible to the type, present at
   // runtime); adopt it whenever the new key is still at its "" default.
+  // copyJoinWrappedLines (boolean) → copySelection (three modes). Only a
+  // stored `false` carried information — it meant "don't join at all", i.e.
+  // the new "raw" mode; everything else lands on the "joinWrapped" default
+  // this migration's caller already merged in.
+  const legacyCopy = next as AppSettings & { copyJoinWrappedLines?: boolean };
+  if (legacyCopy.copyJoinWrappedLines === false) next.copySelection = "raw";
+  delete legacyCopy.copyJoinWrappedLines;
   const legacy = next as AppSettings & { newSessionCwd?: string };
   if (typeof legacy.newSessionCwd === "string" && legacy.newSessionCwd !== "" && next.defaultProjectsFolder === "") {
     next.defaultProjectsFolder = legacy.newSessionCwd;
@@ -373,6 +415,31 @@ export function projectsFromPins(parsed: unknown): Project[] {
   );
 }
 
+// One-time adoption of the worktrees extension's configuration, from back
+// when worktrees lived in an extension rather than in the PROJECTS tree (see
+// plans/worktrees-into-projects.md). A value the user actually customised is
+// carried over; an app setting they have already changed is never
+// overwritten. Reads both the namespaced and bare extension ids, since the
+// host namespaces panel/config ids by publisher.
+export function adoptWorktreeExtensionSettings(
+  settings: AppSettings,
+  extensionSettings: ExtensionSettingsValues | undefined,
+): AppSettings {
+  if (!extensionSettings) return settings;
+  const ext = extensionSettings["tmux-server.worktrees"] ?? extensionSettings["worktrees"];
+  if (!ext) return settings;
+  const next = { ...settings };
+  const location = ext["worktrees.location"];
+  if (typeof location === "string" && location.trim() && next.worktreeLocation === DEFAULT_SETTINGS.worktreeLocation) {
+    next.worktreeLocation = location.trim();
+  }
+  const agents = ext["worktrees.agents"];
+  if (typeof agents === "string" && agents.trim() && next.worktreeRunCommands === DEFAULT_SETTINGS.worktreeRunCommands) {
+    next.worktreeRunCommands = agents.trim();
+  }
+  return next;
+}
+
 export function loadProjects(): Project[] {
   try {
     const raw = localStorage.getItem(PROJECTS_KEY);
@@ -442,23 +509,54 @@ export function saveCommandUsage(usage: CommandUsage): void {
   localStorage.setItem(COMMAND_USAGE_KEY, JSON.stringify(usage));
 }
 
-// Sidebar activity-bar tab order (Sidebar.tsx's SidebarTabStrip) — a plain
-// id array, empty until the user actually drags a tab (see Sidebar.tsx's
-// reorderTabs). Empty means "no cross-device preference yet", in which case
-// Sidebar's own local reconciliation (including its bundled default order)
-// stays authoritative rather than this overwriting it with nothing. Lives
-// outside AppSettings, like projects above, so a settings reset can't
-// wipe a drag the user made.
-export function loadSidebarTabsOrder(): string[] {
+// The sidebars' arrangement (lib/sidebarLayout.ts): which tabs sit on which
+// side, and any section the user moved into another tab. Active tabs are
+// deliberately NOT part of this — which view you were last looking at is
+// per-device. Empty means "no cross-device preference yet", in which case
+// useSidebarLayout's own local state (including its bundled defaults) stays
+// authoritative rather than this overwriting it with nothing. Lives outside
+// AppSettings, like projects above, so a settings reset can't wipe a drag
+// the user made.
+export interface StoredSidebarLayout {
+  left: string[];
+  right: string[];
+  panelHome: Record<string, string>;
+}
+
+const SIDEBAR_LAYOUT_KEY = "sidebarLayoutSync";
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((s): s is string => typeof s === "string" && s !== "") : [];
+}
+
+export function parseSidebarLayout(value: unknown): StoredSidebarLayout | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const left = asStringArray(v.left);
+  const right = asStringArray(v.right);
+  if (left.length === 0 && right.length === 0) return null;
+  const panelHome: Record<string, string> = {};
+  if (v.panelHome && typeof v.panelHome === "object") {
+    for (const [k, tab] of Object.entries(v.panelHome as Record<string, unknown>)) {
+      if (typeof tab === "string") panelHome[k] = tab;
+    }
+  }
+  return { left, right, panelHome };
+}
+
+export function loadSidebarLayout(): StoredSidebarLayout | null {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(SIDEBAR_TABS_ORDER_KEY) ?? "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((s): s is string => typeof s === "string" && s.length > 0);
+    const stored = parseSidebarLayout(JSON.parse(localStorage.getItem(SIDEBAR_LAYOUT_KEY) ?? "null"));
+    if (stored) return stored;
+    // Pre-right-sidebar builds synced a bare tab order; read it once so a
+    // device that only ever knew that key still restores its arrangement.
+    const legacy = asStringArray(JSON.parse(localStorage.getItem(SIDEBAR_TABS_ORDER_KEY) ?? "[]"));
+    return legacy.length > 0 ? { left: legacy, right: [], panelHome: {} } : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
-export function saveSidebarTabsOrder(order: string[]): void {
-  localStorage.setItem(SIDEBAR_TABS_ORDER_KEY, JSON.stringify(order));
+export function saveSidebarLayout(layout: StoredSidebarLayout): void {
+  localStorage.setItem(SIDEBAR_LAYOUT_KEY, JSON.stringify(layout));
 }

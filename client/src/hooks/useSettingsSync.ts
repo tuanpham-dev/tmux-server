@@ -8,9 +8,10 @@ import {
   loadExtensionRegistries,
   loadExtensionSettings,
   loadKeybindingOverrides,
+  adoptWorktreeExtensionSettings,
   loadProjects,
   loadSettings,
-  loadSidebarTabsOrder,
+  loadSidebarLayout,
   migrateSettings,
   projectsFromPins,
   sanitizeProjects,
@@ -20,7 +21,9 @@ import {
   saveKeybindingOverrides,
   saveProjects,
   saveSettings,
-  saveSidebarTabsOrder,
+  saveSidebarLayout,
+  parseSidebarLayout,
+  type StoredSidebarLayout,
   type AppSettings,
   type CommandUsage,
   type ExtensionSettingsValues,
@@ -131,22 +134,20 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     saveExtensionRegistries(extensionRegistries);
   }, [extensionRegistries]);
 
-  // Sidebar tab order (Sidebar.tsx's activity-bar strip) — same
-  // localStorage-first + skip-initial-persist + server-doc flow as
-  // extensionRegistries above. Starts empty (see loadSidebarTabsOrder) and
-  // only ever gets set by Sidebar.tsx's own reorderTabs, i.e. an explicit
-  // user drag — Sidebar keeps building its own richer default order locally
-  // whenever this is empty, so a device that's never synced doesn't get that
-  // default overwritten by nothing.
-  const [sidebarTabsOrder, setSidebarTabsOrder] = useState<string[]>(loadSidebarTabsOrder);
-  const sidebarTabsOrderMounted = useRef(false);
+  // Sidebars' arrangement (which tabs on which side, plus any relocated
+  // section) — same localStorage-first + skip-initial-persist + server-doc
+  // flow as extensionRegistries above. Starts null (see loadSidebarLayout)
+  // and is only ever set by a deliberate drag or move, so a device that has
+  // never synced keeps its own defaults instead of being handed nothing.
+  const [sidebarLayout, setSidebarLayout] = useState<StoredSidebarLayout | null>(loadSidebarLayout);
+  const sidebarLayoutMounted = useRef(false);
   useEffect(() => {
-    if (!sidebarTabsOrderMounted.current) {
-      sidebarTabsOrderMounted.current = true;
+    if (!sidebarLayoutMounted.current) {
+      sidebarLayoutMounted.current = true;
       return;
     }
-    saveSidebarTabsOrder(sidebarTabsOrder);
-  }, [sidebarTabsOrder]);
+    if (sidebarLayout) saveSidebarLayout(sidebarLayout);
+  }, [sidebarLayout]);
 
   // Command palette usage stats (count/last per command id) — same
   // localStorage-first + skip-initial-persist + server-doc flow as
@@ -175,7 +176,14 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
       .then((doc) => {
         if (cancelled) return;
         if (doc.settings && typeof doc.settings === "object") {
-          setSettings(migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }));
+          // Worktree settings used to live in the worktrees extension; a
+          // value the user customised there is adopted here once.
+          setSettings(
+            adoptWorktreeExtensionSettings(
+              migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }),
+              doc.extensionSettings as ExtensionSettingsValues | undefined,
+            ),
+          );
         }
         if (doc.keybindings && typeof doc.keybindings === "object") {
           setKeybindingOverrides(migrateKeybindingOverrides(doc.keybindings));
@@ -198,13 +206,18 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
         if (Array.isArray(doc.extensionRegistries)) {
           setExtensionRegistries(doc.extensionRegistries.filter((s): s is string => typeof s === "string"));
         }
-        // Unlike the arrays above, an empty synced order is left alone
-        // (rather than applied) — it means "never dragged on any device",
-        // and Sidebar.tsx's own local default order should stay in charge
-        // rather than being wiped out by nothing (see loadSidebarTabsOrder).
-        if (Array.isArray(doc.sidebarTabsOrder) && doc.sidebarTabsOrder.length > 0) {
-          setSidebarTabsOrder(doc.sidebarTabsOrder.filter((s): s is string => typeof s === "string"));
-        }
+        // Unlike the arrays above, an absent/empty synced layout is left
+        // alone (rather than applied) — it means "never arranged on any
+        // device", and useSidebarLayout's own defaults should stay in charge
+        // rather than being wiped out by nothing (see loadSidebarLayout).
+        // A doc written by a pre-right-sidebar build carries only the old
+        // sidebarTabsOrder key; read that as a left-side-only layout.
+        const syncedLayout =
+          parseSidebarLayout(doc.sidebarLayout) ??
+          (Array.isArray(doc.sidebarTabsOrder) && doc.sidebarTabsOrder.length > 0
+            ? parseSidebarLayout({ left: doc.sidebarTabsOrder, right: [], panelHome: {} })
+            : null);
+        if (syncedLayout) setSidebarLayout(syncedLayout);
         if (doc.commandUsage && typeof doc.commandUsage === "object" && !Array.isArray(doc.commandUsage)) {
           const usage: CommandUsage = {};
           for (const [id, entry] of Object.entries(doc.commandUsage as Record<string, unknown>)) {
@@ -252,7 +265,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           projects,
           commandUsage,
           extensionRegistries,
-          sidebarTabsOrder,
+          sidebarLayout,
         }))
         .catch(() => ({
           settings,
@@ -261,7 +274,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           projects,
           commandUsage,
           extensionRegistries,
-          sidebarTabsOrder,
+          sidebarLayout,
         }))
         .then((doc) => api.putSettingsDoc(doc))
         .catch(() => {});
@@ -274,7 +287,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     projects,
     commandUsage,
     extensionRegistries,
-    sidebarTabsOrder,
+    sidebarLayout,
   ]);
 
   return {
@@ -295,7 +308,7 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
     setCommandUsage,
     extensionRegistries,
     setExtensionRegistries,
-    sidebarTabsOrder,
-    setSidebarTabsOrder,
+    sidebarLayout,
+    setSidebarLayout,
   };
 }

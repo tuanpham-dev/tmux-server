@@ -46,6 +46,16 @@ function indexToXtermPosition(
   return { y: startLine + Math.floor(idx / cols) + 1, x: (idx % cols) + 1 };
 }
 
+// A provided link plus what it actually points at — the engine forwards
+// these fields to the host as a HoveredLink so a context menu can label and
+// copy the real target (already resolved, for a path) rather than the
+// visible cell text.
+export interface XtermDetectedLink extends XtermILink {
+  kind: "url" | "path";
+  target: string;
+  line?: number;
+}
+
 export interface XtermTerminalLinksHandlers {
   resolvePaths: (paths: string[]) => Promise<(string | null)[]>;
   onOpenUrl: (url: string) => void;
@@ -54,7 +64,7 @@ export interface XtermTerminalLinksHandlers {
   // Fired with the ILink under the pointer (or null on leave) — same shape
   // as ghostty-web's onHoverChange, so the caller's tooltip can read
   // link.text and its own activate(e, link.text) either way.
-  onHoverChange: (link: XtermILink | null) => void;
+  onHoverChange: (link: XtermDetectedLink | null) => void;
 }
 
 export function buildXtermLinkProvider(
@@ -92,7 +102,7 @@ export function buildXtermLinkProvider(
 
       resolve
         .then((resolved) => {
-          const links: XtermILink[] = [];
+          const links: XtermDetectedLink[] = [];
           let pathIdx = 0;
           for (const c of candidates) {
             let openTarget: string | undefined = c.target;
@@ -108,9 +118,12 @@ export function buildXtermLinkProvider(
             };
             const kind = c.kind;
             const target = openTarget;
-            const link: XtermILink = {
+            const link: XtermDetectedLink = {
               range,
               text: c.text,
+              kind,
+              target,
+              line,
               activate(event) {
                 if (!isOpenGesture(event)) return;
                 if (kind === "url") {
