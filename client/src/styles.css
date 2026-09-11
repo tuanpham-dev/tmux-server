@@ -1169,6 +1169,17 @@ body.resizing-row {
   border-bottom-right-radius: 5px;
 }
 
+/* ---- Air between projects ----
+   Every row of a project — its worktrees and terminals — is a sibling <li>
+   of the next project's caption, so without this the tree reads as one
+   undifferentiated column. The gap goes above each project row but the
+   first, which separates the groups without leaving a stray margin at the
+   top of the list. */
+
+.session-list-ul > li[data-kind="project"]:not(:first-child) {
+  margin-top: 10px;
+}
+
 .session-dot {
   width: 7px;
   height: 7px;

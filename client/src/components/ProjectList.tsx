@@ -901,6 +901,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
           <li
             key={row.id}
             data-row-id={row.id}
+            data-kind={row.kind}
             data-block={blockPos.get(row.id)}
             style={{ "--row-depth": row.depth } as React.CSSProperties}
           >
