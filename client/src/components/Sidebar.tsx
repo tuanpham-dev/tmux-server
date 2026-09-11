@@ -138,6 +138,14 @@ interface Props {
   // show and flip it from either side.
   rightSidebarVisible: boolean;
   onToggleRightSidebar: () => void;
+  // Phone/tablet (see App's own matchMedia): the footer drops its Manage
+  // button there, since the status bar carries that menu on phones.
+  mobilePointer: boolean;
+  // Tab back/forward — the footer's two arrows (see useNavigationHistory).
+  canGoBack: boolean;
+  canGoForward: boolean;
+  onGoBack: () => void;
+  onGoForward: () => void;
   // Reorder within this side; `index` is an index into this side's visible tabs.
   onReorderTab: (tabId: string, side: SidebarSide, index: number) => void;
   // Move a tab to a side (possibly the same one) at a visible index.
@@ -218,6 +226,11 @@ export default function Sidebar({
   onSelectTab,
   rightSidebarVisible,
   onToggleRightSidebar,
+  mobilePointer,
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
   onReorderTab,
   onMoveTab,
   onMovePanel,
@@ -822,53 +835,6 @@ export default function Sidebar({
           drag={tabDrag}
           onDragChange={onTabDragChange}
         />
-        {/* Layout controls live in the LEFT header only: one home for them,
-            rather than a duplicate set in each sidebar. Order mirrors the
-            layout itself — settings, then bottom panel, left, right. */}
-        {side === "left" && (
-          <>
-            <button
-              className="icon-button"
-              title="Manage"
-              aria-haspopup="menu"
-              data-menu-trigger="true"
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                onShowMenu(rect.left, rect.bottom + 4, manageMenuItems());
-              }}
-            >
-              <Icon name="gear" />
-            </button>
-            <button
-              className={`icon-button${panelVisible ? " active" : ""}`}
-              title={`Toggle bottom panel${shortcutSuffix("panel.toggle")}`}
-              aria-pressed={panelVisible}
-              onClick={onTogglePanel}
-            >
-              {/* Filled while open, outline while closed — the same state
-                  convention VS Code's own layout toggles use. */}
-              <Icon name={panelVisible ? "layout-panel" : "layout-panel-off"} />
-            </button>
-            <button
-              className="icon-button active"
-              title={`Toggle left sidebar${shortcutSuffix("sidebar.toggle")}`}
-              aria-pressed={true}
-              onClick={onCollapse}
-            >
-              {/* Always filled: this only renders while the left sidebar is
-                  open (its closed-state affordance is App's 4px reopen strip). */}
-              <Icon name="layout-sidebar-left" />
-            </button>
-            <button
-              className={`icon-button${rightSidebarVisible ? " active" : ""}`}
-              title={`Toggle right sidebar${shortcutSuffix("sidebar.toggleRight")}`}
-              aria-pressed={rightSidebarVisible}
-              onClick={onToggleRightSidebar}
-            >
-              <Icon name={rightSidebarVisible ? "layout-sidebar-right" : "layout-sidebar-right-off"} />
-            </button>
-          </>
-        )}
       </div>
       {activeTabId === null ? (
         <div className="sidebar-empty">
@@ -904,6 +870,85 @@ export default function Sidebar({
           )}
         </div>
       )}
+      {/* Layout controls and navigation live in the LEFT sidebar's footer
+          only: one home for them, rather than a duplicate set in each
+          sidebar. They sat in the header before, competing for width with a
+          tab strip that scrolls once an extension or two contributes a tab. */}
+      {side === "left" && (
+        <footer className="sidebar-footer">
+          <div className="sidebar-footer-group">
+            {/* Settings is the one control the status bar also carries (its
+                phone-only Manage item), so the footer drops it there rather
+                than offering the same menu twice within a thumb's reach. */}
+            {!mobilePointer && (
+              <button
+                className="icon-button"
+                title="Manage"
+                aria-haspopup="menu"
+                data-menu-trigger="true"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  // Anchored at the button's TOP edge: showMenu clamps into
+                  // the viewport, so from down here the menu opens upward.
+                  onShowMenu(rect.left, rect.top, manageMenuItems());
+                }}
+              >
+                <Icon name="gear" />
+              </button>
+            )}
+            <button
+              className={`icon-button${panelVisible ? " active" : ""}`}
+              title={`Toggle bottom panel${shortcutSuffix("panel.toggle")}`}
+              aria-pressed={panelVisible}
+              onClick={onTogglePanel}
+            >
+              {/* Filled while open, outline while closed — the same state
+                  convention VS Code's own layout toggles use. */}
+              <Icon name={panelVisible ? "layout-panel" : "layout-panel-off"} />
+            </button>
+            <button
+              className="icon-button active"
+              title={`Toggle left sidebar${shortcutSuffix("sidebar.toggle")}`}
+              aria-pressed={true}
+              onClick={onCollapse}
+            >
+              {/* Always filled: this only renders while the left sidebar is
+                  open (its closed-state affordance is App's 4px reopen strip). */}
+              <Icon name="layout-sidebar-left" />
+            </button>
+            <button
+              className={`icon-button${rightSidebarVisible ? " active" : ""}`}
+              title={`Toggle right sidebar${shortcutSuffix("sidebar.toggleRight")}`}
+              aria-pressed={rightSidebarVisible}
+              onClick={onToggleRightSidebar}
+            >
+              <Icon name={rightSidebarVisible ? "layout-sidebar-right" : "layout-sidebar-right-off"} />
+            </button>
+          </div>
+          {/* Back/forward over the tabs you've been in — see
+              useNavigationHistory. Disabled rather than hidden when there's
+              nowhere to go, so the pair never shifts under the pointer. */}
+          <div className="sidebar-footer-group">
+            <button
+              className="icon-button"
+              title="Go Back"
+              disabled={!canGoBack}
+              onClick={onGoBack}
+            >
+              <Icon name="arrow-left" />
+            </button>
+            <button
+              className="icon-button"
+              title="Go Forward"
+              disabled={!canGoForward}
+              onClick={onGoForward}
+            >
+              <Icon name="arrow-right" />
+            </button>
+          </div>
+        </footer>
+      )}
     </aside>
   );
 }
+

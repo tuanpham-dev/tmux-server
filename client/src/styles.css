@@ -543,6 +543,25 @@ body.sidebar-tab-dragging .sidebar-drop-edge:hover {
   border-bottom: 1px solid var(--border);
 }
 
+/* The layout toggles and the back/forward pair, pinned under the panels:
+   one group left, one right. Out of the topbar so the tab strip keeps the
+   whole width it needs to scroll through contributed tabs. */
+.sidebar-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-footer-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .sidebar-tabs {
   display: flex;
   align-items: center;

@@ -48,6 +48,7 @@ import { useSessionActions } from "./hooks/useSessionActions";
 import { useSessions } from "./hooks/useSessions";
 import { useWorktrees } from "./hooks/useWorktrees";
 import { useSettingsSync } from "./hooks/useSettingsSync";
+import { useNavigationHistory } from "./hooks/useNavigationHistory";
 import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useGitRootDir } from "./hooks/useGitRootDir";
@@ -739,6 +740,15 @@ export default function App() {
     extFileViewers,
     extensions,
     registryCatalog,
+  );
+
+  // Back/forward over the tabs you've been in — the sidebar footer's two
+  // arrows. setActiveTabId resolves a tab's editor group from the tab
+  // itself, so navigating also brings the right split pane forward.
+  const { canGoBack, canGoForward, goBack, goForward } = useNavigationHistory(
+    activeTabId,
+    setActiveTabId,
+    tabsRef,
   );
 
   // FILES-tree root mode (the panel header's switch): "project" roots the
@@ -1920,6 +1930,11 @@ export default function App() {
             tabDrag={sidebarTabDrag}
             onTabDragChange={setSidebarTabDrag}
             onCollapse={() => setSidebarSideVisible("left", false)}
+            mobilePointer={mobilePointer}
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            onGoBack={goBack}
+            onGoForward={goForward}
     projectListProps={sidebarProjectListProps}
     onOpenLazygit={openLazygit}
     onShowMenu={showMenu}
@@ -2214,6 +2229,11 @@ export default function App() {
             tabDrag={sidebarTabDrag}
             onTabDragChange={setSidebarTabDrag}
             onCollapse={() => setSidebarSideVisible("right", false)}
+            mobilePointer={mobilePointer}
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            onGoBack={goBack}
+            onGoForward={goForward}
     projectListProps={sidebarProjectListProps}
     onOpenLazygit={openLazygit}
     onShowMenu={showMenu}
