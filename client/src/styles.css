@@ -3160,11 +3160,31 @@ body.scrollbar-dragging {
   margin-top: 2px;
 }
 
+/* A hint captions the control ABOVE it, so the pair is kept tight and the
+   separating space goes after the hint instead. Previously the row's own
+   12px sat between a field and its hint while nothing separated that hint
+   from the next field, so every hint read as the caption of the field below
+   it — see the Terminal section, where the right-click explanation butted
+   straight up against "When copying a selection". */
+.settings-row:has(+ .settings-hint) {
+  margin-bottom: 0;
+}
+
 .settings-hint {
   display: block;
   font-size: 11px;
   color: var(--fg-inactive);
+  margin-top: 3px;
+  margin-bottom: 16px;
+}
+
+/* A hint nested INSIDE a row (AiSection, BehaviorSection) is one of that
+   row's own stacked children, already spaced by its 4px gap — the pairing
+   above is about a hint that FOLLOWS a row as its sibling. Left exactly as
+   it was before that rule existed. */
+.settings-row > .settings-hint {
   margin-top: 2px;
+  margin-bottom: 0;
 }
 
 /* A hint that's actually a problem — a key that failed to save, a CLI
