@@ -5,7 +5,7 @@ import Icon from "../Icon";
 import AiModelField from "./AiModelField";
 import { useSettingsContext } from "./context";
 
-// Settings → AI. One place answers "which AI do I have?", for the app and
+// Settings → AI Providers. One place answers "which AI do I have?", for the app and
 // every extension that asks for one (plans/core-ai-providers.md) — the
 // commit-message button in SOURCE CONTROL, AI Command Search, and the prompt
 // editor's Refine all run through what is configured here.

@@ -24,7 +24,7 @@ function ExtensionProperties({
   overrides: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
 }) {
-  // For "ai-profile"/"ai-model" properties — the same list Settings → AI
+  // For "ai-profile"/"ai-model" properties — the same list Settings → AI Providers
   // edits.
   const { settings } = useSettingsContext();
   const aiProfiles = settings.aiProfiles;
@@ -85,7 +85,7 @@ function ExtensionProperties({
             // configured on whichever profile this extension is pointed at
             // (its own "ai-profile" property, else the app default), so the
             // placeholder answers "and what do I get if I leave this empty?"
-            // without anyone opening Settings → AI to look.
+            // without anyone opening Settings → AI Providers to look.
             if (prop.format === "ai-model") {
               // Which profile would answer if this box stays empty — the
               // extension's own pick, else the app default. Mirrors ai.ts's
@@ -121,7 +121,7 @@ function ExtensionProperties({
             }
 
             // An AI picker rather than a text box for the profile id: the
-            // ids come from Settings → AI, and nobody should have to type
+            // ids come from Settings → AI Providers, and nobody should have to type
             // one. Empty means "whatever the default profile is", which is
             // also what ctx.ai.run does with an empty profileId.
             if (prop.format === "ai-profile") {
@@ -143,7 +143,7 @@ function ExtensionProperties({
                         </option>
                       ))}
                   </select>
-                  <div className="settings-hint">Configure the list in Settings → AI.</div>
+                  <div className="settings-hint">Configure the list in Settings → AI Providers.</div>
                 </label>
               );
             }

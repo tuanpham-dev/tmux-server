@@ -123,7 +123,7 @@ export function getAiModels(profileId: string): Promise<{ models: AiModelOption[
   return request(`/api/ai-models?profileId=${encodeURIComponent(profileId)}`);
 }
 
-// provider id → whether that CLI is on the server's PATH. Settings → AI
+// provider id → whether that CLI is on the server's PATH. Settings → AI Providers
 // greys out the ones that aren't, so a provider that could only fail isn't
 // offered as if it would work.
 export function getAiCliStatus(): Promise<Record<string, boolean>> {
@@ -131,7 +131,7 @@ export function getAiCliStatus(): Promise<Record<string, boolean>> {
 }
 
 // An empty `key` clears the stored one. `profileId` is an AI profile's id
-// (Settings → AI); the two legacy provider names still work server-side.
+// (Settings → AI Providers); the two legacy provider names still work server-side.
 export function setAiKey(profileId: string, key: string): Promise<void> {
   return request("/api/ai-key", {
     method: "PUT",

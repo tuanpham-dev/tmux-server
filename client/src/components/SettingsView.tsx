@@ -38,7 +38,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "editor", label: "Editor" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
-  { id: "ai", label: "AI" },
+  { id: "ai", label: "AI Providers" },
 ];
 
 export default function SettingsView({

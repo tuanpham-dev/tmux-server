@@ -4122,7 +4122,7 @@ body.scrollbar-dragging {
   font-size: 14px;
 }
 
-/* ---- Settings → AI: the configured-AI list ---- */
+/* ---- Settings → AI Providers: the configured-AI list ---- */
 
 .ai-profile-list {
   display: flex;

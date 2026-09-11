@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getAiModels, type AiModelOption } from "../../api";
 
 // A model name, with the endpoint's own list behind it. Used twice: by the
-// profile editor in Settings → AI, and by an extension's `"ai-model"`
+// profile editor in Settings → AI Providers, and by an extension's `"ai-model"`
 // property, which picks a model for that one feature (see
 // ExtensionConfigSection). Both want the same three things — a text box, a
 // way to pull the list, and an honest fallback hint — so the fetching lives

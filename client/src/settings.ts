@@ -144,7 +144,7 @@ export interface AppSettings {
   // The aiProvider/aiModel/aiBinaryPath/aiCustomCommand/aiBaseUrl keys below
   // predate this list. They are still the server's fallback for a document
   // with no profiles (see ai.ts's legacyProfile), which is what a user who
-  // has never opened Settings → AI since upgrading has; the AI section seeds
+  // has never opened Settings → AI Providers since upgrading has; the AI section seeds
   // the list from them on its first render and then leaves them alone.
   aiProfiles: AiProfile[];
   // Which profile answers a caller that doesn't name one. Empty (or naming a
