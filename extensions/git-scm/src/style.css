@@ -1231,3 +1231,75 @@
   color: var(--badge-fg);
   font-size: 11px;
 }
+
+/* ---- STASH pane ---- */
+
+.git-stash-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.git-stash-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  /* 28px, not 26: 3px of padding either side plus a 22px icon-button is
+     exactly 28, so revealing the actions on hover must not grow the row and
+     nudge every row below it down. Same reason .git-row above uses 28. */
+  min-height: 28px;
+  box-sizing: border-box;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.git-stash-row:hover {
+  background: var(--list-hover-bg);
+}
+
+.git-stash-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One slot for both, so hovering a row can't move anything: the timestamp
+   stays in the flow and keeps the width (it only goes invisible), and the
+   actions are laid over it. min-width covers a very short timestamp ("now"),
+   which would otherwise be narrower than the three 22px buttons. */
+.git-stash-trailer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  min-width: 66px;
+}
+
+.git-stash-time {
+  color: var(--fg-inactive);
+  font-size: 11px;
+}
+
+/* Row actions appear on hover (or keyboard focus), like the change rows' —
+   the timestamp gives way to them rather than both crowding the row. */
+.git-stash-actions {
+  position: absolute;
+  right: 0;
+  display: none;
+  align-items: center;
+}
+
+.git-stash-row:hover .git-stash-actions,
+.git-stash-row:focus-within .git-stash-actions {
+  display: flex;
+}
+
+/* visibility, not display: the timestamp is what holds the slot open. */
+.git-stash-row:hover .git-stash-time,
+.git-stash-row:focus-within .git-stash-time {
+  visibility: hidden;
+}

@@ -174,6 +174,8 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
     let url: string;
     if (parsed.commitHash) {
       const params = new URLSearchParams({ cwd: parsed.cwd, hash: parsed.commitHash });
+      // Stash entries only — see encodeDiffKey's firstParent comment.
+      if (parsed.firstParent) params.set("firstParent", "1");
       url = `/commit-diff?${params}`;
     } else {
       const params = new URLSearchParams({

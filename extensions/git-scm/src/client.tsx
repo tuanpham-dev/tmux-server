@@ -351,8 +351,22 @@ function encodeDiffKey(
   untracked: boolean,
   origPath?: string,
   commitHash?: string,
+  // Show the commit against its FIRST parent rather than as a combined
+  // diff. Only stash entries ask for this: a stash is a merge commit (work
+  // tree + index, sometimes + untracked), and `git show` renders a merge as
+  // a "diff --cc" combined diff, which is not what anyone means by "what's
+  // in this stash".
+  firstParent?: boolean,
 ): string {
-  return [cwd, path, staged ? "1" : "0", untracked ? "1" : "0", origPath ?? "", commitHash ?? ""].join(KEY_SEP);
+  return [
+    cwd,
+    path,
+    staged ? "1" : "0",
+    untracked ? "1" : "0",
+    origPath ?? "",
+    commitHash ?? "",
+    firstParent ? "1" : "",
+  ].join(KEY_SEP);
 }
 
 export function decodeDiffKey(key: string): {
@@ -362,8 +376,9 @@ export function decodeDiffKey(key: string): {
   untracked: boolean;
   origPath?: string;
   commitHash?: string;
+  firstParent: boolean;
 } {
-  const [cwd, path, stagedFlag, untrackedFlag, origPath, commitHash] = key.split(KEY_SEP);
+  const [cwd, path, stagedFlag, untrackedFlag, origPath, commitHash, firstParent] = key.split(KEY_SEP);
   return {
     cwd,
     path,
@@ -371,6 +386,7 @@ export function decodeDiffKey(key: string): {
     untracked: untrackedFlag === "1",
     origPath: origPath || undefined,
     commitHash: commitHash || undefined,
+    firstParent: firstParent === "1",
   };
 }
 
@@ -779,6 +795,60 @@ async function fetchCommits(root: string, limit: number) {
 // pays for a `git log` on every stage.
 function refreshCommits() {
   if (commitsState.root) fetchCommits(commitsState.root, commitsState.limit);
+}
+
+// ---- STASH store ----
+// Module-level for the same reason the COMMITS store above is: the host
+// unmounts a collapsed pane outright, and the panel's own Stash/Pop actions
+// have to reach the list whether or not that pane is expanded.
+
+interface StashEntry {
+  // The commit the entry IS — what a row opens as an ordinary diff.
+  hash: string;
+  // "stash@{0}". Positional: every drop/pop renumbers the entries below it,
+  // which is why every mutation here refetches rather than splicing.
+  ref: string;
+  timestamp: number;
+  subject: string;
+}
+
+interface StashesState {
+  stashes: StashEntry[];
+  loading: boolean;
+  root: string | null;
+}
+
+let stashesState: StashesState = { stashes: [], loading: false, root: null };
+const stashesListeners = new Set<(state: StashesState) => void>();
+
+function setStashesState(next: StashesState) {
+  stashesState = next;
+  stashesListeners.forEach((cb) => cb(next));
+}
+
+async function fetchStashes(root: string) {
+  setStashesState({ ...stashesState, root, loading: true });
+  try {
+    const data = await apiGetJson<{ stashes: StashEntry[] }>(
+      `/stashes?cwd=${encodeURIComponent(root)}`,
+    );
+    // A repo switch mid-flight makes this the wrong list — let the switch's
+    // own fetch win, exactly as fetchCommits does.
+    if (stashesState.root !== root) return;
+    setStashesState({ stashes: data.stashes, loading: false, root });
+  } catch {
+    // Best-effort: keep the last-good list. A failing ACTION reports through
+    // the pane's own error banner; a failing refresh is not worth a banner.
+    if (stashesState.root === root) setStashesState({ ...stashesState, loading: false });
+  }
+}
+
+// Called after any mutating operation, like refreshCommits — a stash push
+// or pop from the panel's More Actions menu changes this list too. A no-op
+// until the pane has fetched once, so a user who never opens STASH never
+// pays for a `git stash list`.
+function refreshStashes() {
+  if (stashesState.root) fetchStashes(stashesState.root);
 }
 
 // ---- Background fetch ----
@@ -1216,6 +1286,8 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     // shared store rather than a local fetch, so history stays current
     // whether or not that pane is expanded, or even on this side.
     refreshCommits();
+    // Same for STASH: More Actions' Stash/Pop entries change that list.
+    refreshStashes();
   }, []);
 
   const runOp = useCallback(
@@ -2526,6 +2598,190 @@ function CommitsPanel({ actionsTarget }: PanelProps) {
   );
 }
 
+// ---- StashPanel (registerSidebarPanel component) ----
+//
+// The stash list as its own pane under SOURCE CONTROL, beside COMMITS: the
+// panel's More Actions menu could only ever stash everything and pop the
+// latest, which is the wrong shape for a stack you keep more than one thing
+// in. Rows carry Apply (restore, keep the entry), Pop (restore and drop)
+// and Drop, and a click opens the entry's diff — a stash entry is a commit,
+// so that is the ordinary commit-diff path, not a viewer of its own.
+function StashPanel({ actionsTarget }: PanelProps) {
+  const status = useSharedStatus();
+  const [{ stashes, loading, root: loadedRoot }, setState] = useState<StashesState>(
+    () => stashesState,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The row awaiting confirmation — Drop is the one action here that
+  // nothing in the UI can undo.
+  const [confirmDrop, setConfirmDrop] = useState<StashEntry | null>(null);
+
+  useEffect(() => {
+    setState(stashesState);
+    stashesListeners.add(setState);
+    return () => {
+      stashesListeners.delete(setState);
+    };
+  }, []);
+
+  const root = status?.root ?? null;
+
+  // First mount in a repo, and every repo switch, refetches; re-expanding
+  // the pane in the same repo paints the cached list first.
+  useEffect(() => {
+    if (root && root !== stashesState.root) fetchStashes(root);
+  }, [root]);
+
+  const runOp = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      // Every one of these changes the working tree as well as the list:
+      // refresh the panel's status and the FILES tree with it.
+      refreshStatus();
+      refreshFiles?.();
+      refreshStashes();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const apply = (entry: StashEntry) =>
+    runOp(() => apiPost("/stash-apply", { cwd: root, ref: entry.ref }));
+  const pop = (entry: StashEntry) => runOp(() => apiPost("/stash-pop", { cwd: root, ref: entry.ref }));
+  const drop = (entry: StashEntry) => runOp(() => apiPost("/stash-drop", { cwd: root, ref: entry.ref }));
+  const stashAll = (includeUntracked: boolean) =>
+    runOp(() => apiPost("/stash", { cwd: root, includeUntracked }));
+
+  const headerActions = (
+    <>
+      <button
+        className="icon-button"
+        title="Stash All Changes"
+        disabled={busy || !root}
+        onClick={() => stashAll(false)}
+      >
+        <Icon name="archive" />
+      </button>
+      <button
+        className="icon-button"
+        title="Refresh stashes"
+        disabled={loading || !root}
+        onClick={() => refreshStashes()}
+      >
+        <Icon name="refresh" />
+      </button>
+    </>
+  );
+
+  return (
+    <div className="git-panel git-stash-panel">
+      {actionsTarget && createPortal(headerActions, actionsTarget)}
+      {error && (
+        <div className="git-error" onClick={() => setError(null)}>
+          {error}
+        </div>
+      )}
+      {!root ? (
+        <div className="git-empty">Not a git repository.</div>
+      ) : stashes.length === 0 ? (
+        <div className="git-empty">{loading || loadedRoot !== root ? "Loading…" : "No stashes."}</div>
+      ) : (
+        <div className="git-stash-list">
+          {stashes.map((entry) => (
+            <StashRow
+              key={entry.hash}
+              entry={entry}
+              busy={busy}
+              onClick={() => openStashDiff(root, entry)}
+              actions={[
+                { icon: "diff-added", title: "Apply (keep the stash)", onClick: () => apply(entry) },
+                { icon: "inbox", title: "Pop (apply and drop)", onClick: () => pop(entry) },
+                { icon: "trash", title: "Drop", onClick: () => setConfirmDrop(entry) },
+              ]}
+            />
+          ))}
+        </div>
+      )}
+      {confirmDrop && (
+        <div className="git-confirm">
+          <div className="git-confirm-text">
+            Drop {confirmDrop.ref}? Its changes are lost.
+          </div>
+          <div className="git-confirm-buttons">
+            <button onClick={() => setConfirmDrop(null)}>Cancel</button>
+            <button
+              className="git-confirm-discard"
+              onClick={() => {
+                drop(confirmDrop);
+                setConfirmDrop(null);
+              }}
+            >
+              Drop Stash
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One stash entry. Deliberately not a FileRow, for the same reason CommitRow
+// isn't: no data-path, so the panel's marquee selection can never pick these
+// up.
+function StashRow({
+  entry,
+  busy,
+  actions,
+  onClick,
+}: {
+  entry: StashEntry;
+  busy: boolean;
+  actions: RowAction[];
+  onClick: () => void;
+}) {
+  return (
+    <div className="git-stash-row" title={`${entry.ref}\n${entry.subject}`} onClick={onClick}>
+      <Icon name="archive" />
+      <span className="git-stash-subject">{entry.subject}</span>
+      {/* Time and actions share one slot: the time holds the width (it is
+          always rendered, just hidden on hover) and the actions sit over it,
+          so hovering a row moves nothing. Same trailer idea as .git-row. */}
+      <span className="git-stash-trailer">
+        <span className="git-stash-time">{formatRelativeTime(entry.timestamp)}</span>
+        <span className="git-stash-actions">
+          {actions.map((a) => (
+            <button
+              key={a.title}
+              className="icon-button"
+              title={a.title}
+              disabled={busy}
+              onClick={(e) => {
+                // The row itself opens a diff — an action must not also.
+                e.stopPropagation();
+                a.onClick();
+              }}
+            >
+              <Icon name={a.icon} />
+            </button>
+          ))}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+// A stash entry is a commit, so its diff is the commit diff — same key
+// shape a COMMITS row uses.
+function openStashDiff(root: string, entry: StashEntry) {
+  const key = encodeDiffKey(root, "", false, false, undefined, entry.hash, true);
+  openViewerTab?.("diff", key, { title: `${entry.ref} ${entry.subject}` });
+}
+
 // A COMMITS row click — reuses DiffView via the key's commitHash field
 // (see encodeDiffKey/decodeDiffKey) rather than a dedicated viewer.
 function openCommitDiff(root: string, commit: CommitEntry) {
@@ -2917,7 +3173,7 @@ export function activate(ctx: {
     // Another of THIS extension's panels, by its unnamespaced id, whose tab
     // this one starts out inside — see the host's registerSidebarPanel.
     defaultTab?: string;
-    component: typeof GitPanel | typeof CommitsPanel;
+    component: typeof GitPanel | typeof CommitsPanel | typeof StashPanel;
   }) => void;
   registerFileViewer: (v: {
     id: string;
@@ -3007,6 +3263,17 @@ export function activate(ctx: {
     location: "tab",
     defaultTab: "git",
     component: CommitsPanel,
+  });
+  // Third, so it lands below COMMITS (append-only panel-order
+  // reconciliation again) — the stack you dip into occasionally belongs
+  // under the history you read constantly.
+  ctx.registerSidebarPanel({
+    id: "stash",
+    title: "Stash",
+    icon: "archive",
+    location: "tab",
+    defaultTab: "git",
+    component: StashPanel,
   });
   // Far left of the bar, where VS Code puts it — before any other
   // extension's item, since the branch is the thing you glance at.
@@ -3115,6 +3382,8 @@ export function deactivate() {
   currentStatus = null;
   commitsState = { commits: [], limit: COMMITS_PAGE, loading: false, root: null };
   commitsListeners.clear();
+  stashesState = { stashes: [], loading: false, root: null };
+  stashesListeners.clear();
   setSidebarBadge?.("git", null);
   revealSidebarPanel = null;
   getFileIcon = null;

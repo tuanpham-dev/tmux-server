@@ -1430,7 +1430,15 @@ export function activate({ router, log, host, getSettings, ai }) {
     try {
       const root = await requireRoot(cwd, res);
       if (!root) return;
-      const diff = await git(["show", hash, "--format=fuller", "--patch"], root);
+      // firstParent: a stash entry is a merge commit (work tree + index,
+      // and with -u a third untracked parent), which `git show` renders as
+      // a combined "diff --cc" against every parent at once. Against the
+      // first parent alone it's the ordinary patch the stash actually
+      // holds. Both flags are no-ops on a single-parent commit, but they're
+      // still opt-in: an ordinary merge's COMMITS row keeps the combined
+      // diff it has always shown.
+      const showArgs = req.query.firstParent === "1" ? ["show", "-m", "--first-parent", hash] : ["show", hash];
+      const diff = await git([...showArgs, "--format=fuller", "--patch"], root);
       res.json({ diff });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -1501,42 +1509,132 @@ export function activate({ router, log, host, getSettings, ai }) {
     }
   });
 
-  router.post("/stash-pop", async (req, res) => {
+  // "stash@{3}" and nothing else. git args go through execFile (no shell),
+  // so this isn't about quoting — it's about a ref starting with "-" being
+  // read as an option by whichever git command it reaches.
+  const STASH_REF_RE = /^stash@\{\d+\}$/;
+
+  // undefined = already answered 400; null = no ref given, which every
+  // caller here reads as "the latest entry".
+  function requireStashRef(req, res) {
+    const ref = req.body?.ref;
+    if (ref === undefined || ref === null) return null;
+    if (typeof ref === "string" && STASH_REF_RE.test(ref)) return ref;
+    res.status(400).json({ error: "Invalid stash ref." });
+    return undefined;
+  }
+
+  // `git stash apply/pop` exits 1 both for a real failure (no such entry —
+  // the message lands on stderr) and for a structurally-successful but
+  // CONFLICTING restore (narration on stdout, stderr empty, and the entry
+  // itself kept). Only the latter is tolerated: the panel's next status
+  // refresh renders the conflict as an ordinary Merge Changes entry, the
+  // same as any other conflicted path, with no dedicated stash-conflict UI.
+  function stashRestore(root, args) {
+    return new Promise((resolve, reject) => {
+      execFile(
+        "git",
+        args,
+        {
+          cwd: root,
+          encoding: "utf8",
+          timeout: DEFAULT_TIMEOUT,
+          maxBuffer: 8 * 1024 * 1024,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        },
+        (err, stdout, stderr) => {
+          if (err && !(err.code === 1 && stderr.trim() === "")) {
+            const wrapped = new Error(stderr.trim() || err.message);
+            wrapped.stderr = stderr;
+            reject(wrapped);
+          } else {
+            resolve();
+          }
+        },
+      );
+    });
+  }
+
+  // Same record/field separators as LOG_FORMAT above. %gd is the entry's
+  // ref ("stash@{0}"), %gs its reflog subject ("WIP on main: 3445ac1 …"),
+  // and %H the commit the entry IS — which is what lets a row open through
+  // the ordinary commit-diff path instead of a stash-specific viewer.
+  const STASH_FORMAT = "%H%x1f%gd%x1f%ct%x1f%gs%x1e";
+
+  router.get("/stashes", async (req, res) => {
     const cwd = requireCwd(req, res);
     if (!cwd) return;
     try {
       const root = await requireRoot(cwd, res);
       if (!root) return;
-      await new Promise((resolve, reject) => {
-        execFile(
-          "git",
-          ["stash", "pop"],
-          {
-            cwd: root,
-            encoding: "utf8",
-            timeout: DEFAULT_TIMEOUT,
-            maxBuffer: 8 * 1024 * 1024,
-            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-          },
-          (err, stdout, stderr) => {
-            // `git stash pop` exits 1 both for a real failure (no stash
-            // entries — stdout empty, stderr carries the message) and for a
-            // structurally-successful-but-conflicting pop (stash left
-            // conflict markers in the working tree, the stash entry itself
-            // kept — narration lands on stdout, stderr empty). Only the
-            // latter is tolerated: the panel's next status refresh renders
-            // the conflict as an ordinary Merge Changes entry, same as any
-            // other conflicted path, with no dedicated stash-conflict UI.
-            if (err && !(err.code === 1 && stderr.trim() === "")) {
-              const wrapped = new Error(stderr.trim() || err.message);
-              wrapped.stderr = stderr;
-              reject(wrapped);
-            } else {
-              resolve();
-            }
-          },
-        );
-      });
+      let raw;
+      try {
+        raw = await git(["stash", "list", `--format=${STASH_FORMAT}`], root);
+      } catch {
+        // refs/stash doesn't exist until the first stash — the same "none
+        // yet" non-error /status's own count already swallows.
+        res.json({ stashes: [] });
+        return;
+      }
+      const stashes = raw
+        .split("\x1e")
+        .map((record) => record.replace(/^\n/, ""))
+        .filter((record) => record.length > 0)
+        .map((record) => {
+          const [hash, ref, timestamp, subject] = record.split("\x1f");
+          return { hash, ref, timestamp: Number(timestamp), subject };
+        });
+      res.json({ stashes });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Apply without dropping — the non-destructive half of pop, for reusing
+  // one entry across several branches.
+  router.post("/stash-apply", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const ref = requireStashRef(req, res);
+    if (ref === undefined) return;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      await stashRestore(root, ref ? ["stash", "apply", ref] : ["stash", "apply"]);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Unrecoverable through the UI once done (the dropped commit is only
+  // reachable by hash afterwards), so the pane confirms first.
+  router.post("/stash-drop", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const ref = requireStashRef(req, res);
+    if (ref === undefined) return;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      await git(ref ? ["stash", "drop", ref] : ["stash", "drop"], root);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // No ref pops the latest, which is what the panel's More Actions entry
+  // sends; the STASH pane's rows name the entry they mean.
+  router.post("/stash-pop", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const ref = requireStashRef(req, res);
+    if (ref === undefined) return;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+      await stashRestore(root, ref ? ["stash", "pop", ref] : ["stash", "pop"]);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
