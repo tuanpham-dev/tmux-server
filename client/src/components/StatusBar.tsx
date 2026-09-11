@@ -281,10 +281,15 @@ export default function StatusBar({
     window.removeEventListener("pointercancel", onPointerCancel);
   };
 
+  // Every way a gesture can end comes through here, listeners included: the
+  // touch-slop path below abandons the session without a pointerup of its
+  // own, and the pointerup that eventually arrives finds no session and
+  // returns before it could have cleaned up.
   const endSession = () => {
     const s = sessionRef.current;
     if (s?.longPressTimer) clearTimeout(s.longPressTimer);
     sessionRef.current = null;
+    removeWindowListeners();
     document.body.classList.remove("status-bar-dragging");
     setDrag(null);
   };
@@ -314,7 +319,6 @@ export default function StatusBar({
   const onPointerUp = (e: PointerEvent) => {
     const s = sessionRef.current;
     if (!s || e.pointerId !== s.pointerId) return;
-    removeWindowListeners();
     if (s.dragging && s.drop) {
       justDraggedRef.current = true;
       const { side, index } = s.drop;
@@ -326,7 +330,6 @@ export default function StatusBar({
   const onPointerCancel = (e: PointerEvent) => {
     const s = sessionRef.current;
     if (!s || e.pointerId !== s.pointerId) return;
-    removeWindowListeners();
     endSession();
   };
 

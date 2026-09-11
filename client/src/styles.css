@@ -196,6 +196,15 @@ body {
   display: flex;
   align-items: center;
   height: 100%;
+  /* Without this a long-pressed item comes alive and then refuses to follow
+     the finger: Chrome hands the gesture to the compositor and fires
+     pointercancel, having never dispatched a single touchmove to us — so a
+     non-passive touchmove listener has nothing to preventDefault, whenever
+     it is registered. Same fix the other drag handles in this file need
+     (.panel-splitter, .tmux-scrollbar, .touch-key-editor-grip). Note this
+     also means a swipe that starts ON an item no longer scrolls a compact
+     bar that has overflowed; its padding and inter-item gaps still do. */
+  touch-action: none;
 }
 
 .status-bar-slot.dragging {
