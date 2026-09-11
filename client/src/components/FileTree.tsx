@@ -121,6 +121,74 @@ interface VisibleRow {
   depth: number;
 }
 
+// One node of the search-result tree. A dir node's `path` is absolute and can
+// stand for several directory levels at once (see buildResultTree's chain
+// compression), so it is NOT always one path segment deeper than its parent.
+interface ResultDirNode {
+  kind: "dir";
+  path: string;
+  name: string;
+  children: ResultNode[];
+}
+interface ResultFileNode {
+  kind: "file";
+  path: string;
+  name: string;
+}
+type ResultNode = ResultDirNode | ResultFileNode;
+
+// Nests the server's flat list of matching paths back into a directory tree,
+// following the same rules as the SCM panel's own tree view (git-scm's
+// buildTree): directories before files, both alphabetically, and a directory
+// chain with a single child at every level collapses into one row labeled
+// "client/src/components" rather than three nested ones. Ranking is lost in
+// the nesting — it survives where it matters, in *which* paths the server
+// picked to send back.
+function buildResultTree(rootDir: string, relPaths: string[]): ResultNode[] {
+  interface MutableDir {
+    path: string;
+    name: string;
+    dirs: Map<string, MutableDir>;
+    files: string[];
+  }
+  const root: MutableDir = { path: rootDir, name: "", dirs: new Map(), files: [] };
+  for (const rel of relPaths) {
+    const segments = rel.split("/");
+    const fileName = segments.pop()!;
+    let cur = root;
+    for (const seg of segments) {
+      let next = cur.dirs.get(seg);
+      if (!next) {
+        next = { path: `${cur.path}/${seg}`, name: seg, dirs: new Map(), files: [] };
+        cur.dirs.set(seg, next);
+      }
+      cur = next;
+    }
+    cur.files.push(fileName);
+  }
+
+  const toNodes = (dir: MutableDir): ResultNode[] => {
+    const dirNodes = [...dir.dirs.values()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((d): ResultDirNode => {
+        let chain = d;
+        let label = d.name;
+        while (chain.files.length === 0 && chain.dirs.size === 1) {
+          const [only] = chain.dirs.values();
+          label = `${label}/${only.name}`;
+          chain = only;
+        }
+        return { kind: "dir", path: chain.path, name: label, children: toNodes(chain) };
+      });
+    const fileNodes = dir.files
+      .sort((a, b) => a.localeCompare(b))
+      .map((name): ResultFileNode => ({ kind: "file", path: `${dir.path}/${name}`, name }));
+    return [...dirNodes, ...fileNodes];
+  };
+
+  return toNodes(root);
+}
+
 // The spec says "dragover" should fire on a roughly-350ms timer for as long
 // as the pointer stays over a target, even without movement — but in
 // practice many browser/OS combinations only fire it on actual pointer
@@ -132,6 +200,10 @@ const DRAG_CLEAR_MS = 1800;
 // Time hovering a collapsed folder before it auto-expands, matching the
 // common file-manager / VS Code Explorer drag-hover-to-expand convention.
 const HOVER_EXPAND_MS = 1000;
+
+// Debounce before a keystroke turns into a server-side search request —
+// same interval the quick switcher's own file search uses.
+const SEARCH_DEBOUNCE_MS = 150;
 
 export default function FileTree({
   rootDir,
@@ -217,6 +289,28 @@ export default function FileTree({
   // GET); this only trims the common case of the poll re-requesting a dir
   // its own previous tick is still waiting on.
   const inFlightDirsRef = useRef<Set<string>>(new Set());
+  // Filename search over the whole root, not a filter over what's on screen:
+  // the tree loads a directory only once it's expanded, so a client-side
+  // filter could never see a match sitting in a folder nobody opened yet.
+  // Results come from the same gitignore-aware, server-ranked endpoint the
+  // quick switcher searches (/api/fs/files?q=), capped at 50 matches.
+  const [query, setQuery] = useState("");
+  // Relative to rootDir, best match first — exactly as the server returns them.
+  const [results, setResults] = useState<string[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchTruncated, setSearchTruncated] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  // Directories of the *result* tree the user collapsed — its own state, not
+  // the `expanded` set above: a result dir starts open (hiding the match it
+  // was built to show would be pointless) where a real tree dir starts shut,
+  // so the two can't share one set without inverting each other's meaning.
+  // Keyed by absolute path, and dropped wholesale whenever the results change.
+  const [collapsedSearchDirs, setCollapsedSearchDirs] = useState<Set<string>>(new Set());
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const trimmedQuery = query.trim();
+  // An empty box leaves the tree alone; anything else swaps the directory
+  // listing for the result tree.
+  const searching = trimmedQuery.length > 0;
 
   const fetchDir = useCallback((dirPath: string, opts?: { background?: boolean }) => {
     const background = opts?.background ?? false;
@@ -262,8 +356,53 @@ export default function FileTree({
     setFocusedPath(null);
     setSelectedPaths(new Set());
     setAnchorPath(null);
+    // Results were relative to the old root — a stale query would list paths
+    // that no longer exist. The box itself stays open, ready to retype into.
+    setQuery("");
     if (rootDir) fetchDir(rootDir);
   }, [rootDir, fetchDir]);
+
+  // Searched server-side per keystroke (debounced), like the quick switcher:
+  // the server fuzzy-ranks and returns only the top matches, so a large repo
+  // never ships its whole file list here. Previous results stay on screen
+  // while the next query is in flight, and a stale guard drops a response the
+  // query has already moved past. refreshKey is a dependency so a mutation
+  // (delete, rename, upload) re-runs the search instead of leaving rows
+  // pointing at paths that just disappeared.
+  useEffect(() => {
+    if (!rootDir || !searching) {
+      setResults([]);
+      setSearchLoading(false);
+      setSearchTruncated(false);
+      setSearchError(null);
+      return;
+    }
+    setSearchLoading(true);
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      api
+        .listFiles(rootDir, trimmedQuery)
+        .then((listing) => {
+          if (stale) return;
+          setResults(listing.files);
+          setSearchTruncated(listing.truncated);
+          setSearchError(null);
+        })
+        .catch((err) => {
+          if (stale) return;
+          setResults([]);
+          setSearchTruncated(false);
+          setSearchError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (!stale) setSearchLoading(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [rootDir, searching, trimmedQuery, refreshKey]);
 
   // Bumped after an upload lands: refetch whatever is currently visible. A
   // delete/rename bumps refreshKey together with prunePath (same action, same
@@ -311,6 +450,26 @@ export default function FileTree({
   }, [fetchDir]);
 
   useEffect(() => subscribePollTick(refetchVisibleBackground), [refetchVisibleBackground]);
+
+  const searchTree = useMemo(
+    () => (rootDir && searching ? buildResultTree(rootDir, results) : []),
+    [rootDir, searching, results],
+  );
+
+  // A new result set invalidates the old collapse state — the dirs it was
+  // keyed on may not even be in the tree any more, and a row the user
+  // collapsed for one query shouldn't stay shut for the next one's matches.
+  useEffect(() => {
+    setCollapsedSearchDirs((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [results]);
+
+  // Whether a directory row currently shows its children — the result tree's
+  // dirs start open and are tracked by what's collapsed, the real tree's
+  // start shut and are tracked by what's expanded.
+  const isRowExpanded = useCallback(
+    (dirPath: string) => (searching ? !collapsedSearchDirs.has(dirPath) : expanded.has(dirPath)),
+    [searching, collapsedSearchDirs, expanded],
+  );
 
   const cancelExpandTimer = () => {
     if (expandTimer.current) {
@@ -374,6 +533,19 @@ export default function FileTree({
   }, [endDrag]);
 
   const toggle = (dirPath: string) => {
+    // Result-tree dirs collapse through their own set (see
+    // collapsedSearchDirs), so every caller of toggle — a click, Enter/Space,
+    // the arrow keys — works the same in both modes without knowing which
+    // one is on screen.
+    if (searching) {
+      setCollapsedSearchDirs((prev) => {
+        const next = new Set(prev);
+        if (next.has(dirPath)) next.delete(dirPath);
+        else next.add(dirPath);
+        return next;
+      });
+      return;
+    }
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(dirPath)) {
@@ -390,8 +562,24 @@ export default function FileTree({
   // expanded dirs) — kept in sync by construction since both read the same
   // dirCache/expanded state. A dir with an error or not-yet-fetched state
   // simply contributes no children, matching renderEntries' own early return.
+  // While searching, the flat result list IS the tree's visible rows — so
+  // keyboard navigation, range selection, the context menus and every
+  // files.* command act on matches exactly as they do on tree rows, with no
+  // second code path of their own.
   const visibleRows = useMemo(() => {
     const out: VisibleRow[] = [];
+    if (searching) {
+      const walkResults = (nodes: ResultNode[], depth: number) => {
+        for (const node of nodes) {
+          out.push({ path: node.path, name: node.name, isDir: node.kind === "dir", depth });
+          if (node.kind === "dir" && !collapsedSearchDirs.has(node.path)) {
+            walkResults(node.children, depth + 1);
+          }
+        }
+      };
+      walkResults(searchTree, 0);
+      return out;
+    }
     const walk = (dirPath: string, depth: number) => {
       const state = dirCache.get(dirPath);
       if (!state || state.error) return;
@@ -403,7 +591,7 @@ export default function FileTree({
     };
     if (rootDir) walk(rootDir, 0);
     return out;
-  }, [rootDir, dirCache, expanded]);
+  }, [rootDir, dirCache, expanded, searching, searchTree, collapsedSearchDirs]);
 
   // Falls back to the first row so an empty focusedPath (initial mount, or a
   // just-pruned focus target) still gives roving tabindex a real landing
@@ -419,6 +607,20 @@ export default function FileTree({
     setFocusedPath(path);
     rowRefs.current.get(path)?.focus();
   };
+
+  // The box is always on screen, so files.search only has to put the caret in
+  // it — selecting what's there, so the shortcut retypes over the last query
+  // instead of appending to it.
+  const focusSearch = useCallback(() => {
+    searchInputRef.current?.select();
+  }, []);
+
+  // Clearing hands focus back to the tree container rather than dropping it
+  // on the body — otherwise the very next arrow key would go nowhere.
+  const clearSearch = useCallback(() => {
+    setQuery("");
+    treeContainerRef.current?.focus();
+  }, []);
 
   // Rubber-band drag-to-select: press in empty tree space (not on a row)
   // and drag over rows to select them. Ctrl/Cmd held at drag start makes it
@@ -578,8 +780,10 @@ export default function FileTree({
   };
 
   const handleTreeKeyDown = (e: React.KeyboardEvent) => {
-    if (visibleRows.length === 0) return;
     if (!rootDir) return;
+    // No early return on an empty row list: every branch below already
+    // tolerates a null focused row, and files.search / files.newFile must
+    // still work in an empty directory (or one whose search found nothing).
     const currentPath = effectiveFocusedPath;
     const idx = indexOf(currentPath);
     const row = idx !== -1 ? visibleRows[idx] : null;
@@ -653,6 +857,11 @@ export default function FileTree({
             renameFileEntry(row.path);
             return;
           }
+        }
+        if (matches("files.search")) {
+          e.preventDefault();
+          focusSearch();
+          return;
         }
         if (matches("files.findInFolder")) {
           if (row) {
@@ -729,7 +938,7 @@ export default function FileTree({
         if (!row) return;
         e.preventDefault();
         if (!row.isDir) return;
-        if (!expanded.has(row.path)) {
+        if (!isRowExpanded(row.path)) {
           toggle(row.path);
           return;
         }
@@ -741,7 +950,7 @@ export default function FileTree({
       case "ArrowLeft": {
         if (!row) return;
         e.preventDefault();
-        if (row.isDir && expanded.has(row.path)) {
+        if (row.isDir && isRowExpanded(row.path)) {
           toggle(row.path);
           return;
         }
@@ -769,7 +978,14 @@ export default function FileTree({
         // pending cut (if any) — Escape is the conventional way to cancel a
         // cut/paste in a file manager.
         if (cutPaths) onClearClipboard();
-        if (selectedPaths.size === 0 && anchorPath === null) return;
+        if (selectedPaths.size === 0 && anchorPath === null) {
+          // Nothing left to clear here, so Escape falls through to the search
+          // box: emptying it puts the real tree back.
+          if (!searching) return;
+          e.preventDefault();
+          clearSearch();
+          return;
+        }
         e.preventDefault();
         setSelectedPaths(new Set());
         setAnchorPath(null);
@@ -954,7 +1170,163 @@ export default function FileTree({
     },
   });
 
-  const renderEntries = (dirPath: string, depth: number) => {
+  // The one directory-row renderer, shared by the directory tree and the
+  // search-result tree. `children` is the already-rendered subtree, passed in
+  // rather than recursed into here because the two modes build their children
+  // from different sources (dirCache vs. the result tree) — everything else
+  // about the row, down to the drag-over targeting, is identical.
+  const renderDirRow = (entryPath: string, name: string, depth: number, children: React.ReactNode) => {
+    // Row decoration (git status badge/colors) comes entirely from
+    // extension providers — see extensions.ts's file-decoration point.
+    const decoration = getFileDecoration(entryPath, true);
+    const gitClass = decoration?.className ? ` ${decoration.className}` : "";
+    const selectedClass = selectedPaths.has(entryPath) ? " selected" : "";
+    const cutClass = cutPaths?.has(entryPath) ? " cut" : "";
+    const draggingClass = draggingPaths?.has(entryPath) ? " dragging" : "";
+    const rowTabIndex = entryPath === effectiveFocusedPath ? 0 : -1;
+    const isExpanded = isRowExpanded(entryPath);
+    // A compressed result row ("client/src/components") names several
+    // directories at once — the icon should follow the last one, which is
+    // what entryPath points at.
+    const folderIcon = getFolderIconResult(name.slice(name.lastIndexOf("/") + 1), isExpanded);
+    return (
+      <div key={entryPath} {...dragHandlers(entryPath)}>
+        <button
+          ref={(el) => {
+            if (el) rowRefs.current.set(entryPath, el);
+            else rowRefs.current.delete(entryPath);
+          }}
+          role="treeitem"
+          aria-expanded={isExpanded}
+          aria-level={depth + 1}
+          aria-selected={selectedPaths.has(entryPath)}
+          tabIndex={rowTabIndex}
+          draggable
+          className={`file-tree-row file-tree-dir${
+            dragOverPath === entryPath ? " drag-over" : ""
+          }${gitClass}${selectedClass}${cutClass}${draggingClass}`}
+          style={{ paddingLeft: 6 + depth * 14 }}
+          title={entryPath}
+          onClick={(e) => handleRowClick(e, entryPath, true, name)}
+          onContextMenu={(e) => handleRowContextMenu(e, entryPath, true)}
+          {...bindMenu((x, y) => openRowMenu(x, y, entryPath, true))}
+          onDragStart={(e) => handleRowDragStart(e, entryPath)}
+          onDragEnd={endDrag}
+        >
+          <span className="chevron">
+            <Icon name={isExpanded ? "chevron-down" : "chevron-right"} />
+          </span>
+          <FileIcon className="file-tree-folder-icon" result={folderIcon} />
+          <span className="file-tree-name">{name}</span>
+          <DecorationBadge decoration={decoration} />
+        </button>
+        {isExpanded && children}
+      </div>
+    );
+  };
+
+  // The one file-row renderer, shared by the directory tree and the
+  // search-result tree — a match therefore behaves exactly like the same
+  // file does in the tree (identical click rules, menus, drag, decorations,
+  // roving tabindex), differing only in its indent.
+  const renderFileRow = (entryPath: string, name: string, depth: number) => {
+    // Row decoration (git status badge/colors) comes entirely from
+    // extension providers — see extensions.ts's file-decoration point.
+    const decoration = getFileDecoration(entryPath, false);
+    const gitClass = decoration?.className ? ` ${decoration.className}` : "";
+    const selectedClass = selectedPaths.has(entryPath) ? " selected" : "";
+    const cutClass = cutPaths?.has(entryPath) ? " cut" : "";
+    const draggingClass = draggingPaths?.has(entryPath) ? " dragging" : "";
+    const rowTabIndex = entryPath === effectiveFocusedPath ? 0 : -1;
+    const fileIcon = getFileIconResult(name);
+    // A <div role="treeitem"> rather than a native <button> — the preview
+    // button needs to nest inside the row (a <button> can't contain
+    // another <button>), so the whole row's hover background stays one
+    // continuous element instead of two siblings with a gap between them.
+    // Same accessible-div-as-button pattern as .window-item in Sidebar.
+    return (
+      <div
+        key={entryPath}
+        ref={(el) => {
+          if (el) rowRefs.current.set(entryPath, el);
+          else rowRefs.current.delete(entryPath);
+        }}
+        role="treeitem"
+        aria-level={depth + 1}
+        aria-selected={selectedPaths.has(entryPath)}
+        tabIndex={rowTabIndex}
+        draggable
+        className={`file-tree-row file-tree-file${gitClass}${selectedClass}${cutClass}${draggingClass}`}
+        style={{ paddingLeft: 6 + depth * 14 }}
+        title={name}
+        onClick={(e) => handleRowClick(e, entryPath, false, name)}
+        onContextMenu={(e) => handleRowContextMenu(e, entryPath, false)}
+        {...bindMenu((x, y) => openRowMenu(x, y, entryPath, false))}
+        onDragStart={(e) => handleRowDragStart(e, entryPath)}
+        onDragEnd={endDrag}
+      >
+        <span className="chevron-spacer" />
+        <FileIcon className="file-tree-file-icon" result={fileIcon} />
+        <span className="file-tree-name">{name}</span>
+
+        {/* Single flex item so it's pushed right as one unit — putting
+            margin-left:auto on both the button and the badge separately
+            would split the leftover space between them instead of
+            pinning the button flush against the badge. */}
+        <span className="file-tree-row-trailer">
+          {(() => {
+            // The icon surfaces the opposite of a plain click: "preview"
+            // rows click into nvim, "edit" rows click into a viewer.
+            const hoverAction = fileHoverAction(name);
+            if (!hoverAction) return null;
+            const isPreview = hoverAction === "preview";
+            return (
+              <button
+                className="file-tree-preview-button"
+                title={isPreview ? "Preview" : "Open in Editor"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isPreview) onPreviewFile(entryPath);
+                  else onEditFile(entryPath);
+                }}
+              >
+                <Icon name={isPreview ? "preview" : "file-code"} />
+              </button>
+            );
+          })()}
+          <DecorationBadge decoration={decoration} />
+        </span>
+      </div>
+    );
+  };
+
+  // Matches, nested back under the folders that hold them — the same shape
+  // the tree has when browsing, minus every branch with nothing matching in
+  // it. Result folders come pre-expanded (a collapsed one would hide the
+  // match it exists to show) and stay collapsible from there.
+  const renderResultNodes = (nodes: ResultNode[], depth: number): React.ReactNode =>
+    nodes.map((node) =>
+      node.kind === "dir"
+        ? renderDirRow(node.path, node.name, depth, renderResultNodes(node.children, depth + 1))
+        : renderFileRow(node.path, node.name, depth),
+    );
+
+  const renderSearchResults = () => {
+    if (searchError) return <div className="file-tree-error">{searchError}</div>;
+    if (results.length === 0) {
+      return <div className="file-tree-empty">{searchLoading ? "Searching…" : "No matching files"}</div>;
+    }
+    return (
+      <>
+        {renderResultNodes(searchTree, 0)}
+        {searchTruncated && (
+          <div className="file-tree-search-note">Showing the top {results.length} matches — narrow the search to see more.</div>
+        )}
+      </>
+    );
+  };
+
+  const renderEntries = (dirPath: string, depth: number): React.ReactNode => {
     const state = dirCache.get(dirPath);
     if (!state) return null;
     if (state.error) {
@@ -966,110 +1338,8 @@ export default function FileTree({
     }
     return state.entries.map((entry) => {
       const entryPath = `${dirPath}/${entry.name}`;
-      // Row decoration (git status badge/colors) comes entirely from
-      // extension providers — see extensions.ts's file-decoration point.
-      const decoration = getFileDecoration(entryPath, entry.dir);
-      const gitClass = decoration?.className ? ` ${decoration.className}` : "";
-      const selectedClass = selectedPaths.has(entryPath) ? " selected" : "";
-      const cutClass = cutPaths?.has(entryPath) ? " cut" : "";
-      const draggingClass = draggingPaths?.has(entryPath) ? " dragging" : "";
-      const rowTabIndex = entryPath === effectiveFocusedPath ? 0 : -1;
-      const setRowRef = (el: HTMLElement | null) => {
-        if (el) rowRefs.current.set(entryPath, el);
-        else rowRefs.current.delete(entryPath);
-      };
-      if (entry.dir) {
-        const isExpanded = expanded.has(entryPath);
-        const folderIcon = getFolderIconResult(entry.name, isExpanded);
-        return (
-          <div key={entryPath} {...dragHandlers(entryPath)}>
-            <button
-              ref={setRowRef}
-              role="treeitem"
-              aria-expanded={isExpanded}
-              aria-level={depth + 1}
-              aria-selected={selectedPaths.has(entryPath)}
-              tabIndex={rowTabIndex}
-              draggable
-              className={`file-tree-row file-tree-dir${
-                dragOverPath === entryPath ? " drag-over" : ""
-              }${gitClass}${selectedClass}${cutClass}${draggingClass}`}
-              style={{ paddingLeft: 6 + depth * 14 }}
-              title={entryPath}
-              onClick={(e) => handleRowClick(e, entryPath, true, entry.name)}
-              onContextMenu={(e) => handleRowContextMenu(e, entryPath, true)}
-              {...bindMenu((x, y) => openRowMenu(x, y, entryPath, true))}
-              onDragStart={(e) => handleRowDragStart(e, entryPath)}
-              onDragEnd={endDrag}
-            >
-              <span className="chevron">
-                <Icon name={isExpanded ? "chevron-down" : "chevron-right"} />
-              </span>
-              <FileIcon className="file-tree-folder-icon" result={folderIcon} />
-              <span className="file-tree-name">{entry.name}</span>
-              <DecorationBadge decoration={decoration} />
-            </button>
-            {isExpanded && renderEntries(entryPath, depth + 1)}
-          </div>
-        );
-      }
-      // A <div role="treeitem"> rather than a native <button> — the preview
-      // button needs to nest inside the row (a <button> can't contain
-      // another <button>), so the whole row's hover background stays one
-      // continuous element instead of two siblings with a gap between them.
-      // Same accessible-div-as-button pattern as .window-item in Sidebar.
-      const fileIcon = getFileIconResult(entry.name);
-      return (
-        <div
-          key={entryPath}
-          ref={setRowRef}
-          role="treeitem"
-          aria-level={depth + 1}
-          aria-selected={selectedPaths.has(entryPath)}
-          tabIndex={rowTabIndex}
-          draggable
-          className={`file-tree-row file-tree-file${gitClass}${selectedClass}${cutClass}${draggingClass}`}
-          style={{ paddingLeft: 6 + depth * 14 }}
-          title={entry.name}
-          onClick={(e) => handleRowClick(e, entryPath, false, entry.name)}
-          onContextMenu={(e) => handleRowContextMenu(e, entryPath, false)}
-          {...bindMenu((x, y) => openRowMenu(x, y, entryPath, false))}
-          onDragStart={(e) => handleRowDragStart(e, entryPath)}
-          onDragEnd={endDrag}
-        >
-          <span className="chevron-spacer" />
-          <FileIcon className="file-tree-file-icon" result={fileIcon} />
-          <span className="file-tree-name">{entry.name}</span>
-
-          {/* Single flex item so it's pushed right as one unit — putting
-              margin-left:auto on both the button and the badge separately
-              would split the leftover space between them instead of
-              pinning the button flush against the badge. */}
-          <span className="file-tree-row-trailer">
-            {(() => {
-              // The icon surfaces the opposite of a plain click: "preview"
-              // rows click into nvim, "edit" rows click into a viewer.
-              const hoverAction = fileHoverAction(entry.name);
-              if (!hoverAction) return null;
-              const isPreview = hoverAction === "preview";
-              return (
-                <button
-                  className="file-tree-preview-button"
-                  title={isPreview ? "Preview" : "Open in Editor"}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (isPreview) onPreviewFile(entryPath);
-                    else onEditFile(entryPath);
-                  }}
-                >
-                  <Icon name={isPreview ? "preview" : "file-code"} />
-                </button>
-              );
-            })()}
-            <DecorationBadge decoration={decoration} />
-          </span>
-        </div>
-      );
+      if (!entry.dir) return renderFileRow(entryPath, entry.name, depth);
+      return renderDirRow(entryPath, entry.name, depth, renderEntries(entryPath, depth + 1));
     });
   };
 
@@ -1086,66 +1356,116 @@ export default function FileTree({
   // collide with it.
   const rootMenu = bindMenu((x, y) => onShowMenu(x, y, fileTreeRootMenuItems(rootDir)));
 
+  // Arrow/Enter from inside the box reach into the results without a mouse;
+  // Escape backs out one step at a time (clear the query, then close). The
+  // input sits outside .file-tree on purpose — that selector is what the
+  // filesTreeFocus context key and the global dispatcher's yield-to-the-tree
+  // check both test, so typing here must not read as "the tree has focus"
+  // (Delete would delete the focused file instead of a character).
+  const handleSearchKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      clearSearch();
+      return;
+    }
+    const first = visibleRows[0];
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!first) return;
+      setSelectedPaths(new Set([first.path]));
+      setAnchorPath(first.path);
+      focusRow(first.path);
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (first) onOpenFile(first.path);
+    }
+  };
+
   return (
-    <div
-      ref={treeContainerRef}
-      role="tree"
-      className={`file-tree${dragOverPath === rootDir ? " drag-over" : ""}`}
-      onDragOver={dragHandlers(rootDir).onDragOver}
-      onDrop={dragHandlers(rootDir).onDrop}
-      onDragLeave={(e) => {
-        if (e.target === e.currentTarget) clearDragState();
-      }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onShowMenu(e.clientX, e.clientY, fileTreeRootMenuItems(rootDir));
-      }}
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget) rootMenu.onPointerDown(e);
-      }}
-      onPointerMove={rootMenu.onPointerMove}
-      onPointerUp={rootMenu.onPointerUp}
-      onPointerCancel={rootMenu.onPointerCancel}
-      onKeyDown={handleTreeKeyDown}
-      onPaste={handleTreePaste}
-      // A paste event is only delivered to whatever holds DOM focus. Rows are
-      // focusable but this container wasn't, so clicking empty tree space left
-      // focus wherever it already was (typically the terminal) — and Ctrl+V
-      // then pasted into *that*, never reaching handleTreePaste at all. There
-      // was no way to paste into the root. -1 keeps it out of the Tab order
-      // while letting it hold focus when clicked; keyboard nav is unaffected,
-      // since handleTreeKeyDown already lives on this same element and an arrow
-      // key moves focus into a real row via effectiveFocusedPath's fallback.
-      tabIndex={-1}
-      onMouseDown={(e) => {
-        if ((e.target as HTMLElement).closest(".file-tree-row, button, input")) return;
-        treeContainerRef.current?.focus();
-        onMarqueeMouseDown(e);
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          setSelectedPaths(new Set());
-          setAnchorPath(null);
-          // Drop the focused row too, so a paste right after clicking empty
-          // space targets the root (see handleTreePaste) rather than silently
-          // going to whichever folder was last touched.
-          setFocusedPath(null);
-        }
-      }}
-    >
-      {marqueeRect && (
-        <div
-          className="marquee-rect"
-          style={{ left: marqueeRect.left, top: marqueeRect.top, width: marqueeRect.width, height: marqueeRect.height }}
+    <div className="file-tree-wrap">
+      <div className="file-tree-search">
+        <span className="file-tree-search-icon">
+          <Icon name="search" />
+        </span>
+        <input
+          ref={searchInputRef}
+          className="file-tree-search-input"
+          type="text"
+          placeholder="Search files by name"
+          value={query}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleSearchKeyDown}
         />
-      )}
-      {rootState?.loading && !rootState.entries.length && (
-        <div className="file-tree-empty">Loading…</div>
-      )}
-      {!rootState?.loading && rootState?.entries.length === 0 && (
-        <div className="file-tree-empty">Empty directory</div>
-      )}
-      {renderEntries(rootDir, 0)}
+        {query && (
+          <button className="icon-button" title="Clear Search (Escape)" onClick={clearSearch}>
+            <Icon name="close" />
+          </button>
+        )}
+      </div>
+      <div
+        ref={treeContainerRef}
+        role="tree"
+        className={`file-tree${dragOverPath === rootDir ? " drag-over" : ""}`}
+        onDragOver={dragHandlers(rootDir).onDragOver}
+        onDrop={dragHandlers(rootDir).onDrop}
+        onDragLeave={(e) => {
+          if (e.target === e.currentTarget) clearDragState();
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onShowMenu(e.clientX, e.clientY, fileTreeRootMenuItems(rootDir));
+        }}
+        onPointerDown={(e) => {
+          if (e.target === e.currentTarget) rootMenu.onPointerDown(e);
+        }}
+        onPointerMove={rootMenu.onPointerMove}
+        onPointerUp={rootMenu.onPointerUp}
+        onPointerCancel={rootMenu.onPointerCancel}
+        onKeyDown={handleTreeKeyDown}
+        onPaste={handleTreePaste}
+        // A paste event is only delivered to whatever holds DOM focus. Rows are
+        // focusable but this container wasn't, so clicking empty tree space left
+        // focus wherever it already was (typically the terminal) — and Ctrl+V
+        // then pasted into *that*, never reaching handleTreePaste at all. There
+        // was no way to paste into the root. -1 keeps it out of the Tab order
+        // while letting it hold focus when clicked; keyboard nav is unaffected,
+        // since handleTreeKeyDown already lives on this same element and an arrow
+        // key moves focus into a real row via effectiveFocusedPath's fallback.
+        tabIndex={-1}
+        onMouseDown={(e) => {
+          if ((e.target as HTMLElement).closest(".file-tree-row, button, input")) return;
+          treeContainerRef.current?.focus();
+          onMarqueeMouseDown(e);
+        }}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setSelectedPaths(new Set());
+            setAnchorPath(null);
+            // Drop the focused row too, so a paste right after clicking empty
+            // space targets the root (see handleTreePaste) rather than silently
+            // going to whichever folder was last touched.
+            setFocusedPath(null);
+          }
+        }}
+      >
+        {marqueeRect && (
+          <div
+            className="marquee-rect"
+            style={{ left: marqueeRect.left, top: marqueeRect.top, width: marqueeRect.width, height: marqueeRect.height }}
+          />
+        )}
+        {!searching && rootState?.loading && !rootState.entries.length && (
+          <div className="file-tree-empty">Loading…</div>
+        )}
+        {!searching && !rootState?.loading && rootState?.entries.length === 0 && (
+          <div className="file-tree-empty">Empty directory</div>
+        )}
+        {searching ? renderSearchResults() : renderEntries(rootDir, 0)}
+      </div>
     </div>
   );
 }

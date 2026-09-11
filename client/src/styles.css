@@ -1497,6 +1497,55 @@ body.resizing-row {
   color: var(--error);
 }
 
+/* The FILES tree's filename search. Wraps the search row and the tree so the
+   row stays pinned while the results scroll under it — .file-tree itself is
+   the scroller (flex: 1), so it can't also host a sticky sibling. */
+.file-tree-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.file-tree-search {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 6px;
+}
+
+.file-tree-search-icon {
+  flex-shrink: 0;
+  display: flex;
+  color: var(--fg-inactive);
+  font-size: 13px;
+}
+
+.file-tree-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.file-tree-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.file-tree-search-note {
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: var(--fg-inactive);
+}
+
 /* ---- Main / tabs ---- */
 
 .main {

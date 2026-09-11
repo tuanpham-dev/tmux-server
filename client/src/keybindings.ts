@@ -110,6 +110,9 @@ export const COMMANDS: Command[] = [
   { id: "files.paste", label: "Files: Paste", defaultBindings: [{ key: "ctrl+KeyV", when: "filesTreeFocus" }], scope: "files" },
   { id: "files.delete", label: "Files: Delete", defaultBindings: [{ key: "Delete", when: "filesTreeFocus" }], scope: "files" },
   { id: "files.rename", label: "Files: Rename…", defaultBindings: [{ key: "F2", when: "filesTreeFocus" }], scope: "files" },
+  // Filename search *inside* the FILES tree — distinct from files.findInFolder
+  // below, which hands a glob to the SEARCH panel's content search.
+  { id: "files.search", label: "Files: Search Files…", defaultBindings: [{ key: "ctrl+KeyF", when: "filesTreeFocus" }], scope: "files" },
   { id: "files.findInFolder", label: "Files: Find in Folder…", defaultBindings: [], scope: "files" },
   { id: "files.newFile", label: "Files: New File…", defaultBindings: [], scope: "files" },
   { id: "files.newFolder", label: "Files: New Folder…", defaultBindings: [], scope: "files" },
