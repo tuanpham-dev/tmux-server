@@ -2507,17 +2507,28 @@ body.scrollbar-dragging {
 }
 
 .context-menu-item-trailing {
-  display: none;
+  /* Always in the layout, painted only on hover. Toggling `display` instead
+     made the row demand the icon plus the row's 16px gap the moment the
+     pointer touched it — which re-sized the widest row, and with it the whole
+     menu: Open Recent jumped from 808px to 842px wide as the pointer crossed
+     any row, every label sliding with it. */
+  display: inline-flex;
+  visibility: hidden;
   align-items: center;
   margin-left: auto;
+  /* The icon is 16px, exactly as tall as the row's other content, so the 1px
+     that rounds out the hover chip is the whole difference between a 26px and
+     a 28px row — enough to nudge everything below a hovered row down. Paint
+     the padding, don't let it count toward the row's height. */
   padding: 1px;
+  margin-block: -1px;
   border-radius: 3px;
   color: var(--fg-inactive);
 }
 
 .context-menu-item:hover .context-menu-item-trailing,
 .context-menu-item:focus .context-menu-item-trailing {
-  display: inline-flex;
+  visibility: visible;
 }
 
 .context-menu-item-trailing:hover {
