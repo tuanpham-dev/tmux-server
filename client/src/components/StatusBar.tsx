@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import * as api from "../api";
 import {
   extensionStatusBarItems,
   useExtensionRegistryVersion,
   type StatusBarItemContext,
 } from "../extensions";
 import { formatGb } from "../formatSize";
-import { subscribePollTick } from "../lib/pollTick";
+import { useSystemStats } from "../lib/systemStatsStore";
 import {
   EMPTY_STATUS_BAR_LAYOUT,
   moveStatusBarItem,
@@ -19,15 +18,17 @@ import type { MenuItem, TmuxSession } from "../types";
 import Icon from "./Icon";
 import ProjectList, { type ProjectListProps } from "./ProjectList";
 import StatusBarPopover from "./StatusBarPopover";
+import SystemStatsPanel from "./SystemStatsPanel";
 
 // The bottom status bar (plans/right-click-sidebars-statusbar.md, extended by
 // plans/status-bar-extensions-and-popovers.md): host memory and how many
 // terminals are open, plus whatever extensions contribute.
 //
-// Memory comes from GET /api/system-stats; the terminal count is derived from
-// the sessions the app already polls, so it needs no round-trip and can never
-// disagree with the Explorer tree. Refresh rides the existing 3s sessions-poll
-// tick rather than adding a second timer.
+// Memory comes from GET /api/system-stats (via lib/systemStatsStore, which
+// also feeds the CPU/memory/disk popover that reading opens); the terminal
+// count is derived from the sessions the app already polls, so it needs no
+// round-trip and can never disagree with the Explorer tree. Refresh rides the
+// existing 3s sessions-poll tick rather than adding a second timer.
 //
 // Extension items are read straight from the registry (the TerminalView
 // convention) rather than threaded through App as a prop — they are the bar's
@@ -45,6 +46,10 @@ interface Props {
   showMenu: (x: number, y: number, items: MenuItem[]) => void;
   // The app-wide Manage menu, the same one the sidebar's gear opens.
   manageMenuItems: () => MenuItem[];
+  // The app's shared confirm dialog, handed to contributed items for
+  // destructive actions (the ports item's Kill process) — the same
+  // capability sidebar panels get.
+  confirmDialog: (message: string, confirmLabel?: string) => Promise<boolean>;
   mobilePointer: boolean;
 }
 
@@ -86,9 +91,10 @@ export default function StatusBar({
   projectListProps,
   showMenu,
   manageMenuItems,
+  confirmDialog,
   mobilePointer,
 }: Props) {
-  const [stats, setStats] = useState<api.SystemStats | null>(null);
+  const stats = useSystemStats();
   // What's in the popover, and where it points. `owner` is the id of whatever
   // opened it, so a second click on the same trigger closes rather than
   // reopens it.
@@ -102,24 +108,6 @@ export default function StatusBar({
   useEffect(() => {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
   }, [layout]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      if (document.hidden) return;
-      api
-        .fetchSystemStats()
-        .then((next) => {
-          if (!cancelled) setStats(next);
-        })
-        // A failed poll leaves the last reading on screen rather than
-        // blanking the bar or raising a banner — this is ambient
-        // information, not something worth interrupting anyone over.
-        .catch(() => {});
-    };
-    load();
-    return subscribePollTick(load) ?? (() => {});
-  }, []);
 
   const closePopover = useCallback(() => setPopover(null), []);
 
@@ -141,6 +129,7 @@ export default function StatusBar({
   const contextFor = (itemId: string): StatusBarItemContext => ({
     mobilePointer,
     showMenu,
+    confirmDialog,
     openPopover: (anchor, content) => togglePopover(itemId, anchor, content),
     closePopover,
   });
@@ -163,6 +152,10 @@ export default function StatusBar({
     [projectListProps],
   );
 
+  // Constant: the panel subscribes to the stats store itself, so the node
+  // the bar captures at click time keeps updating while it is open.
+  const systemStatsContent = <SystemStatsPanel />;
+
   // Every renderable item, in registration order, with the group it belongs
   // to until the user moves it.
   const slots: StatusBarSlot[] = [
@@ -176,13 +169,18 @@ export default function StatusBar({
   const renderItem = (id: string): ReactNode => {
     if (id === MEMORY_ITEM_ID) {
       return (
-        // Not a button: there is no memory panel to open.
-        <span
-          className="status-bar-item status-bar-reading"
+        <button
+          className="status-bar-item"
+          data-menu-trigger="true"
+          aria-haspopup="dialog"
+          aria-expanded={popover?.owner === MEMORY_ITEM_ID}
           title={
             stats
-              ? `${formatGb(stats.memUsedBytes)} GB of ${formatGb(stats.memTotalBytes)} GB memory in use`
-              : "Memory usage unavailable"
+              ? `${formatGb(stats.memUsedBytes)} GB of ${formatGb(stats.memTotalBytes)} GB memory in use — click for CPU, memory and disk`
+              : "Host statistics unavailable"
+          }
+          onClick={(e) =>
+            togglePopover(MEMORY_ITEM_ID, e.currentTarget.getBoundingClientRect(), systemStatsContent)
           }
         >
           <Icon name="chip" />
@@ -192,7 +190,7 @@ export default function StatusBar({
               {stats ? ` / ${formatGb(stats.memTotalBytes)} GB` : " GB"}
             </span>
           </span>
-        </span>
+        </button>
       );
     }
     if (id === TERMINALS_ITEM_ID) {

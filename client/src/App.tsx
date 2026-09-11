@@ -2321,6 +2321,7 @@ export default function App() {
           projectListProps={projectListProps}
           showMenu={showMenu}
           manageMenuItems={manageMenuItems}
+          confirmDialog={confirmDialog}
           mobilePointer={mobilePointer}
         />
       )}

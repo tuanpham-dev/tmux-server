@@ -741,12 +741,24 @@ export interface StatusBarItemContext {
   // The app's shared context menu, for an item whose click is a short list
   // of actions.
   showMenu(x: number, y: number, items: MenuItem[]): void;
+  // The app's shared confirm dialog (message → resolves true on confirm) —
+  // the same capability SidebarPanelHostProps gives a panel, since a status
+  // bar item's popover can offer the same destructive actions its panel
+  // does (the ports item's Kill process). Preferred over window.confirm:
+  // the native dialog blurs the window, and the popover closes on blur.
+  confirmDialog(message: string, confirmLabel?: string): Promise<boolean>;
   // Opens `content` in a floating panel anchored above the bar, clamped to
   // the viewport (the host owns positioning and dismissal — outside click,
   // Escape, blur). Pass the trigger's own getBoundingClientRect(). Calling
   // it again while THIS item's popover is open closes it, so a trigger
   // button toggles without tracking any state of its own; another item's
   // call replaces it. closePopover() closes it outright.
+  //
+  // `content` is held as the node it was at click time — the host has no way
+  // to rebuild it from the item's later renders. A popover showing anything
+  // that moves therefore wants a COMPONENT (<MyPopover />) that subscribes to
+  // its own data, not a tree closing over the item's current state, which
+  // would freeze the moment it opened.
   openPopover(anchor: DOMRect, content: ReactNS.ReactNode): void;
   closePopover(): void;
 }

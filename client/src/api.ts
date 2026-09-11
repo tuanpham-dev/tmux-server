@@ -7,6 +7,7 @@ import type {
   TmuxSession,
   WorktreeLookup,
 } from "./types";
+import type { SystemStats } from "./lib/systemStats";
 import { formatMb } from "./formatSize";
 
 // Carries the HTTP status alongside the server's error message so a caller
@@ -40,16 +41,17 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return text ? JSON.parse(text) : (undefined as T);
 }
 
-// Host stats behind the status bar. Memory only: the port count is the ports
-// extension's own readout, and the terminal count is derived client side from
-// the sessions poll.
-export interface SystemStats {
-  memTotalBytes: number;
-  memUsedBytes: number;
-}
+// Host stats behind the status bar: memory for the bar's own reading, CPU and
+// disk for the popover it opens. The port count is the ports extension's own
+// readout, and the terminal count is derived client side from the sessions
+// poll. The shape lives with the model that renders it (lib/systemStats.ts).
+export type { SystemStats } from "./lib/systemStats";
 
-export function fetchSystemStats(): Promise<SystemStats> {
-  return request("/api/system-stats");
+// `detailed` asks for the popover's block as well (disks, swap, network,
+// uptime) — several syscalls and a statfs per filesystem more work, so the
+// bar's own poll leaves it off. See lib/systemStatsStore.ts.
+export function fetchSystemStats(detailed = false): Promise<SystemStats> {
+  return request(`/api/system-stats${detailed ? "?detail=1" : ""}`);
 }
 
 export function fetchSessions(): Promise<TmuxSession[]> {

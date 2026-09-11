@@ -7,7 +7,16 @@
 // (serverFetch for this extension's own /list & /kill routes) arrive via
 // module-level bridge variables set once in activate() — same pattern as
 // the search and git-scm extensions.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import "./style.css";
 import { copyText } from "../../_shared/clipboard";
@@ -721,60 +730,68 @@ function fetchTunnelStatus(): Promise<TunnelStatus> {
   return fetch("/api/tunnel-status").then((res) => readJson<TunnelStatus>(res));
 }
 
-// The ports list plus the tunnel state, on one timer — the panel and the
-// status-bar item both need exactly this, and two components polling the
-// same two endpoints on two intervals would double the traffic for nothing.
-function usePortsFeed(): { ports: ListeningPort[]; tunnel: TunnelStatus; error: string | null; reload: () => void } {
-  const [ports, setPorts] = useState<ListeningPort[]>([]);
-  const [tunnel, setTunnel] = useState<TunnelStatus>(NO_TUNNEL);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const mountedRef = useRef(true);
+// The ports list plus the tunnel state, on one timer for the whole extension.
+// A module singleton rather than per-component state: the status-bar readout
+// and the popover it opens are two separate subscribers (the host holds the
+// popover's content as a node captured at click time, so it cannot be fed by
+// the item's own render), and each polling the same two endpoints on its own
+// interval would double the traffic for nothing. It also means the popover's
+// list is live — a killed process leaves it on the next tick without the
+// popover having to be closed and reopened.
+interface PortsFeed {
+  ports: ListeningPort[];
+  tunnel: TunnelStatus;
+  error: string | null;
+}
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+let feed: PortsFeed = { ports: [], tunnel: NO_TUNNEL, error: null };
+const feedListeners = new Set<() => void>();
+let feedTimer: number | null = null;
 
-  const load = useCallback(() => {
-    fetchPorts()
-      .then((next) => {
-        if (!mountedRef.current) return;
-        setPorts(next);
-        setError(null);
-      })
-      .catch((err) => {
-        if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
-      });
-    // A failed tunnel-status read means "no tunnel" rather than an error —
-    // it is decoration, not the panel's purpose.
-    fetchTunnelStatus()
-      .then((next) => {
-        if (mountedRef.current) setTunnel(next);
-      })
-      .catch(() => {
-        if (mountedRef.current) setTunnel(NO_TUNNEL);
-      });
-  }, []);
+function setFeed(patch: Partial<PortsFeed>): void {
+  feed = { ...feed, ...patch };
+  for (const listener of feedListeners) listener();
+}
 
-  useEffect(() => {
-    load();
-    const timer = window.setInterval(() => {
-      if (!document.hidden) load();
+function loadFeed(): void {
+  fetchPorts()
+    .then((next) => setFeed({ ports: next, error: null }))
+    .catch((err) => setFeed({ error: err instanceof Error ? err.message : String(err) }));
+  // A failed tunnel-status read means "no tunnel" rather than an error — it
+  // is decoration, not the panel's purpose.
+  fetchTunnelStatus()
+    .then((next) => setFeed({ tunnel: next }))
+    .catch(() => setFeed({ tunnel: NO_TUNNEL }));
+}
+
+function onFeedVisibility(): void {
+  if (!document.hidden) loadFeed();
+}
+
+function subscribeFeed(onChange: () => void): () => void {
+  feedListeners.add(onChange);
+  // First subscriber starts the timer; the rest ride it, and a late one (the
+  // popover opening) paints immediately from the last reading.
+  if (feedListeners.size === 1) {
+    loadFeed();
+    feedTimer = window.setInterval(() => {
+      if (!document.hidden) loadFeed();
     }, POLL_MS);
-    const onVisibility = () => {
-      if (!document.hidden) load();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [load, refreshKey]);
+    document.addEventListener("visibilitychange", onFeedVisibility);
+  }
+  return () => {
+    feedListeners.delete(onChange);
+    if (feedListeners.size === 0) {
+      if (feedTimer !== null) window.clearInterval(feedTimer);
+      feedTimer = null;
+      document.removeEventListener("visibilitychange", onFeedVisibility);
+    }
+  };
+}
 
-  return { ports, tunnel, error, reload: () => setRefreshKey((k) => k + 1) };
+function usePortsFeed(): PortsFeed & { reload: () => void } {
+  const state = useSyncExternalStore(subscribeFeed, () => feed);
+  return { ...state, reload: loadFeed };
 }
 
 interface PanelProps {
@@ -1099,16 +1116,27 @@ interface StatusItemProps {
   context: {
     openPopover(anchor: DOMRect, content: ReactNode): void;
     closePopover(): void;
+    confirmDialog(message: string, confirmLabel?: string): Promise<boolean>;
   };
 }
 
-function PortsStatusItem({ context }: StatusItemProps) {
-  const { ports, tunnel } = usePortsFeed();
+// The popover's body is its own component rather than a tree built inside the
+// item: the host keeps whatever node it was handed at click time, so a tree
+// closing over the item's render would freeze the moment it opened. As a
+// component it subscribes to the ports feed itself and stays live — which is
+// what makes Kill usable here, since the killed row has to leave the list
+// while the user is still looking at it.
+function PortsStatusPopover({ context }: StatusItemProps) {
+  const { ports, tunnel, reload } = usePortsFeed();
   const [auth, setAuth] = useState<TunnelAuth>(NO_AUTH);
-  const [copiedPort, setCopiedPort] = useState<number | null>(null);
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(NO_PROXY_CONFIG);
+  const [copiedPort, setCopiedPort] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [killing, setKilling] = useState<Set<number>>(new Set());
+  const [error, setError] = useState<string | null>(null);
 
+  // Neither changes while the app runs, so they're read once per opening
+  // rather than on the feed's timer.
   useEffect(() => {
     fetchTunnelAuth()
       .then(setAuth)
@@ -1144,8 +1172,41 @@ function PortsStatusItem({ context }: StatusItemProps) {
       .catch(() => {});
   };
 
-  const content = (
+  // Same action, prompt and SIGTERM-then-SIGKILL route as the panel's Kill.
+  // The host's own confirm dialog rather than window.confirm: the native one
+  // blurs the window, and the popover closes on blur — the user would
+  // confirm into a panel that had already vanished.
+  const onKillPort = (p: ListeningPort) => {
+    context
+      .confirmDialog(
+        `Kill ${p.process ?? "process"} (pid ${p.pid}) listening on port ${p.port}?`,
+        "Kill",
+      )
+      .then((ok) => {
+        if (!ok) return;
+        setKilling((prev) => new Set(prev).add(p.port));
+        setError(null);
+        return killPort(p.port)
+          // The row only leaves once the server has been asked again — the
+          // process gets a grace period before SIGKILL, so a list refreshed
+          // from local optimism could well be wrong.
+          .then(() => reload())
+          .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+          .finally(() => {
+            setKilling((prev) => {
+              const next = new Set(prev);
+              next.delete(p.port);
+              return next;
+            });
+          });
+      })
+      .catch(() => {});
+  };
+
+  return (
     <div className="ports-status-popover">
+      {/* The panel's own error styling — a failed kill reads the same here. */}
+      {error && <div className="ports-error">{error}</div>}
       <ul className="port-list">
         {ports.map((p) => (
           <li key={p.port} className="port-row">
@@ -1163,8 +1224,7 @@ function PortsStatusItem({ context }: StatusItemProps) {
               {p.process && <span className="port-process">{p.process}</span>}
               <span className="port-session">{p.session}</span>
             </button>
-            {/* Same two row actions the panel offers, minus Kill: the status
-                bar is for reaching a port, not for ending one. */}
+            {/* The same three row actions the panel offers. */}
             <div className="port-actions">
               <button
                 className="icon-button port-action-button"
@@ -1182,6 +1242,19 @@ function PortsStatusItem({ context }: StatusItemProps) {
               >
                 <Icon name={copiedPort === p.port ? "check" : "copy"} />
               </button>
+              {/* No pid, nothing to signal — the port is held by something
+                  outside the tmux sessions this extension can see. */}
+              {p.pid !== undefined && (
+                <button
+                  className="icon-button port-action-button"
+                  title="Kill process"
+                  disabled={killing.has(p.port)}
+                  tabIndex={-1}
+                  onClick={() => onKillPort(p)}
+                >
+                  <Icon name="trash" />
+                </button>
+              )}
             </div>
           </li>
         ))}
@@ -1205,6 +1278,10 @@ function PortsStatusItem({ context }: StatusItemProps) {
       </div>
     </div>
   );
+}
+
+function PortsStatusItem({ context }: StatusItemProps) {
+  const { ports, tunnel } = usePortsFeed();
 
   return (
     <button
@@ -1217,13 +1294,19 @@ function PortsStatusItem({ context }: StatusItemProps) {
           : `${ports.length} listening port${ports.length === 1 ? "" : "s"} in tmux sessions`
       }
       // openPopover toggles: the host keys it on this item's id.
-      onClick={(e) => context.openPopover(e.currentTarget.getBoundingClientRect(), content)}
+      onClick={(e) =>
+        context.openPopover(
+          e.currentTarget.getBoundingClientRect(),
+          <PortsStatusPopover context={context} />,
+        )
+      }
     >
       <Icon name="plug" className={tunnel.allForwarded ? "port-forwarded-icon" : undefined} />
       <span>{ports.length}</span>
     </button>
   );
 }
+
 
 export function activate(ctx: ExtensionContext): void {
   serverFetch = ctx.serverFetch;
