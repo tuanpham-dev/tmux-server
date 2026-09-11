@@ -404,6 +404,19 @@ async function apiPost(path: string, body: unknown): Promise<void> {
   }
 }
 
+// apiPost for the one route whose reply is the point (/generate-message),
+// rather than a bare acknowledgement.
+async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await serverFetch!(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}) as Record<string, never>);
+  if (!res.ok) throw new ApiError((data as { error?: string }).error || `${res.status} ${res.statusText}`);
+  return data as T;
+}
+
 export async function apiGetJson<T>(path: string): Promise<T> {
   const res = await serverFetch!(path);
   const data = await res.json().catch(() => ({}) as Record<string, never>);
@@ -965,6 +978,11 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     el.style.overflowY = el.scrollHeight > 300 ? "auto" : "hidden";
   }, [message]);
   const [confirmAbort, setConfirmAbort] = useState(false);
+  // AI commit-message generation — its own flag rather than `busy`, which
+  // gates the git operations: generating only reads the staged diff, so it
+  // must not disable the panel, and the user can keep editing the message or
+  // change their mind while it runs.
+  const [generating, setGenerating] = useState(false);
   const [clickAction, setClickAction] = useState(readClickAction);
   const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(readCollapsedDirs);
@@ -1206,6 +1224,25 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
       setMessage("");
       setAmend(false);
     });
+  // Fills the commit box from the staged diff using whatever AI is configured
+  // in Settings → AI. Deliberately overwrites the box rather than appending —
+  // the button is disabled once there's a message, so there is never any
+  // typing of the user's to lose.
+  const generateMessage = async () => {
+    if (!activeCwd || generating) return;
+    setGenerating(true);
+    setError(null);
+    try {
+      const data = await apiPostJson<{ message: string }>("/generate-message", { cwd: activeCwd, amend });
+      setMessage(data.message);
+      commitMessageRef.current?.focus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const abortOperation = () => runOp(() => apiPost("/abort", { cwd: activeCwd }));
 
   // User-initiated fetch (More Actions menu) — same non-interactive /fetch
@@ -1930,18 +1967,44 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
       )}
 
       <div className="git-commit-box">
-        <textarea
-          ref={commitMessageRef}
-          className="git-commit-message"
-          placeholder={`Message (${status.branch ?? "detached HEAD"})`}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && canCommit) commit();
-          }}
-          disabled={busy}
-          rows={1}
-        />
+        {/* The AI button sits inside the input, top-right, the way VS Code's
+            own commit box places it — anchored to the top so it doesn't drift
+            as the textarea auto-grows past one line. */}
+        <div className="git-commit-input">
+          <textarea
+            ref={commitMessageRef}
+            className="git-commit-message"
+            placeholder={`Message (${status.branch ?? "detached HEAD"})`}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && canCommit) commit();
+            }}
+            disabled={busy}
+            rows={1}
+          />
+          <button
+            className="icon-button git-generate-button"
+            title={
+              generating
+                ? "Writing a commit message…"
+                : message.trim()
+                  ? "Clear the message first to generate one"
+                  : amend
+                    ? "Write a commit message for the amended commit with AI"
+                    : staged.length === 0
+                      ? "No staged changes to describe"
+                      : "Write a commit message for the staged changes with AI"
+            }
+            disabled={busy || generating || message.trim().length > 0 || (!amend && staged.length === 0)}
+            onClick={() => void generateMessage()}
+          >
+            <Icon
+              name={generating ? "loading" : "sparkle"}
+              className={generating ? "codicon-modifier-spin" : undefined}
+            />
+          </button>
+        </div>
         <label className="git-amend-toggle">
           <input type="checkbox" checked={amend} onChange={toggleAmend} disabled={busy} />
           Amend

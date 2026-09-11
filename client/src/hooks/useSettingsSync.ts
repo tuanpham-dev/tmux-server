@@ -8,6 +8,7 @@ import {
   loadExtensionRegistries,
   loadExtensionSettings,
   loadKeybindingOverrides,
+  adoptAiExtensionSettings,
   adoptWorktreeExtensionSettings,
   loadProjects,
   loadSettings,
@@ -179,9 +180,13 @@ export function useSettingsSync(extCommands: RegisteredCommand[]) {
           // Worktree settings used to live in the worktrees extension; a
           // value the user customised there is adopted here once.
           setSettings(
-            adoptWorktreeExtensionSettings(
-              migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }),
+            adoptAiExtensionSettings(
+              adoptWorktreeExtensionSettings(
+                migrateSettings({ ...DEFAULT_SETTINGS, ...(doc.settings as Partial<AppSettings>) }),
+                doc.extensionSettings as ExtensionSettingsValues | undefined,
+              ),
               doc.extensionSettings as ExtensionSettingsValues | undefined,
+              doc.settings as Record<string, unknown>,
             ),
           );
         }

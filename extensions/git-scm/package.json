@@ -4,7 +4,7 @@
   "publisher": "tmux-server",
   "version": "1.2.0",
   "displayName": "Git",
-  "description": "Built-in VS Code-style Source Control panel: stage, commit, amend, push/pull/fetch, branch switching, stash, a COMMITS history pane, and diff view (bundled — see extensions/build.mjs).",
+  "description": "Built-in VS Code-style Source Control panel: stage, commit, amend, push/pull/fetch, branch switching, stash, an AI-written commit message, a COMMITS history pane, and diff view (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {
@@ -51,6 +51,11 @@
           "type": "boolean",
           "default": false,
           "description": "Submit a diff comment's context block to the agent immediately. Off (default) types it into the pane for you to review before pressing Enter."
+        },
+        "gitScm.aiCommitInstruction": {
+          "type": "string",
+          "default": "Write a git commit message for the staged changes below. Reply with ONLY the commit message - no preamble, no commentary, no code fences. First line: an imperative subject under 72 characters, capitalized, with no trailing period. If the change needs explaining, add a blank line and then a body of prose paragraphs wrapped at 76 characters that says what changed and why, not how. Describe only what the diff actually shows.",
+          "description": "The instruction sent to the AI when you press the sparkle button in the commit box. The staged diff, its file statistics, and recent commit subjects are appended to it. Which AI runs it is set in Settings → AI, not here."
         }
       }
     }

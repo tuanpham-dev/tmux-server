@@ -52,7 +52,13 @@ import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } fr
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { shellIntegrationPath, shellIntegrationSourceLine } from "./shellIntegration.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
-import { mergeSettingsDoc, readSettingsDoc, writeSettingsDoc } from "./settingsStore.js";
+import {
+  mergeSettingsDoc,
+  readAiSecrets,
+  readSettingsDoc,
+  writeAiSecret,
+  writeSettingsDoc,
+} from "./settingsStore.js";
 import {
   createSession,
   createWindow,
@@ -194,9 +200,40 @@ api.post("/sessions", async (req, res) => {
 // callers that want to send just what changed.
 api.get("/settings", async (_req, res) => {
   try {
-    res.json(await readSettingsDoc());
+    // aiSecrets never leaves the server — see settingsStore's module comment.
+    // Clients learn which providers have a key from GET /ai-key instead.
+    const { aiSecrets: _omitted, ...doc } = await readSettingsDoc();
+    res.json(doc);
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// Presence only, never the keys themselves — enough for the settings UI to
+// show "set"/"not set" and for a provider picker to warn before you select a
+// provider you have no key for.
+api.get("/ai-key", async (_req, res) => {
+  try {
+    const secrets = await readAiSecrets();
+    res.json({ anthropic: !!secrets.anthropic, openai: !!secrets.openai });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// The only route that can write an API key. An empty/absent key clears it.
+api.put("/ai-key", async (req, res) => {
+  try {
+    const provider = req.body?.provider;
+    if (provider !== "anthropic" && provider !== "openai") {
+      res.status(400).json({ error: "provider must be \"anthropic\" or \"openai\"" });
+      return;
+    }
+    const key = typeof req.body?.key === "string" ? req.body.key : "";
+    await writeAiSecret(provider, key || null);
+    res.status(204).end();
+  } catch (err) {
+    res.status(400).json({ error: errMessage(err) });
   }
 });
 

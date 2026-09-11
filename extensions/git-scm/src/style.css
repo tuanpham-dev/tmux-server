@@ -31,8 +31,13 @@
 
 .git-commit-message {
   resize: none;
+  width: 100%;
+  box-sizing: border-box;
   max-height: 300px;
-  padding: 6px 8px;
+  /* Right padding clears the overlaid AI button (and the scrollbar that
+     appears once the box grows past max-height), so typed text never runs
+     underneath it. */
+  padding: 6px 30px 6px 8px;
   background: var(--input-bg);
   border: 1px solid var(--input-border);
   border-radius: 2px;
@@ -59,6 +64,26 @@
 .git-amend-toggle input {
   margin: 0;
   cursor: pointer;
+}
+
+/* Positioning context for the AI button overlaid on the message input. */
+.git-commit-input {
+  position: relative;
+  display: flex;
+}
+
+.git-generate-button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  /* The textarea paints its own background, so the button needs none of its
+     own — but it must sit above it to stay clickable. */
+  z-index: 1;
+}
+
+.git-generate-button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .git-commit-button {

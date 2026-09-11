@@ -109,6 +109,27 @@ export interface AppSettings {
   // JSON array of {name, command}. The command is typed into the session and
   // submitted right after it's created. "[]" disables the picker.
   worktreeRunCommands: string;
+  // Which AI backend the app and its extensions use. The CLI providers shell
+  // out to a locally installed binary and need no key; "anthropic"/"openai"
+  // call the HTTP API and need one, stored server-side (see settingsStore's
+  // aiSecrets) and never sent back to a client. "custom" runs aiCustomCommand.
+  aiProvider: "claude" | "codex" | "agy" | "anthropic" | "openai" | "custom";
+  // Override the CLI provider's binary — a name on PATH or an absolute path.
+  // Empty uses the provider's own default (claude / codex / agy).
+  aiBinaryPath: string;
+  // Model passed to the provider. Empty means the CLI's own default; for
+  // "anthropic" it means claude-opus-5, and for "openai" it is required.
+  aiModel: string;
+  // "custom" provider only: a shell command line that receives the prompt as
+  // its single trailing argument and prints the reply.
+  aiCustomCommand: string;
+  // "anthropic"/"openai" only: send that provider's wire format to this
+  // endpoint instead of the vendor's own — any compatible service
+  // (OpenRouter, Groq, Together, LiteLLM, a local Ollama). Include the
+  // version segment, as the vendors document it: "https://host/v1". Empty
+  // uses the official endpoint. With one set, the API key becomes optional,
+  // since a local endpoint often needs none.
+  aiBaseUrl: string;
   // Gates the "Kill Session"/"Kill Window" confirm dialogs. Unsaved-changes
   // confirms (dirty CSV tabs) are never gated — that's data loss, not a
   // preference.
@@ -191,6 +212,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { name: "Claude Code", command: "claude" },
     { name: "Claude Code (skip permissions)", command: "claude --dangerously-skip-permissions" },
   ]),
+  aiProvider: "claude",
+  aiBinaryPath: "",
+  aiModel: "",
+  aiCustomCommand: "",
+  aiBaseUrl: "",
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",
@@ -436,6 +462,61 @@ export function adoptWorktreeExtensionSettings(
   const agents = ext["worktrees.agents"];
   if (typeof agents === "string" && agents.trim() && next.worktreeRunCommands === DEFAULT_SETTINGS.worktreeRunCommands) {
     next.worktreeRunCommands = agents.trim();
+  }
+  return next;
+}
+
+// AI provider settings used to live in each AI extension (ai-command,
+// prompts), one identical quartet apiece. Same contract as
+// adoptWorktreeExtensionSettings above: a value the user actually customised
+// is carried over, and an app setting they have already changed is never
+// overwritten. ai-command is read first, then prompts, so the first
+// customised value wins. The gemini CLI is gone, so a stored "gemini" adopts
+// as "agy" (Antigravity) rather than silently falling back to claude.
+const AI_EXTENSION_SOURCES: { ids: string[]; prefix: string }[] = [
+  { ids: ["tmux-server.ai-command", "ai-command"], prefix: "aiCommand" },
+  { ids: ["tmux-server.prompts", "prompts"], prefix: "prompts" },
+];
+
+export function adoptAiExtensionSettings(
+  settings: AppSettings,
+  extensionSettings: ExtensionSettingsValues | undefined,
+  // The document's RAW settings, before defaults are merged in. Adoption must
+  // happen exactly once, and "the user has never had an AI provider" is
+  // precisely "this key is absent" — testing the merged value against the
+  // default instead would re-adopt on every single load, and would make the
+  // default value unchoosable: pick "claude" with an old extension setting of
+  // "custom" and the next reload silently overwrites it again.
+  rawSettings?: Record<string, unknown>,
+): AppSettings {
+  if (!extensionSettings) return settings;
+  if (rawSettings && "aiProvider" in rawSettings) return settings;
+  const next = { ...settings };
+  for (const { ids, prefix } of AI_EXTENSION_SOURCES) {
+    const ext = ids.map((id) => extensionSettings[id]).find(Boolean);
+    if (!ext) continue;
+    const read = (key: string): string => {
+      const value = ext[`${prefix}.${key}`];
+      return typeof value === "string" ? value.trim() : "";
+    };
+
+    const provider = read("provider");
+    if (provider && next.aiProvider === DEFAULT_SETTINGS.aiProvider) {
+      const adopted = provider === "gemini" ? "agy" : provider;
+      if (["claude", "codex", "agy", "anthropic", "openai", "custom"].includes(adopted)) {
+        next.aiProvider = adopted as AppSettings["aiProvider"];
+      }
+    }
+    const binaryPath = read("binaryPath");
+    if (binaryPath && next.aiBinaryPath === DEFAULT_SETTINGS.aiBinaryPath) {
+      next.aiBinaryPath = binaryPath;
+    }
+    const model = read("model");
+    if (model && next.aiModel === DEFAULT_SETTINGS.aiModel) next.aiModel = model;
+    const customCommand = read("customCommand");
+    if (customCommand && next.aiCustomCommand === DEFAULT_SETTINGS.aiCustomCommand) {
+      next.aiCustomCommand = customCommand;
+    }
   }
   return next;
 }

@@ -20,6 +20,27 @@ const ASKPASS_PATH = path.join(__dirname, "askpass.cjs");
 
 const DEFAULT_TIMEOUT = 15000;
 
+// ---- AI commit messages ----
+// The provider, binary, model and any API key all live in core (Settings →
+// AI, see server/src/ai.ts) — this extension only writes the prompt and hands
+// it to ctx.ai. Nothing here executes any part of the reply; it comes back as
+// plain text that lands in the commit box for the user to read and edit.
+//
+// The patch is what costs tokens and wall-clock, so it is truncated, while
+// --stat always goes along in full: a change too large to send verbatim still
+// gets an accurate file list instead of a message written from a truncated
+// first half.
+const MAX_DIFF_CHARS = 60_000;
+const RECENT_SUBJECTS = 10;
+
+const DEFAULT_COMMIT_INSTRUCTION =
+  "Write a git commit message for the staged changes below. " +
+  "Reply with ONLY the commit message - no preamble, no commentary, no code fences. " +
+  "First line: an imperative subject under 72 characters, capitalized, with no trailing period. " +
+  "If the change needs explaining, add a blank line and then a body of prose paragraphs wrapped at 76 " +
+  "characters that says what changed and why, not how. Describe only what the diff actually shows.";
+
+
 // opts.allowNonZeroExit: `git diff --no-index` exits 1 (not 0) when it
 // finds differences — the expected case, not a failure — so the diff
 // endpoint opts out of the reject-on-nonzero-exit default. Network ops
@@ -450,7 +471,7 @@ async function getRepoDecorations(anyDirInRepo) {
   return scan;
 }
 
-export function activate({ router, log, host }) {
+export function activate({ router, log, host, getSettings, ai }) {
   // Core file mutations (write/rename/delete/paste/upload) must show up in
   // tree badges immediately, same as when the scan lived in core.
   host?.events?.onApiMutation?.(invalidateDecorationCaches);
@@ -1122,6 +1143,81 @@ export function activate({ router, log, host }) {
       }
     };
   }
+
+  // Amending rewrites HEAD, so the change to describe is HEAD's own diff plus
+  // whatever is staged on top — that is HEAD~1..index. A root commit has no
+  // HEAD~1; there the staged diff alone is the best available answer.
+  async function amendBase(root) {
+    try {
+      await git(["rev-parse", "--verify", "--quiet", "HEAD~1"], root);
+      return "HEAD~1";
+    } catch {
+      return null;
+    }
+  }
+
+  router.post("/generate-message", async (req, res) => {
+    const cwd = requireCwd(req, res);
+    if (!cwd) return;
+    const amend = req.body?.amend === true;
+    try {
+      const root = await requireRoot(cwd, res);
+      if (!root) return;
+
+      const base = amend ? await amendBase(root) : null;
+      const diffArgs = base ? ["diff", "--cached", base] : ["diff", "--cached"];
+      const [stat, rawDiff] = await Promise.all([
+        git([...diffArgs, "--stat"], root),
+        git(diffArgs, root),
+      ]);
+      if (!rawDiff.trim()) {
+        res.status(400).json({ error: amend ? "Nothing to amend." : "No staged changes to describe." });
+        return;
+      }
+      const truncated = rawDiff.length > MAX_DIFF_CHARS;
+      const diff = truncated ? `${rawDiff.slice(0, MAX_DIFF_CHARS)}\n\n[diff truncated]` : rawDiff;
+
+      // Recent subjects let the model match this repository's own conventions
+      // instead of defaulting to Conventional Commits. Absent on an unborn
+      // branch, which is fine — the instruction alone still applies.
+      let recent = "";
+      try {
+        recent = await git(["log", `--format=%s`, "-n", String(RECENT_SUBJECTS)], root);
+      } catch {
+        recent = "";
+      }
+
+      const settings = (await getSettings?.()) ?? {};
+      const configured =
+        typeof settings["gitScm.aiCommitInstruction"] === "string"
+          ? settings["gitScm.aiCommitInstruction"].trim()
+          : "";
+      const sections = [configured || DEFAULT_COMMIT_INSTRUCTION];
+      if (recent.trim()) {
+        sections.push(`Recent commit subjects in this repository, for style:\n${recent.trim()}`);
+      }
+      if (truncated) {
+        sections.push(
+          "The patch below is truncated; the file statistics above it are complete. " +
+            "Describe the change as a whole, and do not claim to have seen every hunk.",
+        );
+      }
+      sections.push(`Files changed:\n${stat.trim()}`, `Diff:\n${diff}`);
+
+      // cwd matters to some CLI providers' trust checks (codex refuses to run
+      // outside a trusted directory), so run it in the repository itself
+      // rather than wherever the server was started.
+      const message = await ai.run(sections.join("\n\n---\n\n"), { cwd: root });
+      res.json({ message });
+    } catch (err) {
+      // ai.run's AiError codes distinguish "not configured yet" from "the
+      // provider broke" — both read better as guidance than as a 500.
+      const code = err?.code;
+      const configIssue =
+        code === "missing-binary" || code === "missing-key" || code === "missing-model" || code === "missing-command";
+      res.status(configIssue ? 400 : 502).json({ error: String(err?.message ?? err) });
+    }
+  });
 
   router.post("/push", networkHandler("push"));
   router.post("/pull", networkHandler("pull"));

@@ -6,7 +6,16 @@ import path from "node:path";
 // defines the schema (settings + keybinding overrides) and merges over its
 // own defaults, so the server never needs a schema update when a setting is
 // added. The server only guarantees the doc is a plain JSON object and small.
+//
+// `aiSecrets` is the one documented exception. API keys for the AI providers
+// (see ai.ts) have to live somewhere the server can read at call time and no
+// client can ever read back, and the client's own sync GETs this document,
+// merges client-side, and PUTs it back WHOLE — so a key it could see would
+// come straight back on the next save, and a key it could write would be a
+// way to smuggle one in. Hence: server-owned, restored from disk on every
+// writeSettingsDoc, and only writeAiSecret below ever changes it.
 const MAX_BYTES = 64 * 1024;
+const AI_SECRETS_KEY = "aiSecrets";
 
 const configDir = path.join(
   process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
@@ -28,15 +37,58 @@ export async function readSettingsDoc(): Promise<Record<string, unknown>> {
   }
 }
 
-export async function writeSettingsDoc(doc: unknown): Promise<void> {
-  if (!isPlainObject(doc)) throw new Error("settings must be a JSON object");
+// The only code that actually touches the file. Callers go through
+// writeSettingsDoc (which protects aiSecrets) or writeAiSecret (which is the
+// one writer allowed to change it).
+async function persist(doc: Record<string, unknown>): Promise<void> {
   const json = JSON.stringify(doc, null, 2);
   if (Buffer.byteLength(json) > MAX_BYTES) throw new Error("settings document too large");
   await mkdir(configDir, { recursive: true });
-  // Temp-then-rename so a crash mid-write can't leave a truncated file.
+  // Temp-then-rename so a crash mid-write can't leave a truncated file. 0600
+  // on the temp file, which rename carries over: the document can hold API
+  // keys, so it must not be world-readable. A pre-existing 0644 file is
+  // replaced (not edited) by the rename, so the first write tightens it —
+  // and it cannot hold a secret before a write.
   const tmp = `${settingsPath}.${process.pid}.tmp`;
-  await writeFile(tmp, json);
+  await writeFile(tmp, json, { mode: 0o600 });
   await rename(tmp, settingsPath);
+}
+
+export async function writeSettingsDoc(doc: unknown): Promise<void> {
+  if (!isPlainObject(doc)) throw new Error("settings must be a JSON object");
+  // aiSecrets is restored from disk rather than taken from the caller, so an
+  // incoming document can neither drop the stored keys nor introduce new
+  // ones — whatever it says about aiSecrets is discarded.
+  const next = { ...doc };
+  const stored = (await readSettingsDoc())[AI_SECRETS_KEY];
+  if (isPlainObject(stored)) next[AI_SECRETS_KEY] = stored;
+  else delete next[AI_SECRETS_KEY];
+  await persist(next);
+}
+
+// The stored API keys, provider id → key. Server-side callers only (ai.ts);
+// nothing here is ever sent to a client.
+export async function readAiSecrets(): Promise<Record<string, string>> {
+  const stored = (await readSettingsDoc())[AI_SECRETS_KEY];
+  if (!isPlainObject(stored)) return {};
+  const out: Record<string, string> = {};
+  for (const [provider, key] of Object.entries(stored)) {
+    if (typeof key === "string" && key.trim()) out[provider] = key;
+  }
+  return out;
+}
+
+// Sets or (with a null/empty key) clears one provider's key. The one writer
+// that may change aiSecrets, so it persists directly instead of going through
+// writeSettingsDoc, which would restore the old value over it.
+export async function writeAiSecret(provider: string, key: string | null): Promise<void> {
+  const doc = await readSettingsDoc();
+  const stored = doc[AI_SECRETS_KEY];
+  const secrets: Record<string, unknown> = isPlainObject(stored) ? { ...stored } : {};
+  if (key && key.trim()) secrets[provider] = key.trim();
+  else delete secrets[provider];
+  doc[AI_SECRETS_KEY] = secrets;
+  await persist(doc);
 }
 
 // Recurses into plain-object values on both sides so a patch only has to

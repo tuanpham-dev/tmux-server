@@ -13,6 +13,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
+import { runAi, type AiRunOptions } from "./ai.js";
 import { readSettingsDoc } from "./settingsStore.js";
 
 const configDir = path.join(
@@ -602,11 +603,20 @@ export interface ExtensionHostApi {
     // dropped when its server hook unmounts.
     onApiMutation(cb: () => void): () => void;
   };
+  // The app's shared AI backend (ai.ts) — prompt in, text out, using whatever
+  // provider is configured in Settings → AI. An extension supplies the prompt
+  // and never sees a provider, a binary or an API key. Rejects with an AiError
+  // whose `code` distinguishes "not configured yet" from "the provider broke",
+  // so an extension can surface the first as guidance.
+  ai: {
+    run(prompt: string, opts?: AiRunOptions): Promise<string>;
+  };
 }
 
 function makeHostApi(id: string): ExtensionHostApi {
   return {
     ports: { list: listTmuxPorts, find: findTmuxPort },
+    ai: { run: (prompt, opts) => runAi(prompt, opts) },
     events: {
       onApiMutation(cb) {
         let set = apiMutationListeners.get(id);
@@ -679,6 +689,9 @@ export async function mountServerHookIfNeeded(
       router,
       log: (...args: unknown[]) => console.log(`[ext:${id}]`, ...args),
       getSettings: () => getExtensionSettings(id, manifest),
+      // Also on `host`, but lifted to the top level because it is the one
+      // capability most extensions reach for by name — activate({ ai }).
+      ai: { run: (prompt: string, opts?: AiRunOptions) => runAi(prompt, opts) },
       host: makeHostApi(id),
     });
     serverHooks.set(id, router);

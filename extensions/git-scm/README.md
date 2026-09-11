@@ -1,10 +1,11 @@
 # Git
 
-A VS Code-style SOURCE CONTROL panel for the active directory's git repository: stage, commit, amend, push/pull/fetch, branch switching, stash, commit history, and diff.
+A VS Code-style SOURCE CONTROL panel for the active directory's git repository: stage, commit, amend, push/pull/fetch, branch switching, stash, AI-written commit messages, commit history, and diff.
 
 ## Contributes
 
 - **Sidebar panel:** SOURCE CONTROL — staged/unstaged/conflicted file lists, stage/unstage/discard, commit message box (Ctrl/Cmd+Enter to commit, Amend toggle to rewrite HEAD instead of composing a new commit), a branch button (switch or create a local branch), and a More Actions (`…`) menu for Pull/Push/Fetch/Stash/Pop Stash.
+- **AI commit messages:** the sparkle button next to the Amend toggle writes a commit message from the staged diff — the diff itself (truncated past 60k characters), its full file statistics, and the last ten commit subjects so the message follows this repository's own conventions. With Amend on it describes `HEAD~1..index` instead, so the message covers the whole amended commit. It fills the box for you to edit; nothing is committed until you press Commit, and the button is disabled once the box has text, so it can never overwrite your own typing.
 - **COMMITS pane:** recent history with unpushed markers, click a commit for its full diff, Load More, and a refresh button in its header. It's a pane of the SOURCE CONTROL panel — stacked below it in the same tab, with its own collapse state and a splitter to size the two against each other. Drag its header onto another tab's icon (or right-click it) to move it into the Explorer, the Run tab, or the other sidebar; "Reset Location" puts it back under SOURCE CONTROL.
 - **Diff viewer:** click a file to open its working-tree or staged diff, or a COMMITS row to open that commit's diff; Shift+click a file opens it in the editor instead.
 - **Merge conflict resolver:** click a conflicted file to accept Current/Incoming/Both per block (or Accept All), then Save and Mark as Resolved — used for merge, rebase, cherry-pick/revert conflicts, and a stash pop that lands in conflict.
@@ -12,6 +13,9 @@ A VS Code-style SOURCE CONTROL panel for the active directory's git repository: 
 
 ## Settings
 
+Which AI writes the commit messages — the provider, model, binary path or API key — is **not** configured here. It is shared with every other AI feature in the app, under **Settings → AI**. This extension contributes only the instruction it sends.
+
+- **Commit message instruction** (`gitScm.aiCommitInstruction`) — the instruction the sparkle button sends; the staged diff, its file statistics and recent commit subjects are appended to it. Edit it to change the house style — subject length, whether a body is wanted, Conventional Commits.
 - **Poll interval** (`gitScm.pollInterval`, default 3000ms) — how often the active directory's git status refreshes in the background; 0 disables polling.
 - **Fetch interval** (`gitScm.fetchInterval`, default 0/off) — how often to run a non-interactive `git fetch` in the background so ahead/behind counts stay current; never prompts for credentials, so an auth-requiring remote just fails the fetch silently. Manual fetch is always available via More Actions (`…`).
 - **File tree decorations** (`gitScm.fileTreeDecorations`, default on) — git status badges and row colors in the FILES tree; off skips the per-repo status scan.

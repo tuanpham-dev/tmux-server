@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { extensionSettingsComponents, useExtensionRegistryVersion } from "../extensions";
 import { DEFAULT_SETTINGS, type AppSettings, type ExtensionSettingsValues } from "../settings";
 import type { ExtensionInfo } from "../types";
+import AiSection from "./settings/AiSection";
 import BehaviorSection from "./settings/BehaviorSection";
 import { SettingsProvider } from "./settings/context";
 import ExtensionConfigSection from "./settings/ExtensionConfigSection";
@@ -30,13 +31,14 @@ interface Props {
 // installing, and managing extensions themselves lives in the sidebar's
 // Extensions tab (ExtensionsPanel), not here — see
 // plans/extension-registry-and-extensions-tab.md.
-type Section = "terminal" | "editor" | "behavior" | "ui" | `ext:${string}`;
+type Section = "terminal" | "editor" | "behavior" | "ui" | "ai" | `ext:${string}`;
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "editor", label: "Editor" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
+  { id: "ai", label: "AI" },
 ];
 
 export default function SettingsView({
@@ -136,6 +138,7 @@ export default function SettingsView({
           {section === "editor" && <EditorSection />}
           {section === "behavior" && <BehaviorSection />}
           {section === "ui" && <UiSection />}
+          {section === "ai" && <AiSection />}
           {activeExtension && <ExtensionConfigSection ext={activeExtension} />}
           {activeExtension &&
             extensionSettingsComponents

@@ -92,6 +92,28 @@ export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
   });
 }
 
+// AI provider keys. Deliberately not part of the settings document: the
+// server never hands a key back, so the client can only learn WHICH
+// providers have one (getAiKeyStatus) and set or clear one (setAiKey).
+// See server/src/settingsStore.ts's module comment.
+export interface AiKeyStatus {
+  anthropic: boolean;
+  openai: boolean;
+}
+
+export function getAiKeyStatus(): Promise<AiKeyStatus> {
+  return request("/api/ai-key");
+}
+
+// An empty `key` clears the stored one.
+export function setAiKey(provider: "anthropic" | "openai", key: string): Promise<void> {
+  return request("/api/ai-key", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider, key }),
+  });
+}
+
 // Deep-merges `patch` over the server's on-disk document instead of
 // replacing it outright (see server/src/settingsStore.ts's mergeSettingsDoc)
 // — for a caller that wants to write just the keys it's changing without
