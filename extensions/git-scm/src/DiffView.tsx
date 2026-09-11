@@ -319,7 +319,7 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
     const valid = pendingComments.filter((pc) => hunks[pc.hunkIndex]);
     const dropped = pendingComments.length - valid.length;
     if (valid.length === 0) {
-      setSendError("The diff changed since these comments were added — please re-add them.");
+      setSendError("The diff changed since these comments were added - please re-add them.");
       setPendingComments([]);
       return;
     }
@@ -331,13 +331,13 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
       const targets = agentWindows(sessions, parsed.cwd, readAgentPrograms());
       const submit = readSendAutoSubmit();
       if (targets.length === 0) {
-        setSendError("No agent is running in this repo — start one first.");
+        setSendError("No agent is running in this repo - start one first.");
         return;
       }
       const finish = () => {
         setPendingComments([]);
         if (dropped > 0) {
-          setSendError(`${dropped} comment${dropped === 1 ? "" : "s"} dropped — the diff had changed since they were added.`);
+          setSendError(`${dropped} comment${dropped === 1 ? "" : "s"} dropped - the diff had changed since they were added.`);
         }
       };
       if (targets.length === 1) {

@@ -98,7 +98,7 @@ describe("systemStatRows", () => {
     // that only counts up, so there is no percentage to show yet.
     const unknown = rows({ cpuPercent: null })[0];
     expect(unknown.meter).toEqual({ percent: null });
-    expect(unknown.value).toBe("—");
+    expect(unknown.value).toBe("-");
     expect(rows()[0].meter).toEqual({ percent: 12.4 });
   });
 

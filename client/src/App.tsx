@@ -1709,7 +1709,7 @@ export default function App() {
   const cutPaths = fsClipboard?.mode === "cut" ? new Set(fsClipboard.paths) : null;
 
   useEffect(() => {
-    document.title = activeTab ? `${tabLabel(activeTab)} — ${APP_NAME}` : APP_NAME;
+    document.title = activeTab ? `${tabLabel(activeTab)} - ${APP_NAME}` : APP_NAME;
   }, [activeTab, tabLabel]);
 
   // The Manage menu, shared by the sidebar's gear button and (on a phone,
@@ -2390,7 +2390,7 @@ export default function App() {
       {uploadProgress && (
         <div className="upload-banner">
           <div className="upload-banner-label">
-            Uploading{uploadProgress.currentName ? ` — ${uploadProgress.currentName}` : "…"}
+            Uploading{uploadProgress.currentName ? ` - ${uploadProgress.currentName}` : "…"}
           </div>
           <div className="upload-banner-track">
             <div

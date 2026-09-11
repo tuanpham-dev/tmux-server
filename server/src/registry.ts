@@ -175,7 +175,7 @@ async function loadLocalSource(source: string): Promise<SourceCatalog> {
   } catch {
     return {
       source,
-      error: `no index.json found in ${source} — generate one with the registry repo's "npm run pack" script`,
+      error: `no index.json found in ${source} - generate one with the registry repo's "npm run pack" script`,
       entries: [],
     };
   }

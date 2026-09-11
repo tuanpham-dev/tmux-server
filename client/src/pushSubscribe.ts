@@ -29,7 +29,7 @@ export function isPushSupported(): boolean {
 // this to explain the difference instead of just hiding the toggle.
 export function pushUnavailableReason(): string | null {
   if (!window.isSecureContext) {
-    return "Push notifications need HTTPS (or localhost) — this page isn't loaded over a secure connection.";
+    return "Push notifications need HTTPS (or localhost) - this page isn't loaded over a secure connection.";
   }
   if (!isPushSupported()) {
     return "Push notifications aren't supported in this browser.";

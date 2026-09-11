@@ -1320,7 +1320,7 @@ export default function FileTree({
       <>
         {renderResultNodes(searchTree, 0)}
         {searchTruncated && (
-          <div className="file-tree-search-note">Showing the top {results.length} matches — narrow the search to see more.</div>
+          <div className="file-tree-search-note">Showing the top {results.length} matches - narrow the search to see more.</div>
         )}
       </>
     );

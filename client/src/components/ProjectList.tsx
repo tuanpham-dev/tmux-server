@@ -605,7 +605,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
         <div className="session-row">
           <button
             className="session-item project-item dead-session-item"
-            title={`${cwd} (not running — click to open)`}
+            title={`${cwd} (not running - click to open)`}
             onClick={() => onOpenProject(cwd)}
             {...menuBindings(row)}
             tabIndex={rowProps.tabIndex}
@@ -839,7 +839,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       <div
         role="button"
         className={`window-item${isActive ? " active-window" : ""}`}
-        title={`${s.name} · ${w.name} — ${w.cwd}${w.activity ? " (new output)" : ""} (tmux: ${s.name}:${w.index})`}
+        title={`${s.name} · ${w.name} - ${w.cwd}${w.activity ? " (new output)" : ""} (tmux: ${s.name}:${w.index})`}
         onClick={() => onOpenWindow(s.name, w.index)}
         {...menuBindings(row)}
         tabIndex={rowProps.tabIndex}

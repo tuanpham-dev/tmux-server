@@ -2947,7 +2947,7 @@ function ConflictView({ filePath, active, toolbarTarget, openInEditor, setDirty 
     remaining > 0
       ? `${remaining} conflict${remaining === 1 ? "" : "s"} remaining`
       : dirty
-        ? "All conflicts resolved — Save to apply"
+        ? "All conflicts resolved - Save to apply"
         : "All conflicts resolved";
 
   return (
@@ -2966,10 +2966,10 @@ function ConflictView({ filePath, active, toolbarTarget, openInEditor, setDirty 
       )}
       {!error && data === null && <div className="git-diff-status">Loading…</div>}
       {!error && data?.tooLarge && (
-        <div className="git-diff-status">File is too large to resolve here — open in Editor instead.</div>
+        <div className="git-diff-status">File is too large to resolve here - open in Editor instead.</div>
       )}
       {!error && data?.binary && (
-        <div className="git-diff-status">Binary file conflict — resolve in Editor, then Mark as Resolved.</div>
+        <div className="git-diff-status">Binary file conflict - resolve in Editor, then Mark as Resolved.</div>
       )}
       {!error && data && !data.binary && !data.tooLarge && segments && (
         <>

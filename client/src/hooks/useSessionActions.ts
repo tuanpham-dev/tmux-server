@@ -478,7 +478,7 @@ export function useSessionActions(
       const message = alsoKillSessions
         ? `Kill ${node.sessions.length > 1 ? `sessions "${names}"` : `session "${names}"`} and remove the worktree at ${wt.path}?\n\nThe branch "${node.label}" is kept.`
         : node.sessions.length > 0
-          ? `Remove the worktree at ${wt.path}?\n\n${node.sessions.length > 1 ? `Sessions "${names}" are` : `Session "${names}" is`} left running — their shells will be sitting in a deleted directory. The branch "${node.label}" is kept.`
+          ? `Remove the worktree at ${wt.path}?\n\n${node.sessions.length > 1 ? `Sessions "${names}" are` : `Session "${names}" is`} left running - their shells will be sitting in a deleted directory. The branch "${node.label}" is kept.`
           : `Remove the worktree at ${wt.path}?\n\nThe branch "${node.label}" is kept.`;
       if (!(await confirmDialog(message, alsoKillSessions ? "Kill & Remove" : "Remove Worktree"))) return;
       if (alsoKillSessions) for (const s of node.sessions) await killSessionNow(s.name);
@@ -562,7 +562,7 @@ export function useSessionActions(
       const items: MenuItem[] = [...projects]
         .sort((a, b) => b.lastOpened - a.lastOpened)
         .map((p) => ({
-          label: `${projectName(p.cwd)} — ${p.cwd}`,
+          label: `${projectName(p.cwd)} - ${p.cwd}`,
           icon: p.pinned ? "pinned" : "folder",
           onClick: () => openProject(p.cwd),
           trailing: {

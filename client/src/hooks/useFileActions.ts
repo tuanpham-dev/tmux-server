@@ -192,7 +192,7 @@ export function useFileActions(
         }
         if (pasted.length > 0) setFilesRefreshKey((k) => k + 1);
         if (errors.length === 1) {
-          showError(`Paste failed: ${errors[0].path} — ${errors[0].message}`);
+          showError(`Paste failed: ${errors[0].path} - ${errors[0].message}`);
         } else if (errors.length > 1) {
           showError(`${errors.length} items failed to paste`);
         }
@@ -218,7 +218,7 @@ export function useFileActions(
         if (done.length > 0) setFilesRefreshKey((k) => k + 1);
         const verb = mode === "move" ? "Move" : "Copy";
         if (errors.length === 1) {
-          showError(`${verb} failed: ${errors[0].path} — ${errors[0].message}`);
+          showError(`${verb} failed: ${errors[0].path} - ${errors[0].message}`);
         } else if (errors.length > 1) {
           showError(`${errors.length} items failed to ${mode}`);
         }
@@ -331,7 +331,7 @@ export function useFileActions(
       setUploadProgress(null);
       setFilesRefreshKey((k) => k + 1);
       if (result.errors.length === 1) {
-        showError(`Upload failed: ${result.errors[0].relativePath} — ${result.errors[0].message}`);
+        showError(`Upload failed: ${result.errors[0].relativePath} - ${result.errors[0].message}`);
       } else if (result.errors.length > 1) {
         showError(`${result.errors.length} files failed to upload`);
       }

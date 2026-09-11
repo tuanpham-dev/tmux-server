@@ -256,7 +256,7 @@ export function listIconThemeOptions(extensions: ExtensionInfo[]): IconThemeOpti
   for (const ext of extensions) {
     if (!ext.enabled) continue;
     for (const theme of ext.iconThemes) {
-      options.push({ value: `${ext.id}:${theme.id}`, label: `${theme.label} — ${ext.displayName}` });
+      options.push({ value: `${ext.id}:${theme.id}`, label: `${theme.label} - ${ext.displayName}` });
     }
   }
   return options;

@@ -498,13 +498,13 @@ function PortProxyView({ filePath, active, toolbarTarget }: PortProxyProps) {
     try {
       const activeCwd = getActiveContext?.()?.cwd ?? null;
       if (!activeCwd) {
-        setSendError("No active project — open a project first.");
+        setSendError("No active project - open a project first.");
         return;
       }
       const sessions = await fetchSessions();
       const targets = agentWindows(sessions, activeCwd, readAgentPrograms());
       if (targets.length === 0) {
-        setSendError("No agent is running in this project — start one first.");
+        setSendError("No agent is running in this project - start one first.");
         return;
       }
       await sendToAgent(targets[0].sessionName, text, readSendAutoSubmit(), { windowIndex: targets[0].windowIndex });
@@ -1214,7 +1214,7 @@ function PortsStatusPopover({ context }: StatusItemProps) {
               className="port-item"
               title={
                 forwarded.has(p.port)
-                  ? `Forwarded — open http://localhost:${p.port}/`
+                  ? `Forwarded - open http://localhost:${p.port}/`
                   : `Open port ${p.port}`
               }
               onClick={() => openPort(p.port)}
@@ -1265,7 +1265,7 @@ function PortsStatusPopover({ context }: StatusItemProps) {
           {tunnel.allForwarded
             ? "All ports forwarded to this machine."
             : tunnel.connected
-              ? "Tunnel connected — run the command again to pick up new ports."
+              ? "Tunnel connected - run the command again to pick up new ports."
               : "Run the forward command locally to reach every port at localhost."}
         </span>
         <button

@@ -91,7 +91,7 @@ function plural(n: number, noun: string, many = `${noun}s`): string {
 }
 
 function formatPercent(percent: number | null): string {
-  return percent === null ? "—" : `${Math.round(percent)}%`;
+  return percent === null ? "-" : `${Math.round(percent)}%`;
 }
 
 function formatRate(bytesPerSec: number): string {

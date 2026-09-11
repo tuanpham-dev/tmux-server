@@ -98,7 +98,7 @@ export function EditableCell({
           onMouseEnter={() => onMouseEnter(rowIdx, colIdx)}
           className={cellClass}
         >
-          {value || <span className="csv-cell-empty">—</span>}
+          {value || <span className="csv-cell-empty">-</span>}
         </div>
       )}
       {showFillHandle && !isEditing && (
@@ -160,7 +160,7 @@ export function EditableHeaderCell({
       {!editing && (
         <button
           onClick={(e) => { e.stopPropagation(); onSort(colIdx); }}
-          title={sortDir === "asc" ? "Sorted ascending — click for descending" : sortDir === "desc" ? "Sorted descending — click to clear" : "Sort"}
+          title={sortDir === "asc" ? "Sorted ascending - click for descending" : sortDir === "desc" ? "Sorted descending - click to clear" : "Sort"}
           className="csv-header-sort"
         >
           {/* Base glyph reads as ascending; flipped to point the other way for

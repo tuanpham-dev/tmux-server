@@ -17,11 +17,11 @@ import { useSettingsContext } from "./context";
 // its own — see ExtensionConfigSection's picker.
 
 const PROVIDERS: { id: AiProviderId; label: string; hint: string }[] = [
-  { id: "claude", label: "Claude Code (claude CLI)", hint: "Uses your existing Claude Code sign-in — no API key needed." },
-  { id: "codex", label: "OpenAI Codex (codex CLI)", hint: "Uses your existing Codex sign-in — no API key needed." },
-  { id: "agy", label: "Antigravity (agy CLI)", hint: "Uses your existing Antigravity sign-in — no API key needed." },
-  { id: "anthropic", label: "Anthropic API (key)", hint: "Anthropic's Messages format — to Anthropic, or to any compatible endpoint you set below. Defaults to claude-opus-5 when no model is set." },
-  { id: "openai", label: "OpenAI API (key)", hint: "OpenAI's chat-completions format — to OpenAI, or to any compatible endpoint you set below. A model is required." },
+  { id: "claude", label: "Claude Code (claude CLI)", hint: "Uses your existing Claude Code sign-in - no API key needed." },
+  { id: "codex", label: "OpenAI Codex (codex CLI)", hint: "Uses your existing Codex sign-in - no API key needed." },
+  { id: "agy", label: "Antigravity (agy CLI)", hint: "Uses your existing Antigravity sign-in - no API key needed." },
+  { id: "anthropic", label: "Anthropic API (key)", hint: "Anthropic's Messages format - to Anthropic, or to any compatible endpoint you set below. Defaults to claude-opus-5 when no model is set." },
+  { id: "openai", label: "OpenAI API (key)", hint: "OpenAI's chat-completions format - to OpenAI, or to any compatible endpoint you set below. A model is required." },
   { id: "custom", label: "Custom command", hint: "Any command that takes the prompt as its last argument and prints the reply." },
 ];
 
@@ -50,7 +50,7 @@ function providerOptions(cliStatus: Record<string, boolean> | null, selected?: A
     return (
       <option key={p.id} value={p.id} disabled={disabled}>
         {p.label}
-        {missing ? " — not installed" : ""}
+        {missing ? " - not installed" : ""}
       </option>
     );
   });
@@ -122,7 +122,7 @@ function ApiKeyField({
       <span className="settings-label">
         API key{" "}
         <span className="settings-hint">
-          — {stored ? "stored" : optional ? "not set (optional for this endpoint)" : "not set"}
+          - {stored ? "stored" : optional ? "not set (optional for this endpoint)" : "not set"}
         </span>
       </span>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -131,7 +131,7 @@ function ApiKeyField({
           style={{ flex: 1 }}
           type="password"
           autoComplete="off"
-          placeholder={stored ? "Stored — type to replace" : `Paste your ${profile.provider} API key`}
+          placeholder={stored ? "Stored - type to replace" : `Paste your ${profile.provider} API key`}
           value={draft}
           disabled={busy}
           onChange={(e) => setDraft(e.target.value)}
@@ -187,7 +187,7 @@ function ProfileEditor({
           placeholder={providerLabel(profile.provider)}
           onChange={(e) => onChange({ ...profile, label: e.target.value })}
         />
-        <div className="settings-hint">What pickers call this one — yours to name.</div>
+        <div className="settings-hint">What pickers call this one - yours to name.</div>
       </div>
 
       <div className="settings-row">
@@ -201,7 +201,7 @@ function ProfileEditor({
         </select>
         {cliMissing ? (
           <div className="settings-hint settings-error">
-            No <code>{profile.provider}</code> on the server&apos;s PATH — install it, or give this
+            No <code>{profile.provider}</code> on the server&apos;s PATH - install it, or give this
             profile a binary path below.
           </div>
         ) : (
@@ -222,8 +222,8 @@ function ProfileEditor({
           />
           <div className="settings-hint">
             Leave empty for {profile.provider === "openai" ? "OpenAI" : "Anthropic"} itself. Set it to
-            send the same request format to any compatible service — OpenRouter, Groq, Together,
-            LiteLLM, or a local Ollama — including the version segment, e.g.{" "}
+            send the same request format to any compatible service - OpenRouter, Groq, Together,
+            LiteLLM, or a local Ollama - including the version segment, e.g.{" "}
             <code>https://openrouter.ai/api/v1</code>.
           </div>
         </div>
@@ -392,7 +392,7 @@ export default function AiSection() {
                 <input
                   type="checkbox"
                   checked={profile.enabled}
-                  title={profile.enabled ? "Enabled — uncheck to keep it but stop offering it" : "Disabled"}
+                  title={profile.enabled ? "Enabled - uncheck to keep it but stop offering it" : "Disabled"}
                   onChange={(e) => update(profile.id, { ...profile, enabled: e.target.checked })}
                 />
                 <button

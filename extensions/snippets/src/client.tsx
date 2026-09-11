@@ -274,7 +274,7 @@ function PickerForm({
             </button>
           </li>
         ))}
-        {snippets.length === 0 && <li className="snippets-empty">No snippets yet — add one in the Commands sidebar tab.</li>}
+        {snippets.length === 0 && <li className="snippets-empty">No snippets yet - add one in the Commands sidebar tab.</li>}
       </ul>
     </DialogShell>
   );
@@ -323,7 +323,7 @@ function showMissingSnippet(): void {
   void mountDialog<null>((resolve) => (
     <DialogShell title="Snippet not found" onCancel={() => resolve(null)}>
       <div className="snippets-hint">
-        This touch key references a snippet that no longer exists — it may have been deleted.
+        This touch key references a snippet that no longer exists - it may have been deleted.
         Edit the key in Settings → Touch Keys, or re-create the snippet.
       </div>
       <div className="snippets-dialog-buttons">
@@ -445,7 +445,7 @@ function SnippetsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
           </li>
         ))}
         {snippets.length === 0 && (
-          <li className="snippets-empty">No snippets yet — click + to add one.</li>
+          <li className="snippets-empty">No snippets yet - click + to add one.</li>
         )}
       </ul>
     </div>

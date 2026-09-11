@@ -201,7 +201,7 @@ function JsonView({ filePath, active, toolbarTarget, openInEditor, fontSize = 14
           className="icon-button"
           title={
             hasWideInteger
-              ? "Disabled: file has an integer wider than Number.MAX_SAFE_INTEGER — reformatting would corrupt it"
+              ? "Disabled: file has an integer wider than Number.MAX_SAFE_INTEGER - reformatting would corrupt it"
               : "Format & Save"
           }
           disabled={!parsed.ok || hasWideInteger || saving}

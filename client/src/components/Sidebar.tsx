@@ -724,7 +724,7 @@ export default function Sidebar({
             {id === "files" && filesBranch && (
               <button
                 className="branch-pill"
-                title={`Branch: ${filesBranch} — click to open lazygit`}
+                title={`Branch: ${filesBranch} - click to open lazygit`}
                 onClick={(e) => {
                   // The header's own click toggles panel collapse.
                   e.stopPropagation();

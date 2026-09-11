@@ -176,7 +176,7 @@ export default function StatusBar({
           aria-expanded={popover?.owner === MEMORY_ITEM_ID}
           title={
             stats
-              ? `${formatGb(stats.memUsedBytes)} GB of ${formatGb(stats.memTotalBytes)} GB memory in use — click for CPU, memory and disk`
+              ? `${formatGb(stats.memUsedBytes)} GB of ${formatGb(stats.memTotalBytes)} GB memory in use - click for CPU, memory and disk`
               : "Host statistics unavailable"
           }
           onClick={(e) =>
@@ -185,7 +185,7 @@ export default function StatusBar({
         >
           <Icon name="chip" />
           <span>
-            {stats ? formatGb(stats.memUsedBytes) : "—"}
+            {stats ? formatGb(stats.memUsedBytes) : "-"}
             <span className="full-only">
               {stats ? ` / ${formatGb(stats.memTotalBytes)} GB` : " GB"}
             </span>

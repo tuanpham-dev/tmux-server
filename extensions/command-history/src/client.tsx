@@ -263,7 +263,7 @@ function CommandHistoryPanel({ showMenu }: PanelProps) {
         ))}
         {!shown?.running && (shown?.history ?? []).length === 0 && (
           <li className="cmdhist-empty">
-            No commands yet — shell integration reports them (Settings → Behavior).
+            No commands yet - shell integration reports them (Settings → Behavior).
           </li>
         )}
       </ul>

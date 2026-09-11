@@ -468,7 +468,7 @@ export function saveFileText(targetPath: string, content: string): Promise<{ pat
 export class UploadTooLargeError extends Error {
   constructor(public readonly size: number) {
     super(
-      `too large for the server (${formatMb(size)} MB refused with 413) — a proxy in ` +
+      `too large for the server (${formatMb(size)} MB refused with 413) - a proxy in ` +
         `front of it caps request size. Set "Maximum upload file size" in Settings → ` +
         `Behavior to catch these before uploading.`,
     );

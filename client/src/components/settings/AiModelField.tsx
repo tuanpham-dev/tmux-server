@@ -55,7 +55,7 @@ export default function AiModelField({
     try {
       const data = await getAiModels(profileId);
       setModels(data.models);
-      if (data.models.length === 0) setError("This provider listed no models — type the id it expects.");
+      if (data.models.length === 0) setError("This provider listed no models - type the id it expects.");
     } catch (err) {
       setModels(null);
       setError(err instanceof Error ? err.message : String(err));
@@ -94,7 +94,7 @@ export default function AiModelField({
         <div className="settings-hint settings-error">{error}</div>
       ) : models ? (
         <div className="settings-hint">
-          {models.length} model{models.length === 1 ? "" : "s"} offered — type to filter, or enter any
+          {models.length} model{models.length === 1 ? "" : "s"} offered - type to filter, or enter any
           id this provider accepts.
         </div>
       ) : (

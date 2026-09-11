@@ -466,7 +466,7 @@ export default function ExtensionsPanel({
           <div className="extension-list">
             {effectiveRegistries.length === 0 && uninstalledBuiltins.length === 0 && (
               <div className="keybinding-empty">
-                No registries configured — click the gear above to add one.
+                No registries configured - click the gear above to add one.
               </div>
             )}
             {effectiveRegistries.length > 0 && totalAvailable === 0 && !registryLoading && (

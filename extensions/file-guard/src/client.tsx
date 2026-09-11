@@ -85,8 +85,8 @@ function GuardView({ filePath, active, openInEditor }: Props) {
 
   const reason = result
     ? result.binary
-      ? "This is a binary file — it can't be displayed as text."
-      : `This file is ${formatSize(result.size)} — too large to open in the editor.`
+      ? "This is a binary file - it can't be displayed as text."
+      : `This file is ${formatSize(result.size)} - too large to open in the editor.`
     : null;
 
   return (

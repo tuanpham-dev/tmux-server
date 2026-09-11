@@ -382,7 +382,7 @@ function HtmlPreview({ filePath, active, toolbarTarget, openInEditor }: Props) {
       const sessions = await fetchSessions();
       const targets = agentWindows(sessions, activeCwd, readAgentPrograms());
       if (targets.length === 0) {
-        setSendError("No agent is running in this project — start one first.");
+        setSendError("No agent is running in this project - start one first.");
         return;
       }
       await sendToAgent(targets[0].sessionName, text, readSendAutoSubmit(), { windowIndex: targets[0].windowIndex });

@@ -199,7 +199,7 @@ export default function TerminalSection() {
 
       <div className="settings-hint">
         Joining soft-wrapped lines undoes wraps the terminal made. Joining into paragraphs also undoes a
-        program's own word-wrap, which collapses code and command output into one line — Copy as Paragraph
+        program's own word-wrap, which collapses code and command output into one line - Copy as Paragraph
         does the same for a single copy without changing this.
       </div>
 

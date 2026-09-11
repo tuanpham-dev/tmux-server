@@ -247,7 +247,7 @@ function runCli(bin: string, args: string[], provider: string, cwd?: string): Pr
             reject(
               new AiError(
                 "missing-binary",
-                `${provider} CLI not found ("${bin}") — install it, or pick another provider in Settings → AI`,
+                `${provider} CLI not found ("${bin}") - install it, or pick another provider in Settings → AI`,
               ),
             );
             return;
@@ -306,7 +306,7 @@ async function resolveKey(profile: AiProfile, custom: boolean): Promise<string> 
   if (!key && !custom) {
     throw new AiError(
       "missing-key",
-      `No API key configured for "${profile.label}" — add one in Settings → AI`,
+      `No API key configured for "${profile.label}" - add one in Settings → AI`,
     );
   }
   return key ?? "";
@@ -331,7 +331,7 @@ async function runAnthropic(prompt: string, model: string, profile: AiProfile): 
 
 async function runOpenai(prompt: string, model: string, profile: AiProfile): Promise<string> {
   if (!model) {
-    throw new AiError("missing-model", "The OpenAI provider needs a model — set one in Settings → AI");
+    throw new AiError("missing-model", "The OpenAI provider needs a model - set one in Settings → AI");
   }
   const baseUrl = profile.baseUrl;
   const key = await resolveKey(profile, !!baseUrl);
@@ -522,7 +522,7 @@ export async function listProviderModels(profileId?: string): Promise<AiModelOpt
   if (profile.provider === "custom") {
     throw new AiError(
       "unsupported",
-      `"${profile.label}" is a command line you wrote — only you know which models it takes.`,
+      `"${profile.label}" is a command line you wrote - only you know which models it takes.`,
     );
   }
   return listCliModels(profile);
@@ -570,7 +570,7 @@ export async function runAi(prompt: string, opts: AiRunOptions = {}): Promise<st
     if (!profile.customCommand) {
       throw new AiError(
         "missing-command",
-        `"${profile.label}" needs a command — set one in Settings → AI`,
+        `"${profile.label}" needs a command - set one in Settings → AI`,
       );
     }
     // The user's own command line, run via sh with the prompt appended as its

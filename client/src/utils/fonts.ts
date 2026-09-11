@@ -264,7 +264,7 @@ export function listExtensionFontOptions(extensions: ExtensionInfo[]): Extension
       if (families.length === 0) continue;
       options.push({
         value: `${ext.id}::${group.group}`,
-        label: `${group.group} — ${ext.displayName}`,
+        label: `${group.group} - ${ext.displayName}`,
         families,
       });
     }

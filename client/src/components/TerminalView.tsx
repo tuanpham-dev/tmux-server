@@ -2461,7 +2461,7 @@ export default function TerminalView({
       <div ref={terminalBodyRef} className="terminal-body">
         {engineMissing && (
           <div className="terminal-engine-missing">
-            Terminal engine unavailable — the bundled xterm-engine extension failed to load.
+            Terminal engine unavailable - the bundled xterm-engine extension failed to load.
             Reinstall or rebuild the app's bundled extensions, then reload.
           </div>
         )}

@@ -377,7 +377,7 @@ export function listColorThemeOptions(extensions: ExtensionInfo[]): ColorThemeOp
   for (const ext of extensions) {
     if (!ext.enabled) continue;
     for (const theme of ext.themes) {
-      options.push({ value: `${ext.id}:${theme.label}`, label: `${theme.label} — ${ext.displayName}` });
+      options.push({ value: `${ext.id}:${theme.label}`, label: `${theme.label} - ${ext.displayName}` });
     }
   }
   return options;

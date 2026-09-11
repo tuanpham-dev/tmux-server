@@ -96,9 +96,9 @@ function ShellIntegrationCard() {
       <span className="settings-label">
         Shell integration{" "}
         {status.receivedAny ? (
-          <span className="settings-hint">— active</span>
+          <span className="settings-hint">- active</span>
         ) : (
-          <span className="settings-hint">— no command reports received yet</span>
+          <span className="settings-hint">- no command reports received yet</span>
         )}
       </span>
       <div className="settings-hint">
@@ -185,7 +185,7 @@ export default function BehaviorSection() {
       <label className="settings-row">
         <span className="settings-label">Commands offered for a new worktree</span>
         <div className="settings-hint">
-          A JSON array of {"{name, command}"} — the chosen command is typed into the new session right
+          A JSON array of {"{name, command}"} - the chosen command is typed into the new session right
           after it is created. Leave as [] to hide the picker.
         </div>
         <textarea
