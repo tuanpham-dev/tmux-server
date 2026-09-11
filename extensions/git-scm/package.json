@@ -57,6 +57,18 @@
           "default": false,
           "description": "Submit a diff comment's context block to the agent immediately. Off (default) types it into the pane for you to review before pressing Enter."
         },
+        "gitScm.aiProfile": {
+          "type": "string",
+          "format": "ai-profile",
+          "default": "",
+          "description": "Which configured AI writes commit messages. \"App default\" follows Settings \u2192 AI's own default; pick another to give this one job a different (often cheaper or faster) model."
+        },
+        "gitScm.aiModel": {
+          "type": "string",
+          "format": "ai-model",
+          "default": "",
+          "description": "Model for commit messages. Empty uses whatever model the AI above is configured with."
+        },
         "gitScm.aiCommitInstruction": {
           "type": "string",
           "default": "Write a git commit message for the staged changes below. Reply with ONLY the commit message - no preamble, no commentary, no code fences. First line: an imperative subject under 72 characters, capitalized, with no trailing period. If the change needs explaining, add a blank line and then a body of prose paragraphs wrapped at 76 characters that says what changed and why, not how. Describe only what the diff actually shows.",

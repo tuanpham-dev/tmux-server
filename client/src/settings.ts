@@ -1,6 +1,26 @@
 import { migrateKeybindingOverrides, type KeybindingOverrides } from "./keybindings";
 import type { Project } from "./types";
 
+export type AiProviderId = "claude" | "codex" | "agy" | "anthropic" | "openai" | "custom";
+
+// One configured AI. Mirrors server/src/ai.ts's AiProfile — the server reads
+// these straight out of the settings document, so the two shapes have to
+// agree. API keys are NOT here: they live server-side in aiSecrets, keyed by
+// this profile's id, and never reach a client (see settingsStore.ts).
+export interface AiProfile {
+  // Stable across renames — what a caller stores when it picks a profile.
+  id: string;
+  label: string;
+  provider: AiProviderId;
+  model: string;
+  binaryPath: string;
+  customCommand: string;
+  baseUrl: string;
+  // A profile kept but not offered: it stays configured (key included) and
+  // stops showing up in pickers.
+  enabled: boolean;
+}
+
 export interface AppSettings {
   // "auto" resolves per device (xterm on mobile pointers, ghostty
   // elsewhere) — synced across devices, so a phone and a desktop each get
@@ -109,11 +129,25 @@ export interface AppSettings {
   // JSON array of {name, command}. The command is typed into the session and
   // submitted right after it's created. "[]" disables the picker.
   worktreeRunCommands: string;
+  // Every AI the user has configured, in their own order. Several can be set
+  // up at once — a CLI you're signed into, a keyed API for the jobs worth
+  // paying for — and each caller (core, or an extension with an "ai-profile"
+  // setting) either names one or gets aiProfileId's.
+  //
+  // The aiProvider/aiModel/aiBinaryPath/aiCustomCommand/aiBaseUrl keys below
+  // predate this list. They are still the server's fallback for a document
+  // with no profiles (see ai.ts's legacyProfile), which is what a user who
+  // has never opened Settings → AI since upgrading has; the AI section seeds
+  // the list from them on its first render and then leaves them alone.
+  aiProfiles: AiProfile[];
+  // Which profile answers a caller that doesn't name one. Empty (or naming a
+  // profile that's gone) means the first enabled profile.
+  aiProfileId: string;
   // Which AI backend the app and its extensions use. The CLI providers shell
   // out to a locally installed binary and need no key; "anthropic"/"openai"
   // call the HTTP API and need one, stored server-side (see settingsStore's
   // aiSecrets) and never sent back to a client. "custom" runs aiCustomCommand.
-  aiProvider: "claude" | "codex" | "agy" | "anthropic" | "openai" | "custom";
+  aiProvider: AiProviderId;
   // Override the CLI provider's binary — a name on PATH or an absolute path.
   // Empty uses the provider's own default (claude / codex / agy).
   aiBinaryPath: string;
@@ -212,6 +246,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { name: "Claude Code", command: "claude" },
     { name: "Claude Code (skip permissions)", command: "claude --dangerously-skip-permissions" },
   ]),
+  aiProfiles: [],
+  aiProfileId: "",
   aiProvider: "claude",
   aiBinaryPath: "",
   aiModel: "",

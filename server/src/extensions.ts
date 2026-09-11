@@ -13,7 +13,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
-import { runAi, type AiRunOptions } from "./ai.js";
+import { listAiProfiles, runAi, type AiProfileSummary, type AiRunOptions } from "./ai.js";
 import { readSettingsDoc } from "./settingsStore.js";
 
 const configDir = path.join(
@@ -118,6 +118,11 @@ const EDITOR_CAPABILITIES: EditorCapability[] = ["file", "diff", "merge"];
 // enum value), the latter its tooltip.
 interface ConfigurationProperty {
   type?: "boolean" | "number" | "integer" | "string";
+  // Renders a richer control than a plain text box for a string property.
+  // "ai-profile": a picker of the AIs configured in Settings → AI; the
+  // stored value is a profile id to pass as ctx.ai.run's opts.profileId
+  // (empty = whatever the user's default profile is).
+  format?: string;
   default?: unknown;
   description?: string;
   markdownDescription?: string;
@@ -171,6 +176,9 @@ interface ExtensionManifest {
 export interface ExtensionConfigurationProperty {
   key: string;
   type: "boolean" | "number" | "integer" | "string";
+  // See ConfigurationProperty.format — only "ai-profile" is recognized by
+  // the settings UI today; anything else falls back to a text box.
+  format?: string;
   default: unknown;
   description: string;
   enum?: string[];
@@ -204,6 +212,7 @@ function normalizeConfiguration(
       properties.push({
         key,
         type: prop.type,
+        format: typeof prop.format === "string" ? prop.format : undefined,
         default: prop.default,
         description: prop.description || prop.markdownDescription || "",
         enum: Array.isArray(prop.enum) ? prop.enum : undefined,
@@ -609,14 +618,21 @@ export interface ExtensionHostApi {
   // whose `code` distinguishes "not configured yet" from "the provider broke",
   // so an extension can surface the first as guidance.
   ai: {
+    // opts.profileId names one of listProfiles()'s entries; omitted, the
+    // user's default profile answers.
     run(prompt: string, opts?: AiRunOptions): Promise<string>;
+    // The AIs the user has configured and enabled, so an extension can let
+    // them choose one for its own feature. Prefer declaring a manifest
+    // property with "format": "ai-profile" — the settings UI renders the
+    // picker for it — and pass the stored id as opts.profileId.
+    listProfiles(): Promise<AiProfileSummary[]>;
   };
 }
 
 function makeHostApi(id: string): ExtensionHostApi {
   return {
     ports: { list: listTmuxPorts, find: findTmuxPort },
-    ai: { run: (prompt, opts) => runAi(prompt, opts) },
+    ai: { run: (prompt, opts) => runAi(prompt, opts), listProfiles: () => listAiProfiles() },
     events: {
       onApiMutation(cb) {
         let set = apiMutationListeners.get(id);
@@ -691,7 +707,10 @@ export async function mountServerHookIfNeeded(
       getSettings: () => getExtensionSettings(id, manifest),
       // Also on `host`, but lifted to the top level because it is the one
       // capability most extensions reach for by name — activate({ ai }).
-      ai: { run: (prompt: string, opts?: AiRunOptions) => runAi(prompt, opts) },
+      ai: {
+        run: (prompt: string, opts?: AiRunOptions) => runAi(prompt, opts),
+        listProfiles: (): Promise<AiProfileSummary[]> => listAiProfiles(),
+      },
       host: makeHostApi(id),
     });
     serverHooks.set(id, router);

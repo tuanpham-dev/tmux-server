@@ -1,4 +1,5 @@
 import type { ExtensionInfo } from "../../types";
+import AiModelField from "./AiModelField";
 import { NumberField } from "./controls";
 import { useSettingsContext } from "./context";
 
@@ -9,6 +10,11 @@ import { useSettingsContext } from "./context";
 // overrides, so a future manifest default change still reaches a user who
 // never customized that property. Bounds default to a wide ±1e9 when the
 // schema omits minimum/maximum, since NumberField requires both.
+// Every provider but "custom" can produce a list — the API ones over HTTP,
+// the CLIs by running them (server/src/ai.ts's listCliModels). A custom
+// command line is the one thing nothing can enumerate.
+const UNLISTABLE_PROVIDER = "custom";
+
 function ExtensionProperties({
   ext,
   overrides,
@@ -18,6 +24,18 @@ function ExtensionProperties({
   overrides: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
 }) {
+  // For "ai-profile"/"ai-model" properties — the same list Settings → AI
+  // edits.
+  const { settings } = useSettingsContext();
+  const aiProfiles = settings.aiProfiles;
+  // This extension's own profile choice, whatever it called that property —
+  // an "ai-model" box reads it to show the right fallback. One picker per
+  // extension is the convention; the first one declared wins.
+  const profileKey = ext.configuration
+    .flatMap((section) => section.properties)
+    .find((p) => p.format === "ai-profile")?.key;
+  const selectedAiProfileId =
+    profileKey && typeof overrides[profileKey] === "string" ? (overrides[profileKey] as string) : "";
   const setValue = (key: string, value: unknown, def: unknown) => {
     const next = { ...overrides };
     if (value === def) delete next[key];
@@ -59,6 +77,73 @@ function ExtensionProperties({
                     step={prop.type === "integer" ? 1 : 0.1}
                     onCommit={(v) => setValue(prop.key, prop.type === "integer" ? Math.round(v) : v, prop.default)}
                   />
+                </label>
+              );
+            }
+
+            // A model box that knows what it would fall back to: the model
+            // configured on whichever profile this extension is pointed at
+            // (its own "ai-profile" property, else the app default), so the
+            // placeholder answers "and what do I get if I leave this empty?"
+            // without anyone opening Settings → AI to look.
+            if (prop.format === "ai-model") {
+              // Which profile would answer if this box stays empty — the
+              // extension's own pick, else the app default. Mirrors ai.ts's
+              // resolveProfile, so the placeholder names the AI that would
+              // really run.
+              const chosen =
+                aiProfiles.find((p) => p.id === selectedAiProfileId) ??
+                aiProfiles.find((p) => p.id === settings.aiProfileId && p.enabled) ??
+                aiProfiles.find((p) => p.enabled);
+              const fallback = chosen?.model
+                ? `${chosen.model} (from ${chosen.label})`
+                : chosen
+                  ? `${chosen.label}'s own default`
+                  : "the provider's own default";
+              return (
+                <div key={prop.key} className="settings-row" title={prop.key}>
+                  <span className="settings-label">{label}</span>
+                  <AiModelField
+                    // Namespaced by property key: two extensions' model
+                    // fields must not share one <datalist>.
+                    id={prop.key}
+                    value={typeof value === "string" ? value : ""}
+                    // "" is "the app default", which the server resolves the
+                    // same way this placeholder does.
+                    profileId={selectedAiProfileId}
+                    fetchable={!!chosen && chosen.provider !== UNLISTABLE_PROVIDER}
+                    placeholder={`Leave empty for ${fallback}`}
+                    hint={`Runs on ${chosen ? chosen.label : "the app's default AI"}.`}
+                    onChange={(next) => setValue(prop.key, next, prop.default)}
+                  />
+                </div>
+              );
+            }
+
+            // An AI picker rather than a text box for the profile id: the
+            // ids come from Settings → AI, and nobody should have to type
+            // one. Empty means "whatever the default profile is", which is
+            // also what ctx.ai.run does with an empty profileId.
+            if (prop.format === "ai-profile") {
+              return (
+                <label key={prop.key} className="settings-row" title={prop.key}>
+                  <span className="settings-label">{label}</span>
+                  <select
+                    className="dialog-input settings-select"
+                    value={typeof value === "string" ? value : ""}
+                    onChange={(e) => setValue(prop.key, e.target.value, prop.default)}
+                  >
+                    <option value="">App default</option>
+                    {aiProfiles
+                      .filter((p) => p.enabled)
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.label}
+                          {p.model ? ` · ${p.model}` : ""}
+                        </option>
+                      ))}
+                  </select>
+                  <div className="settings-hint">Configure the list in Settings → AI.</div>
                 </label>
               );
             }

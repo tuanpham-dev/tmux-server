@@ -309,6 +309,9 @@ export interface ExtensionFontGroupContribution {
 export interface ExtensionConfigurationProperty {
   key: string;
   type: "boolean" | "number" | "integer" | "string";
+  // "ai-profile" renders a picker of the AIs configured in Settings → AI,
+  // storing the chosen profile's id. Anything else renders as usual.
+  format?: string;
   default: unknown;
   description: string;
   enum?: string[];

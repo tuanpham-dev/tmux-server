@@ -99,20 +99,44 @@ export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
 // providers have one (getAiKeyStatus) and set or clear one (setAiKey).
 // See server/src/settingsStore.ts's module comment.
 export interface AiKeyStatus {
+  // Pre-profiles provider-keyed entries, still read at call time.
   anthropic: boolean;
   openai: boolean;
+  // Every id that has a stored key — profile ids and those two alike.
+  has?: Record<string, boolean>;
 }
 
 export function getAiKeyStatus(): Promise<AiKeyStatus> {
   return request("/api/ai-key");
 }
 
-// An empty `key` clears the stored one.
-export function setAiKey(provider: "anthropic" | "openai", key: string): Promise<void> {
+export interface AiModelOption {
+  id: string;
+  label?: string;
+}
+
+// The models a profile's own endpoint offers (Anthropic's or OpenAI's
+// /models route, against whatever base URL the profile points at). Rejects
+// with an ApiError whose message is already user-facing — including "this
+// provider is a command, not an API".
+export function getAiModels(profileId: string): Promise<{ models: AiModelOption[] }> {
+  return request(`/api/ai-models?profileId=${encodeURIComponent(profileId)}`);
+}
+
+// provider id → whether that CLI is on the server's PATH. Settings → AI
+// greys out the ones that aren't, so a provider that could only fail isn't
+// offered as if it would work.
+export function getAiCliStatus(): Promise<Record<string, boolean>> {
+  return request("/api/ai-cli");
+}
+
+// An empty `key` clears the stored one. `profileId` is an AI profile's id
+// (Settings → AI); the two legacy provider names still work server-side.
+export function setAiKey(profileId: string, key: string): Promise<void> {
   return request("/api/ai-key", {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ provider, key }),
+    body: JSON.stringify({ profileId, key }),
   });
 }
 

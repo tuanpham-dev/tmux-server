@@ -3167,6 +3167,15 @@ body.scrollbar-dragging {
   margin-top: 12px;
   display: flex;
   flex-direction: column;
+/* A hint that's actually a problem — a key that failed to save, a CLI
+   provider that isn't installed. Same size and position as a plain hint;
+   only the color says "this needs attention" rather than "small print".
+   (The class was already in use with no rule behind it, so those messages
+   were rendering as ordinary grey hints.) */
+.settings-hint.settings-error {
+  color: var(--error);
+}
+
   gap: 4px;
 }
 
@@ -4055,4 +4064,68 @@ body.scrollbar-dragging {
   text-align: center;
   color: var(--error);
   font-size: 14px;
+}
+
+/* ---- Settings → AI: the configured-AI list ---- */
+
+.ai-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 12px;
+}
+
+.ai-profile {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-bg);
+}
+
+.ai-profile.expanded {
+  border-color: var(--focus-border);
+}
+
+.ai-profile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+}
+
+/* The name doubles as the expander, so it takes the row's slack and stays
+   left-aligned while the default radio and Remove hold the right end. */
+.ai-profile-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-profile-name > span:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-profile-default {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: var(--fg-inactive);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-profile-editor {
+  padding: 0 8px 8px;
+  border-top: 1px solid var(--border);
 }

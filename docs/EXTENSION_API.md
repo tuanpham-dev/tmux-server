@@ -225,6 +225,18 @@ Settings section and readable from both entries:
       "enum": ["fast", "thorough"],
       "enumItemLabels": ["Fast", "Thorough"],       // visible labels
       "enumDescriptions": ["…", "…"]                // option tooltips
+    },
+    "myExt.aiProfile": {
+      "type": "string",
+      "format": "ai-profile",              // renders a picker of Settings → AI's list
+      "default": "",                       // "" = the user's default AI
+      "description": "Which configured AI this feature uses."
+    },
+    "myExt.aiModel": {
+      "type": "string",
+      "format": "ai-model",                // text box whose placeholder names the fallback
+      "default": "",                       // "" = that AI's own configured model
+      "description": "Model for this feature."
     }
   }
 }
@@ -240,6 +252,24 @@ Settings section and readable from both entries:
   order.
 - Values are server-synced: manifest defaults overridden by the user's
   stored values, shared across the user's devices.
+- `"format": "ai-profile"` on a string property renders a dropdown of the
+  AIs configured in **Settings → AI** instead of a text box. The stored
+  value is a profile id — pass it straight to `ai.run`'s `profileId`
+  (`""` means "the user's default AI", which is also what an omitted
+  `profileId` does). That is the sanctioned way to let someone point your
+  feature at a cheaper or faster model than their everyday one, without
+  your extension asking for keys or knowing what a provider is.
+- `"format": "ai-model"` pairs with it: a text box for a per-feature model,
+  whose placeholder names what an empty value falls back to (the model
+  configured on the profile the sibling `"ai-profile"` property points at,
+  else the user's default AI). Unless that AI is a custom
+  command, the field also offers a **Fetch models** button, filling its
+  suggestions from whatever the provider will say — an API endpoint's
+  `/models` route, a CLI's own list subcommand, or the model names its
+  `--help` documents — so whoever configures your extension picks from a
+  real list instead of typing an id from memory. Pass the value
+  as `ai.run`'s `model` — empty means "whatever that AI is set to", which is
+  exactly what omitting it does.
 
 ---
 
@@ -825,7 +855,7 @@ about). Only write keys you declared.
 TypeScript via tsx, but extension server entries are plain JS):
 
 ```js
-export function activate({ router, log, getSettings, host }) {
+export function activate({ router, log, getSettings, host, ai }) {
   router.get("/list", async (req, res) => { ... });
 }
 ```
@@ -837,6 +867,8 @@ export function activate({ router, log, getSettings, host }) {
 | `getSettings()` | `Promise<Record<string, unknown>>` — this extension's current configuration values (defaults + user overrides), read fresh per call. |
 | `host.ports.list()` | `Promise<ListeningPort[]>` — listening ports attributed to tmux sessions (`{ port, address, process?, pid?, session }`). The same attribution data the WS tunnel's security gate uses; consume it rather than re-scanning `/proc`. |
 | `host.ports.find(port)` | `Promise<ListeningPort \| null>` — one port's fresh attribution (kill-confirmation flows). |
+| `ai.run(prompt, opts?)` | `Promise<string>` — prompt in, text out, through whatever the user configured in **Settings → AI** (a signed-in CLI, a keyed API, a custom command). Your extension never sees a provider, a binary or a key. `opts.profileId` picks one configured AI (see `listProfiles`, and the `"ai-profile"` config format above); `opts.model` overrides that profile's model for one call; `opts.cwd` is the directory a CLI provider runs in — pass the project, since some CLIs refuse to run outside a trusted directory. Rejects with an `AiError` whose `code` separates "not configured yet" (`missing-binary`/`missing-key`/`missing-model`/`missing-command`) from a real failure (`provider-failed`/`empty-reply`), so the first can be surfaced as guidance instead of an error. |
+| `ai.listProfiles()` | `Promise<{ id, label, provider, model, isDefault }[]>` — the AIs the user has configured and enabled, for an extension that builds its own picker. Prefer the `"ai-profile"` config property, which renders one for you. |
 | `host.events.onApiMutation(cb)` | Fires after **any** mutating (non-GET/HEAD) core API request finishes — the signal that on-disk state probably changed. Use it to invalidate caches that mirror the filesystem (git-scm drops its status-scan cache here). Returns an unsubscribe; all of an extension's subscriptions are dropped when its hook unmounts. |
 
 The `host` object is the **only** sanctioned way to reach core services —

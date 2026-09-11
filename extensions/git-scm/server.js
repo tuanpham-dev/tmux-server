@@ -1204,10 +1204,22 @@ export function activate({ router, log, host, getSettings, ai }) {
       }
       sections.push(`Files changed:\n${stat.trim()}`, `Diff:\n${diff}`);
 
+      // gitScm.aiProfile names one of the AIs configured in Settings → AI;
+      // empty (the default) lets the app's own default profile answer.
+      const profileId =
+        typeof settings["gitScm.aiProfile"] === "string" ? settings["gitScm.aiProfile"].trim() : "";
+      // Empty falls back to that profile's own model (ai.ts's runAi), which
+      // is what "use the provider's setting" means here.
+      const model =
+        typeof settings["gitScm.aiModel"] === "string" ? settings["gitScm.aiModel"].trim() : "";
       // cwd matters to some CLI providers' trust checks (codex refuses to run
       // outside a trusted directory), so run it in the repository itself
       // rather than wherever the server was started.
-      const message = await ai.run(sections.join("\n\n---\n\n"), { cwd: root });
+      const message = await ai.run(sections.join("\n\n---\n\n"), {
+        cwd: root,
+        ...(profileId ? { profileId } : {}),
+        ...(model ? { model } : {}),
+      });
       res.json({ message });
     } catch (err) {
       // ai.run's AiError codes distinguish "not configured yet" from "the

@@ -16,6 +16,7 @@ import {
 } from "node:os";
 import path from "node:path";
 import { Router, urlencoded, type Response } from "express";
+import { AiError, listProviderModels, probeCliProviders } from "./ai.js";
 import {
   ConflictError,
   copyPath,
@@ -428,22 +429,59 @@ api.get("/settings", async (_req, res) => {
 api.get("/ai-key", async (_req, res) => {
   try {
     const secrets = await readAiSecrets();
-    res.json({ anthropic: !!secrets.anthropic, openai: !!secrets.openai });
+    // Every id that has a key, profile ids and the pre-profiles
+    // provider-keyed entries alike — the settings UI asks about whichever it
+    // is showing, and both kinds resolve at call time (see ai.ts).
+    const has: Record<string, boolean> = {};
+    for (const id of Object.keys(secrets)) has[id] = true;
+    res.json({ anthropic: !!secrets.anthropic, openai: !!secrets.openai, has });
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
 });
 
 // The only route that can write an API key. An empty/absent key clears it.
+// Which CLI providers are installed on this machine — the settings UI greys
+// out the ones that aren't, rather than letting someone pick a provider
+// whose first real call would fail with "not found".
+api.get("/ai-cli", async (_req, res) => {
+  try {
+    res.json(await probeCliProviders());
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// The models a profile's own endpoint offers, for the Model field's picker.
+// Errors carry ai.ts's typed code so the UI can say "add a key first" rather
+// than showing a raw failure.
+api.get("/ai-models", async (req, res) => {
+  const profileId = typeof req.query.profileId === "string" ? req.query.profileId : undefined;
+  try {
+    res.json({ models: await listProviderModels(profileId) });
+  } catch (err) {
+    if (err instanceof AiError) {
+      res.status(400).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
 api.put("/ai-key", async (req, res) => {
   try {
-    const provider = req.body?.provider;
-    if (provider !== "anthropic" && provider !== "openai") {
-      res.status(400).json({ error: "provider must be \"anthropic\" or \"openai\"" });
+    // A profile id (the shape Settings → AI writes now) or, still accepted,
+    // one of the two pre-profiles provider names.
+    const rawId = req.body?.profileId ?? req.body?.provider;
+    const id = typeof rawId === "string" ? rawId.trim() : "";
+    // Keys are stored under this id verbatim, so it has to look like an id
+    // and not like a path or a prototype key.
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(id) || id === "__proto__") {
+      res.status(400).json({ error: "profileId must be a short id" });
       return;
     }
     const key = typeof req.body?.key === "string" ? req.body.key : "";
-    await writeAiSecret(provider, key || null);
+    await writeAiSecret(id, key || null);
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
