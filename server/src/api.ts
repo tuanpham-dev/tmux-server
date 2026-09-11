@@ -441,7 +441,6 @@ api.get("/ai-key", async (_req, res) => {
   }
 });
 
-// The only route that can write an API key. An empty/absent key clears it.
 // Which CLI providers are installed on this machine — the settings UI greys
 // out the ones that aren't, rather than letting someone pick a provider
 // whose first real call would fail with "not found".
@@ -469,6 +468,7 @@ api.get("/ai-models", async (req, res) => {
   }
 });
 
+// The only route that can write an API key. An empty/absent key clears it.
 api.put("/ai-key", async (req, res) => {
   try {
     // A profile id (the shape Settings → AI writes now) or, still accepted,

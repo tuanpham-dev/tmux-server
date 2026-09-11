@@ -109,7 +109,7 @@ function ShellIntegrationCard() {
         <code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap", userSelect: "all" }}>
           {status.sourceLine}
         </code>
-        <button type="button" className="dialog-button" onClick={copy}>
+        <button type="button" className="dialog-button secondary" onClick={copy}>
           {copied ? "Copied" : "Copy"}
         </button>
       </div>

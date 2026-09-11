@@ -2726,6 +2726,23 @@ body.scrollbar-dragging {
   outline-offset: 1px;
 }
 
+/* Every .dialog-button needs .primary or .secondary — the base class sets
+   only geometry, so a bare one falls through to the browser's own grey-on-
+   black chrome, which no theme can reach. This makes a disabled one read as
+   disabled either way, matching .icon-button's own convention. */
+.dialog-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dialog-button.primary:disabled:hover {
+  filter: none;
+}
+
+.dialog-button.secondary:disabled:hover {
+  background: transparent;
+}
+
 .auth-gate-error {
   color: var(--error);
   font-size: 12px;
@@ -3150,6 +3167,15 @@ body.scrollbar-dragging {
   margin-top: 2px;
 }
 
+/* A hint that's actually a problem — a key that failed to save, a CLI
+   provider that isn't installed. Same size and position as a plain hint;
+   only the color says "this needs attention" rather than "small print".
+   (The class was already in use with no rule behind it, so those messages
+   were rendering as ordinary grey hints.) */
+.settings-hint.settings-error {
+  color: var(--error);
+}
+
 .extension-install-button {
   display: inline-block;
   cursor: pointer;
@@ -3186,15 +3212,6 @@ body.scrollbar-dragging {
   margin-top: 12px;
   display: flex;
   flex-direction: column;
-/* A hint that's actually a problem — a key that failed to save, a CLI
-   provider that isn't installed. Same size and position as a plain hint;
-   only the color says "this needs attention" rather than "small print".
-   (The class was already in use with no rule behind it, so those messages
-   were rendering as ordinary grey hints.) */
-.settings-hint.settings-error {
-  color: var(--error);
-}
-
   gap: 4px;
 }
 
