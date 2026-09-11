@@ -64,6 +64,7 @@ let openMergeInEditor:
 let openFileTab: ((path: string) => void) | null = null;
 let refreshFiles: (() => void) | null = null;
 let setSidebarBadge: ((panelId: string, badge: number | null) => void) | null = null;
+let revealSidebarPanel: ((panelId: string) => void) | null = null;
 export let extSettings: SettingsApi | null = null;
 let getFileIcon: ((fileName: string) => IconResult) | null = null;
 let getFolderIcon: ((folderName: string, expanded: boolean) => IconResult) | null = null;
@@ -92,6 +93,10 @@ type ClickAction = "diff" | "edit";
 
 function readClickAction(): ClickAction {
   return extSettings?.get("gitScm.clickAction") === "edit" ? "edit" : "diff";
+}
+
+function readStatusBarEnabled(): boolean {
+  return extSettings?.get("gitScm.statusBar") !== false;
 }
 
 // ---- View mode (list vs. tree) ----
@@ -643,15 +648,20 @@ let pollCwd: string | null = null;
 let pollTimer: number | null = null;
 let lastPollMs = 0;
 
-function updateBadge(status: StatusResponse | null) {
-  if (!status?.root) {
-    setSidebarBadge?.("git", null);
-    return;
-  }
-  const distinct = new Set(
+// How many files a status describes as changed. Distinct paths: a file
+// that is both staged and modified again appears in two of the lists and
+// is still one change. Behind the sidebar badge and the status-bar item's
+// dirty marker, which must never disagree about it.
+function changeCount(status: StatusResponse | null): number {
+  if (!status?.root) return 0;
+  return new Set(
     [...(status.staged ?? []), ...(status.unstaged ?? []), ...(status.conflicted ?? [])].map((e) => e.path),
-  );
-  setSidebarBadge?.("git", distinct.size > 0 ? distinct.size : null);
+  ).size;
+}
+
+function updateBadge(status: StatusResponse | null) {
+  const count = changeCount(status);
+  setSidebarBadge?.("git", count > 0 ? count : null);
 }
 
 function setSharedStatus(next: StatusResponse | null) {
@@ -699,6 +709,23 @@ function setPollCwd(cwd: string | null) {
   pollCwd = cwd;
   restartPolling();
   restartFetchTimer();
+}
+
+// Read the stream above from a component. Three things render off it — the
+// panel, the COMMITS pane and the status-bar item — and none of them owns a
+// fetch: whichever happen to be mounted all see the one poll started in
+// activate(). The mount-time re-read covers the gap between the initial
+// state and the subscription.
+function useSharedStatus(): StatusResponse | null {
+  const [status, setStatus] = useState<StatusResponse | null>(() => currentStatus);
+  useEffect(() => {
+    setStatus(currentStatus);
+    statusListeners.add(setStatus);
+    return () => {
+      statusListeners.delete(setStatus);
+    };
+  }, []);
+  return status;
 }
 
 // ---- COMMITS store ----
@@ -946,7 +973,10 @@ interface PanelProps {
 
 function GitPanel({ actionsTarget, showMenu }: PanelProps) {
   const [activeCwd, setActiveCwd] = useState<string | null>(() => getActiveContext?.().cwd ?? null);
-  const [status, setStatus] = useState<StatusResponse | null>(() => currentStatus);
+  // From the module-level poller (started in activate(), kept alive
+  // regardless of whether this panel is mounted) rather than a fetch owned
+  // by this component — see the "Background status polling" section.
+  const status = useSharedStatus();
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
@@ -1168,16 +1198,6 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.operation, status?.mergeMsg]);
 
-  // Status comes from the module-level poller (started in activate(), kept
-  // alive regardless of whether this panel is mounted) rather than a fetch
-  // owned by this component — see the "Background status polling" section.
-  useEffect(() => {
-    setStatus(currentStatus);
-    statusListeners.add(setStatus);
-    return () => {
-      statusListeners.delete(setStatus);
-    };
-  }, []);
   useEffect(() => {
     fetchErrorListeners.add(setError);
     return () => {
@@ -2436,18 +2456,15 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
 // unmounting it, as the host does whenever the pane is collapsed, costs
 // nothing.
 function CommitsPanel({ actionsTarget }: PanelProps) {
-  const [status, setStatus] = useState<StatusResponse | null>(() => currentStatus);
+  const status = useSharedStatus();
   const [{ commits, limit, loading, root: loadedRoot }, setState] = useState<CommitsState>(
     () => commitsState,
   );
 
   useEffect(() => {
-    setStatus(currentStatus);
-    statusListeners.add(setStatus);
     setState(commitsState);
     commitsListeners.add(setState);
     return () => {
-      statusListeners.delete(setStatus);
       commitsListeners.delete(setState);
     };
   }, []);
@@ -2812,6 +2829,82 @@ function ConflictView({ filePath, active, toolbarTarget, openInEditor, setDirty 
   );
 }
 
+// ---- Status-bar item ----
+//
+// The branch readout at the bottom-left, VS Code's: branch name, a "*" when
+// the tree is dirty, and the ahead/behind counts. It rides the same poller
+// the sidebar badge does, so it costs no request of its own and stays
+// correct whether or not the SOURCE CONTROL tab has ever been opened —
+// which is the point, since the bar is visible when the sidebar isn't.
+//
+// A readout, not a control: clicking it reveals the panel, where every
+// action (switch branch, sync, stage, commit) already lives with the error
+// banner and credential form those actions need.
+
+// The host hands every status-bar item a context (menus, popovers above the
+// bar, the shared confirm dialog). This one uses none of it — its whole
+// click is "open the panel" — so the prop is accepted and ignored.
+function GitStatusBarItem(_props: { context: unknown }) {
+  const status = useSharedStatus();
+  const [enabled, setEnabled] = useState(readStatusBarEnabled);
+
+  useEffect(() => {
+    if (!extSettings) return;
+    return extSettings.onDidChange(() => setEnabled(readStatusBarEnabled()));
+  }, []);
+
+  // Nothing to say when the active directory isn't a repo — an empty slot
+  // is better than a placeholder nobody can act on.
+  if (!enabled || !status?.root) return null;
+
+  const ahead = status.ahead ?? 0;
+  const behind = status.behind ?? 0;
+  const changes = changeCount(status);
+  const operation = status.operation ? OPERATION_LABEL[status.operation] : null;
+  const tooltip = [
+    status.branch ? `Branch: ${status.branch}` : "Detached HEAD",
+    operation ? `${operation} in progress` : null,
+    changes > 0 ? `${changes} change${changes === 1 ? "" : "s"}` : "No local changes",
+    status.upstream ? `${behind} behind, ${ahead} ahead of ${status.upstream}` : "No upstream branch",
+    "Click to open Source Control",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <button
+      className="status-bar-item git-status-bar-item"
+      title={tooltip}
+      onClick={() => revealSidebarPanel?.("git")}
+    >
+      <Icon name="git-branch" />
+      <span className="git-status-bar-branch">
+        {status.branch ?? "detached HEAD"}
+        {/* VS Code's dirty marker — the exact count is a tooltip away, and
+            a number here would only repeat the sidebar's own badge. */}
+        {changes > 0 && "*"}
+      </span>
+      {operation && <span className="git-status-bar-operation">{operation}</span>}
+      {status.upstream && (behind > 0 || ahead > 0) && (
+        <span className="git-status-bar-counts">
+          {behind > 0 && (
+            <>
+              <Icon name="arrow-down" />
+              {behind}
+            </>
+          )}
+          {ahead > 0 && (
+            <>
+              <Icon name="arrow-up" />
+              {ahead}
+            </>
+          )}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ---- activate() ----
 
 export function activate(ctx: {
@@ -2831,6 +2924,12 @@ export function activate(ctx: {
     extensions: string[];
     mode?: "default" | "preview";
     component: typeof DiffView | typeof ConflictView;
+  }) => void;
+  registerStatusBarItem: (item: {
+    id: string;
+    placement?: "left" | "right";
+    order?: number;
+    component: typeof GitStatusBarItem;
   }) => void;
   registerCommand: (cmd: { id: string; label: string; defaultBinding?: string; run: () => void }) => void;
   registerFileDecorationProvider: (provider: {
@@ -2864,6 +2963,7 @@ export function activate(ctx: {
     }) => Promise<boolean>;
     refreshFiles: () => void;
     setSidebarBadge: (panelId: string, badge: number | null) => void;
+    revealSidebarPanel: (panelId: string) => void;
     getFileIcon: (fileName: string) => IconResult;
     getFolderIcon: (folderName: string, expanded: boolean) => IconResult;
     onDidChangeIconTheme: (cb: () => void) => () => void;
@@ -2881,6 +2981,7 @@ export function activate(ctx: {
   openFileTab = ctx.app.openFileTab;
   refreshFiles = ctx.app.refreshFiles;
   setSidebarBadge = ctx.app.setSidebarBadge;
+  revealSidebarPanel = ctx.app.revealSidebarPanel;
   getFileIcon = ctx.app.getFileIcon;
   getFolderIcon = ctx.app.getFolderIcon;
   onDidChangeIconTheme = ctx.app.onDidChangeIconTheme;
@@ -2906,6 +3007,14 @@ export function activate(ctx: {
     location: "tab",
     defaultTab: "git",
     component: CommitsPanel,
+  });
+  // Far left of the bar, where VS Code puts it — before any other
+  // extension's item, since the branch is the thing you glance at.
+  ctx.registerStatusBarItem({
+    id: "branch",
+    placement: "left",
+    order: 0,
+    component: GitStatusBarItem,
   });
   // extensions: [] — never auto-matched to a file; reached only via
   // ctx.app.openViewerTab from GitPanel's row clicks (see openEntry above).
@@ -3007,6 +3116,7 @@ export function deactivate() {
   commitsState = { commits: [], limit: COMMITS_PAGE, loading: false, root: null };
   commitsListeners.clear();
   setSidebarBadge?.("git", null);
+  revealSidebarPanel = null;
   getFileIcon = null;
   getFolderIcon = null;
   onDidChangeIconTheme = null;

@@ -1,6 +1,6 @@
 # Git
 
-A VS Code-style SOURCE CONTROL panel for the active directory's git repository: stage, commit, amend, push/pull/fetch, branch switching, stash, AI-written commit messages, commit history, and diff.
+A VS Code-style SOURCE CONTROL panel for the active directory's git repository: stage, commit, amend, push/pull/fetch, branch switching, stash, AI-written commit messages, commit history, a status-bar branch readout, and diff.
 
 ## Contributes
 
@@ -9,6 +9,7 @@ A VS Code-style SOURCE CONTROL panel for the active directory's git repository: 
 - **COMMITS pane:** recent history with unpushed markers, click a commit for its full diff, Load More, and a refresh button in its header. It's a pane of the SOURCE CONTROL panel — stacked below it in the same tab, with its own collapse state and a splitter to size the two against each other. Drag its header onto another tab's icon (or right-click it) to move it into the Explorer, the Run tab, or the other sidebar; "Reset Location" puts it back under SOURCE CONTROL.
 - **Diff viewer:** click a file to open its working-tree or staged diff, or a COMMITS row to open that commit's diff; Shift+click a file opens it in the editor instead.
 - **Merge conflict resolver:** click a conflicted file to accept Current/Incoming/Both per block (or Accept All), then Save and Mark as Resolved — used for merge, rebase, cherry-pick/revert conflicts, and a stash pop that lands in conflict.
+- **Status bar item:** the current branch at the bottom-left, with a `*` when the working tree is dirty, the ahead/behind counts next to it, and a badge while a merge/rebase/cherry-pick is unfinished. Click it to open the SOURCE CONTROL panel, where switching branch, syncing and committing already live. Hidden when the active directory isn't a repository, and it rides the same status poll the panel does, so it costs no extra requests. Drag it anywhere along the bar (or to the other end) like any status-bar item.
 - **File tree git status:** modified/added/untracked/renamed/deleted badges in the FILES tree (see Settings → UI → "Git status in file tree" to toggle), plus a branch-name pill on the FILES tree root.
 
 ## Settings
@@ -19,6 +20,7 @@ Which AI writes the commit messages — the provider, model, binary path or API 
 - **Poll interval** (`gitScm.pollInterval`, default 3000ms) — how often the active directory's git status refreshes in the background; 0 disables polling.
 - **Fetch interval** (`gitScm.fetchInterval`, default 0/off) — how often to run a non-interactive `git fetch` in the background so ahead/behind counts stay current; never prompts for credentials, so an auth-requiring remote just fails the fetch silently. Manual fetch is always available via More Actions (`…`).
 - **File tree decorations** (`gitScm.fileTreeDecorations`, default on) — git status badges and row colors in the FILES tree; off skips the per-repo status scan.
+- **Status bar** (`gitScm.statusBar`, default on) — the branch readout in the status bar. Settings → UI turns the bar itself on and off.
 - **Click action** (`gitScm.clickAction`, default "Open Diff") — what clicking a file in the panel opens; the other action is always available via Shift+click.
 
 ## Authentication

@@ -4,7 +4,7 @@
   "publisher": "tmux-server",
   "version": "1.2.0",
   "displayName": "Git",
-  "description": "Built-in VS Code-style Source Control panel: stage, commit, amend, push/pull/fetch, branch switching, stash, an AI-written commit message, a COMMITS history pane, and diff view (bundled — see extensions/build.mjs).",
+  "description": "Built-in VS Code-style Source Control panel: stage, commit, amend, push/pull/fetch, branch switching, stash, an AI-written commit message, a COMMITS history pane, a status-bar branch readout, and diff view (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
   "contributes": {
     "configuration": {
@@ -28,6 +28,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show git status badges and row colors in the FILES tree (the branch pill stays either way). Off skips the per-repo status scan — the expensive part on large repos."
+        },
+        "gitScm.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the current branch, a \"*\" when the working tree is dirty, and the ahead/behind counts in the status bar (Settings → UI turns the bar itself on and off). Clicking it opens the SOURCE CONTROL panel. Costs no extra polling — it reads the same status the sidebar badge does."
         },
         "gitScm.clickAction": {
           "type": "string",

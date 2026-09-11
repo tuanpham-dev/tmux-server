@@ -1190,3 +1190,44 @@
   color: var(--fg-inactive);
   opacity: 0.6;
 }
+
+/* ---- Status-bar item (the branch readout) ----
+   Layout (gap, height, hover) comes from core's .status-bar-item; only the
+   parts core knows nothing about live here. */
+
+.git-status-bar-branch {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The compact (phone) bar gives every item less room, and the branch name
+   is the one part of this readout worth keeping there. */
+.status-bar.compact .git-status-bar-branch {
+  max-width: 90px;
+}
+
+.git-status-bar-counts {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 11px;
+}
+
+/* Tighter than the 13px core gives bar icons — these sit inline with their
+   own numbers, not beside a label. */
+.git-status-bar-counts .codicon {
+  font-size: 11px;
+}
+
+/* Merge/rebase/cherry-pick in progress — the one state worth interrupting
+   the readout for, since half the panel's actions mean something else
+   while it lasts. */
+.git-status-bar-operation {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  font-size: 11px;
+}
