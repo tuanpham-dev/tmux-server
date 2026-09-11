@@ -215,6 +215,9 @@ export function closeWindowTab(attachName: string): Promise<void> {
   return request(`/api/window-views/${encodeURIComponent(attachName)}`, { method: "DELETE" });
 }
 
+// An empty newName hands the name back to tmux's automatic naming — see
+// resetWindowName in server/src/tmux.ts for why that needs a server round
+// trip rather than just being a rename to the command's name.
 export function renameWindow(name: string, index: number, newName: string): Promise<void> {
   return request(`/api/sessions/${encodeURIComponent(name)}/windows/${index}/rename`, {
     method: "POST",

@@ -281,6 +281,24 @@ export function useSessionActions(
     [refresh, showError, promptDialog],
   );
 
+  // Back to tmux's own naming, which tracks whatever is running in the
+  // window ("zsh", "npm", "claude"). Renaming a window is otherwise
+  // one-way: tmux turns automatic-rename off for any window that gets
+  // renamed — by this app, by a `tmux rename-window`, or by a program's own
+  // title escape — and it never turns itself back on, so a window renamed
+  // once keeps that name for life even as the command changes.
+  const resetWindowName = useCallback(
+    async (session: string, win: TmuxWindow) => {
+      try {
+        await api.renameWindow(session, win.index, "");
+        await refresh();
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [refresh, showError],
+  );
+
   const killWindow = useCallback(
     async (session: string, index: number) => {
       const winName = sessions.find((s) => s.name === session)?.windows.find((w) => w.index === index)?.name;
@@ -571,13 +589,14 @@ export function useSessionActions(
       { label: "Select Terminal", onClick: () => selectWindowInSession(session, win.index) },
       { label: "New Terminal", onClick: () => createWindow(session) },
       { label: "Rename Terminal…", onClick: () => renameWindow(session, win) },
+      { label: "Reset Name", onClick: () => resetWindowName(session, win) },
       {
         label: "Close Terminal",
         danger: true,
         onClick: () => killWindow(session, win.index),
       },
     ],
-    [selectWindowInSession, createWindow, renameWindow, killWindow],
+    [selectWindowInSession, createWindow, renameWindow, resetWindowName, killWindow],
   );
 
   const tabMenuItems = useCallback(
@@ -654,6 +673,7 @@ export function useSessionActions(
     createWindow,
     selectWindowInSession,
     renameWindow,
+    resetWindowName,
     killWindow,
     togglePinSession,
     openProject,

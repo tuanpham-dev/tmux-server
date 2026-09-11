@@ -505,6 +505,19 @@ export async function renameWindow(
   await tmux(["rename-window", "-t", `=${session}:${index}`, newName]);
 }
 
+// Hands the window's name back to tmux, which then keeps it at whatever is
+// running there ("zsh", "npm", "claude" — automatic-rename-format).
+//
+// This is the only way out of a rename: ANY rename, whether `rename-window`
+// or a program's own title escape, permanently sets automatic-rename off for
+// that window, so a window renamed once (by a person, or by something that
+// ran in it) stays frozen at that name forever — including after the command
+// changes. -u unsets the window-level override so the global option (on, by
+// default) applies again; the rename itself follows within a second.
+export async function resetWindowName(session: string, index: number): Promise<void> {
+  await tmux(["set-window-option", "-t", `=${session}:${index}`, "-u", "automatic-rename"]);
+}
+
 export interface ScrollState {
   inMode: boolean;
   position: number;

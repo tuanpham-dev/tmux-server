@@ -90,6 +90,7 @@ import {
   paneCurrentPath,
   renameSession,
   renameWindow,
+  resetWindowName,
   selectWindow,
   sendTextToSession,
   WindowGoneError,
@@ -768,12 +769,12 @@ api.post("/sessions/:name/windows/:index/rename", async (req, res) => {
     return;
   }
   const newName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-  if (!newName) {
-    res.status(400).json({ error: "new name is required" });
-    return;
-  }
+  // An empty name is "give it back to tmux" rather than an error: renaming
+  // is one-way otherwise (see resetWindowName), and the UI's Reset Name
+  // action is the only route back to a command-tracking name.
   try {
-    await renameWindow(req.params.name, index, newName);
+    if (newName) await renameWindow(req.params.name, index, newName);
+    else await resetWindowName(req.params.name, index);
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
