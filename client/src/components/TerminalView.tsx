@@ -384,6 +384,10 @@ export default function TerminalView({
   // pasteDropUploadDirRef).
   const rightClickBehaviorRef = useRef(settings.rightClickBehavior);
   rightClickBehaviorRef.current = settings.rightClickBehavior;
+  // Same mount-time-listener-needs-a-ref reason as rightClickBehavior above:
+  // read at keystroke time by snapToBottomIfScrolled in the mount effect.
+  const snapToBottomRef = useRef(settings.scrollbackSnapToBottom);
+  snapToBottomRef.current = settings.scrollbackSnapToBottom;
   // Set by the swallowed right mousedown, consumed by the contextmenu
   // handler that follows it. Non-null means "this contextmenu belongs to a
   // press we kept" — a press that was forwarded to a mouse-aware program
@@ -584,6 +588,7 @@ export default function TerminalView({
       // bypassed the router left the buffer's overlay appending while the
       // real cursor sat mid-line.
       const sendKeyOrEcho = (data: string) => {
+        snapToBottomIfScrolled(data);
         if (localEchoActive()) routeLocalEcho(data, localEcho!);
         else sendInput(data);
       };
@@ -611,6 +616,7 @@ export default function TerminalView({
       // in this file uses, just without the sticky-Ctrl/control-byte cases
       // that don't apply to a plain path string.
       const sendTextOrEcho = (text: string) => {
+        snapToBottomIfScrolled(text);
         // While suspended (cursor mid-line), direct send is the correct
         // path here too: the PTY inserts at the real cursor and echoes.
         if (!localEchoActive() || echoSuspended) {
@@ -846,7 +852,11 @@ export default function TerminalView({
 
       // Last known state, kept for drag math; updated by server replies and,
       // optimistically, by drag moves so the thumb never waits on a round trip.
-      const lastState = { position: 0, history: 0, height: 0 };
+      // `inMode` is tmux's pane_in_mode — true for copy-mode at any position,
+      // including pinned to the bottom, where keys are still copy-mode
+      // commands rather than shell input; it's what snapToBottomIfScrolled
+      // below tests, not position.
+      const lastState = { inMode: false, position: 0, history: 0, height: 0 };
 
       const renderThumb = (position: number, history: number, height: number) => {
         const track = scrollTrackRef.current;
@@ -862,11 +872,55 @@ export default function TerminalView({
         thumb.style.top = `${((history - position) / total) * 100}%`;
       };
 
-      const applyScrollState = (s: { position: number; history: number; height: number }) => {
+      const applyScrollState = (s: {
+        inMode: boolean;
+        position: number;
+        history: number;
+        height: number;
+      }) => {
+        lastState.inMode = s.inMode;
         lastState.position = s.position;
         lastState.history = s.history;
         lastState.height = s.height;
         renderThumb(s.position, s.history, s.height);
+      };
+
+      // Keys that move within the scrollback, so they must NOT snap it away:
+      // PageUp/PageDown, with or without modifiers (CSI 5~ / 6~, and the
+      // CSI 5;<mods>~ form a shifted or ctrl'd press produces).
+      const SCROLLBACK_KEY_RE = /^\x1b\[[56](;\d+)?~$/;
+
+      // Scrollback here is tmux copy-mode (see requestScrollState above), so
+      // while a pane is scrolled back every key is a copy-mode command rather
+      // than shell input — type "l" in a scrolled pane and tmux moves its
+      // cursor instead. A normal terminal emulator snaps to the live tail on
+      // the first keypress and lets the key through, so that's what every
+      // typed/pasted byte does here: request the exit, then send as usual.
+      // Ordering is the server's job (wsAttach's writeInput queues input
+      // behind an in-flight exit) — leaving copy-mode costs a tmux round trip
+      // while input is a direct PTY write, so a keystroke sent alongside it
+      // would otherwise overtake it.
+      //
+      // Deliberately NOT routed through here: mouse/wheel/focus reports,
+      // which call sendInput directly (a wheel tick is how you scroll in the
+      // first place), and this app's own terminal.* keybindings, which the
+      // key handler claims before the engine ever emits data — so find, copy
+      // and the prompt jumps all stay usable while scrolled.
+      const snapToBottomIfScrolled = (data: string) => {
+        if (!snapToBottomRef.current || !lastState.inMode) return;
+        if (SCROLLBACK_KEY_RE.test(data)) return;
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: "exitCopyMode" }));
+        // Optimistic, like the scrollbar drag's: the server sends a fresh
+        // scroll frame once the exit lands, but the thumb shouldn't sit at a
+        // stale position for the round trip — and clearing inMode here keeps
+        // the rest of a fast burst of typing from re-sending the request.
+        applyScrollState({
+          inMode: false,
+          position: 0,
+          history: lastState.history,
+          height: lastState.height,
+        });
       };
 
       // A close preceded by an "exit" message means tmux itself is gone

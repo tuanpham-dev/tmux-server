@@ -623,6 +623,16 @@ export async function promptJump(session: string, dir: "prev" | "next"): Promise
   ]);
 }
 
+// Leaves copy-mode and returns the pane to its live tail — the same "cancel"
+// searchScrollback below sends on close, but tolerant of a pane that isn't in
+// a mode at all (send-keys -X errors with "pane not in a mode" there). Its
+// caller is the snap-to-bottom-on-typing path in wsAttach, which fires from
+// the client's own copy-mode flag; that flag is refreshed by a throttled poll,
+// so acting on a stale "still scrolled" is normal, not a failure.
+export async function exitCopyMode(session: string): Promise<void> {
+  await tmux(["send-keys", "-X", "-t", `=${session}:`, "cancel"]).catch(() => {});
+}
+
 export type SearchAction = "start" | "next" | "prev" | "cancel";
 
 // Drives copy-mode search for the scrollback search overlay. "start" uses

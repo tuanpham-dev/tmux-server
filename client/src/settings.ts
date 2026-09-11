@@ -95,6 +95,13 @@ export interface AppSettings {
   //   "paste": pastes the clipboard (Windows Terminal habit), except over a
   //     link or with text selected, where the menu is more useful.
   rightClickBehavior: "menu" | "forward" | "paste";
+  // Typing while the pane is scrolled back jumps it to the live tail first,
+  // the way a normal terminal emulator does, instead of letting the key be
+  // eaten as a tmux copy-mode command. PageUp/PageDown are exempt — moving
+  // within the scrollback is their whole job — as are the wheel and the app's
+  // own terminal.* keybindings (find, copy, prompt jumps), which stay usable
+  // while scrolled. Turn it off to keep tmux's native copy-mode keys.
+  scrollbackSnapToBottom: boolean;
   // The bottom status bar (RAM, terminals, listening ports). Hidden on
   // touch devices regardless — a phone has no room for it.
   showStatusBar: boolean;
@@ -236,6 +243,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   minimumContrastRatio: 4.5,
   copySelection: "joinWrapped",
   rightClickBehavior: "menu",
+  scrollbackSnapToBottom: true,
   showStatusBar: true,
   uploadConflict: "rename",
   uploadMaxSizeMb: 0,

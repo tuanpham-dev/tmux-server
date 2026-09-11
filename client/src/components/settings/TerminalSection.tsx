@@ -203,6 +203,20 @@ export default function TerminalSection() {
         does the same for a single copy without changing this.
       </div>
 
+      <label className="settings-row checkbox-row">
+        <input
+          type="checkbox"
+          checked={settings.scrollbackSnapToBottom}
+          onChange={(e) => set("scrollbackSnapToBottom", e.target.checked)}
+        />
+        <span>Typing jumps back to the bottom</span>
+      </label>
+      <div className="settings-hint">
+        Scrolled back and then type, and the pane returns to the live output first, like a normal terminal
+        emulator, instead of the key acting as a tmux copy-mode command. PageUp and PageDown still move
+        through the scrollback, and Find and the prompt jumps still work while scrolled.
+      </div>
+
       <label className="settings-row">
         <span className="settings-label">Local echo when</span>
         <input

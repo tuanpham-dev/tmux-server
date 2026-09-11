@@ -6,6 +6,7 @@ import { spawnEnv } from "./spawnEnv.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import {
   applyTmuxOptions,
+  exitCopyMode,
   getAttachIdentity,
   getScrollState,
   invalidateScrollState,
@@ -19,7 +20,16 @@ import {
 } from "./tmux.js";
 
 interface ClientMsg {
-  type: "input" | "resize" | "scrollQuery" | "scrollTo" | "hscroll" | "search" | "promptJump" | "ping";
+  type:
+    | "input"
+    | "resize"
+    | "scrollQuery"
+    | "scrollTo"
+    | "hscroll"
+    | "search"
+    | "promptJump"
+    | "exitCopyMode"
+    | "ping";
   data?: string;
   cols?: number;
   rows?: number;
@@ -207,6 +217,43 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     if (ws.readyState === WebSocket.OPEN) ws.close();
   });
 
+  // Snap-to-bottom on typing (see TerminalView's snapToBottomIfScrolled):
+  // leaving copy-mode is a tmux subprocess round trip, while ordinary input
+  // is a synchronous write to the attach PTY — so a keystroke sent right
+  // after the exit request would otherwise overtake it and land in copy-mode
+  // as a command instead of reaching the shell. While an exit is in flight
+  // this holds the tail of a promise chain every subsequent write queues
+  // behind; it self-clears once the chain drains, putting normal typing back
+  // on the direct path.
+  let inputChain: Promise<void> | null = null;
+
+  const writeInput = (data: string) => {
+    if (inputChain === null) {
+      term.write(data);
+      return;
+    }
+    const chain = inputChain.then(() => {
+      if (!exited) term.write(data);
+    });
+    inputChain = chain;
+    void chain.finally(() => {
+      if (inputChain === chain) inputChain = null;
+    });
+  };
+
+  const pushScrollState = () => {
+    // The pane just moved, so the coalescing cache in getScrollState holds a
+    // pre-move answer — drop it, or the thumb snaps back to the old position.
+    invalidateScrollState(session);
+    return getScrollState(session)
+      .then((state) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "scroll", ...state }));
+        }
+      })
+      .catch(() => {});
+  };
+
   ws.on("message", (raw) => {
     // A message already in flight when the PTY exits can still arrive here
     // before the WS finishes closing — term.resize() on an exited PTY throws
@@ -225,7 +272,17 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
       // the client proves the path with a JSON round trip instead.
       send({ type: "pong" });
     } else if (msg.type === "input" && typeof msg.data === "string") {
-      term.write(msg.data);
+      writeInput(msg.data);
+    } else if (msg.type === "exitCopyMode") {
+      // Only the first request opens a chain; later keystrokes arriving
+      // during the same exit just queue on it via writeInput above.
+      if (inputChain === null) {
+        const chain = exitCopyMode(session).then(pushScrollState);
+        inputChain = chain;
+        void chain.finally(() => {
+          if (inputChain === chain) inputChain = null;
+        });
+      }
     } else if (msg.type === "scrollQuery") {
       getScrollState(session)
         .then((state) => {
@@ -236,16 +293,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
         .catch(() => {});
     } else if (msg.type === "scrollTo" && Number.isFinite(msg.line)) {
       scrollTo(session, msg.line!)
-        // This just moved the pane, so the coalescing cache in getScrollState
-        // now holds a pre-scroll answer — drop it, or the reply below reports
-        // the old position and the thumb snaps back.
-        .then(() => invalidateScrollState(session))
-        .then(() => getScrollState(session))
-        .then((state) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "scroll", ...state }));
-          }
-        })
+        .then(pushScrollState)
         .catch(() => {});
     } else if (
       msg.type === "search" &&
@@ -254,27 +302,11 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
       (msg.action !== "start" || typeof msg.query === "string")
     ) {
       searchScrollback(session, msg.action, msg.query)
-        // Same as scrollTo above: a search jump moves the pane, so the cached
-        // scroll state is stale by definition.
-        .then(() => invalidateScrollState(session))
-        .then(() => getScrollState(session))
-        .then((state) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "scroll", ...state }));
-          }
-        })
+        .then(pushScrollState)
         .catch(() => {});
     } else if (msg.type === "promptJump" && (msg.dir === "prev" || msg.dir === "next")) {
       promptJump(session, msg.dir)
-        // Same as scrollTo/search above: the jump moved the pane, so the
-        // cached scroll state is stale and the thumb must track the jump.
-        .then(() => invalidateScrollState(session))
-        .then(() => getScrollState(session))
-        .then((state) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "scroll", ...state }));
-          }
-        })
+        .then(pushScrollState)
         .catch(() => {});
     } else if (
       msg.type === "hscroll" &&
