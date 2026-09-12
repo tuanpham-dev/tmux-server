@@ -178,7 +178,7 @@ function ProfileEditor({
   const storedKey = !!(keys?.has?.[profile.id] ?? keys?.has?.[profile.provider]);
 
   return (
-    <div className="ai-profile-editor">
+    <div className="settings-entry-editor">
       <div className="settings-row">
         <span className="settings-label">Name</span>
         <input
@@ -383,12 +383,12 @@ export default function AiSection() {
         </div>
       </div>
 
-      <div className="ai-profile-list">
+      <div className="settings-entry-list">
         {profiles.map((profile) => {
           const isExpanded = expandedId === profile.id;
           return (
-            <div key={profile.id} className={`ai-profile${isExpanded ? " expanded" : ""}`}>
-              <div className="ai-profile-head">
+            <div key={profile.id} className={`settings-entry${isExpanded ? " expanded" : ""}`}>
+              <div className="settings-entry-head">
                 <input
                   type="checkbox"
                   checked={profile.enabled}
@@ -396,7 +396,7 @@ export default function AiSection() {
                   onChange={(e) => update(profile.id, { ...profile, enabled: e.target.checked })}
                 />
                 <button
-                  className="ai-profile-name"
+                  className="settings-entry-name"
                   onClick={() => setExpandedId(isExpanded ? null : profile.id)}
                   aria-expanded={isExpanded}
                 >

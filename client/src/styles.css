@@ -1310,6 +1310,18 @@ body.resizing-row {
   outline-offset: -1px;
 }
 
+/* "Skip permission prompts", under the agent picker in the New Worktree
+   form. Only rendered for an agent that has such a flag, so it appears and
+   disappears with the selection. */
+.worktree-form-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-inactive);
+  cursor: pointer;
+}
+
 .worktree-form-buttons {
   display: flex;
   gap: 6px;
@@ -3198,6 +3210,13 @@ body.scrollbar-dragging {
   margin-bottom: 16px;
 }
 
+/* Hints name real files (an agent's hook config, a worktree) and a long path
+   has nowhere to break, which pushed the panel past the screen edge at phone
+   width. Break inside it rather than overflow. */
+.settings-hint code {
+  overflow-wrap: anywhere;
+}
+
 /* A hint nested INSIDE a row (AiSection, BehaviorSection) is one of that
    row's own stacked children, already spaced by its 4px gap — the pairing
    above is about a hint that FOLLOWS a row as its sibling. Left exactly as
@@ -4142,26 +4161,30 @@ body.scrollbar-dragging {
   font-size: 14px;
 }
 
-/* ---- Settings → AI Providers: the configured-AI list ---- */
+/* ---- Settings list entries: one expandable row per configured thing ----
+   Shared by Settings → AI Providers (the configured-AI list) and
+   Settings → Agents (the agent registry) - the same shape in both:
+   an enable checkbox, a name that doubles as the expander, row actions,
+   and the entry's own fields underneath while it is open. */
 
-.ai-profile-list {
+.settings-entry-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
   margin: 0 0 12px;
 }
 
-.ai-profile {
+.settings-entry {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--panel-bg);
 }
 
-.ai-profile.expanded {
+.settings-entry.expanded {
   border-color: var(--focus-border);
 }
 
-.ai-profile-head {
+.settings-entry-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4170,7 +4193,7 @@ body.scrollbar-dragging {
 
 /* The name doubles as the expander, so it takes the row's slack and stays
    left-aligned while the default radio and Remove hold the right end. */
-.ai-profile-name {
+.settings-entry-name {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4185,10 +4208,214 @@ body.scrollbar-dragging {
   cursor: pointer;
 }
 
-.ai-profile-name > span:first-of-type {
+.settings-entry-name > span:first-of-type {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Settings → Agents ------------------------------------------------------
+   A catalog rather than an editor: a master switch, a permissions choice, and
+   one row per agent the app knows about. */
+
+/* A label-and-hint block on the left, its control held at the right end.
+   Wraps to stacked at narrow widths so the control never squeezes the text
+   into a column. */
+.settings-split {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-split > .settings-hint {
+  flex: 1 1 260px;
+  margin-bottom: 0;
+}
+
+/* Two named states, both visible - "off" for permissions means "ask me",
+   which a cleared checkbox does not say out loud. */
+.settings-segmented {
+  display: inline-flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.settings-segment {
+  padding: 3px 10px;
+  border: none;
+  background: var(--input-bg);
+  color: var(--fg-inactive);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-segment + .settings-segment {
+  border-left: 1px solid var(--input-border);
+}
+
+/* The app's own selected-row treatment (as Settings' nav uses), not a status
+   colour: the first cut painted the active half in the working-agent green,
+   which swallowed its own label. */
+.settings-segment.active {
+  background: var(--list-active-bg);
+  color: var(--list-active-fg);
+}
+
+.settings-segment:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* The count chip beside "Available agents". */
+.settings-count {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg-inactive);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.agent-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 16px;
+}
+
+/* A separator ABOVE each row and none below the last: the settings footer
+   draws its own rule a few pixels further down, and closing the list as well
+   put two lines side by side. */
+.agent-row {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+
+/* Not installed: the row stays readable and its link stays usable, but it
+   reads as unavailable rather than as something that would run. */
+.agent-row.missing .agent-row-label,
+.agent-row.missing .agent-row-command {
+  opacity: 0.55;
+}
+
+.agent-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The agent's glyph, in a soft square like the rest of the app's list
+   iconography. Dimmed with the row when the agent is not installed. */
+.agent-row-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-inactive);
+  font-size: 14px;
+}
+
+.agent-row-icon img {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.agent-row.missing .agent-row-icon {
+  opacity: 0.55;
+}
+
+.agent-row-name {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+
+.agent-row-label {
+  font-size: 13px;
+}
+
+.agent-row-command,
+.agent-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-inactive);
+}
+
+.agent-row-meta {
+  margin: 0;
+}
+
+/* The row's link is an <a>, so it needs the underline taken off explicitly,
+   and it sits beside text rather than in a toolbar - smaller than the app's
+   standard icon button.
+
+   The size has to be set on the GLYPH, not on this anchor: the codicon
+   stylesheet gives every `.codicon[class*='codicon-']` its own
+   `font: normal normal normal 16px/1 codicon`, which overrides whatever the
+   container's font-size is. Setting it here alone looked like it worked and
+   changed nothing on screen. */
+.agent-row-head a.icon-button {
+  width: 16px;
+  height: 16px;
+  color: var(--fg-inactive);
+  text-decoration: none;
+}
+
+.agent-row-head a.icon-button .codicon {
+  font-size: 11px;
+}
+
+.agent-row-head a.icon-button:hover {
+  color: var(--fg);
+}
+
+.agent-row-detail {
+  padding: 6px 0 2px;
+}
+
+/* Keeps the row's controls aligned when an agent has no link to offer. */
+.icon-button-placeholder {
+  width: 16px;
+  flex-shrink: 0;
+}
+
+/* Settings → Agents: the generated hook snippet and its buttons. The snippet
+   is a config file's worth of JSON, so it scrolls on its own rather than
+   stretching the panel, and wraps its buttons at phone width. */
+
+.agent-hook-snippet {
+  max-height: 220px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--fg-inactive);
+  font-family: inherit;
+  font-size: 12px;
+  white-space: pre;
+  -webkit-overflow-scrolling: touch;
+}
+
+.agent-hook-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
 }
 
 .ai-profile-default {
@@ -4201,7 +4428,7 @@ body.scrollbar-dragging {
   cursor: pointer;
 }
 
-.ai-profile-editor {
+.settings-entry-editor {
   padding: 0 8px 8px;
   border-top: 1px solid var(--border);
 }

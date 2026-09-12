@@ -25,8 +25,8 @@
         },
         "ports.agentPrograms": {
           "type": "string",
-          "default": "claude",
-          "description": "Comma-separated foreground commands (tmux's pane_current_command) the port proxy viewer's element picker \"Send to Agent\" targets, e.g. \"claude,codex\"."
+          "default": "",
+          "description": "Deprecated - Settings → Agents now holds the one list of AI agents, and the port proxy viewer's element picker \"Send to Agent\" uses it. A value here still overrides that list for this version; clear it to follow Settings → Agents. Comma-separated foreground commands (tmux's pane_current_command), e.g. \"claude,codex\"."
         },
         "ports.sendAutoSubmit": {
           "type": "boolean",

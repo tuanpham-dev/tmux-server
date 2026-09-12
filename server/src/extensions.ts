@@ -14,7 +14,25 @@ import { pathToFileURL } from "node:url";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { listAiProfiles, runAi, type AiProfileSummary, type AiRunOptions } from "./ai.js";
-import { readSettingsDoc } from "./settingsStore.js";
+import {
+  DEFAULT_AGENT_ICON,
+  listAgents,
+  setContributedAgentsSource,
+  type AgentPreset,
+  type AgentSummary,
+} from "./agents.js";
+import {
+  dropAgentHookSubscriptions,
+  subscribeAgentHooks,
+  type AgentHookSubscription,
+} from "./agentHooks.js";
+import {
+  clearExtensionSecrets,
+  listExtensionSecretNames,
+  readExtensionSecret,
+  readSettingsDoc,
+  writeExtensionSecret,
+} from "./settingsStore.js";
 
 const configDir = path.join(
   process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
@@ -157,6 +175,13 @@ interface ExtensionManifest {
     configuration?: ConfigurationContribution | ConfigurationContribution[];
     terminalEngines?: TerminalEngineContribution[];
     editors?: EditorContribution[];
+    // Agents this extension adds to core's registry (Settings → Agents), so
+    // a plugin can teach the app about an agent core has never heard of
+    // without the user defining one by hand. Declared, not activated: the
+    // registry reads these from the manifest, so a contributed agent is
+    // offered for detection and launching whether or not the extension has
+    // a client or server entry.
+    agents?: AgentContribution[];
   };
   tmuxServer?: {
     client?: string;
@@ -166,6 +191,32 @@ interface ExtensionManifest {
     // Ignored on user-installed extensions, which could otherwise claim it.
     required?: boolean;
   };
+}
+
+// One agent from a manifest's contributes.agents. The same three facts a
+// core registry entry carries, plus where to read about it. `id` is
+// namespaced with the extension's id when it is merged, so two extensions
+// contributing "claude" cannot collide, and a user's own stored entry always
+// wins over a contributed one.
+export interface AgentContribution {
+  id: string;
+  label?: string;
+  // tmux's pane_current_command for a pane running it (detection).
+  program?: string;
+  // The full launch line (launch presets).
+  command?: string;
+  // Appended for its no-prompts mode.
+  skipPermissionsArgs?: string;
+  // Which hook format its CLI reads: "claude" | "codex" | "agy".
+  hooks?: string;
+  docsUrl?: string;
+  // An image for the agent's row: an absolute URL, or a path inside this
+  // extension (resolved to the extension's own file route, the same way its
+  // manifest `icon` is). Falls back to `icon` below when absent.
+  iconUrl?: string;
+  // Fallback codicon name from the app's own icon set. Anything empty or
+  // unknown renders a generic robot.
+  icon?: string;
 }
 
 // The normalized, ordered form of a manifest's contributes.configuration —
@@ -542,6 +593,12 @@ export async function uninstallExtension(id: string): Promise<void> {
   } else {
     await rm(found.folderPath, { recursive: true, force: true });
     delete state[id];
+    // Only on this branch. A builtin's "uninstall" above is a reversible
+    // tombstone — its files never leave and the UI offers Reinstall — so
+    // wiping its credentials would make an undoable action partly
+    // un-undoable. Here the folder is actually gone, and leaving a live
+    // credential behind for it has no upside.
+    await clearExtensionSecrets(id);
   }
   await writeState(state);
 }
@@ -612,6 +669,35 @@ export interface ExtensionHostApi {
     // dropped when its server hook unmounts.
     onApiMutation(cb: () => void): () => void;
   };
+  // The agent registry (agents.ts) — the one list of AI agents the user has
+  // configured, so an extension that needs to find an agent pane or offer an
+  // agent to launch stops carrying its own copy of "what is an agent". Each
+  // entry's `program` is tmux's pane_current_command for a pane running it
+  // (detection) and `command` is the line that starts it (launch presets).
+  // Enabled entries only, in the user's own order.
+  agents: {
+    list(): Promise<AgentSummary[]>;
+  };
+  // Core's agent-hook pipeline (agentHooks.ts): an AI agent's own hooks
+  // report to one core endpoint, and core normalizes each event and fans it
+  // out here. An extension no longer ships a snippet, a schema or a route of
+  // its own — all three are core's, surfaced in Settings → Agents.
+  //
+  // Events are named in core's own vocabulary ("stop", "permission", …) so a
+  // subscriber never learns which CLI it is talking to. `paneId` is the
+  // correlation key — it is the one identifier every agent's hook can supply
+  // — and `sessionName` is core's resolution of it. An event core cannot map
+  // arrives with `event: null` and its `rawEvent` intact rather than being
+  // guessed at or dropped.
+  //
+  // tool-start / tool-end only arrive once the user has turned on
+  // per-tool-call hooks in Settings → Agents; a subscriber that wants them
+  // must keep working without them.
+  agentHooks: {
+    // Returns an unsubscribe. All of an extension's subscriptions are also
+    // dropped when its server hook unmounts.
+    subscribe(sub: AgentHookSubscription): () => void;
+  };
   // The app's shared AI backend (ai.ts) — prompt in, text out, using whatever
   // provider is configured in Settings → AI. An extension supplies the prompt
   // and never sees a provider, a binary or an API key. Rejects with an AiError
@@ -627,12 +713,36 @@ export interface ExtensionHostApi {
     // picker for it — and pass the stored id as opts.profileId.
     listProfiles(): Promise<AiProfileSummary[]>;
   };
+  // This extension's own credential store (settingsStore.ts's
+  // extensionSecrets), scoped to its id. A manifest configuration property is
+  // the wrong home for a credential: it lands in the settings document, which
+  // the client GETs, merges and PUTs back whole. These values are stripped
+  // from GET /api/settings and no document write can reach them, so they
+  // never leave the server. Core deliberately serves no route for them — an
+  // extension that wants a browser-facing field defines its own route on its
+  // own router and calls set() from there.
+  secrets: {
+    // The stored value, or null when there is none.
+    get(name: string): Promise<string | null>;
+    // A null or blank value clears the name.
+    set(name: string, value: string | null): Promise<void>;
+    // Names only, never values — the shape a "set"/"not set" UI needs, and
+    // the one that is safe to forward to a client.
+    list(): Promise<string[]>;
+  };
 }
 
 function makeHostApi(id: string): ExtensionHostApi {
   return {
     ports: { list: listTmuxPorts, find: findTmuxPort },
+    agents: { list: () => listAgents() },
+    agentHooks: { subscribe: (sub) => subscribeAgentHooks(id, sub) },
     ai: { run: (prompt, opts) => runAi(prompt, opts), listProfiles: () => listAiProfiles() },
+    secrets: {
+      get: (name) => readExtensionSecret(id, name),
+      set: (name, value) => writeExtensionSecret(id, name, value),
+      list: () => listExtensionSecretNames(id),
+    },
     events: {
       onApiMutation(cb) {
         let set = apiMutationListeners.get(id);
@@ -646,6 +756,62 @@ function makeHostApi(id: string): ExtensionHostApi {
     },
   };
 }
+
+// contributes.agents from every ENABLED extension, in the shape the registry
+// wants. Disabled extensions contribute nothing, for the same reason their
+// settings are not in effect. Ids are namespaced with the contributing
+// extension so two extensions cannot collide on "claude", and a hook flavour
+// outside the three core knows is dropped to null rather than trusted.
+// An absolute URL is used as given; anything else is read as a path inside
+// the contributing extension and served through its own file route.
+function contributedIconUrl(extensionId: string, raw: string): string {
+  if (!raw) return "";
+  if (/^https?:\/\//.test(raw) || raw.startsWith("data:")) return raw;
+  const relative = raw.replace(/^\.?\//, "");
+  return `/api/extensions/${encodeURIComponent(extensionId)}/file/${relative}`;
+}
+
+async function contributedAgents(): Promise<AgentPreset[]> {
+  const out: AgentPreset[] = [];
+  for (const ext of await listExtensions()) {
+    if (!ext.enabled) continue;
+    const found = await findExtensionFolder(ext.id);
+    const declared = found?.manifest.contributes?.agents;
+    if (!Array.isArray(declared)) continue;
+    for (const raw of declared) {
+      const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+      const program = typeof raw?.program === "string" ? raw.program.trim() : "";
+      const command = typeof raw?.command === "string" ? raw.command.trim() : "";
+      // Same floor the settings document's own entries have to clear: an
+      // entry that can neither be detected nor launched is not an agent.
+      if (!id || (!program && !command)) continue;
+      const hooks = typeof raw?.hooks === "string" ? raw.hooks.trim() : "";
+      out.push({
+        id: `${ext.id}.${id}`,
+        label: (typeof raw?.label === "string" && raw.label.trim()) || program || command,
+        program,
+        command,
+        skipPermissionsArgs:
+          typeof raw?.skipPermissionsArgs === "string" ? raw.skipPermissionsArgs.trim() : "",
+        hooks: hooks === "claude" || hooks === "codex" || hooks === "agy" ? hooks : null,
+        docsUrl: typeof raw?.docsUrl === "string" ? raw.docsUrl.trim() : "",
+        // An extension-relative path becomes a URL here rather than in the
+        // client: whoever renders a row should not have to know which
+        // extension an agent came from to find its picture.
+        iconUrl: contributedIconUrl(ext.id, typeof raw?.iconUrl === "string" ? raw.iconUrl.trim() : ""),
+        icon: (typeof raw?.icon === "string" && raw.icon.trim()) || DEFAULT_AGENT_ICON,
+        enabled: true,
+        contributedBy: ext.id,
+      });
+    }
+  }
+  return out;
+}
+
+// Installed once, at import: agents.ts owns the registry but cannot import
+// this module (the host API here already depends on it), so it takes its
+// contributed entries through this hook instead.
+setContributedAgentsSource(contributedAgents);
 
 export function getServerHookRouter(id: string): Router | undefined {
   return serverHooks.get(id);
@@ -701,6 +867,7 @@ export async function mountServerHookIfNeeded(
       return;
     }
     const router = Router();
+    const host = makeHostApi(id);
     activate({
       router,
       log: (...args: unknown[]) => console.log(`[ext:${id}]`, ...args),
@@ -711,7 +878,10 @@ export async function mountServerHookIfNeeded(
         run: (prompt: string, opts?: AiRunOptions) => runAi(prompt, opts),
         listProfiles: (): Promise<AiProfileSummary[]> => listAiProfiles(),
       },
-      host: makeHostApi(id),
+      // Lifted for the same reason as `ai` — an extension holding a
+      // credential reaches for it by name: activate({ secrets }).
+      secrets: host.secrets,
+      host,
     });
     serverHooks.set(id, router);
   } catch (err) {
@@ -722,6 +892,7 @@ export async function mountServerHookIfNeeded(
 export function unmountServerHook(id: string): void {
   serverHooks.delete(id);
   apiMutationListeners.delete(id);
+  dropAgentHookSubscriptions(id);
 }
 
 export async function loadEnabledServerHooks(): Promise<void> {

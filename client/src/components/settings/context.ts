@@ -3,6 +3,10 @@ import type { AppSettings, ExtensionSettingsValues } from "../../settings";
 import type { ExtensionInfo } from "../../types";
 
 export interface SettingsContextValue {
+  // Whether the Settings tab is the one on screen. Sections stay mounted
+  // when it is not (SettingsView only hides them), so anything that polls
+  // has to check this or it polls forever in the background.
+  active: boolean;
   settings: AppSettings;
   set: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onSettingsChange: (settings: AppSettings) => void;

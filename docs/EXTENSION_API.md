@@ -28,6 +28,7 @@ to read).
   - [`ctx.serverFetch` / `ctx.assetUrl`](#ctxserverfetch--ctxasseturl)
   - [`ctx.settings`](#ctxsettings)
 - [Server API](#server-api)
+- [Agent hooks](#agent-hooks)
 - [Sharing the host runtime](#sharing-the-host-runtime)
 - [Building and packaging](#building-and-packaging)
 - [Security model](#security-model)
@@ -352,6 +353,67 @@ interface FileViewerHostProps {
   fontSize?: number;                     // the configured terminal font size, px
 }
 ```
+
+### Agents — `contributes.agents`
+
+An extension can add agents to the app's own registry (**Settings → Agents**),
+so a plugin can teach the app about an agent core has never heard of without
+the user defining one by hand. Declared, not activated: these are read from
+the manifest, so a contributed agent is detected and offered for launching
+whether or not your extension has a client or server entry.
+
+```json
+"contributes": {
+  "agents": [
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "program": "opencode",
+      "command": "opencode",
+      "skipPermissionsArgs": "--yolo",
+      "hooks": "claude",
+      "docsUrl": "https://example.com/opencode",
+      "icon": "hubot"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Required. Namespaced with your extension id when merged (`<publisher>.<name>.<id>`), so two extensions cannot collide. |
+| `program` | tmux's `pane_current_command` for a pane running it — how a pane is recognised as this agent. Omit for launch-only. |
+| `command` | The full launch line. Omit for detection-only. An entry with neither is dropped. |
+| `skipPermissionsArgs` | Appended for the agent's no-prompts mode. Empty means it has none, and no "skip permissions" choice is offered for it. |
+| `hooks` | `"claude"`, `"codex"` or `"agy"` — which hook format its CLI reads, so the app can install its own hooks for it. Anything else becomes none. |
+| `docsUrl` | Where to read about it, or how to install it — the row's link, and the only useful action for an agent whose CLI is absent. |
+| `icon` | A codicon name for the row. Unknown or omitted falls back to a generic robot. |
+
+Contributed agents are **not editable** in Settings — whoever contributed
+them owns the command line — but the user can enable and disable them like
+any other, and a stored entry with the same id always wins. An agent whose
+`program` is not on `PATH` is shown dimmed rather than offered as if it would
+run.
+
+`showMenu` opens the app's own context menu at a point. Its items:
+
+```ts
+interface MenuItem {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;     // destructive styling
+  checked?: boolean;    // leading check icon — for a toggle row. Setting it on
+                        // ANY item (true or false) reserves the gutter, so a
+                        // menu's labels stay aligned
+  icon?: string;        // leading codicon name, same gutter; `checked` wins
+  disabled?: boolean;   // dimmed and inert
+  separator?: boolean;  // a divider row; label/onClick are placeholders
+}
+```
+
+A menu closes on any click, including a `checked` toggle — so a toggle that
+should stay visible after flipping has to reopen the menu itself (the JIRA
+extension's "Skip permission prompts" row does exactly that).
 
 Reference: any of the preview extensions; `git-scm` for `extensions: []`
 viewers opened only via `ctx.app.openViewerTab`.
@@ -855,7 +917,7 @@ about). Only write keys you declared.
 TypeScript via tsx, but extension server entries are plain JS):
 
 ```js
-export function activate({ router, log, getSettings, host, ai }) {
+export function activate({ router, log, getSettings, host, ai, secrets }) {
   router.get("/list", async (req, res) => { ... });
 }
 ```
@@ -869,11 +931,56 @@ export function activate({ router, log, getSettings, host, ai }) {
 | `host.ports.find(port)` | `Promise<ListeningPort \| null>` — one port's fresh attribution (kill-confirmation flows). |
 | `ai.run(prompt, opts?)` | `Promise<string>` — prompt in, text out, through whatever the user configured in **Settings → AI** (a signed-in CLI, a keyed API, a custom command). Your extension never sees a provider, a binary or a key. `opts.profileId` picks one configured AI (see `listProfiles`, and the `"ai-profile"` config format above); `opts.model` overrides that profile's model for one call; `opts.cwd` is the directory a CLI provider runs in — pass the project, since some CLIs refuse to run outside a trusted directory. Rejects with an `AiError` whose `code` separates "not configured yet" (`missing-binary`/`missing-key`/`missing-model`/`missing-command`) from a real failure (`provider-failed`/`empty-reply`), so the first can be surfaced as guidance instead of an error. |
 | `ai.listProfiles()` | `Promise<{ id, label, provider, model, isDefault }[]>` — the AIs the user has configured and enabled, for an extension that builds its own picker. Prefer the `"ai-profile"` config property, which renders one for you. |
+| `host.agents.list()` | `Promise<AgentSummary[]>` — the AI agents the user has configured and enabled, in their own order, from the one core registry behind **Settings → Agents**. Each entry is `{ id, label, program, command, hooks }`: `program` is the foreground command tmux reports for a pane running it (match `pane_current_command` against it to find the agent's window), `command` is the full launch line (offer it as a "start work with" preset), and `hooks` is `"claude" \| "codex" \| "agy" \| null` — which hook format its CLI speaks, or `null` for one core cannot hook. Read this instead of declaring an agent-programs or agent-presets setting of your own. |
+| `host.agentHooks.subscribe({ events, onEvent })` | Subscribe to normalized AI agent hook events — core installs the hooks, receives them at one endpoint and fans them out (see [Agent hooks](#agent-hooks)). Returns an unsubscribe; all of an extension's subscriptions are dropped when its hook unmounts. |
+| `secrets.get(name)` | `Promise<string \| null>` — one of this extension's stored credentials, or null. Also on `host.secrets`. |
+| `secrets.set(name, value)` | `Promise<void>` — stores a credential under `name` (1-64 chars of `[A-Za-z0-9._-]`); a null or blank `value` clears it. |
+| `secrets.list()` | `Promise<string[]>` — the names this extension has stored, **never** the values. The shape a "set / not set" UI needs, and the one that's safe to send to a client. |
 | `host.events.onApiMutation(cb)` | Fires after **any** mutating (non-GET/HEAD) core API request finishes — the signal that on-disk state probably changed. Use it to invalidate caches that mirror the filesystem (git-scm drops its status-scan cache here). Returns an unsubscribe; all of an extension's subscriptions are dropped when its hook unmounts. |
 
 The `host` object is the **only** sanctioned way to reach core services —
 never import core modules from an extension (it would bypass
 enable/disable and break when core refactors).
+
+#### Credentials — `secrets`
+
+A `contributes.configuration` string property is the wrong home for an API
+token. Configuration values live in the settings document, which the client
+GETs, merges client-side, and PUTs back **whole** — so a token there is
+readable by anything with access to the app.
+
+`secrets` is a store scoped to your extension id that no client can read.
+Values are stripped from `GET /api/settings` and restored from disk on every
+document write, so an incoming document can neither read them back, overwrite
+them, nor smuggle one in — the same protection core's own AI provider keys
+get (see `server/src/settingsStore.ts`).
+
+Core deliberately serves **no route** for them. An extension that wants a
+browser-facing field defines its own route and calls `secrets.set` there,
+answering the "is it set?" question with a boolean:
+
+```js
+export function activate({ router, secrets }) {
+  router.get("/token", async (_req, res) => {
+    res.json({ set: !!(await secrets.get("apiToken")) });   // presence, never the value
+  });
+  router.put("/token", async (req, res) => {
+    const value = req.body?.value;
+    if (typeof value !== "string") return res.status(400).json({ error: "value must be a string" });
+    await secrets.set("apiToken", value || null);           // "" clears it
+    res.status(204).end();
+  });
+}
+```
+
+Pair that with a [settings component](#settings-components--registersettingscomponent)
+rendering a password field, and the credential never reaches the settings
+document at all.
+
+Values survive a disable/enable cycle, and survive an "uninstall" of a
+**builtin** (which is a reversible tombstone — the files stay and the UI
+offers Reinstall). Uninstalling a non-builtin deletes its folder and clears
+its secrets with it.
 
 Caveats:
 
@@ -892,6 +999,57 @@ References: `ports/server.js` (minimal, `host`-driven),
 `git-scm/server.js` (the full works).
 
 ---
+
+## Agent hooks
+
+An AI agent's own hooks (Claude Code's `Stop`, Codex's `PermissionRequest`,
+Antigravity's `PreInvocation`) are core's business, not yours. Core knows each
+agent's config file and schema, generates the snippet, installs it on an
+explicit press in **Settings → Agents**, receives every event at one
+loopback-only endpoint, normalizes it, and hands it to whoever subscribed.
+An extension ships no snippet, no schema, no route and no settings component
+for any of that — it subscribes:
+
+```js
+const unsubscribe = host.agentHooks.subscribe({
+  events: ["stop", "permission"],
+  onEvent(event) {
+    if (event.event === "stop") finish(event.paneId);
+  },
+});
+```
+
+`events` are core's own names, never the agent's, so the same subscription
+works for every agent:
+
+| Event | Fires when |
+| --- | --- |
+| `session-start` | The agent started a session in that pane. |
+| `prompt-submit` | A turn began (Antigravity's `PreInvocation` maps here). |
+| `tool-start` / `tool-end` | One tool call began or finished. **Only delivered while the user has turned on per-tool-call hooks** in Settings → Agents — they fire once per tool call, so they are off by default. Subscribe if you want them, and keep working without them. |
+| `permission` | The agent is waiting on a permission prompt. Antigravity never sends this: its CLI has no permission event at all. |
+| `stop` | The turn ended. |
+| `subagent-stop` | A subagent finished (Claude Code, Codex). |
+
+Each `onEvent` receives:
+
+| Field | Meaning |
+| --- | --- |
+| `event` | One of the names above, or **`null`** for a raw event core has no mapping for. A `null` event is delivered, not dropped — with `rawEvent` intact, so an extension that knows what it means can act on it and core never has to guess. Antigravity's `PostInvocation` is the live example: it fires when the model's tool calls finish, which is neither `tool-end` nor `stop`. |
+| `rawEvent` | What the agent called it (`"Stop"`, `"PreInvocation"`). Always present. |
+| `agent` | The registry id of the agent whose hook fired. Informational: hooks live in one config file per CLI, so two presets sharing a CLI share one installed hook, and this names whichever of them was installed last. **Correlate by `paneId`, not by this.** |
+| `paneId` | The tmux pane id (`"%3"`) the agent is running in, from `$TMUX_PANE` in its own environment. The correlation key: it is the one identifier every agent's hook can supply, which is why keying on the agent's own session id only ever worked for Claude Code. Empty when the hook did not run under tmux. |
+| `sessionName` | The tmux session that pane belongs to, resolved per event, or `null` if the pane is gone. |
+| `payload` | The agent's own event JSON, verbatim, or `null` if it sent something that was not JSON. |
+| `receivedAt` | `Date.now()` when core received it. |
+
+Core installs only the **union of events its enabled subscribers asked for**,
+so subscribing to something new makes the user's installed hooks stale, and
+Settings → Agents says so and offers to reinstall. That panel also lists who
+is subscribed to what, so a user can see why.
+
+Hook events are transient: core normalizes and fans out, and stores nothing.
+Whether anything is remembered is your extension's business.
 
 ## Sharing the host runtime
 
@@ -963,3 +1121,11 @@ app already hands you through the terminal itself — but it means:
 `/api/ext/<id>` routes with the same care as core routes (they sit behind
 the app's Host/Origin gate and auth, but validate paths and inputs — see
 `git-scm/server.js`'s `resolveSafePath` for the pattern).
+
+Agent hook payloads are **untrusted process input**. They come from an AI
+agent's own hook, over a loopback-only endpoint that any local process can
+reach, and core does not validate their contents — only their shape and size.
+Treat every field of `event.payload` as unvalidated: never interpolate one
+into a shell command, a path, or SQL, and do not assume a field is present or
+of the type the vendor documents. The trustworthy parts are the ones core
+derives itself: `event.event`, `paneId` and `sessionName`.

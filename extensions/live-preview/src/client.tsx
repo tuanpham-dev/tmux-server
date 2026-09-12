@@ -3,7 +3,13 @@ import { createPortal } from "react-dom";
 import "./style.css";
 import { injectStylesheet } from "../../_shared/injectStylesheet";
 import Icon from "../../_shared/Icon";
-import { agentWindows, fetchSessions, sendToAgent } from "../../_shared/agentTarget";
+import {
+  agentWindows,
+  fetchSessions,
+  resolveAgentTargets,
+  sendToAgent,
+  type AgentTargetProgram,
+} from "../../_shared/agentTarget";
 
 interface SettingsApi {
   get(key: string): unknown;
@@ -37,9 +43,11 @@ function readPollInterval(): number {
   return Math.min(10000, Math.max(250, value));
 }
 
-function readAgentPrograms(): string {
-  const raw = extSettings?.get("livePreview.agentPrograms");
-  return typeof raw === "string" && raw.trim() ? raw : "claude";
+// Which panes count as an agent comes from core's registry (Settings →
+// Agents) now, with this extension's own deprecated setting still winning
+// while it is set - see _shared/agentTarget's resolveAgentTargets.
+function agentTargets(): Promise<AgentTargetProgram[]> {
+  return resolveAgentTargets(extSettings?.get("livePreview.agentPrograms"));
 }
 
 function readSendAutoSubmit(): boolean {
@@ -379,8 +387,8 @@ function HtmlPreview({ filePath, active, toolbarTarget, openInEditor }: Props) {
     setSendError(null);
     try {
       const activeCwd = getActiveContext?.()?.cwd ?? dir;
-      const sessions = await fetchSessions();
-      const targets = agentWindows(sessions, activeCwd, readAgentPrograms());
+      const [sessions, agents] = await Promise.all([fetchSessions(), agentTargets()]);
+      const targets = agentWindows(sessions, activeCwd, agents);
       if (targets.length === 0) {
         setSendError("No agent is running in this project - start one first.");
         return;

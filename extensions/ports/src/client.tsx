@@ -25,7 +25,13 @@ import Icon from "../../_shared/Icon";
 import type { MenuItem } from "../../_shared/types";
 import { useListNavigation } from "../../_shared/useListNavigation";
 import { useLongPressMenu } from "../../_shared/useLongPressMenu";
-import { agentWindows, fetchSessions, sendToAgent } from "../../_shared/agentTarget";
+import {
+  agentWindows,
+  fetchSessions,
+  resolveAgentTargets,
+  sendToAgent,
+  type AgentTargetProgram,
+} from "../../_shared/agentTarget";
 
 // ---- Module-level host bridge ----
 
@@ -50,9 +56,11 @@ function readClickAction(): "app" | "browser" {
   return extSettings?.get("ports.clickAction") === "browser" ? "browser" : "app";
 }
 
-function readAgentPrograms(): string {
-  const raw = extSettings?.get("ports.agentPrograms");
-  return typeof raw === "string" && raw.trim() ? raw : "claude";
+// Which panes count as an agent comes from core's registry (Settings →
+// Agents) now, with this extension's own deprecated setting still winning
+// while it is set - see _shared/agentTarget's resolveAgentTargets.
+function agentTargets(): Promise<AgentTargetProgram[]> {
+  return resolveAgentTargets(extSettings?.get("ports.agentPrograms"));
 }
 
 function readSendAutoSubmit(): boolean {
@@ -501,8 +509,8 @@ function PortProxyView({ filePath, active, toolbarTarget }: PortProxyProps) {
         setSendError("No active project - open a project first.");
         return;
       }
-      const sessions = await fetchSessions();
-      const targets = agentWindows(sessions, activeCwd, readAgentPrograms());
+      const [sessions, agents] = await Promise.all([fetchSessions(), agentTargets()]);
+      const targets = agentWindows(sessions, activeCwd, agents);
       if (targets.length === 0) {
         setSendError("No agent is running in this project - start one first.");
         return;

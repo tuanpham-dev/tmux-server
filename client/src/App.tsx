@@ -40,7 +40,7 @@ import { useFileActions } from "./hooks/useFileActions";
 import { useFileOpeners } from "./hooks/useFileOpeners";
 import { useGlobalKeybindings } from "./hooks/useGlobalKeybindings";
 import { COMMANDS, formatBinding } from "./keybindings";
-import { DEFAULT_SETTINGS } from "./settings";
+import { DEFAULT_SETTINGS, LEGACY_WORKTREE_RUN_COMMANDS } from "./settings";
 import { evaluateWhen } from "./whenClause";
 import { useBottomPanel } from "./hooks/useBottomPanel";
 import { useOpenTarget } from "./hooks/useOpenTarget";
@@ -1822,21 +1822,47 @@ export default function App() {
   // The PROJECTS tree's whole prop set, shared by the sidebars (through
   // Sidebar) and by the status bar's terminals popover, which renders the
   // same list with `projects` overridden to [] (no pins, no dead rows).
-  // worktreeRunCommands is a JSON-string setting (the documented pattern for
+  // What the New Worktree form offers to run in the new session. The agent
+  // registry (Settings → Agents) is the source, so this picker names the same
+  // agents as everything else in the app rather than being an eighth private
+  // copy of the list — each entry carrying its own skip-permissions flag, so
+  // the form can offer that as a checkbox instead of as a second entry.
+  //
+  // worktreeRunCommands is the pre-registry setting and still wins while the
+  // user has one stored, same one-version deprecation the migrated extensions
+  // use. It is a JSON-string setting (the documented pattern for
   // richer-than-scalar configuration): malformed JSON or a non-array just
-  // means no picker, not an error.
+  // means fall through to the registry, not an error.
   const worktreeRunCommands = useMemo(() => {
     try {
+      // A document still holding exactly what the app shipped was never
+      // customised - core settings are stored in full, so that string is in
+      // every existing profile - and the registry answers for it.
+      if (settings.worktreeRunCommands === LEGACY_WORKTREE_RUN_COMMANDS) throw new Error("shipped default");
       const parsed = JSON.parse(settings.worktreeRunCommands);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter(
-        (p): p is { name: string; command: string } =>
-          typeof p === "object" && p !== null && typeof p.name === "string" && typeof p.command === "string",
-      );
+      if (Array.isArray(parsed)) {
+        const legacy = parsed
+          .filter(
+            (p): p is { name: string; command: string } =>
+              typeof p === "object" && p !== null && typeof p.name === "string" && typeof p.command === "string",
+          )
+          // The old shape had no skip-permissions field: someone who wanted
+          // that wrote the flag into the command itself, which still runs
+          // exactly as written.
+          .map((p) => ({ name: p.name, command: p.command, skipPermissionsArgs: "" }));
+        if (legacy.length > 0) return legacy;
+      }
     } catch {
-      return [];
+      // Not JSON any more (a hand-edit) — fall through to the registry.
     }
-  }, [settings.worktreeRunCommands]);
+    return settings.agents
+      .filter((agent) => agent.enabled && agent.command !== "")
+      .map((agent) => ({
+        name: agent.label || agent.command,
+        command: agent.command,
+        skipPermissionsArgs: agent.skipPermissionsArgs,
+      }));
+  }, [settings.worktreeRunCommands, settings.agents]);
 
   const projectListProps = useMemo(
     () => ({
@@ -1860,6 +1886,9 @@ export default function App() {
       onCreateWorktree: createWorktreeSession,
       loadBranches: loadWorktreeBranches,
       worktreeRunCommands,
+      // Settings → Agents' Yolo/Manual choice, as the New Worktree form's
+      // starting position for "Skip permission prompts".
+      skipPermissionsByDefault: settings.agentPermissions === "yolo",
       onShowMenu: showMenu,
       repoIndex,
       projectMenuItems,
@@ -1885,6 +1914,7 @@ export default function App() {
       createWorktreeSession,
       loadWorktreeBranches,
       worktreeRunCommands,
+      settings.agentPermissions,
       showMenu,
       repoIndex,
       projectMenuItems,

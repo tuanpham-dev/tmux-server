@@ -7,15 +7,27 @@ import path from "node:path";
 // own defaults, so the server never needs a schema update when a setting is
 // added. The server only guarantees the doc is a plain JSON object and small.
 //
-// `aiSecrets` is the one documented exception. API keys for the AI providers
-// (see ai.ts) have to live somewhere the server can read at call time and no
-// client can ever read back, and the client's own sync GETs this document,
-// merges client-side, and PUTs it back WHOLE — so a key it could see would
-// come straight back on the next save, and a key it could write would be a
-// way to smuggle one in. Hence: server-owned, restored from disk on every
-// writeSettingsDoc, and only writeAiSecret below ever changes it.
+// SERVER_OWNED_KEYS are the documented exceptions. A credential has to live
+// somewhere the server can read at call time and no client can ever read
+// back, and the client's own sync GETs this document, merges client-side,
+// and PUTs it back WHOLE — so a value it could see would come straight back
+// on the next save, and a value it could write would be a way to smuggle one
+// in. Hence: server-owned, restored from disk on every writeSettingsDoc
+// (whatever the incoming document says about them is discarded), stripped
+// from GET /api/settings (see api.ts), and changed only by the dedicated
+// writers below.
+//
+//   aiSecrets        API keys for the AI providers, keyed by profile id —
+//                    read by ai.ts at call time.
+//   extensionSecrets per-extension credentials, keyed by extension id then
+//                    by name — reached by an extension's server hook through
+//                    host.secrets (see extensions.ts). Core serves no route
+//                    for these: an extension that wants a browser-facing
+//                    field defines its own route on its own router.
 const MAX_BYTES = 64 * 1024;
 const AI_SECRETS_KEY = "aiSecrets";
+const EXTENSION_SECRETS_KEY = "extensionSecrets";
+const SERVER_OWNED_KEYS = [AI_SECRETS_KEY, EXTENSION_SECRETS_KEY] as const;
 
 const configDir = path.join(
   process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
@@ -38,8 +50,8 @@ export async function readSettingsDoc(): Promise<Record<string, unknown>> {
 }
 
 // The only code that actually touches the file. Callers go through
-// writeSettingsDoc (which protects aiSecrets) or writeAiSecret (which is the
-// one writer allowed to change it).
+// writeSettingsDoc (which protects every SERVER_OWNED_KEY) or one of the
+// dedicated secret writers below (which are allowed to change them).
 async function persist(doc: Record<string, unknown>): Promise<void> {
   const json = JSON.stringify(doc, null, 2);
   if (Buffer.byteLength(json) > MAX_BYTES) throw new Error("settings document too large");
@@ -56,13 +68,16 @@ async function persist(doc: Record<string, unknown>): Promise<void> {
 
 export async function writeSettingsDoc(doc: unknown): Promise<void> {
   if (!isPlainObject(doc)) throw new Error("settings must be a JSON object");
-  // aiSecrets is restored from disk rather than taken from the caller, so an
-  // incoming document can neither drop the stored keys nor introduce new
-  // ones — whatever it says about aiSecrets is discarded.
+  // Every server-owned key is restored from disk rather than taken from the
+  // caller, so an incoming document can neither drop the stored values nor
+  // introduce new ones — whatever it says about them is discarded.
   const next = { ...doc };
-  const stored = (await readSettingsDoc())[AI_SECRETS_KEY];
-  if (isPlainObject(stored)) next[AI_SECRETS_KEY] = stored;
-  else delete next[AI_SECRETS_KEY];
+  const current = await readSettingsDoc();
+  for (const key of SERVER_OWNED_KEYS) {
+    const stored = current[key];
+    if (isPlainObject(stored)) next[key] = stored;
+    else delete next[key];
+  }
   await persist(next);
 }
 
@@ -88,6 +103,78 @@ export async function writeAiSecret(provider: string, key: string | null): Promi
   if (key && key.trim()) secrets[provider] = key.trim();
   else delete secrets[provider];
   doc[AI_SECRETS_KEY] = secrets;
+  await persist(doc);
+}
+
+// ---- Per-extension secrets ----
+//
+// extensionSecrets is { "<extensionId>": { "<name>": "<value>" } }. Extension
+// ids are already constrained by extensions.ts's isSafeId before they reach
+// here; names are stored verbatim as object keys, so they get the same
+// validation PUT /api/ai-key applies to a profile id. Like writeAiSecret,
+// every writer persists directly — going through writeSettingsDoc would
+// restore the old value straight over the new one.
+const SECRET_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+
+function assertSecretName(name: string): void {
+  if (!SECRET_NAME.test(name) || name === "__proto__") {
+    throw new Error("secret name must be 1-64 chars of [A-Za-z0-9._-]");
+  }
+}
+
+function extensionSecretsFor(doc: Record<string, unknown>, extId: string): Record<string, unknown> {
+  const all = doc[EXTENSION_SECRETS_KEY];
+  if (!isPlainObject(all)) return {};
+  const own = all[extId];
+  return isPlainObject(own) ? own : {};
+}
+
+// One extension's stored value, or null when it has none. Server-side callers
+// only — nothing here is ever sent to a client.
+export async function readExtensionSecret(extId: string, name: string): Promise<string | null> {
+  assertSecretName(name);
+  const value = extensionSecretsFor(await readSettingsDoc(), extId)[name];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+// The names one extension has stored, never the values — that's the shape a
+// settings component needs to render "set"/"not set", and the one that is
+// safe for an extension to forward to its own client.
+export async function listExtensionSecretNames(extId: string): Promise<string[]> {
+  const own = extensionSecretsFor(await readSettingsDoc(), extId);
+  return Object.entries(own)
+    .filter(([, value]) => typeof value === "string" && value.trim())
+    .map(([name]) => name);
+}
+
+// Sets or (with a null/blank value) clears one name. Clearing the last name
+// drops the extension's namespace object too, so an uninstall-less extension
+// that never stores anything doesn't leave `{}` behind forever.
+export async function writeExtensionSecret(extId: string, name: string, value: string | null): Promise<void> {
+  assertSecretName(name);
+  const doc = await readSettingsDoc();
+  const all = doc[EXTENSION_SECRETS_KEY];
+  const next: Record<string, unknown> = isPlainObject(all) ? { ...all } : {};
+  const own = { ...extensionSecretsFor(doc, extId) };
+  if (value && value.trim()) own[name] = value.trim();
+  else delete own[name];
+  if (Object.keys(own).length > 0) next[extId] = own;
+  else delete next[extId];
+  if (Object.keys(next).length > 0) doc[EXTENSION_SECRETS_KEY] = next;
+  else delete doc[EXTENSION_SECRETS_KEY];
+  await persist(doc);
+}
+
+// Drops one extension's whole namespace — called on uninstall, never on
+// disable (a disable/enable cycle must not cost the user their credentials).
+export async function clearExtensionSecrets(extId: string): Promise<void> {
+  const doc = await readSettingsDoc();
+  const all = doc[EXTENSION_SECRETS_KEY];
+  if (!isPlainObject(all) || !(extId in all)) return;
+  const next = { ...all };
+  delete next[extId];
+  if (Object.keys(next).length > 0) doc[EXTENSION_SECRETS_KEY] = next;
+  else delete doc[EXTENSION_SECRETS_KEY];
   await persist(doc);
 }
 

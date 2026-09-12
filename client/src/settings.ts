@@ -21,6 +21,106 @@ export interface AiProfile {
   enabled: boolean;
 }
 
+// Which hook config schema an agent's CLI speaks, or null for an agent whose
+// hooks core cannot install. Mirrors server/src/agents.ts's AgentHookFlavor.
+export type AgentHookFlavor = "claude" | "codex" | "agy";
+
+// One agent in the registry. Mirrors server/src/agents.ts's AgentPreset — the
+// server reads these straight out of the settings document, so the two shapes
+// have to agree.
+//
+// One entry, not three lists, because the three facts always travel together:
+// `program` is what tmux reports for a pane running it (detection), `command`
+// is the line that starts it (launch presets), `hooks` is the schema its CLI
+// speaks (core's hook pipeline).
+export interface AgentPreset {
+  // Stable across renames — what an extension stores when it picks one.
+  id: string;
+  label: string;
+  // tmux's pane_current_command. Empty means launch-preset only: no pane will
+  // ever be detected as this agent.
+  program: string;
+  // The full launch line. Empty means detection only.
+  command: string;
+  // Appended to `command` to start this agent with its permission prompts
+  // off - its "yolo mode". A parameter rather than a second entry, because
+  // every agent has one and a pair of entries only ever differed by this
+  // flag. Empty means no such mode, and no checkbox is offered for it.
+  skipPermissionsArgs: string;
+  hooks: AgentHookFlavor | null;
+  // Where to read about this agent, or how to install it - the row's
+  // external link in Settings → Agents. Empty hides it.
+  docsUrl: string;
+  // An image for the row (the app serves its own at /agents/<id>.svg; a
+  // contributed one is resolved to its extension's file route). Empty falls
+  // back to `icon`.
+  iconUrl: string;
+  // Fallback codicon name for an agent with no image. Empty or unknown
+  // renders a generic robot.
+  icon: string;
+  // An agent kept but not offered: stays configured, stops showing up in
+  // pickers and in detection.
+  enabled: boolean;
+  // The extension that contributed this entry, or "" for one the app ships
+  // or the user wrote. Contributed entries are not editable.
+  contributedBy: string;
+}
+
+// The registry a profile starts with. Mirrors server/src/agents.ts's
+// DEFAULT_AGENTS entry for entry, including the ids — an extension that
+// stored one before the user ever opened Settings → Agents keeps resolving.
+// Each skip-permissions flag was read off the installed binary's own --help,
+// and Codex's is not spelled like the other two.
+// What worktreeRunCommands shipped as before Settings → Agents existed. A
+// document still holding exactly this was never customised, so the registry
+// answers instead - see the setting's own comment.
+export const LEGACY_WORKTREE_RUN_COMMANDS = JSON.stringify([
+  { name: "Claude Code", command: "claude" },
+  { name: "Claude Code (skip permissions)", command: "claude --dangerously-skip-permissions" },
+]);
+
+export const DEFAULT_AGENTS: AgentPreset[] = [
+  {
+    id: "claude",
+    label: "Claude Code",
+    program: "claude",
+    command: "claude",
+    skipPermissionsArgs: "--dangerously-skip-permissions",
+    hooks: "claude",
+    docsUrl: "https://docs.claude.com/en/docs/claude-code",
+    iconUrl: "/agents/claude.svg",
+    icon: "sparkle",
+    enabled: true,
+    contributedBy: "",
+  },
+  {
+    id: "codex",
+    label: "OpenAI Codex",
+    program: "codex",
+    command: "codex",
+    skipPermissionsArgs: "--dangerously-bypass-approvals-and-sandbox",
+    hooks: "codex",
+    docsUrl: "https://github.com/openai/codex",
+    iconUrl: "/agents/codex.svg",
+    icon: "hubot",
+    enabled: true,
+    contributedBy: "",
+  },
+  {
+    id: "agy",
+    label: "Antigravity",
+    program: "agy",
+    command: "agy",
+    skipPermissionsArgs: "--dangerously-skip-permissions",
+    hooks: "agy",
+    docsUrl: "https://antigravity.google/docs/cli",
+    iconUrl: "/agents/agy.png",
+    icon: "rocket",
+    enabled: true,
+    contributedBy: "",
+  },
+];
+
 export interface AppSettings {
   // "auto" resolves per device (xterm on mobile pointers, ghostty
   // elsewhere) — synced across devices, so a phone and a desktop each get
@@ -132,9 +232,18 @@ export interface AppSettings {
   // inside the repository, its top folder is added to .git/info/exclude so it
   // stays out of git status (your committed .gitignore is never modified).
   worktreeLocation: string;
-  // Commands the create-worktree form offers to run in the new session, as a
-  // JSON array of {name, command}. The command is typed into the session and
-  // submitted right after it's created. "[]" disables the picker.
+  // Deprecated: the create-worktree form offers the agents from Settings →
+  // Agents now, so this is the eighth copy of "what is an agent" that the
+  // registry replaced (plans/agent-platform-core.md). A JSON array of
+  // {name, command}, typed into the session and submitted right after it is
+  // created; "[]" disables the picker.
+  //
+  // Still honoured while it holds anything OTHER than what the app shipped
+  // (LEGACY_WORKTREE_RUN_COMMANDS below), so a list somebody actually wrote
+  // is not silently replaced. The comparison is against the shipped string
+  // rather than just "is it empty", because core settings are stored in
+  // full: every existing profile has the old default written into its
+  // document, so "non-empty" would mean "nobody ever gets the registry".
   worktreeRunCommands: string;
   // Every AI the user has configured, in their own order. Several can be set
   // up at once — a CLI you're signed into, a keyed API for the jobs worth
@@ -171,6 +280,35 @@ export interface AppSettings {
   // uses the official endpoint. With one set, the API key becomes optional,
   // since a local endpoint often needs none.
   aiBaseUrl: string;
+  // Every AI agent the app knows, in the user's own order — the one list
+  // behind agent detection ("which window is the agent in"), agent launch
+  // presets ("Start work") and core's agent-hook pipeline. Extensions read
+  // it through GET /api/agents or host.agents.list() instead of each
+  // carrying its own copy (plans/agent-platform-core.md). Seeded with
+  // DEFAULT_AGENTS; the server falls back to the same seed for a document
+  // that has never stored the key (see server/src/agents.ts).
+  agents: AgentPreset[];
+  // The one switch over core's agent-hook pipeline: on, core keeps its hooks
+  // installed in each agent's own config file, so the app can show working /
+  // waiting / done states; off, it removes them and stops putting them back.
+  // Off by default - writing into a file the app does not own is not
+  // something to start doing unasked.
+  agentHooksEnabled: boolean;
+  // How agents are launched by default. "yolo" appends each agent's own
+  // skip-permissions flag (see AgentPreset.skipPermissionsArgs); "manual"
+  // leaves the prompts on. Per-launch controls (the New Worktree form's
+  // checkbox, JIRA's Start work menu) start from this and can override it
+  // for one launch.
+  agentPermissions: "yolo" | "manual";
+  // Whether core installs the per-tool-call hook events (tool-start /
+  // tool-end) an extension asked for. Off by default: they fire once per
+  // tool call, which buys exact working-state detection at the cost of a
+  // hook process every time the agent touches anything. With it off, a
+  // subscriber still gets the turn-level events and falls back to its own
+  // inference. Named flat like every other core setting in here; the plan
+  // that specified it writes it agentHooks.highFrequencyEvents, which no
+  // AppSettings key could be without quoting.
+  agentHooksHighFrequencyEvents: boolean;
   // Gates the "Kill Session"/"Kill Window" confirm dialogs. Unsaved-changes
   // confirms (dirty CSV tabs) are never gated — that's data loss, not a
   // preference.
@@ -250,10 +388,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pasteDropUploadDir: "/tmp",
   localEchoWhen: "claude",
   worktreeLocation: "{repo}/.worktrees/{branch}",
-  worktreeRunCommands: JSON.stringify([
-    { name: "Claude Code", command: "claude" },
-    { name: "Claude Code (skip permissions)", command: "claude --dangerously-skip-permissions" },
-  ]),
+  worktreeRunCommands: "",
   aiProfiles: [],
   aiProfileId: "",
   aiProvider: "claude",
@@ -261,6 +396,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiModel: "",
   aiCustomCommand: "",
   aiBaseUrl: "",
+  // Copied, not shared: DEFAULT_SETTINGS is spread into a mutable settings
+  // object that the Agents section edits in place.
+  agents: DEFAULT_AGENTS.map((a) => ({ ...a })),
+  agentHooksEnabled: false,
+  agentPermissions: "manual",
+  agentHooksHighFrequencyEvents: false,
   confirmBeforeKill: true,
   tabCloseActivation: "recent",
   newTabPlacement: "end",

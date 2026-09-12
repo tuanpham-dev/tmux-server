@@ -94,6 +94,121 @@ export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
   });
 }
 
+// The agent registry as the server resolves it: enabled entries only, in the
+// user's own order, seeded with the defaults for a profile that has never
+// stored the list (server/src/agents.ts). The same list extensions read
+// through GET /api/agents or host.agents.list(), so anything asking core
+// "which agents are there" gets one answer.
+//
+// Settings → Agents edits the list through the settings document like any
+// other core setting, not through this call — there is no write route.
+export interface AgentSummaryDto {
+  id: string;
+  label: string;
+  // tmux's pane_current_command for a pane running this agent (detection).
+  program: string;
+  // The full launch line (launch presets).
+  command: string;
+  // Which hook schema the CLI speaks, or null for one core cannot hook.
+  hooks: "claude" | "codex" | "agy" | null;
+}
+
+export function fetchAgents(): Promise<{ agents: AgentSummaryDto[] }> {
+  return request("/api/agents");
+}
+
+// Agent hooks: what core would install for each agent, what is actually in
+// that agent's own config file right now, and which extensions asked for it.
+// Settings → Agents shows all of it, so "why does this say stale" is
+// answerable there (see server/src/agents.ts's writer).
+export interface AgentHookSnippetDto {
+  // Absolute path of the file the snippet belongs in.
+  file: string;
+  // "merged" - the file holds other things and core only adds its own part.
+  // "whole-file" - the snippet IS the file, so pasting it over an existing
+  // one would discard what was there.
+  ownership: "merged" | "whole-file";
+  text: string;
+  rawEvents: string[];
+}
+
+export interface AgentHookStateDto {
+  agentId: string;
+  label: string;
+  // The launch line, shown under the agent's name the way a terminal would
+  // spell it.
+  command: string;
+  skipPermissionsArgs: string;
+  // Where to read about this agent, or how to install it. Empty hides the
+  // row's external link.
+  docsUrl: string;
+  // An image for the row, already resolved to a URL this client can load
+  // (the app's own, or a contributing extension's file route). Empty falls
+  // back to `icon`.
+  iconUrl: string;
+  // Fallback codicon name; a generic robot when unknown.
+  icon: string;
+  enabled: boolean;
+  // The extension that contributed this agent, or "" for one the app ships
+  // or the user wrote. A contributed agent is not editable here.
+  contributedBy: string;
+  // Whether its CLI is on the machine. A row that is not installed is dimmed
+  // and its Enabled control disabled - the link is the only useful action.
+  installed: boolean;
+  state: "unsupported" | "not-installed" | "installed" | "stale";
+  file: string | null;
+  ownership: "merged" | "whole-file" | null;
+  // Event names as the agent itself spells them (SessionStart, Stop).
+  installedEvents: string[];
+  wantedEvents: string[];
+  // One sentence the user can act on, when state is "stale".
+  staleReason: string | null;
+  // The config file exists but could not be read as JSON: nothing has been
+  // written to it and nothing will be until it is fixed.
+  error: string | null;
+  // An old pasted agent-monitor hook is still in this file - the user's own,
+  // which core never touches, and which stopped working when that route went.
+  legacyMonitorHook: boolean;
+  snippet: AgentHookSnippetDto | null;
+}
+
+export interface AgentHooksDto {
+  // The normalized events core would install right now: the union of what
+  // enabled extensions asked for, minus the per-tool-call ones while that
+  // setting is off.
+  events: string[];
+  subscribers: { extensionId: string; events: string[] }[];
+  agents: AgentHookStateDto[];
+}
+
+export function fetchAgentHooks(): Promise<AgentHooksDto> {
+  return request("/api/agent-hooks");
+}
+
+export interface AgentHookWriteResult {
+  state: AgentHookStateDto;
+  // Where the previous contents were kept, when there were any.
+  backup: string | null;
+}
+
+// Both write into a file core does not own, so both are only ever called
+// from a button the user pressed.
+export function installAgentHooks(agentId: string): Promise<AgentHookWriteResult> {
+  return request("/api/agent-hooks/install", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agentId }),
+  });
+}
+
+export function uninstallAgentHooks(agentId: string): Promise<AgentHookWriteResult> {
+  return request("/api/agent-hooks/uninstall", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agentId }),
+  });
+}
+
 // AI provider keys. Deliberately not part of the settings document: the
 // server never hands a key back, so the client can only learn WHICH
 // providers have one (getAiKeyStatus) and set or clear one (setAiKey).

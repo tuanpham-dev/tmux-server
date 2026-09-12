@@ -185,8 +185,11 @@ export default function BehaviorSection() {
       <label className="settings-row">
         <span className="settings-label">Commands offered for a new worktree</span>
         <div className="settings-hint">
-          A JSON array of {"{name, command}"} - the chosen command is typed into the new session right
-          after it is created. Leave as [] to hide the picker.
+          Deprecated - the New Worktree form offers the agents from Settings &rarr; Agents now, each
+          with its own &quot;Skip permission prompts&quot; option. Leave this empty to follow that
+          list. A JSON array of {"{name, command}"} here still overrides it for this version, and the
+          chosen command is typed into the new session right after it is created; [] hides the picker
+          entirely.
         </div>
         <textarea
           className="dialog-input settings-textarea"

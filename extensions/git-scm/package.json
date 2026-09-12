@@ -49,8 +49,8 @@
         },
         "gitScm.agentPrograms": {
           "type": "string",
-          "default": "claude",
-          "description": "Comma-separated foreground commands (tmux's pane_current_command) a diff comment's \"Send to Agent\" button will target, e.g. \"claude,codex\"."
+          "default": "",
+          "description": "Deprecated - Settings → Agents now holds the one list of AI agents, and a diff comment's \"Send to Agent\" button uses it. A value here still overrides that list for this version; clear it to follow Settings → Agents. Comma-separated foreground commands (tmux's pane_current_command), e.g. \"claude,codex\"."
         },
         "gitScm.sendAutoSubmit": {
           "type": "boolean",

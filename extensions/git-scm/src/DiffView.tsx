@@ -7,7 +7,13 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { createPortal } from "react-dom";
 import Icon from "../../_shared/Icon";
 import type { MenuItem } from "../../_shared/types";
-import { agentWindows, fetchSessions, sendToAgent } from "../../_shared/agentTarget";
+import {
+  agentWindows,
+  fetchSessions,
+  resolveAgentTargets,
+  sendToAgent,
+  type AgentTargetProgram,
+} from "../../_shared/agentTarget";
 import { apiGetJson, decodeDiffKey, extSettings, statusListeners } from "./client";
 
 interface DiffProps {
@@ -124,9 +130,11 @@ function buildCombinedText(path: string, hunks: Hunk[], pending: PendingComment[
   return pending.map((pc) => buildContextBlock(path, hunks[pc.hunkIndex], pc, pc.text)).join("\n\n---\n\n");
 }
 
-function readAgentPrograms(): string {
-  const raw = extSettings?.get("gitScm.agentPrograms");
-  return typeof raw === "string" && raw.trim() ? raw : "claude";
+// Which panes count as an agent comes from core's registry (Settings →
+// Agents) now, with this extension's own deprecated setting still winning
+// while it is set - see _shared/agentTarget's resolveAgentTargets.
+function agentTargets(): Promise<AgentTargetProgram[]> {
+  return resolveAgentTargets(extSettings?.get("gitScm.agentPrograms"));
 }
 
 function readSendAutoSubmit(): boolean {
@@ -327,8 +335,8 @@ export default function DiffView({ filePath, active, toolbarTarget, openInEditor
     setSendBusy(true);
     setSendError(null);
     try {
-      const sessions = await fetchSessions();
-      const targets = agentWindows(sessions, parsed.cwd, readAgentPrograms());
+      const [sessions, agents] = await Promise.all([fetchSessions(), agentTargets()]);
+      const targets = agentWindows(sessions, parsed.cwd, agents);
       const submit = readSendAutoSubmit();
       if (targets.length === 0) {
         setSendError("No agent is running in this repo - start one first.");

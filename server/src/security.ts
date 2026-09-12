@@ -207,12 +207,19 @@ export function isAuthExemptPath(path: string): boolean {
   // /api/command-events/report likewise (local curl from the
   // shell-integration snippet); the GET /api/command-events browser
   // endpoint stays gated, which is why report has its own subpath.
+  // /api/agent-hooks/report is the same pattern once more, this time for the
+  // agent-hook shim an AI agent's own hook runs (server/src/agentHooks.ts) —
+  // a local process with no cookie and no token. Its handler enforces
+  // loopback plus the custom header. Exact match: the sibling
+  // /api/agent-hooks* routes the browser uses (install, uninstall, state)
+  // stay gated, which is why report has its own subpath.
   return (
     isOriginExemptPath(path) ||
     path === "/api/push/bell" ||
     path === "/api/open-url" ||
     path === "/api/open-target" ||
-    path === "/api/command-events/report"
+    path === "/api/command-events/report" ||
+    path === "/api/agent-hooks/report"
   );
 }
 

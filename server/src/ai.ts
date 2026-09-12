@@ -206,7 +206,11 @@ const CLI_PROVIDERS: Record<string, { bin: string; args: (prompt: string, model:
 const CLI_PROBE_TTL_MS = 15_000;
 let cliProbe: { at: number; value: Record<string, boolean> } | null = null;
 
-async function isOnPath(bin: string): Promise<boolean> {
+// Shared with agents.ts, which asks the same question of each registry
+// entry's program so Settings → Agents can dim an agent whose CLI is not
+// installed. Same reasoning as the comment above: a PATH walk rather than a
+// subprocess per name.
+export async function isOnPath(bin: string): Promise<boolean> {
   const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
   for (const dir of dirs) {
     try {

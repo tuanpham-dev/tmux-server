@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import express from "express";
 import { WebSocketServer } from "ws";
+import { agentHookBodyParser, ensureAgentHookShim } from "./agentHooks.js";
 import { api } from "./api.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import { loadEnabledServerHooks } from "./extensions.js";
@@ -169,6 +170,11 @@ app.use((req, res, next) => {
   }
   next();
 });
+// The agent-hook report endpoint takes its body raw, with its own size cap
+// (server/src/agentHooks.ts) — registered ahead of express.json() for the
+// same reason the proxy routes are: whichever parser runs first consumes the
+// stream.
+app.use("/api/agent-hooks/report", agentHookBodyParser);
 app.use(express.json());
 app.use("/api", api);
 
@@ -333,6 +339,13 @@ loadEnabledServerHooks().catch((err) => {
 // server/src/openUrl.ts). Failure just disables the bridge, never the server.
 ensureOpenShim(PORT).catch((err) => {
   console.error("failed to write browser-opener shim:", err);
+});
+// Agent-hook shim (what an AI agent's own hooks exec to report a turn
+// ending, a permission prompt, a tool call — see server/src/agentHooks.ts).
+// Same contract as the two shims around it: failure disables the pipeline,
+// never the server.
+ensureAgentHookShim(PORT).catch((err) => {
+  console.error("failed to write agent-hook shim:", err);
 });
 // Shell-integration snippet (OSC 133 marks + command reports — see
 // server/src/shellIntegration.ts). Same contract: failure only disables the

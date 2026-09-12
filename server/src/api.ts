@@ -15,8 +15,20 @@ import {
   uptime,
 } from "node:os";
 import path from "node:path";
-import { Router, urlencoded, type Response } from "express";
+import { Router, urlencoded, type Request, type Response } from "express";
 import { AiError, listProviderModels, probeCliProviders } from "./ai.js";
+import {
+  hookStateFor,
+  HookWriteError,
+  installHooks,
+  isSafeAgentId,
+  listAgents,
+  probeAgentPrograms,
+  resolveAgents,
+  snippetFor,
+  uninstallHooks,
+} from "./agents.js";
+import { reportAgentHook, subscribedEvents, subscriberSummary } from "./agentHooks.js";
 import {
   ConflictError,
   copyPath,
@@ -415,9 +427,10 @@ api.post("/sessions", async (req, res) => {
 // callers that want to send just what changed.
 api.get("/settings", async (_req, res) => {
   try {
-    // aiSecrets never leaves the server — see settingsStore's module comment.
-    // Clients learn which providers have a key from GET /ai-key instead.
-    const { aiSecrets: _omitted, ...doc } = await readSettingsDoc();
+    // The server-owned keys never leave the server — see settingsStore's
+    // module comment. Clients learn which AI providers have a key from
+    // GET /ai-key; an extension's own routes answer for its own secrets.
+    const { aiSecrets: _aiOmitted, extensionSecrets: _extOmitted, ...doc } = await readSettingsDoc();
     res.json(doc);
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
@@ -464,6 +477,23 @@ api.get("/ai-models", async (req, res) => {
       res.status(400).json({ error: err.message, code: err.code });
       return;
     }
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// The agent registry (agents.ts) — the one answer to "what is an AI agent",
+// for core and for every extension that used to carry its own copy
+// (plans/agent-platform-core.md). Enabled entries only, in the user's order:
+// a disabled agent is one the user has taken out of circulation, so neither
+// detection nor a launch picker should offer it.
+//
+// Read-only on purpose. The list is edited through the settings document like
+// every other core setting (Settings → Agents), so there is exactly one
+// writer and no second path that could disagree with it.
+api.get("/agents", async (_req, res) => {
+  try {
+    res.json({ agents: await listAgents() });
+  } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
 });
@@ -1600,6 +1630,131 @@ api.post("/open-target", urlencoded({ extended: false }), async (req, res) => {
     action,
   });
   res.json({ delivered });
+});
+
+// Agent hook state, for Settings → Agents: what core would install, what is
+// actually in each agent's config file right now, and who asked for it. One
+// GET answers the whole panel, so "why is this stale" is answerable there
+// rather than by reading two files and reasoning about enabled extensions.
+api.get("/agent-hooks", async (_req, res) => {
+  try {
+    const [agents, events, installed] = await Promise.all([
+      resolveAgents(),
+      subscribedEvents(),
+      probeAgentPrograms(),
+    ]);
+    const states = await Promise.all(
+      agents.map(async (agent) => ({
+        ...(await hookStateFor(agent, events)),
+        label: agent.label,
+        command: agent.command,
+        skipPermissionsArgs: agent.skipPermissionsArgs,
+        docsUrl: agent.docsUrl,
+        iconUrl: agent.iconUrl,
+        icon: agent.icon,
+        enabled: agent.enabled,
+        contributedBy: agent.contributedBy,
+        // Whether this agent's CLI is actually on the machine. Settings →
+        // Agents dims a row that is not, rather than offering it as if it
+        // would run.
+        installed: installed[agent.id] ?? false,
+        // The snippet is offered for every agent that has a hook format,
+        // installed or not: copying it by hand is the safe door, and the
+        // Install button is the convenience.
+        snippet: snippetFor(agent, events),
+      })),
+    );
+    res.json({ events, subscribers: subscriberSummary(), agents: states });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
+// The two routes that write into a file core does not own. Both are ordinary
+// authenticated browser POSTs — a deliberate press in Settings → Agents,
+// never anything automatic (see agents.ts's writer rules).
+async function writeAgentHooks(
+  req: Request,
+  res: Response,
+  write: typeof installHooks,
+): Promise<void> {
+  const agentId = typeof req.body?.agentId === "string" ? req.body.agentId : "";
+  try {
+    const events = await subscribedEvents();
+    const agent = (await resolveAgents()).find((a) => a.id === agentId);
+    if (!agent) {
+      res.status(404).json({ error: "no such agent" });
+      return;
+    }
+    res.json(await write(agent, events));
+  } catch (err) {
+    // A refusal (a file core cannot parse, a name collision, nothing
+    // subscribed) is the user's to act on, not a server fault.
+    if (err instanceof HookWriteError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    res.status(500).json({ error: errMessage(err) });
+  }
+}
+
+api.post("/agent-hooks/install", (req, res) => {
+  void writeAgentHooks(req, res, installHooks);
+});
+
+api.post("/agent-hooks/uninstall", (req, res) => {
+  void writeAgentHooks(req, res, uninstallHooks);
+});
+
+// Agent hooks (plans/agent-platform-core.md Phase 2). Reached by the shim an
+// AI agent's own hook execs — a local process, never the browser — so it
+// follows /api/command-events/report exactly: auth-exempt by path
+// (isAuthExemptPath), with its own loopback check plus the custom-header
+// CSRF guard standing in for the auth it cannot carry. Everything the agent
+// supplies arrives as the raw body or a header and is validated here; none
+// of it has been through a shell.
+
+// Event names as the agents spell them (SessionStart, PreToolUse). Bounded
+// and plain so an unknown one can be carried through to a subscriber and
+// logged without being a vector of its own.
+const RAW_EVENT_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+// The raw body parser for this route is registered in index.ts, ahead of the
+// app-wide express.json() — see agentHookBodyParser.
+api.post("/agent-hooks/report", async (req, res) => {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  if (req.headers["x-tmux-server-hook"] === undefined) {
+    res.status(403).json({ error: "missing header" });
+    return;
+  }
+  const header = (name: string): string => {
+    const value = req.headers[name];
+    return typeof value === "string" ? value : "";
+  };
+  const agentId = header("x-tmux-server-agent");
+  const rawEvent = header("x-tmux-server-event");
+  if (!isSafeAgentId(agentId) || !RAW_EVENT_NAME.test(rawEvent)) {
+    res.status(400).json({ error: "invalid report" });
+    return;
+  }
+  const body = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+  try {
+    const outcome = await reportAgentHook({
+      agentId,
+      rawEvent,
+      paneId: header("x-tmux-server-pane"),
+      body,
+    });
+    // Always 204 on a well-formed report, outcome in a header: the shim
+    // discards its output anyway, and a hook must never look like it failed
+    // because nothing happened to be listening.
+    res.set("X-Tmux-Server-Hook-Outcome", outcome).status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
 });
 
 // Command events (plans/warp-features.md Phase 1). /report follows the
