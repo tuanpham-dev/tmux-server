@@ -10,9 +10,11 @@
 //
 // This module never writes anything and treats every read as best-effort: a
 // missing/malformed file just contributes nothing.
+import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { claudeSessionsByPane } from "./claudePanes.mjs";
 
 const CLAUDE_PROJECTS_DIR = path.join(homedir(), ".claude", "projects");
 
@@ -108,14 +110,62 @@ async function readMeta(metaPath) {
   }
 }
 
-// Cheap per-cwd result for the counts poll: just how many of this cwd's
-// most-recent session's subagents currently look active — no jsonl content
-// is parsed, only meta.json (for the count) and jsonl mtimes (for the
-// active check).
-async function countRunningAgents(cwd) {
-  const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(cwd));
+// ---- Window -> Claude session ----
+//
+// A window's subagents belong to the Claude session running in it, not to
+// "the newest transcript in its cwd": with two Claude windows in one
+// directory, that rule gave both windows the same session, so both showed
+// the other's subagents. The session comes from the pane (claudePanes.mjs);
+// the newest-transcript rule stays only as the fallback for a CLI that
+// wrote no session file (an older Claude Code, or one started outside tmux).
+
+const TMUX_TIMEOUT = 5000;
+
+function listPanes() {
+  return new Promise((resolve) => {
+    execFile(
+      "tmux",
+      ["list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{window_index}"],
+      { encoding: "utf8", timeout: TMUX_TIMEOUT },
+      // No tmux server, or any failure: no panes, so every window falls back.
+      (err, stdout) => resolve(err ? "" : stdout),
+    );
+  });
+}
+
+// "session:index" -> pane ids in that window. list-panes -a repeats a pane
+// under every grouped view session it belongs to; each copy is recorded
+// under its own session name, and the client asks by the name it shows.
+async function panesByWindow() {
+  const byWindow = new Map();
+  for (const line of (await listPanes()).split("\n")) {
+    const [paneId, sessionName, windowIndex] = line.split("\t");
+    if (!paneId || windowIndex === undefined) continue;
+    const key = `${sessionName}:${windowIndex}`;
+    if (!byWindow.has(key)) byWindow.set(key, []);
+    byWindow.get(key).push(paneId);
+  }
+  return byWindow;
+}
+
+// { projectDir, sessionId } for a window, or null when it has no session.
+async function resolveWindowSession(win, panes, sessions) {
+  for (const paneId of panes.get(`${win.sessionName}:${win.windowIndex}`) ?? []) {
+    const session = sessions.get(paneId);
+    if (session) {
+      const cwd = session.cwd ?? expandHome(win.cwd);
+      return { projectDir: path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(cwd)), sessionId: session.sessionId };
+    }
+  }
+  const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(expandHome(win.cwd)));
   const sessionId = await mostRecentSessionIdCached(projectDir);
-  if (!sessionId) return 0;
+  return sessionId ? { projectDir, sessionId } : null;
+}
+
+// Cheap per-session result for the counts poll: how many of the session's
+// subagents currently look active — no jsonl content is parsed, only the
+// subagent directory listing and jsonl mtimes.
+async function countRunningAgents(projectDir, sessionId) {
   const files = await listSubagentFiles(projectDir, sessionId);
   if (files.length === 0) return 0;
   const now = Date.now();
@@ -135,32 +185,28 @@ async function countRunningAgents(cwd) {
 }
 
 const COUNTS_CACHE_TTL_MS = 2_000;
-const countsCache = new Map();
+const countsCache = new Map(); // sessionId -> { at, value }
 
-// Batched for the client's 3s poll — one entry per claude-window cwd, cheap
-// enough thanks to the per-cwd TTL cache. Cwds with zero running agents are
-// omitted (absence means zero).
-async function getCounts(cwds) {
+// Batched for the client's 3s poll — one entry per claude window, keyed by
+// the client's own "session:index" so it maps straight back to its rows.
+// Windows with zero running agents are omitted.
+async function getCounts(windows) {
+  const [panes, sessions] = await Promise.all([panesByWindow(), claudeSessionsByPane()]);
   const result = {};
+  const now = Date.now();
   await Promise.all(
-    cwds.map(async (cwd) => {
-      const key = expandHome(cwd);
-      const cached = countsCache.get(key);
-      const now = Date.now();
+    windows.map(async (win) => {
+      const resolved = await resolveWindowSession(win, panes, sessions);
+      if (!resolved) return;
+      const cached = countsCache.get(resolved.sessionId);
       let count;
       if (cached && now - cached.at < COUNTS_CACHE_TTL_MS) {
         count = cached.value;
       } else {
-        try {
-          count = await countRunningAgents(key);
-        } catch {
-          count = 0;
-        }
-        countsCache.set(key, { at: now, value: count });
+        count = await countRunningAgents(resolved.projectDir, resolved.sessionId);
+        countsCache.set(resolved.sessionId, { at: now, value: count });
       }
-      // Keyed by the cwd string exactly as the client sent it, so the
-      // client maps straight back to its window rows.
-      if (count > 0) result[cwd] = count;
+      if (count > 0) result[win.key] = count;
     }),
   );
   return result;
@@ -228,35 +274,47 @@ async function summarizeAgent(file) {
 // Full detail for the on-demand popover — parses each agent's whole
 // transcript, unlike the cheap getCounts above. Only called while the
 // popover is open, not on every counts poll.
-async function getSubagentDetails(cwd) {
-  const projectDir = path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(expandHome(cwd)));
-  const sessionId = await mostRecentSessionIdCached(projectDir);
-  if (!sessionId) return [];
-  const files = await listSubagentFiles(projectDir, sessionId);
+async function getSubagentDetails(win) {
+  const [panes, sessions] = await Promise.all([panesByWindow(), claudeSessionsByPane()]);
+  const resolved = await resolveWindowSession(win, panes, sessions);
+  if (!resolved) return [];
+  const files = await listSubagentFiles(resolved.projectDir, resolved.sessionId);
   const summaries = await Promise.all(files.map(summarizeAgent));
   return summaries.filter((s) => s !== null);
 }
 
+// A { key, sessionName, windowIndex, cwd } window from the client, or null.
+function readWindow(value) {
+  if (!value || typeof value !== "object") return null;
+  const { key, sessionName, windowIndex, cwd } = value;
+  if (typeof sessionName !== "string" || typeof cwd !== "string") return null;
+  const index = Number(windowIndex);
+  if (!Number.isInteger(index)) return null;
+  return { key: typeof key === "string" ? key : `${sessionName}:${index}`, sessionName, windowIndex: index, cwd };
+}
+
 export function activate({ router }) {
   router.post("/counts", async (req, res) => {
-    const cwds = Array.isArray(req.body?.cwds)
-      ? req.body.cwds.filter((c) => typeof c === "string")
-      : [];
+    const windows = Array.isArray(req.body?.windows) ? req.body.windows.map(readWindow).filter(Boolean) : [];
     try {
-      res.json({ counts: await getCounts(cwds) });
+      res.json({ counts: await getCounts(windows) });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
 
   router.get("/details", async (req, res) => {
-    const cwd = typeof req.query.cwd === "string" ? req.query.cwd : "";
-    if (!cwd) {
-      res.status(400).json({ error: "cwd is required" });
+    const win = readWindow({
+      sessionName: req.query.session,
+      windowIndex: req.query.window,
+      cwd: req.query.cwd,
+    });
+    if (!win) {
+      res.status(400).json({ error: "session, window and cwd are required" });
       return;
     }
     try {
-      res.json(await getSubagentDetails(cwd));
+      res.json(await getSubagentDetails(win));
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

@@ -47,18 +47,31 @@ async function readJson<T>(res: Response): Promise<T> {
 //
 // The decoration provider is synchronous, so counts come from this cache,
 // refreshed on a 3s cadence (the same beat the sessions list itself polls
-// on). Which cwds to ask about is learned from the provider's own calls:
-// every render of a claude window row records its cwd here, and the next
-// poll asks the server about every cwd seen recently. First badge can
+// on). Which windows to ask about is learned from the provider's own calls:
+// every render of a claude window row records it here, and the next poll
+// asks the server about every window seen recently. First badge can
 // therefore lag one poll tick behind the row's first render — acceptable,
 // and self-heals immediately.
+//
+// Counts are per WINDOW, not per cwd: two Claude windows in one directory
+// run separate sessions, and keying by cwd showed each one the other's
+// subagents. The server resolves each window to the session in its pane.
 
 const POLL_MS = 3_000;
-// A cwd not rendered for this long (its window/session closed) drops out of
-// the poll set.
-const CWD_SEEN_TTL_MS = 15_000;
+// A window not rendered for this long (closed) drops out of the poll set.
+const WINDOW_SEEN_TTL_MS = 15_000;
 
-const seenCwds = new Map<string, number>();
+interface WindowRef {
+  sessionName: string;
+  windowIndex: number;
+  cwd: string;
+}
+
+function windowKey(win: { sessionName: string; windowIndex: number }): string {
+  return `${win.sessionName}:${win.windowIndex}`;
+}
+
+const seenWindows = new Map<string, { win: WindowRef; at: number }>();
 let counts: Record<string, number> = {};
 let pollTimer: number | null = null;
 let refreshDecorations: (() => void) | null = null;
@@ -66,11 +79,11 @@ let refreshDecorations: (() => void) | null = null;
 async function pollCounts(): Promise<void> {
   if (!serverFetch) return;
   const now = Date.now();
-  for (const [cwd, at] of seenCwds) {
-    if (now - at > CWD_SEEN_TTL_MS) seenCwds.delete(cwd);
+  for (const [key, seen] of seenWindows) {
+    if (now - seen.at > WINDOW_SEEN_TTL_MS) seenWindows.delete(key);
   }
-  const cwds = [...seenCwds.keys()];
-  if (cwds.length === 0) {
+  const windows = [...seenWindows].map(([key, { win }]) => ({ key, ...win }));
+  if (windows.length === 0) {
     if (Object.keys(counts).length > 0) {
       counts = {};
       refreshDecorations?.();
@@ -81,7 +94,7 @@ async function pollCounts(): Promise<void> {
     const res = await serverFetch("/counts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cwds }),
+      body: JSON.stringify({ windows }),
     });
     const next = (await readJson<{ counts: Record<string, number> }>(res)).counts;
     const changed =
@@ -108,14 +121,14 @@ function relativeTime(iso: string | null): string {
 }
 
 interface PanelProps {
-  cwd: string;
+  win: WindowRef;
   // Where the triggering badge was clicked — same fixed-position-clamped-
   // to-viewport approach as the app's ContextMenu.
   anchor: { x: number; y: number };
   onClose: () => void;
 }
 
-function AgentsPanel({ cwd, anchor, onClose }: PanelProps) {
+function AgentsPanel({ win, anchor, onClose }: PanelProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(anchor);
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
@@ -137,7 +150,12 @@ function AgentsPanel({ cwd, anchor, onClose }: PanelProps) {
     let cancelled = false;
     const poll = () => {
       if (!serverFetch) return;
-      serverFetch(`/details?cwd=${encodeURIComponent(cwd)}`)
+      const query = new URLSearchParams({
+        session: win.sessionName,
+        window: String(win.windowIndex),
+        cwd: win.cwd,
+      });
+      serverFetch(`/details?${query}`)
         .then((res) => readJson<AgentSummary[]>(res))
         .then((result) => {
           if (!cancelled) {
@@ -155,7 +173,7 @@ function AgentsPanel({ cwd, anchor, onClose }: PanelProps) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [cwd]);
+  }, [win.sessionName, win.windowIndex, win.cwd]);
 
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
@@ -213,12 +231,12 @@ function closePopover(): void {
   popoverHost = null;
 }
 
-function openPopover(cwd: string, anchor: { x: number; y: number }): void {
+function openPopover(win: WindowRef, anchor: { x: number; y: number }): void {
   closePopover();
   popoverHost = document.createElement("div");
   document.body.appendChild(popoverHost);
   popoverRoot = createRoot(popoverHost);
-  popoverRoot.render(<AgentsPanel cwd={cwd} anchor={anchor} onClose={closePopover} />);
+  popoverRoot.render(<AgentsPanel win={win} anchor={anchor} onClose={closePopover} />);
 }
 
 // ---- Activation ----
@@ -249,8 +267,12 @@ export function activate(ctx: ExtensionContext): void {
     id: "agents",
     provideWindowDecoration(win) {
       if (win.command !== "claude") return undefined;
-      seenCwds.set(win.cwd, Date.now());
-      const count = counts[win.cwd];
+      const key = windowKey(win);
+      seenWindows.set(key, {
+        win: { sessionName: win.sessionName, windowIndex: win.windowIndex, cwd: win.cwd },
+        at: Date.now(),
+      });
+      const count = counts[key];
       if (!count) return undefined;
       return {
         badge: String(count),
@@ -258,7 +280,10 @@ export function activate(ctx: ExtensionContext): void {
       };
     },
     onClick(anchorRect, win) {
-      openPopover(win.cwd, { x: anchorRect.left, y: anchorRect.bottom + 4 });
+      openPopover(
+        { sessionName: win.sessionName, windowIndex: win.windowIndex, cwd: win.cwd },
+        { x: anchorRect.left, y: anchorRect.bottom + 4 },
+      );
     },
   });
   refreshDecorations = handle.refresh;
@@ -271,7 +296,7 @@ export function deactivate(): void {
   if (pollTimer !== null) window.clearInterval(pollTimer);
   pollTimer = null;
   refreshDecorations = null;
-  seenCwds.clear();
+  seenWindows.clear();
   counts = {};
   removeStylesheet?.();
   removeStylesheet = null;
