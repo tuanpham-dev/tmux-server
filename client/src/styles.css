@@ -667,11 +667,9 @@ body.resizing {
 }
 
 /* The right (secondary) sidebar. Same component, mirrored chrome: its
-   divider sits on its left edge (App renders the resize handle before it),
-   and the reopen strip's border flips with it. */
-.sidebar-right {
-  border-left: 1px solid var(--border);
-}
+   divider sits on its left edge - the resize handle App renders before it
+   is that 1px line, so the sidebar draws no border of its own, same as the
+   left one - and the reopen strip's border flips with it. */
 
 .sidebar-reopen-right {
   border-right: none;
@@ -2146,7 +2144,10 @@ body.resizing-row {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border);
+  /* No border of its own: every edge already has a 1px line from whatever
+     sits there (the sidebar's resize handle or reopen strip, a .split-sash,
+     the bottom panel, the status bar, the title bar), and a second one here
+     doubled each of them. */
 }
 
 .split-leaf-inactive .tab-bar {
