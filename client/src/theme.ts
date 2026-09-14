@@ -90,6 +90,13 @@ const CSS_VAR_KEY_CHAINS: Record<string, string[]> = {
   "--fg-bright": ["foreground"],
   "--fg-inactive": ["descriptionForeground", "disabledForeground"],
   "--panel-bg": ["sideBar.background", "panel.background"],
+  "--titlebar-bg": ["titleBar.activeBackground"],
+  "--titlebar-fg": ["titleBar.activeForeground"],
+  "--commandcenter-bg": ["commandCenter.background"],
+  "--commandcenter-fg": ["commandCenter.foreground", "titleBar.activeForeground"],
+  "--commandcenter-border": ["commandCenter.border"],
+  "--commandcenter-active-bg": ["commandCenter.activeBackground"],
+  "--commandcenter-active-border": ["commandCenter.activeBorder"],
   "--border": ["panel.border", "sideBar.border", "widget.border"],
   "--input-bg": ["input.background"],
   "--accent": ["focusBorder"],
@@ -353,6 +360,17 @@ export function loadColorTheme(extensionId: string, themeRelPath: string): Promi
   })();
   themeCache.set(cacheKey, promise);
   return promise;
+}
+
+// The page's theme-color paints the phone status bar, the installed app's
+// normal title bar, and - with the title bar hidden - the band behind the
+// window controls, so it follows the active theme's title bar color instead
+// of staying on the built-in dark value. Read back computed, so a theme
+// without titleBar.activeBackground lands on --titlebar-bg's own fallback.
+export function syncThemeColorMeta(): void {
+  const color = getComputedStyle(document.documentElement).getPropertyValue("--titlebar-bg").trim();
+  if (!color) return;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", color);
 }
 
 // Sets/clears the CSS var overrides on <html> — call with null to fall back

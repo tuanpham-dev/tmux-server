@@ -41,6 +41,18 @@
   --statusbar-fg: var(--fg-inactive);
   --statusbar-border: var(--border);
 
+  /* The custom title bar (TitleBar.tsx); --titlebar-bg also feeds the page's
+     theme-color (theme.ts syncThemeColorMeta). */
+  --titlebar-bg: var(--bg);
+  --titlebar-fg: var(--fg);
+  /* VS Code's own commandCenter.* defaults, as a share of the text color so
+     they hold on light themes too. */
+  --commandcenter-bg: color-mix(in srgb, var(--fg) 4%, transparent);
+  --commandcenter-fg: var(--titlebar-fg);
+  --commandcenter-border: color-mix(in srgb, var(--fg) 15%, transparent);
+  --commandcenter-active-bg: color-mix(in srgb, var(--fg) 7%, transparent);
+  --commandcenter-active-border: color-mix(in srgb, var(--fg) 25%, transparent);
+
   --scrollbar-thumb-bg: var(--hover);
   --scrollbar-thumb-hover-bg: var(--selection);
 
@@ -131,6 +143,151 @@ body {
   flex: 1;
   display: flex;
   min-height: 0;
+}
+
+/* ---- Title bar ---- */
+
+/* Only exists while the installed app's browser title bar is hidden (see
+   TitleBar.tsx). The browser's window controls overlay this strip, so the
+   bar pads itself clear of them by the insets useWindowControlsOverlay
+   measured; the empty space drags the window, the way a native one does. */
+.titlebar {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: var(--tb-height);
+  padding-left: var(--tb-start);
+  padding-right: var(--tb-end);
+  background: var(--titlebar-bg);
+  color: var(--titlebar-fg);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  user-select: none;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar button {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* The command center, centered on the window - an off-center title reads as
+   a layout bug - with each button group riding right beside it (VS Code's
+   arrangement). The groups hang off the wrapper's edges so only the box
+   itself decides the centering; --cc-max keeps the groups clear of the
+   window controls. Once that gets too small, .cc-inline lays all three out
+   as a plain row. */
+.titlebar-center {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 100%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+}
+
+.titlebar-group-start {
+  position: absolute;
+  right: calc(100% + 4px);
+}
+
+.titlebar-group-end {
+  position: absolute;
+  left: calc(100% + 10px);
+}
+
+.titlebar-command-center {
+  width: 38vw;
+  max-width: var(--cc-max);
+  height: calc(var(--tb-height) - 10px);
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: var(--commandcenter-bg);
+  color: var(--commandcenter-fg);
+  border: 1px solid var(--commandcenter-border);
+  border-radius: 5px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.titlebar-command-center:hover {
+  background: var(--commandcenter-active-bg);
+  border-color: var(--commandcenter-active-border);
+}
+
+.titlebar-command-center:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.titlebar-command-center .codicon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.titlebar-command-center-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar.cc-inline .titlebar-center {
+  position: static;
+  transform: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 4px;
+}
+
+.titlebar.cc-inline .titlebar-group-start,
+.titlebar.cc-inline .titlebar-group-end {
+  position: static;
+}
+
+.titlebar.cc-inline .titlebar-command-center {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.titlebar.inactive .titlebar-center {
+  opacity: 0.6;
+}
+
+/* ?wco=left|right QA emulation only: where the OS controls would sit. */
+.titlebar-emulated-controls {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  outline: 1px dashed var(--fg-inactive);
+  outline-offset: -3px;
+  pointer-events: none;
+}
+
+.titlebar-emulated-controls[data-side="left"] {
+  left: 0;
+  width: var(--tb-start);
+}
+
+.titlebar-emulated-controls[data-side="right"] {
+  right: 0;
+  width: var(--tb-end);
 }
 
 /* ---- Status bar ---- */

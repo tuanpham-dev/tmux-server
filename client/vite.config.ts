@@ -36,6 +36,10 @@ export default defineConfig({
         short_name: "tmux",
         description: "A web-based tmux terminal client",
         display: "standalone",
+        // Lets the installed desktop app hide the browser's title bar; the
+        // app then draws its own (components/TitleBar.tsx,
+        // plans/pwa-custom-title-bar.md). Browsers without it keep standalone.
+        display_override: ["window-controls-overlay"],
         theme_color: "#21252b",
         background_color: "#21252b",
         icons: [

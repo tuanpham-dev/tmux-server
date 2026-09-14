@@ -161,6 +161,13 @@ export interface AppSettings {
   // The bottom status bar (RAM, terminals, listening ports). Hidden on
   // touch devices regardless — a phone has no room for it.
   showStatusBar: boolean;
+  // When the installed desktop app's browser title bar is hidden (Window
+  // Controls Overlay), draw the app's own title bar in that strip and drop
+  // the left sidebar footer whose buttons it carries. Off keeps the footer,
+  // and content then runs up under the window controls.
+  customTitleBar: boolean;
+  // What clicking the custom title bar's command center opens.
+  commandCenterAction: "quickSwitcher" | "commandPalette";
   uploadConflict: "rename" | "overwrite" | "ask";
   // Largest single file accepted by an upload, in MB. 0 means no limit —
   // same 0-disables convention as notifyCommandMinDuration. Enforced client
@@ -307,6 +314,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rightClickBehavior: "menu",
   scrollbackSnapToBottom: true,
   showStatusBar: true,
+  customTitleBar: true,
+  commandCenterAction: "quickSwitcher",
   uploadConflict: "rename",
   uploadMaxSizeMb: 0,
   pasteDropUploadDir: "/tmp",

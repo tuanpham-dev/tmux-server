@@ -6,6 +6,7 @@ import {
 import type { AppSettings, ExtensionSettingsValues } from "../settings";
 import {
   applyColorThemeCssVars,
+  syncThemeColorMeta,
   loadColorTheme,
   resolveColorThemeValue,
   setActiveTokenTheme,
@@ -81,6 +82,7 @@ export function useThemeAssets(
     if (!target) {
       setColorTheme(null);
       applyColorThemeCssVars(null);
+      syncThemeColorMeta();
       setActiveTokenTheme({}, []);
       setThemeSettled(true);
       return;
@@ -91,6 +93,7 @@ export function useThemeAssets(
         if (cancelled) return;
         setColorTheme(resolved);
         applyColorThemeCssVars(resolved.cssVars);
+        syncThemeColorMeta();
         setActiveTokenTheme(resolved.colors, resolved.tokenColors);
         setThemeSettled(true);
       })
@@ -99,6 +102,7 @@ export function useThemeAssets(
         if (!cancelled) {
           setColorTheme(null);
           applyColorThemeCssVars(null);
+          syncThemeColorMeta();
           setActiveTokenTheme({}, []);
           setThemeSettled(true);
         }

@@ -141,6 +141,9 @@ interface Props {
   // Phone/tablet (see App's own matchMedia): the footer drops its Manage
   // button there, since the status bar carries that menu on phones.
   mobilePointer: boolean;
+  // False while App's custom title bar is up: it carries the footer's
+  // buttons (plans/pwa-custom-title-bar.md). Only the left sidebar has one.
+  showFooter: boolean;
   // Tab back/forward — the footer's two arrows (see useNavigationHistory).
   canGoBack: boolean;
   canGoForward: boolean;
@@ -227,6 +230,7 @@ export default function Sidebar({
   rightSidebarVisible,
   onToggleRightSidebar,
   mobilePointer,
+  showFooter,
   canGoBack,
   canGoForward,
   onGoBack,
@@ -874,7 +878,7 @@ export default function Sidebar({
           only: one home for them, rather than a duplicate set in each
           sidebar. They sat in the header before, competing for width with a
           tab strip that scrolls once an extension or two contributes a tab. */}
-      {side === "left" && (
+      {side === "left" && showFooter && (
         <footer className="sidebar-footer">
           <div className="sidebar-footer-group">
             {/* Settings is the one control the status bar also carries (its

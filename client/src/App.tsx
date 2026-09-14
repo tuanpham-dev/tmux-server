@@ -12,6 +12,7 @@ import SettingsView from "./components/SettingsView";
 import Sidebar from "./components/Sidebar";
 import SplitLayout from "./components/SplitLayout";
 import StatusBar from "./components/StatusBar";
+import TitleBar from "./components/TitleBar";
 import TerminalView from "./components/TerminalView";
 import {
   COMMANDS_TAB_ID,
@@ -49,6 +50,7 @@ import { useSessions } from "./hooks/useSessions";
 import { useWorktrees } from "./hooks/useWorktrees";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useNavigationHistory } from "./hooks/useNavigationHistory";
+import { useWindowControlsOverlay } from "./hooks/useWindowControlsOverlay";
 import { useTabGroups } from "./hooks/useTabGroups";
 import { useTabs } from "./hooks/useTabs";
 import { useGitRootDir } from "./hooks/useGitRootDir";
@@ -1726,9 +1728,16 @@ export default function App() {
   refreshClipboardMirrorRef.current = refreshClipboardMirror;
   const cutPaths = fsClipboard?.mode === "cut" ? new Set(fsClipboard.paths) : null;
 
+  const windowTitle = activeTab ? `${tabLabel(activeTab)} - ${APP_NAME}` : APP_NAME;
   useEffect(() => {
-    document.title = activeTab ? `${tabLabel(activeTab)} - ${APP_NAME}` : APP_NAME;
-  }, [activeTab, tabLabel]);
+    document.title = windowTitle;
+  }, [windowTitle]);
+
+  // The installed app's own title bar, once its browser title bar is hidden
+  // (plans/pwa-custom-title-bar.md). Never on a phone: the overlay is a
+  // desktop-only browser feature, and the check keeps emulation honest.
+  const windowControlsOverlay = useWindowControlsOverlay();
+  const showTitleBar = windowControlsOverlay.visible && settings.customTitleBar && !mobilePointer;
 
   // The Manage menu, shared by the sidebar's gear button and (on a phone,
   // where that button is behind a closed drawer) the status bar's own. Built
@@ -1937,6 +1946,31 @@ export default function App() {
 
   return (
     <div className="app">
+      {showTitleBar && (
+        <TitleBar
+          rect={windowControlsOverlay.rect}
+          emulated={windowControlsOverlay.emulated}
+          focused={windowControlsOverlay.focused}
+          title={windowTitle}
+          commandCenterLabel={settings.commandCenterAction === "commandPalette" ? "Command Palette" : "Quick Switcher"}
+          commandCenterCommand={
+            settings.commandCenterAction === "commandPalette" ? "commandPalette.toggle" : "quickSwitcher.toggle"
+          }
+          onCommandCenter={() => setSwitcherQuery(settings.commandCenterAction === "commandPalette" ? ">" : "")}
+          canGoBack={canGoBack}
+          canGoForward={canGoForward}
+          onGoBack={goBack}
+          onGoForward={goForward}
+          panelVisible={panel.visible}
+          onTogglePanel={togglePanel}
+          leftSidebarVisible={sidebarVisible}
+          onToggleLeftSidebar={() => setSidebarSideVisible("left", !sidebarVisible)}
+          rightSidebarVisible={rightSidebarVisible}
+          onToggleRightSidebar={() => setSidebarSideVisible("right", !rightSidebarVisible)}
+          onManage={(anchor) => showMenu(anchor.left, anchor.bottom, manageMenuItems())}
+          resolvedBindings={resolvedBindings}
+        />
+      )}
       <div className="app-body">
       {/* Everything both sidebars render identically. Width, side, the
           layout slice, and the hide button differ per instance. */}
@@ -1964,6 +1998,7 @@ export default function App() {
             onTabDragChange={setSidebarTabDrag}
             onCollapse={() => setSidebarSideVisible("left", false)}
             mobilePointer={mobilePointer}
+            showFooter={!showTitleBar}
             canGoBack={canGoBack}
             canGoForward={canGoForward}
             onGoBack={goBack}
@@ -2263,6 +2298,7 @@ export default function App() {
             onTabDragChange={setSidebarTabDrag}
             onCollapse={() => setSidebarSideVisible("right", false)}
             mobilePointer={mobilePointer}
+            showFooter={!showTitleBar}
             canGoBack={canGoBack}
             canGoForward={canGoForward}
             onGoBack={goBack}
