@@ -2639,6 +2639,11 @@ body.scrollbar-dragging {
   color: var(--fg-bright);
   font-size: 13px;
   margin-bottom: 12px;
+  /* Messages carry their own line breaks (Remove Worktree's paragraphs, Clean
+     Up Worktrees' lists) - keep them, and let a long path wrap instead of
+     widening the dialog. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .dialog-input {
