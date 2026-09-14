@@ -249,8 +249,15 @@ export default function StatusBar({
     dragging: boolean;
     longPressTimer: ReturnType<typeof setTimeout> | null;
     drop: { side: StatusBarSide; index: number } | null;
+    // A touch that moved before the long press fired is scrolling its group
+    // by hand: the slot's touch-action: none (styles.css) keeps the browser
+    // from doing it.
+    scrolling: boolean;
+    group: HTMLElement | null;
+    lastX: number;
   } | null>(null);
   const justDraggedRef = useRef(false);
+  const barRef = useRef<HTMLElement | null>(null);
   // Read inside the window listeners, which are registered per gesture and
   // would otherwise close over a stale render's value.
   const resolvedRef = useRef(resolved);
@@ -303,10 +310,19 @@ export default function StatusBar({
         if (moved < MOUSE_DRAG_THRESHOLD_PX) return;
         s.dragging = true;
         document.body.classList.add("status-bar-dragging");
+      } else if (s.scrolling) {
+        if (s.group) s.group.scrollLeft -= e.clientX - s.lastX;
+        s.lastX = e.clientX;
+        return;
       } else {
         // Touch: movement before the long-press fires belongs to a scroll,
         // not to a drag.
-        if (moved >= TOUCH_SLOP_PX) endSession();
+        if (moved >= TOUCH_SLOP_PX) {
+          if (s.longPressTimer) clearTimeout(s.longPressTimer);
+          s.longPressTimer = null;
+          s.scrolling = true;
+          s.lastX = e.clientX;
+        }
         return;
       }
     }
@@ -344,6 +360,9 @@ export default function StatusBar({
       dragging: false,
       longPressTimer: null,
       drop: null,
+      scrolling: false,
+      group: e.currentTarget.closest<HTMLElement>(".status-bar-group"),
+      lastX: e.clientX,
     };
     if (e.pointerType !== "mouse") {
       sessionRef.current.longPressTimer = setTimeout(() => {
@@ -366,6 +385,24 @@ export default function StatusBar({
     e.preventDefault();
     e.stopPropagation();
   };
+
+  // A plain (unshifted) mouse wheel scrolls an overflowing group sideways,
+  // not just Shift+wheel (the browser's native horizontal-scroll gesture).
+  // Native (non-passive) listener, as in TabBar: React's onWheel can't
+  // preventDefault a scroll that's already begun.
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.shiftKey || e.deltaY === 0) return;
+      const group = (e.target as Element | null)?.closest<HTMLElement>(".status-bar-group");
+      if (!group || group.scrollWidth <= group.clientWidth) return;
+      e.preventDefault();
+      group.scrollLeft += e.deltaY;
+    };
+    bar.addEventListener("wheel", onWheel, { passive: false });
+    return () => bar.removeEventListener("wheel", onWheel);
+  }, []);
 
   // Safety net for a drag interrupted by an unmount (the setting toggled off
   // mid-drag): the gesture's own pointerup never arrives to clean up.
@@ -417,7 +454,7 @@ export default function StatusBar({
   };
 
   return (
-    <footer className={`status-bar${mobilePointer ? " compact" : ""}`}>
+    <footer ref={barRef} className={`status-bar${mobilePointer ? " compact" : ""}`}>
       {renderGroup("left")}
       {renderGroup("right")}
       {popover && (

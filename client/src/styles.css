@@ -159,17 +159,6 @@ body {
   display: none;
 }
 
-/* When even the compact row overflows, the groups scroll rather than
-   clipping — the same treatment the sidebar tab strip gets. */
-.status-bar.compact .status-bar-group {
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.status-bar.compact .status-bar-group::-webkit-scrollbar {
-  display: none;
-}
-
 .status-bar-group {
   display: flex;
   align-items: center;
@@ -179,11 +168,34 @@ body {
   /* An empty group still has to be a drop target, or an item could never be
      moved into it. */
   min-height: 100%;
-  flex: 1;
 }
 
+/* The left group takes whatever the right one leaves and scrolls when its
+   items outgrow that - the same treatment the sidebar tab strip gets. The
+   scrollbar is hidden: a plain mouse wheel over the group scrolls it
+   (StatusBar.tsx), and on touch a finger drags it. */
+.status-bar-group[data-side="left"] {
+  flex: 1 1 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* Core's readouts keep their natural width so the left group knows how much
+   room it really has. The floor keeps an emptied right group droppable. */
 .status-bar-group[data-side="right"] {
+  flex: 0 1 auto;
+  min-width: 24px;
   justify-content: flex-end;
+}
+
+/* On a phone even the compact right group can overflow, so it scrolls too. */
+.status-bar.compact .status-bar-group[data-side="right"] {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.status-bar-group::-webkit-scrollbar {
+  display: none;
 }
 
 .status-bar-slot-wrap {
@@ -201,9 +213,10 @@ body {
      pointercancel, having never dispatched a single touchmove to us — so a
      non-passive touchmove listener has nothing to preventDefault, whenever
      it is registered. Same fix the other drag handles in this file need
-     (.panel-splitter, .tmux-scrollbar, .touch-key-editor-grip). Note this
-     also means a swipe that starts ON an item no longer scrolls a compact
-     bar that has overflowed; its padding and inter-item gaps still do. */
+     (.panel-splitter, .tmux-scrollbar, .touch-key-editor-grip). It also
+     means the browser won't scroll an overflowing group from a swipe that
+     starts ON an item, so StatusBar.tsx scrolls the group itself when a
+     touch moves before the long press fires. */
   touch-action: none;
 }
 
