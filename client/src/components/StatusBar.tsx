@@ -4,8 +4,6 @@ import {
   useExtensionRegistryVersion,
   type StatusBarItemContext,
 } from "../extensions";
-import { formatGb } from "../formatSize";
-import { useSystemStats } from "../lib/systemStatsStore";
 import {
   EMPTY_STATUS_BAR_LAYOUT,
   moveStatusBarItem,
@@ -18,17 +16,15 @@ import type { MenuItem, TmuxSession } from "../types";
 import Icon from "./Icon";
 import ProjectList, { type ProjectListProps } from "./ProjectList";
 import StatusBarPopover from "./StatusBarPopover";
-import SystemStatsPanel from "./SystemStatsPanel";
 
 // The bottom status bar (plans/right-click-sidebars-statusbar.md, extended by
-// plans/status-bar-extensions-and-popovers.md): host memory and how many
-// terminals are open, plus whatever extensions contribute.
+// plans/status-bar-extensions-and-popovers.md): how many terminals are
+// open, plus whatever extensions contribute. Host memory and CPU used to be a
+// core readout here; they now come from the System Stats registry extension
+// (plans/system-stats-extension.md).
 //
-// Memory comes from GET /api/system-stats (via lib/systemStatsStore, which
-// also feeds the CPU/memory/disk popover that reading opens); the terminal
-// count is derived from the sessions the app already polls, so it needs no
-// round-trip and can never disagree with the Explorer tree. Refresh rides the
-// existing 3s sessions-poll tick rather than adding a second timer.
+// The terminal count is derived from the sessions the app already polls, so
+// it needs no round-trip and can never disagree with the Explorer tree.
 //
 // Extension items are read straight from the registry (the TerminalView
 // convention) rather than threaded through App as a prop — they are the bar's
@@ -55,7 +51,6 @@ interface Props {
 
 // Core readouts are ids too, so a drag can reorder them alongside contributed
 // ones. Namespaced away from "ext." so they can never collide.
-const MEMORY_ITEM_ID = "core.memory";
 const TERMINALS_ITEM_ID = "core.terminals";
 // Phone only: the sidebar's own gear sits behind a drawer that now starts
 // closed there, so the bar carries the Manage menu's entry point instead.
@@ -94,7 +89,6 @@ export default function StatusBar({
   confirmDialog,
   mobilePointer,
 }: Props) {
-  const stats = useSystemStats();
   // What's in the popover, and where it points. `owner` is the id of whatever
   // opened it, so a second click on the same trigger closes rather than
   // reopens it.
@@ -152,47 +146,25 @@ export default function StatusBar({
     [projectListProps],
   );
 
-  // Constant: the panel subscribes to the stats store itself, so the node
-  // the bar captures at click time keeps updating while it is open.
-  const systemStatsContent = <SystemStatsPanel />;
-
   // Every renderable item, in registration order, with the group it belongs
   // to until the user moves it.
   const slots: StatusBarSlot[] = [
     ...extItems.map((item) => ({ id: item.id, defaultSide: item.placement })),
-    { id: MEMORY_ITEM_ID, defaultSide: "right" as const },
     { id: TERMINALS_ITEM_ID, defaultSide: "right" as const },
     ...(mobilePointer ? [{ id: MANAGE_ITEM_ID, defaultSide: "right" as const }] : []),
   ];
   const resolved = resolveStatusBarLayout(slots, layout);
 
+  // An open popover whose item is gone (its extension was just disabled or
+  // uninstalled) closes with it. The content node the bar captured at click
+  // time belongs to that extension, and left mounted it would stay on screen
+  // and keep whatever it subscribed to running.
+  const liveIds = [...resolved.left, ...resolved.right].join("\n");
+  useEffect(() => {
+    if (popover && !liveIds.split("\n").includes(popover.owner)) setPopover(null);
+  }, [popover, liveIds]);
+
   const renderItem = (id: string): ReactNode => {
-    if (id === MEMORY_ITEM_ID) {
-      return (
-        <button
-          className="status-bar-item"
-          data-menu-trigger="true"
-          aria-haspopup="dialog"
-          aria-expanded={popover?.owner === MEMORY_ITEM_ID}
-          title={
-            stats
-              ? `${formatGb(stats.memUsedBytes)} GB of ${formatGb(stats.memTotalBytes)} GB memory in use - click for CPU, memory and disk`
-              : "Host statistics unavailable"
-          }
-          onClick={(e) =>
-            togglePopover(MEMORY_ITEM_ID, e.currentTarget.getBoundingClientRect(), systemStatsContent)
-          }
-        >
-          <Icon name="chip" />
-          <span>
-            {stats ? formatGb(stats.memUsedBytes) : "-"}
-            <span className="full-only">
-              {stats ? ` / ${formatGb(stats.memTotalBytes)} GB` : " GB"}
-            </span>
-          </span>
-        </button>
-      );
-    }
     if (id === TERMINALS_ITEM_ID) {
       return (
         <button
