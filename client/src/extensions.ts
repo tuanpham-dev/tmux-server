@@ -440,7 +440,7 @@ export interface ExtensionContext {
     revealSidebarPanel(panelId: string): void;
     // Opens the PROJECTS tree's create-worktree form, revealing the tree
     // first. runCommandIndex preselects one of the configured worktree run
-    // commands (the worktreeRunCommands setting); omit it for none.
+    // agents (the app's registry, Settings → AI Providers); omit it for none.
     newWorktree(opts?: { runCommandIndex?: number }): void;
     // Opens a tmux session's active window as a window-tab. When no session
     // by that name exists, opts.createCwd creates it there first (same

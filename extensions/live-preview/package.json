@@ -2,7 +2,7 @@
   "name": "live-preview",
   "private": true,
   "publisher": "tmux-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Live Preview",
   "description": "Built-in live-reloading HTML preview (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
@@ -21,11 +21,6 @@
           "minimum": 250,
           "maximum": 10000,
           "description": "How often (ms) to check the previewed folder for changes when auto-refresh is on."
-        },
-        "livePreview.agentPrograms": {
-          "type": "string",
-          "default": "",
-          "description": "Deprecated - Settings → Agents now holds the one list of AI agents, and the element picker's \"send to agent\" uses it. A value here still overrides that list for this version; clear it to follow Settings → Agents. Comma-separated foreground commands (tmux's pane_current_command), e.g. \"claude,codex\"."
         },
         "livePreview.sendAutoSubmit": {
           "type": "boolean",

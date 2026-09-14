@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { fetchAiProfiles, type AiProfileOption } from "../../api";
 import type { ExtensionInfo } from "../../types";
 import AiModelField from "./AiModelField";
 import { NumberField } from "./controls";
@@ -24,10 +26,42 @@ function ExtensionProperties({
   overrides: Record<string, unknown>;
   onChange: (next: Record<string, unknown>) => void;
 }) {
-  // For "ai-profile"/"ai-model" properties — the same list Settings → AI Providers
-  // edits.
+  // For "ai-profile"/"ai-model" properties — every AI a job may be pointed at.
+  //
+  // Fetched rather than read from the settings document, because the document
+  // no longer holds all of them: the API providers are stored there, but a
+  // CLI comes from whichever agent declared it and is synthesised server-side
+  // (plans/cli-providers-from-agents.md). Falls back to the stored list if
+  // the request fails, so an offline or older server still renders a picker.
   const { settings } = useSettingsContext();
-  const aiProfiles = settings.aiProfiles;
+  const [resolvedProfiles, setResolvedProfiles] = useState<AiProfileOption[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetchAiProfiles()
+      .then((list) => {
+        if (live) setResolvedProfiles(list);
+      })
+      .catch(() => {
+        if (live) setResolvedProfiles(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const aiProfiles =
+    resolvedProfiles ??
+    settings.aiProfiles
+      .filter((p) => p.enabled)
+      .map((p) => ({
+        id: p.id,
+        label: p.label,
+        provider: p.provider,
+        model: p.model,
+        // Unknown from the document alone; only the fallback path uses this
+        // shape, and nothing here reads the binary name.
+        program: "",
+        isDefault: p.id === settings.aiProfileId,
+      }));
   // This extension's own profile choice, whatever it called that property —
   // an "ai-model" box reads it to show the right fallback. One picker per
   // extension is the convention; the first one declared wins.
@@ -91,10 +125,13 @@ function ExtensionProperties({
               // extension's own pick, else the app default. Mirrors ai.ts's
               // resolveProfile, so the placeholder names the AI that would
               // really run.
+              // The server list is already enabled-only and marks its own
+              // default, so this mirrors resolveProfile without re-deriving
+              // "enabled" on the client.
               const chosen =
                 aiProfiles.find((p) => p.id === selectedAiProfileId) ??
-                aiProfiles.find((p) => p.id === settings.aiProfileId && p.enabled) ??
-                aiProfiles.find((p) => p.enabled);
+                aiProfiles.find((p) => p.isDefault) ??
+                aiProfiles[0];
               const fallback = chosen?.model
                 ? `${chosen.model} (from ${chosen.label})`
                 : chosen
@@ -134,14 +171,12 @@ function ExtensionProperties({
                     onChange={(e) => setValue(prop.key, e.target.value, prop.default)}
                   >
                     <option value="">App default</option>
-                    {aiProfiles
-                      .filter((p) => p.enabled)
-                      .map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.label}
-                          {p.model ? ` · ${p.model}` : ""}
-                        </option>
-                      ))}
+                    {aiProfiles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                        {p.model ? ` · ${p.model}` : ""}
+                      </option>
+                    ))}
                   </select>
                   <div className="settings-hint">Configure the list in Settings → AI Providers.</div>
                 </label>

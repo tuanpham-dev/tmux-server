@@ -2,7 +2,7 @@
   "name": "git-scm",
   "private": true,
   "publisher": "tmux-server",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "displayName": "Git",
   "description": "Built-in VS Code-style Source Control panel: stage, commit, amend, push/pull/fetch, branch switching, stash, an AI-written commit message, a COMMITS history pane, a status-bar branch readout, and diff view (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
@@ -47,11 +47,6 @@
           ],
           "description": "What clicking a file in the SOURCE CONTROL panel opens. Shift+click always opens the other one."
         },
-        "gitScm.agentPrograms": {
-          "type": "string",
-          "default": "",
-          "description": "Deprecated - Settings → Agents now holds the one list of AI agents, and a diff comment's \"Send to Agent\" button uses it. A value here still overrides that list for this version; clear it to follow Settings → Agents. Comma-separated foreground commands (tmux's pane_current_command), e.g. \"claude,codex\"."
-        },
         "gitScm.sendAutoSubmit": {
           "type": "boolean",
           "default": false,
@@ -72,7 +67,7 @@
         "gitScm.aiCommitInstruction": {
           "type": "string",
           "default": "Write a git commit message for the staged changes below. Reply with ONLY the commit message - no preamble, no commentary, no code fences. First line: an imperative subject under 72 characters, capitalized, with no trailing period. If the change needs explaining, add a blank line and then a body of prose paragraphs wrapped at 76 characters that says what changed and why, not how. Describe only what the diff actually shows.",
-          "description": "The instruction sent to the AI when you press the sparkle button in the commit box. The staged diff, its file statistics, and recent commit subjects are appended to it. Which AI runs it is set in Settings → AI, not here."
+          "description": "The instruction sent to the AI when you press the sparkle button in the commit box. The staged diff, its file statistics, and recent commit subjects are appended to it. Which AI runs it is set in Settings → AI Providers, not here."
         }
       }
     }

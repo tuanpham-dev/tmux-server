@@ -1310,17 +1310,6 @@ body.resizing-row {
   outline-offset: -1px;
 }
 
-/* "Skip permission prompts", under the agent picker in the New Worktree
-   form. Only rendered for an agent that has such a flag, so it appears and
-   disappears with the selection. */
-.worktree-form-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--fg-inactive);
-  cursor: pointer;
-}
 
 .worktree-form-buttons {
   display: flex;
@@ -4163,7 +4152,7 @@ body.scrollbar-dragging {
 
 /* ---- Settings list entries: one expandable row per configured thing ----
    Shared by Settings → AI Providers (the configured-AI list) and
-   Settings → Agents (the agent registry) - the same shape in both:
+   Settings → AI Providers (the agent registry) - the same shape in both:
    an enable checkbox, a name that doubles as the expander, row actions,
    and the entry's own fields underneath while it is open. */
 
@@ -4214,7 +4203,7 @@ body.scrollbar-dragging {
   white-space: nowrap;
 }
 
-/* Settings → Agents ------------------------------------------------------
+/* Settings → AI Providers ------------------------------------------------------
    A catalog rather than an editor: a master switch, a permissions choice, and
    one row per agent the app knows about. */
 
@@ -4271,7 +4260,37 @@ body.scrollbar-dragging {
   opacity: 0.5;
 }
 
-/* The count chip beside "Available agents". */
+/* A group heading inside one settings section - Settings → AI Providers holds
+   two (Agents, API providers) and needs them told apart from the rows under
+   them without either looking like a page of its own.
+   A rule ABOVE, never below: the group's own content follows immediately, and
+   a closing rule under the last group would double up with the one the
+   settings footer already draws - which is exactly the double line that had
+   to be fixed at the bottom of the agent list. The first heading in a section
+   has nothing above it to separate from, so it drops the rule and the extra
+   space. */
+.settings-group-heading {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-group-heading:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* The heading's own label carries a count chip on the right rather than
+   sitting beside the text, so two groups' headings line up with each other. */
+.settings-group-heading > .settings-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* The count chip beside a group heading's label. */
 .settings-count {
   padding: 1px 6px;
   border: 1px solid var(--border);
@@ -4392,7 +4411,7 @@ body.scrollbar-dragging {
   flex-shrink: 0;
 }
 
-/* Settings → Agents: the generated hook snippet and its buttons. The snippet
+/* Settings → AI Providers: the generated hook snippet and its buttons. The snippet
    is a config file's worth of JSON, so it scrolls on its own rather than
    stretching the panel, and wraps its buttons at phone width. */
 

@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { extensionSettingsComponents, useExtensionRegistryVersion } from "../extensions";
 import { DEFAULT_SETTINGS, type AppSettings, type ExtensionSettingsValues } from "../settings";
 import type { ExtensionInfo } from "../types";
-import AgentsSection from "./settings/AgentsSection";
-import AiSection from "./settings/AiSection";
+import AiProvidersSection from "./settings/AiProvidersSection";
 import BehaviorSection from "./settings/BehaviorSection";
 import { SettingsProvider } from "./settings/context";
 import ExtensionConfigSection from "./settings/ExtensionConfigSection";
@@ -32,15 +31,17 @@ interface Props {
 // installing, and managing extensions themselves lives in the sidebar's
 // Extensions tab (ExtensionsPanel), not here — see
 // plans/extension-registry-and-extensions-tab.md.
-type Section = "terminal" | "editor" | "behavior" | "ui" | "ai" | "agents" | `ext:${string}`;
+type Section = "terminal" | "editor" | "behavior" | "ui" | "ai" | `ext:${string}`;
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "editor", label: "Editor" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
+  // Agents used to be its own entry. It is a group inside AI Providers now:
+  // "which AIs does this app have" has one answer and one place to read it
+  // (plans/consolidate-agents-into-ai-providers.md).
   { id: "ai", label: "AI Providers" },
-  { id: "agents", label: "Agents" },
 ];
 
 export default function SettingsView({
@@ -141,8 +142,7 @@ export default function SettingsView({
           {section === "editor" && <EditorSection />}
           {section === "behavior" && <BehaviorSection />}
           {section === "ui" && <UiSection />}
-          {section === "ai" && <AiSection />}
-          {section === "agents" && <AgentsSection />}
+          {section === "ai" && <AiProvidersSection />}
           {activeExtension && <ExtensionConfigSection ext={activeExtension} />}
           {activeExtension &&
             extensionSettingsComponents

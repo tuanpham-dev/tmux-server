@@ -229,7 +229,7 @@ Settings section and readable from both entries:
     },
     "myExt.aiProfile": {
       "type": "string",
-      "format": "ai-profile",              // renders a picker of Settings → AI's list
+      "format": "ai-profile",              // renders a picker of Settings → AI Providers' list
       "default": "",                       // "" = the user's default AI
       "description": "Which configured AI this feature uses."
     },
@@ -254,7 +254,7 @@ Settings section and readable from both entries:
 - Values are server-synced: manifest defaults overridden by the user's
   stored values, shared across the user's devices.
 - `"format": "ai-profile"` on a string property renders a dropdown of the
-  AIs configured in **Settings → AI** instead of a text box. The stored
+  AIs configured in **Settings → AI Providers** instead of a text box. The stored
   value is a profile id — pass it straight to `ai.run`'s `profileId`
   (`""` means "the user's default AI", which is also what an omitted
   `profileId` does). That is the sanctioned way to let someone point your
@@ -356,7 +356,7 @@ interface FileViewerHostProps {
 
 ### Agents — `contributes.agents`
 
-An extension can add agents to the app's own registry (**Settings → Agents**),
+An extension can add agents to the app's own registry (**Settings → AI Providers**),
 so a plugin can teach the app about an agent core has never heard of without
 the user defining one by hand. Declared, not activated: these are read from
 the manifest, so a contributed agent is detected and offered for launching
@@ -371,9 +371,12 @@ whether or not your extension has a client or server entry.
       "program": "opencode",
       "command": "opencode",
       "skipPermissionsArgs": "--yolo",
-      "hooks": "claude",
       "docsUrl": "https://example.com/opencode",
-      "icon": "hubot"
+      "icon": "hubot",
+      "hooks": {
+        "file": "~/.opencode/settings.json",
+        "events": { "session-start": "SessionStart", "stop": "Stop" }
+      }
     }
   ]
 }
@@ -385,15 +388,131 @@ whether or not your extension has a client or server entry.
 | `program` | tmux's `pane_current_command` for a pane running it — how a pane is recognised as this agent. Omit for launch-only. |
 | `command` | The full launch line. Omit for detection-only. An entry with neither is dropped. |
 | `skipPermissionsArgs` | Appended for the agent's no-prompts mode. Empty means it has none, and no "skip permissions" choice is offered for it. |
-| `hooks` | `"claude"`, `"codex"` or `"agy"` — which hook format its CLI reads, so the app can install its own hooks for it. Anything else becomes none. |
+| `hooks` | How the app should write this agent's hook config — see **The hooks descriptor** below. Omit it for an agent whose CLI has none; a malformed one costs the agent its hooks, not its row. |
+| `oneShot` | How to run this CLI for a single prompt — see **The one-shot form** below. Declaring it also lists this agent as an AI provider under Settings → AI Providers. |
 | `docsUrl` | Where to read about it, or how to install it — the row's link, and the only useful action for an agent whose CLI is absent. |
 | `icon` | A codicon name for the row. Unknown or omitted falls back to a generic robot. |
 
 Contributed agents are **not editable** in Settings — whoever contributed
 them owns the command line — but the user can enable and disable them like
-any other, and a stored entry with the same id always wins. An agent whose
-`program` is not on `PATH` is shown dimmed rather than offered as if it would
-run.
+any other. The settings document records only that choice: an agent's
+identity, including its hook descriptor, always comes from the manifest, and
+an entry in the document that no installed extension contributes is dropped
+rather than shown as a dead row. An agent whose `program` is not on `PATH` is
+shown dimmed rather than offered as if it would run.
+
+The app itself ships **no** agents. Claude Code and OpenAI Codex come from the
+bundled `agents` extension, which is an ordinary extension using exactly the
+contribution documented here — uninstall it and the list is empty.
+
+#### The hooks descriptor
+
+An agent's `hooks` says which file to write, in what shape, and what that CLI
+calls each event. Only `file` and `events` are required; every other field
+defaults to the commonest shape.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `file` | required | The config file to write. `~` is expanded. A path outside `$HOME` is refused and the descriptor is dropped. |
+| `events` | required | Maps the app's normalized event names (see the table further down) to what this CLI calls them. An event you leave out is one the app will never install or claim. An empty map drops the descriptor. |
+| `ownership` | `"merged"` | `"merged"` — the file holds other things and the app only adds its own part. `"whole-file"` — the file is the app's, so the UI warns that replacing it discards what was there. |
+| `container` | `{"key": "hooks"}` | Where the event map lives: under a top-level key, or `{"wrapper": "<name>", "extra": {…}}` for a CLI that wants a named wrapper object carrying its own fields. |
+| `entry` | `"nested"` | The shape of one event's value. `"nested"` — a list of entries each with its own `hooks` array. `"flat"` — a list of handlers directly. |
+| `matcherEvents` | `[]` | Raw event names that take `matcher: "*"`. Putting a matcher on an event that does not accept one is how a config file gets rejected at startup. |
+| `extraFields` | `{}` | Top-level fields the CLI's parser requires. Written only when absent — a value the user put there is theirs. |
+| `companion` | none | A second file to write alongside the hooks; see **Companions** below. Must sit in the same directory as `file`. |
+
+The app writes only its own entries, recognised by the command being its own
+hook shim and nothing else. A hand-written hook in the same file is never
+read, rewritten or removed, whatever it points at, and every write is preceded
+by a timestamped backup and performed as a temp-file rename.
+
+A worked example of the other shape — a named wrapper whose event value is a
+flat handler array, with no inner `hooks`. Antigravity's CLI is the real CLI
+that reads this form:
+
+```json
+"hooks": {
+  "file": "~/.gemini/config/hooks.json",
+  "container": { "wrapper": "tmux-server", "extra": { "enabled": true } },
+  "entry": "flat",
+  "events": {
+    "session-start": "SessionStart",
+    "prompt-submit": "PreInvocation",
+    "stop": "Stop"
+  }
+}
+```
+
+which produces:
+
+```json
+{
+  "tmux-server": {
+    "enabled": true,
+    "SessionStart": [{ "type": "command", "command": "<shim> <agent> SessionStart", "timeout": 5 }],
+    "Stop": [{ "type": "command", "command": "<shim> <agent> Stop", "timeout": 5 }]
+  }
+}
+```
+
+#### The one-shot form
+
+An agent's `command` starts an interactive session in a pane. Answering one
+prompt and printing a reply is a different invocation, and the app needs it for
+text jobs — commit messages, AI command search, prompt refine. Declare it and
+your agent appears as an AI provider automatically; there is no second list to
+add it to.
+
+```json
+"oneShot": {
+  "args": ["exec", "{modelArgs}", "{prompt}"],
+  "modelArgs": ["-m", "{model}"],
+  "listModelsArgs": ["models"]
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `args` | required | The argv after the binary. `{prompt}` is replaced by the prompt and **must** appear, or the whole form is dropped. `{modelArgs}` is a splice point: it expands to `modelArgs` below, or to nothing at all when no model is set. |
+| `modelArgs` | `[]` | Included only when a model is named; `{model}` is replaced by it. It is a separate list, and `args` says where it goes, because CLIs disagree — `claude` takes `--model`, `codex` takes `-m` before the prompt. |
+| `listModelsArgs` | none | A subcommand that prints the available models, one per line. Omit it and the app scrapes `--help` instead. |
+
+The binary is the agent's `program`. The prompt is always its own argv entry —
+never concatenated into a string, never passed through a shell — so a prompt
+that looks like a flag stays a prompt. Non-string tokens in either list are
+dropped rather than coerced.
+
+
+#### Companions
+
+Some CLIs need a second file before they will run a hook at all. Codex is the
+example: it refuses to run a handler that is not trusted in
+`~/.codex/config.toml`, and it does so **silently** — no warning, nothing in
+its log, the hook simply never fires.
+
+Declare the path as `companion` on the descriptor and register a transform
+from your server entry:
+
+```js
+export function activate({ host }) {
+  host.agentHooks.provideCompanion("codex", ({ hookFile, handlers, current }) => {
+    // `current` is the file's existing text ("" when absent). Return what it
+    // should become. `handlers` is what was just installed — each with
+    // `rawEvent`, `command`, `timeoutSeconds`, `group` and `handler` — and is
+    // EMPTY on uninstall, which is how you know to remove your entries.
+    return rewrite(current, hookFile, handlers);
+  });
+}
+```
+
+The app does the reading and the writing, under the same backup and
+temp-then-rename rules as the hook file, so a transform is a pure string
+function. It is fenced accordingly: the path comes from the manifest and must
+be in the hook file's own directory, output is capped at 64KB, and a transform
+that throws, hangs or returns anything else is logged and skipped rather than
+failing the install. Register one for an agent you did not contribute and
+nothing happens.
 
 `showMenu` opens the app's own context menu at a point. Its items:
 
@@ -929,9 +1048,9 @@ export function activate({ router, log, getSettings, host, ai, secrets }) {
 | `getSettings()` | `Promise<Record<string, unknown>>` — this extension's current configuration values (defaults + user overrides), read fresh per call. |
 | `host.ports.list()` | `Promise<ListeningPort[]>` — listening ports attributed to tmux sessions (`{ port, address, process?, pid?, session }`). The same attribution data the WS tunnel's security gate uses; consume it rather than re-scanning `/proc`. |
 | `host.ports.find(port)` | `Promise<ListeningPort \| null>` — one port's fresh attribution (kill-confirmation flows). |
-| `ai.run(prompt, opts?)` | `Promise<string>` — prompt in, text out, through whatever the user configured in **Settings → AI** (a signed-in CLI, a keyed API, a custom command). Your extension never sees a provider, a binary or a key. `opts.profileId` picks one configured AI (see `listProfiles`, and the `"ai-profile"` config format above); `opts.model` overrides that profile's model for one call; `opts.cwd` is the directory a CLI provider runs in — pass the project, since some CLIs refuse to run outside a trusted directory. Rejects with an `AiError` whose `code` separates "not configured yet" (`missing-binary`/`missing-key`/`missing-model`/`missing-command`) from a real failure (`provider-failed`/`empty-reply`), so the first can be surfaced as guidance instead of an error. |
+| `ai.run(prompt, opts?)` | `Promise<string>` — prompt in, text out, through whatever the user configured in **Settings → AI Providers** (an agent that answers a single prompt, a keyed API, a custom command). Your extension never sees a provider, a binary or a key. `opts.profileId` picks one configured AI (see `listProfiles`, and the `"ai-profile"` config format above); `opts.model` overrides that profile's model for one call; `opts.cwd` is the directory a CLI provider runs in — pass the project, since some CLIs refuse to run outside a trusted directory. Rejects with an `AiError` whose `code` separates "not configured yet" (`missing-binary`/`missing-key`/`missing-model`/`missing-command`) from a real failure (`provider-failed`/`empty-reply`), so the first can be surfaced as guidance instead of an error. |
 | `ai.listProfiles()` | `Promise<{ id, label, provider, model, isDefault }[]>` — the AIs the user has configured and enabled, for an extension that builds its own picker. Prefer the `"ai-profile"` config property, which renders one for you. |
-| `host.agents.list()` | `Promise<AgentSummary[]>` — the AI agents the user has configured and enabled, in their own order, from the one core registry behind **Settings → Agents**. Each entry is `{ id, label, program, command, hooks }`: `program` is the foreground command tmux reports for a pane running it (match `pane_current_command` against it to find the agent's window), `command` is the full launch line (offer it as a "start work with" preset), and `hooks` is `"claude" \| "codex" \| "agy" \| null` — which hook format its CLI speaks, or `null` for one core cannot hook. Read this instead of declaring an agent-programs or agent-presets setting of your own. |
+| `host.agents.list()` | `Promise<AgentSummary[]>` — the AI agents the user has configured and enabled, in their own order, from the one core registry behind **Settings → AI Providers**. Each entry is `{ id, label, program, command, hooks }`: `program` is the foreground command tmux reports for a pane running it (match `pane_current_command` against it to find the agent's window), `command` is the full launch line (offer it as a "start work with" preset), and `hooks` is a boolean — whether core can install hooks for it at all (the descriptor itself stays in core, since it names a file in the user's home). Read this instead of declaring an agent-programs or agent-presets setting of your own. |
 | `host.agentHooks.subscribe({ events, onEvent })` | Subscribe to normalized AI agent hook events — core installs the hooks, receives them at one endpoint and fans them out (see [Agent hooks](#agent-hooks)). Returns an unsubscribe; all of an extension's subscriptions are dropped when its hook unmounts. |
 | `secrets.get(name)` | `Promise<string \| null>` — one of this extension's stored credentials, or null. Also on `host.secrets`. |
 | `secrets.set(name, value)` | `Promise<void>` — stores a credential under `name` (1-64 chars of `[A-Za-z0-9._-]`); a null or blank `value` clears it. |
@@ -1005,7 +1124,7 @@ References: `ports/server.js` (minimal, `host`-driven),
 An AI agent's own hooks (Claude Code's `Stop`, Codex's `PermissionRequest`,
 Antigravity's `PreInvocation`) are core's business, not yours. Core knows each
 agent's config file and schema, generates the snippet, installs it on an
-explicit press in **Settings → Agents**, receives every event at one
+explicit press in **Settings → AI Providers**, receives every event at one
 loopback-only endpoint, normalizes it, and hands it to whoever subscribed.
 An extension ships no snippet, no schema, no route and no settings component
 for any of that — it subscribes:
@@ -1026,7 +1145,7 @@ works for every agent:
 | --- | --- |
 | `session-start` | The agent started a session in that pane. |
 | `prompt-submit` | A turn began (Antigravity's `PreInvocation` maps here). |
-| `tool-start` / `tool-end` | One tool call began or finished. **Only delivered while the user has turned on per-tool-call hooks** in Settings → Agents — they fire once per tool call, so they are off by default. Subscribe if you want them, and keep working without them. |
+| `tool-start` / `tool-end` | One tool call began or finished. **Only delivered while the user has turned on per-tool-call hooks** in Settings → AI Providers — they fire once per tool call, so they are off by default. Subscribe if you want them, and keep working without them. |
 | `permission` | The agent is waiting on a permission prompt. Antigravity never sends this: its CLI has no permission event at all. |
 | `stop` | The turn ended. |
 | `subagent-stop` | A subagent finished (Claude Code, Codex). |
@@ -1045,7 +1164,7 @@ Each `onEvent` receives:
 
 Core installs only the **union of events its enabled subscribers asked for**,
 so subscribing to something new makes the user's installed hooks stale, and
-Settings → Agents says so and offers to reinstall. That panel also lists who
+Settings → AI Providers says so and offers to reinstall. That panel also lists who
 is subscribed to what, so a user can see why.
 
 Hook events are transient: core normalizes and fans out, and stores nothing.

@@ -1317,7 +1317,7 @@ function GitPanel({ actionsTarget, showMenu }: PanelProps) {
       setAmend(false);
     });
   // Fills the commit box from the staged diff using whatever AI is configured
-  // in Settings → AI. Deliberately overwrites the box rather than appending —
+  // in Settings → AI Providers. Deliberately overwrites the box rather than appending —
   // the button is disabled once there's a message, so there is never any
   // typing of the user's to lose.
   const generateMessage = async () => {

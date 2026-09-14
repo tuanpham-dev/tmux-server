@@ -15,13 +15,13 @@ A VS Code-style SOURCE CONTROL panel for the active directory's git repository: 
 
 ## Settings
 
-Which AI writes the commit messages — the provider, model, binary path or API key — is **not** configured here. It is shared with every other AI feature in the app, under **Settings → AI**. This extension contributes only the instruction it sends.
+Which AI writes the commit messages — the provider, model, binary path or API key — is **not** configured here. It is shared with every other AI feature in the app, under **Settings → AI Providers**. This extension contributes only the instruction it sends.
 
 - **Commit message instruction** (`gitScm.aiCommitInstruction`) — the instruction the sparkle button sends; the staged diff, its file statistics and recent commit subjects are appended to it. Edit it to change the house style — subject length, whether a body is wanted, Conventional Commits.
 - **Poll interval** (`gitScm.pollInterval`, default 3000ms) — how often the active directory's git status refreshes in the background; 0 disables polling.
 - **Fetch interval** (`gitScm.fetchInterval`, default 0/off) — how often to run a non-interactive `git fetch` in the background so ahead/behind counts stay current; never prompts for credentials, so an auth-requiring remote just fails the fetch silently. Manual fetch is always available via More Actions (`…`).
 - **File tree decorations** (`gitScm.fileTreeDecorations`, default on) — git status badges and row colors in the FILES tree; off skips the per-repo status scan.
-- **AI** (`gitScm.aiProfile` / `gitScm.aiModel`) — which of the AIs configured in Settings → AI writes commit messages, and optionally a model for just this job (empty follows that AI's own model — Settings → AI can fetch the list an API endpoint offers). Lets the sparkle button run on something cheap while the rest of the app uses your everyday model.
+- **AI** (`gitScm.aiProfile` / `gitScm.aiModel`) — which of the AIs configured in Settings → AI Providers writes commit messages, and optionally a model for just this job (empty follows that AI's own model — Settings → AI Providers can fetch the list an API endpoint offers). Lets the sparkle button run on something cheap while the rest of the app uses your everyday model.
 - **Status bar** (`gitScm.statusBar`, default on) — the branch readout in the status bar. Settings → UI turns the bar itself on and off.
 - **Click action** (`gitScm.clickAction`, default "Open Diff") — what clicking a file in the panel opens; the other action is always available via Shift+click.
 

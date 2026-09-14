@@ -16,7 +16,12 @@ import {
 } from "node:os";
 import path from "node:path";
 import { Router, urlencoded, type Request, type Response } from "express";
-import { AiError, listProviderModels, probeCliProviders } from "./ai.js";
+import {
+  AiError,
+  listAiProfiles,
+  listProviderModels,
+  probeCliProviders,
+} from "./ai.js";
 import {
   hookStateFor,
   HookWriteError,
@@ -465,6 +470,20 @@ api.get("/ai-cli", async (_req, res) => {
   }
 });
 
+// Every AI a caller may name: the stored API providers plus one entry per
+// agent that can answer a single prompt. The agent-derived ones are not in
+// the settings document at all, so the settings UI cannot build this list for
+// itself - which is the whole point of the CLIs coming from the registry
+// rather than from a second list somebody maintains
+// (plans/cli-providers-from-agents.md).
+api.get("/ai-profiles", async (_req, res) => {
+  try {
+    res.json({ profiles: await listAiProfiles() });
+  } catch (err) {
+    res.status(500).json({ error: errMessage(err) });
+  }
+});
+
 // The models a profile's own endpoint offers, for the Model field's picker.
 // Errors carry ai.ts's typed code so the UI can say "add a key first" rather
 // than showing a raw failure.
@@ -488,11 +507,20 @@ api.get("/ai-models", async (req, res) => {
 // detection nor a launch picker should offer it.
 //
 // Read-only on purpose. The list is edited through the settings document like
-// every other core setting (Settings → Agents), so there is exactly one
+// every other core setting (Settings → AI Providers), so there is exactly one
 // writer and no second path that could disagree with it.
 api.get("/agents", async (_req, res) => {
   try {
-    res.json({ agents: await listAgents() });
+    // The Yolo/Manual choice travels WITH the list, so a consumer never has to
+    // ask a second time. It used to be asked again per launch - a checkbox on
+    // the worktree form and a menu row in jira - which meant one question in
+    // three places and a local answer that could contradict the global one.
+    const doc = await readSettingsDoc();
+    const settings = (doc.settings ?? {}) as Record<string, unknown>;
+    res.json({
+      agents: await listAgents(),
+      skipPermissions: settings.agentPermissions === "yolo",
+    });
   } catch (err) {
     res.status(500).json({ error: errMessage(err) });
   }
@@ -501,9 +529,10 @@ api.get("/agents", async (_req, res) => {
 // The only route that can write an API key. An empty/absent key clears it.
 api.put("/ai-key", async (req, res) => {
   try {
-    // A profile id (the shape Settings → AI writes now) or, still accepted,
-    // one of the two pre-profiles provider names.
-    const rawId = req.body?.profileId ?? req.body?.provider;
+    // The profile id the key belongs to. Keys used to be stored under a bare
+    // provider name before profiles existed; that alias is gone with the
+    // pre-profiles settings.
+    const rawId = req.body?.profileId;
     const id = typeof rawId === "string" ? rawId.trim() : "";
     // Keys are stored under this id verbatim, so it has to look like an id
     // and not like a path or a prototype key.
@@ -1632,7 +1661,7 @@ api.post("/open-target", urlencoded({ extended: false }), async (req, res) => {
   res.json({ delivered });
 });
 
-// Agent hook state, for Settings → Agents: what core would install, what is
+// Agent hook state, for Settings → AI Providers: what core would install, what is
 // actually in each agent's config file right now, and who asked for it. One
 // GET answers the whole panel, so "why is this stale" is answerable there
 // rather than by reading two files and reasoning about enabled extensions.
@@ -1655,7 +1684,7 @@ api.get("/agent-hooks", async (_req, res) => {
         enabled: agent.enabled,
         contributedBy: agent.contributedBy,
         // Whether this agent's CLI is actually on the machine. Settings →
-        // Agents dims a row that is not, rather than offering it as if it
+        // AI Providers dims a row that is not, rather than offering it as if it
         // would run.
         installed: installed[agent.id] ?? false,
         // The snippet is offered for every agent that has a hook format,
@@ -1671,7 +1700,7 @@ api.get("/agent-hooks", async (_req, res) => {
 });
 
 // The two routes that write into a file core does not own. Both are ordinary
-// authenticated browser POSTs — a deliberate press in Settings → Agents,
+// authenticated browser POSTs — a deliberate press in Settings → AI Providers,
 // never anything automatic (see agents.ts's writer rules).
 async function writeAgentHooks(
   req: Request,

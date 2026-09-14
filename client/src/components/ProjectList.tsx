@@ -68,13 +68,12 @@ export interface ProjectListProps {
   // they aren't part of the tree's poll.
   loadBranches: (cwd: string) => Promise<WorktreeBranch[]>;
   // Commands the create form offers to run in the new session (the
-  // agent registry, or the deprecated worktreeRunCommands setting while one
-  // is stored — see App.tsx). `skipPermissionsArgs` is what the form's
-  // "Skip permission prompts" checkbox appends; an entry with none hides it.
-  worktreeRunCommands: { name: string; command: string; skipPermissionsArgs: string }[];
-  // Settings → Agents' Yolo/Manual choice, as the checkbox's starting
+  // The agents offered by the New Worktree form's picker, from the one
+  // registry (see App.tsx). Each `command` already carries the app's
+  // Yolo/Manual choice, so the form launches it as given and asks nothing.
+  worktreeAgents: { name: string; command: string }[];
+  // Settings → AI Providers' Yolo/Manual choice, as the checkbox's starting
   // position. The form can override it for one launch.
-  skipPermissionsByDefault: boolean;
   onShowMenu: (x: number, y: number, items: MenuItem[]) => void;
   projectMenuItems: (node: ProjectNode) => MenuItem[];
   worktreeMenuItems: (node: WorktreeNode) => MenuItem[];
@@ -119,24 +118,6 @@ const windowRowId = (sessionName: string, index: number) => `window:${sessionNam
 const projectRowId = (node: ProjectNode) => `project:${node.key}`;
 const worktreeRowId = (node: WorktreeNode) => `worktree:${node.key}`;
 
-// The PROJECTS panel's tree — project → worktree → terminal, plus dead pinned
-// projects — with roving-tabindex keyboard navigation (useListNavigation),
-// rebindable projects.* operation shortcuts, and menu-key context menus. See
-// plans/projects-not-sessions.md, plans/project-first-ui.md and
-// plans/worktrees-into-projects.md.
-// A picked agent plus the "skip permission prompts" checkbox, as the line to
-// type into the new session. Mirrors launchCommand() in
-// extensions/_shared/agentTarget.ts, which the extensions' own "Start work"
-// flows use: that file is source-inlined into extension bundles rather than
-// imported, so the rule is stated in both places deliberately.
-function runCommandFor(
-  preset: { command: string; skipPermissionsArgs: string } | undefined,
-  skipPermissions: boolean,
-): string | undefined {
-  if (!preset) return undefined;
-  if (!skipPermissions || !preset.skipPermissionsArgs) return preset.command;
-  return `${preset.command} ${preset.skipPermissionsArgs}`;
-}
 
 const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function ProjectList(
   {
@@ -158,8 +139,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     onNewTerminalInWorktree,
     onCreateWorktree,
     loadBranches,
-    worktreeRunCommands,
-    skipPermissionsByDefault,
+    worktreeAgents,
     onShowMenu,
     projectMenuItems,
     worktreeMenuItems,
@@ -183,7 +163,6 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     base: "",
     sessionName: "",
     run: "",
-    skipPermissions: skipPermissionsByDefault,
   });
   const [formBranches, setFormBranches] = useState<WorktreeBranch[]>([]);
   const [formBusy, setFormBusy] = useState(false);
@@ -232,8 +211,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
         base: "",
         sessionName: "",
         run: "",
-        skipPermissions: skipPermissionsByDefault,
-      });
+          });
       sessionEditedRef.current = false;
       setFormError(null);
       setFormBranches([]);
@@ -277,7 +255,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       x: Math.max(POPOVER_EDGE, Math.min(anchor.left, innerWidth - rect.width - POPOVER_EDGE)),
       y,
     });
-  }, [formFor, form.mode, formError, worktreeRunCommands.length]);
+  }, [formFor, form.mode, formError, worktreeAgents.length]);
 
   // Click-outside and Escape close it. Capture phase on both pointer kinds,
   // for the same reason ContextMenu does it that way: the terminal view
@@ -323,7 +301,9 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
           base: form.mode === "new" ? form.base.trim() || undefined : undefined,
           mode: form.mode,
           sessionName: form.sessionName.trim() || undefined,
-          runCommand: form.run ? runCommandFor(worktreeRunCommands[Number(form.run)], form.skipPermissions) : undefined,
+          runCommand: form.run
+            ? worktreeAgents[Number(form.run)]?.command
+            : undefined,
         });
         closeCreateForm();
       } catch (err) {
@@ -332,7 +312,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
         setFormBusy(false);
       }
     },
-    [form, formBusy, onCreateWorktree, worktreeRunCommands, closeCreateForm],
+    [form, formBusy, onCreateWorktree, worktreeAgents, closeCreateForm],
   );
 
   // Terminal rows show each window's cwd collapsed to its git repo root
@@ -795,7 +775,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
             setForm((f) => ({ ...f, sessionName: e.target.value }));
           }}
         />
-        {worktreeRunCommands.length > 0 && (
+        {worktreeAgents.length > 0 && (
           <select
             className="worktree-form-input"
             aria-label="Run command"
@@ -803,25 +783,12 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
             onChange={(e) => setForm((f) => ({ ...f, run: e.target.value }))}
           >
             <option value="">Run: nothing</option>
-            {worktreeRunCommands.map((preset, i) => (
+            {worktreeAgents.map((preset, i) => (
               <option key={preset.name + i} value={i}>
                 Run: {preset.name}
               </option>
             ))}
           </select>
-        )}
-        {/* Only for an agent that actually has a no-prompts flag, and only
-            once one is picked — a checkbox that would append nothing is
-            worse than no checkbox. */}
-        {form.run !== "" && worktreeRunCommands[Number(form.run)]?.skipPermissionsArgs && (
-          <label className="worktree-form-check">
-            <input
-              type="checkbox"
-              checked={form.skipPermissions}
-              onChange={(e) => setForm((f) => ({ ...f, skipPermissions: e.target.checked }))}
-            />
-            <span>Skip permission prompts</span>
-          </label>
         )}
         <div className="worktree-form-buttons">
           <button type="submit" disabled={!form.branch.trim() || formBusy}>

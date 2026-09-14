@@ -1,7 +1,17 @@
 import { migrateKeybindingOverrides, type KeybindingOverrides } from "./keybindings";
 import type { Project } from "./types";
 
-export type AiProviderId = "claude" | "codex" | "agy" | "anthropic" | "openai" | "custom";
+// The API kinds core implements itself, plus - for a CLI - the id of an agent
+// from Settings → AI Providers' own Agents group. The CLIs used to be literals
+// here ("claude" | "codex" | "agy"); they are agent ids now, so adding one is
+// an extension rather than an edit to this union
+// (plans/cli-providers-from-agents.md). The `string & {}` arm keeps the three
+// literals in autocomplete while accepting any agent id.
+export type AiProviderId = "anthropic" | "openai" | "custom" | (string & {});
+
+// The kinds core itself knows how to talk to. Anything else in a profile's
+// `provider` is an agent id.
+export const API_PROVIDER_IDS = ["anthropic", "openai", "custom"] as const;
 
 // One configured AI. Mirrors server/src/ai.ts's AiProfile — the server reads
 // these straight out of the settings document, so the two shapes have to
@@ -21,18 +31,12 @@ export interface AiProfile {
   enabled: boolean;
 }
 
-// Which hook config schema an agent's CLI speaks, or null for an agent whose
-// hooks core cannot install. Mirrors server/src/agents.ts's AgentHookFlavor.
-export type AgentHookFlavor = "claude" | "codex" | "agy";
-
-// One agent in the registry. Mirrors server/src/agents.ts's AgentPreset — the
-// server reads these straight out of the settings document, so the two shapes
-// have to agree.
-//
-// One entry, not three lists, because the three facts always travel together:
-// `program` is what tmux reports for a pane running it (detection), `command`
-// is the line that starts it (launch presets), `hooks` is the schema its CLI
-// speaks (core's hook pipeline).
+// One agent as the settings document stores it. The server reads these back,
+// but only for `id` and `enabled`: an agent's identity now comes from the
+// extension that contributed it, and the document only records what the user
+// did to it (plans/agents-from-extensions.md). The rest of the fields are
+// kept so a row can render from stored state alone, without waiting for the
+// server's copy - the difference between a 21ms toggle and a 4.5s one.
 export interface AgentPreset {
   // Stable across renames — what an extension stores when it picks one.
   id: string;
@@ -47,9 +51,8 @@ export interface AgentPreset {
   // every agent has one and a pair of entries only ever differed by this
   // flag. Empty means no such mode, and no checkbox is offered for it.
   skipPermissionsArgs: string;
-  hooks: AgentHookFlavor | null;
   // Where to read about this agent, or how to install it - the row's
-  // external link in Settings → Agents. Empty hides it.
+  // external link in Settings → AI Providers. Empty hides it.
   docsUrl: string;
   // An image for the row (the app serves its own at /agents/<id>.svg; a
   // contributed one is resolved to its extension's file route). Empty falls
@@ -66,60 +69,13 @@ export interface AgentPreset {
   contributedBy: string;
 }
 
-// The registry a profile starts with. Mirrors server/src/agents.ts's
-// DEFAULT_AGENTS entry for entry, including the ids — an extension that
-// stored one before the user ever opened Settings → Agents keeps resolving.
-// Each skip-permissions flag was read off the installed binary's own --help,
-// and Codex's is not spelled like the other two.
-// What worktreeRunCommands shipped as before Settings → Agents existed. A
-// document still holding exactly this was never customised, so the registry
-// answers instead - see the setting's own comment.
-export const LEGACY_WORKTREE_RUN_COMMANDS = JSON.stringify([
-  { name: "Claude Code", command: "claude" },
-  { name: "Claude Code (skip permissions)", command: "claude --dangerously-skip-permissions" },
-]);
 
-export const DEFAULT_AGENTS: AgentPreset[] = [
-  {
-    id: "claude",
-    label: "Claude Code",
-    program: "claude",
-    command: "claude",
-    skipPermissionsArgs: "--dangerously-skip-permissions",
-    hooks: "claude",
-    docsUrl: "https://docs.claude.com/en/docs/claude-code",
-    iconUrl: "/agents/claude.svg",
-    icon: "sparkle",
-    enabled: true,
-    contributedBy: "",
-  },
-  {
-    id: "codex",
-    label: "OpenAI Codex",
-    program: "codex",
-    command: "codex",
-    skipPermissionsArgs: "--dangerously-bypass-approvals-and-sandbox",
-    hooks: "codex",
-    docsUrl: "https://github.com/openai/codex",
-    iconUrl: "/agents/codex.svg",
-    icon: "hubot",
-    enabled: true,
-    contributedBy: "",
-  },
-  {
-    id: "agy",
-    label: "Antigravity",
-    program: "agy",
-    command: "agy",
-    skipPermissionsArgs: "--dangerously-skip-permissions",
-    hooks: "agy",
-    docsUrl: "https://antigravity.google/docs/cli",
-    iconUrl: "/agents/agy.png",
-    icon: "rocket",
-    enabled: true,
-    contributedBy: "",
-  },
-];
+// A profile starts with no agents of its own. The app ships none: every agent
+// comes from an extension's `contributes.agents`, and the bundled
+// extensions/agents supplies Claude Code and Codex. An empty list here means
+// the document never overrides anything, so a freshly installed agent arrives
+// enabled as its extension declared it.
+export const DEFAULT_AGENTS: AgentPreset[] = []
 
 export interface AppSettings {
   // "auto" resolves per device (xterm on mobile pointers, ghostty
@@ -232,54 +188,22 @@ export interface AppSettings {
   // inside the repository, its top folder is added to .git/info/exclude so it
   // stays out of git status (your committed .gitignore is never modified).
   worktreeLocation: string;
-  // Deprecated: the create-worktree form offers the agents from Settings →
-  // Agents now, so this is the eighth copy of "what is an agent" that the
-  // registry replaced (plans/agent-platform-core.md). A JSON array of
-  // {name, command}, typed into the session and submitted right after it is
-  // created; "[]" disables the picker.
-  //
-  // Still honoured while it holds anything OTHER than what the app shipped
-  // (LEGACY_WORKTREE_RUN_COMMANDS below), so a list somebody actually wrote
-  // is not silently replaced. The comparison is against the shipped string
-  // rather than just "is it empty", because core settings are stored in
-  // full: every existing profile has the old default written into its
-  // document, so "non-empty" would mean "nobody ever gets the registry".
-  worktreeRunCommands: string;
-  // Every AI the user has configured, in their own order. Several can be set
-  // up at once — a CLI you're signed into, a keyed API for the jobs worth
-  // paying for — and each caller (core, or an extension with an "ai-profile"
-  // setting) either names one or gets aiProfileId's.
-  //
-  // The aiProvider/aiModel/aiBinaryPath/aiCustomCommand/aiBaseUrl keys below
-  // predate this list. They are still the server's fallback for a document
-  // with no profiles (see ai.ts's legacyProfile), which is what a user who
-  // has never opened Settings → AI Providers since upgrading has; the AI section seeds
-  // the list from them on its first render and then leaves them alone.
+  // The API providers the user has added, in their own order - a keyed API
+  // for the jobs worth paying for, or a custom command. CLIs are not stored
+  // here: every agent that can answer a single prompt is offered as a
+  // provider by the server, from the agent registry. Each caller (core, or
+  // an extension with an "ai-profile" setting) either names one or gets
+  // aiProfileId's.
   aiProfiles: AiProfile[];
   // Which profile answers a caller that doesn't name one. Empty (or naming a
   // profile that's gone) means the first enabled profile.
   aiProfileId: string;
-  // Which AI backend the app and its extensions use. The CLI providers shell
-  // out to a locally installed binary and need no key; "anthropic"/"openai"
-  // call the HTTP API and need one, stored server-side (see settingsStore's
-  // aiSecrets) and never sent back to a client. "custom" runs aiCustomCommand.
-  aiProvider: AiProviderId;
-  // Override the CLI provider's binary — a name on PATH or an absolute path.
-  // Empty uses the provider's own default (claude / codex / agy).
-  aiBinaryPath: string;
-  // Model passed to the provider. Empty means the CLI's own default; for
-  // "anthropic" it means claude-opus-5, and for "openai" it is required.
-  aiModel: string;
-  // "custom" provider only: a shell command line that receives the prompt as
-  // its single trailing argument and prints the reply.
-  aiCustomCommand: string;
-  // "anthropic"/"openai" only: send that provider's wire format to this
-  // endpoint instead of the vendor's own — any compatible service
-  // (OpenRouter, Groq, Together, LiteLLM, a local Ollama). Include the
-  // version segment, as the vendors document it: "https://host/v1". Empty
-  // uses the official endpoint. With one set, the API key becomes optional,
-  // since a local endpoint often needs none.
-  aiBaseUrl: string;
+  // The model the DEFAULT provider runs, chosen by the one select in
+  // Settings → AI Providers rather than per profile. Empty means that
+  // provider's own default model. It overrides the default profile's own
+  // `model` field, because "default model" is exactly what it says - a
+  // profile named explicitly by an extension still uses its own.
+  aiDefaultModel: string;
   // Every AI agent the app knows, in the user's own order — the one list
   // behind agent detection ("which window is the agent in"), agent launch
   // presets ("Start work") and core's agent-hook pipeline. Extensions read
@@ -388,14 +312,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pasteDropUploadDir: "/tmp",
   localEchoWhen: "claude",
   worktreeLocation: "{repo}/.worktrees/{branch}",
-  worktreeRunCommands: "",
   aiProfiles: [],
   aiProfileId: "",
-  aiProvider: "claude",
-  aiBinaryPath: "",
-  aiModel: "",
-  aiCustomCommand: "",
-  aiBaseUrl: "",
+  aiDefaultModel: "",
   // Copied, not shared: DEFAULT_SETTINGS is spread into a mutable settings
   // object that the Agents section edits in place.
   agents: DEFAULT_AGENTS.map((a) => ({ ...a })),
@@ -644,65 +563,9 @@ export function adoptWorktreeExtensionSettings(
   if (typeof location === "string" && location.trim() && next.worktreeLocation === DEFAULT_SETTINGS.worktreeLocation) {
     next.worktreeLocation = location.trim();
   }
-  const agents = ext["worktrees.agents"];
-  if (typeof agents === "string" && agents.trim() && next.worktreeRunCommands === DEFAULT_SETTINGS.worktreeRunCommands) {
-    next.worktreeRunCommands = agents.trim();
-  }
-  return next;
-}
-
-// AI provider settings used to live in each AI extension (ai-command,
-// prompts), one identical quartet apiece. Same contract as
-// adoptWorktreeExtensionSettings above: a value the user actually customised
-// is carried over, and an app setting they have already changed is never
-// overwritten. ai-command is read first, then prompts, so the first
-// customised value wins. The gemini CLI is gone, so a stored "gemini" adopts
-// as "agy" (Antigravity) rather than silently falling back to claude.
-const AI_EXTENSION_SOURCES: { ids: string[]; prefix: string }[] = [
-  { ids: ["tmux-server.ai-command", "ai-command"], prefix: "aiCommand" },
-  { ids: ["tmux-server.prompts", "prompts"], prefix: "prompts" },
-];
-
-export function adoptAiExtensionSettings(
-  settings: AppSettings,
-  extensionSettings: ExtensionSettingsValues | undefined,
-  // The document's RAW settings, before defaults are merged in. Adoption must
-  // happen exactly once, and "the user has never had an AI provider" is
-  // precisely "this key is absent" — testing the merged value against the
-  // default instead would re-adopt on every single load, and would make the
-  // default value unchoosable: pick "claude" with an old extension setting of
-  // "custom" and the next reload silently overwrites it again.
-  rawSettings?: Record<string, unknown>,
-): AppSettings {
-  if (!extensionSettings) return settings;
-  if (rawSettings && "aiProvider" in rawSettings) return settings;
-  const next = { ...settings };
-  for (const { ids, prefix } of AI_EXTENSION_SOURCES) {
-    const ext = ids.map((id) => extensionSettings[id]).find(Boolean);
-    if (!ext) continue;
-    const read = (key: string): string => {
-      const value = ext[`${prefix}.${key}`];
-      return typeof value === "string" ? value.trim() : "";
-    };
-
-    const provider = read("provider");
-    if (provider && next.aiProvider === DEFAULT_SETTINGS.aiProvider) {
-      const adopted = provider === "gemini" ? "agy" : provider;
-      if (["claude", "codex", "agy", "anthropic", "openai", "custom"].includes(adopted)) {
-        next.aiProvider = adopted as AppSettings["aiProvider"];
-      }
-    }
-    const binaryPath = read("binaryPath");
-    if (binaryPath && next.aiBinaryPath === DEFAULT_SETTINGS.aiBinaryPath) {
-      next.aiBinaryPath = binaryPath;
-    }
-    const model = read("model");
-    if (model && next.aiModel === DEFAULT_SETTINGS.aiModel) next.aiModel = model;
-    const customCommand = read("customCommand");
-    if (customCommand && next.aiCustomCommand === DEFAULT_SETTINGS.aiCustomCommand) {
-      next.aiCustomCommand = customCommand;
-    }
-  }
+  // worktrees.agents used to migrate into a worktreeRunCommands setting.
+  // That setting is gone - the New Worktree form offers the agent registry
+  // directly - so there is nothing to carry the old value into.
   return next;
 }
 

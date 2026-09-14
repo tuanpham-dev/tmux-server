@@ -20,18 +20,196 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { isOnPath } from "./ai.js";
+import { isOnPath } from "./which.js";
 import { readSettingsDoc } from "./settingsStore.js";
 
-// Which hook config schema an agent's CLI speaks. Only these three are
-// known; null means "this agent has no hooks core can install" (a wrapper
-// script, a CLI that has none), which is a first-class state — such an
-// entry is still a perfectly good detection and launch preset.
-export type AgentHookFlavor = "claude" | "codex" | "agy";
+// How one agent's CLI wants its hooks written, as data rather than as code.
+// Core used to carry three hard-coded flavours (claude / codex / agy); it now
+// carries none, and an extension declares this in its manifest instead
+// (plans/agents-from-extensions.md). null means "this agent has no hooks core
+// can install" (a wrapper script, a CLI that has none), which is a first-class
+// state — such an entry is still a perfectly good detection and launch preset.
+//
+// Three known CLIs shaped these fields, and between them they cover both
+// layouts anyone writes:
+//
+//   Claude   ~/.claude/settings.json, merged into a top-level "hooks" key,
+//            each event holding entries of {matcher?, hooks:[handler]}.
+//   Codex    ~/.codex/hooks.json, the same nested shape but core owns the
+//            whole file, plus a required top-level "description".
+//   flat     a named wrapper whose event value is a FLAT handler array with
+//            no inner "hooks" — what Antigravity's CLI actually accepts.
+export interface AgentHookDescriptor {
+  // Absolute path to the config file. Declared with "~" and expanded here;
+  // a path that escapes $HOME is refused, because core writing outside the
+  // user's own home is never what an agent manifest legitimately wants.
+  file: string;
+  // "merged" — the file holds other things and core only adds its own part.
+  // "whole-file" — the file is core's, so replacing it discards whatever was
+  // there and the UI has to say so.
+  ownership: "merged" | "whole-file";
+  // Where the event map lives in the document: under a top-level key
+  // ("hooks"), or inside a named wrapper object that carries its own extra
+  // fields (Antigravity's {enabled:true, <Event>:[…]}).
+  container:
+    | { kind: "key"; key: string }
+    | { kind: "wrapper"; name: string; extra: Record<string, unknown> };
+  // The shape of one event's value. "nested" — a list of entries, each with
+  // its own "hooks" array of handlers. "flat" — a list of handlers directly.
+  entry: "nested" | "flat";
+  // Raw event names that take matcher:"*". Only Claude's tool events do.
+  matcherEvents: readonly string[];
+  // Extra top-level fields the CLI's parser requires (Codex's description).
+  extraFields: Readonly<Record<string, unknown>>;
+  // A second file this agent's CLI needs written alongside its hooks, or null.
+  // Core does not know what goes in it: the extension that declared the agent
+  // registers a function (host.agentHooks.provideCompanion) that transforms
+  // the file's current text, and core does the reading and the writing under
+  // the same backup and temp-then-rename rules as the hook file itself.
+  //
+  // Codex is why this exists: it silently refuses to run any hook whose
+  // handler is not trusted in ~/.codex/config.toml, so hooks.json alone is
+  // inert. Constrained to the hook file's own directory - an extension does
+  // not get to name an arbitrary path in $HOME for core to write.
+  companion: string | null;
+  // normalized event -> the raw name this CLI uses. An event missing here is
+  // one the CLI does not deliver, so core never installs it and never claims
+  // it can. Read backwards by the normalizer, so a raw name absent from the
+  // map arrives with `event: null` rather than guessed at.
+  events: Readonly<Partial<Record<AgentEvent, string>>>;
+}
 
-const HOOK_FLAVORS: readonly string[] = ["claude", "codex", "agy"];
+// How to run this agent's CLI for ONE prompt and one answer - the shape the
+// shared AI backend (ai.ts) needs, which is a different thing from launching
+// the agent into a pane. `command` starts an interactive session; this runs
+// non-interactively and prints a reply.
+//
+// Core used to carry a table of these keyed by CLI name (`claude -p`,
+// `codex exec`, `agy -p`), which is exactly the sort of per-agent knowledge
+// that stopped being core's business - so the agent declares it and core only
+// substitutes and executes.
+export interface AgentOneShot {
+  // argv template. "{prompt}" is replaced by the prompt; "{modelArgs}" splices
+  // in `modelArgs` below, or nothing at all when no model is set - which is
+  // why it is a splice point rather than a placeholder inside a single token:
+  // codex wants its model flag BEFORE the prompt, and a template with no
+  // splice point could not say where.
+  args: readonly string[];
+  // Included only when the profile names a model. "{model}" is replaced by it.
+  modelArgs: readonly string[];
+  // Optional subcommand that prints this CLI's available models, one per
+  // line. Absent means core falls back to scraping `--help`.
+  listModelsArgs: readonly string[];
+}
 
-// One agent, as Settings → Agents lists them.
+function readStringArray(source: Record<string, unknown>, key: string): string[] {
+  const raw = source[key];
+  return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+}
+
+// A one-shot form out of a manifest, or null when it cannot run a prompt.
+// `args` has to say where the prompt goes: without "{prompt}" the CLI would
+// be invoked with no question in it.
+export function parseOneShot(raw: unknown): AgentOneShot | null {
+  if (!isRecordValue(raw)) return null;
+  const args = readStringArray(raw, "args");
+  if (!args.includes("{prompt}")) return null;
+  return {
+    args,
+    modelArgs: readStringArray(raw, "modelArgs"),
+    listModelsArgs: readStringArray(raw, "listModelsArgs"),
+  };
+}
+
+// The argv to spawn, with the templates filled in. Substitution is
+// positional and never shell-quoted: the prompt is its own argv entry, so
+// nothing in it can be read as a flag or an operator.
+export function oneShotArgs(spec: AgentOneShot, prompt: string, model: string): string[] {
+  const out: string[] = [];
+  for (const token of spec.args) {
+    if (token === "{modelArgs}") {
+      if (model) out.push(...spec.modelArgs.map((t) => t.replaceAll("{model}", model)));
+      continue;
+    }
+    out.push(token.replaceAll("{prompt}", prompt));
+  }
+  return out;
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Expands a leading "~" and refuses anything that lands outside $HOME. The
+// descriptor comes from an extension manifest, and this is the one field in
+// it that decides which file core writes.
+function resolveHookFile(raw: string): string | null {
+  const home = homedir();
+  const expanded = raw === "~" ? home : raw.startsWith("~/") ? path.join(home, raw.slice(2)) : raw;
+  if (!path.isAbsolute(expanded)) return null;
+  const resolved = path.resolve(expanded);
+  if (resolved !== home && !resolved.startsWith(`${home}${path.sep}`)) return null;
+  return resolved;
+}
+
+// One descriptor out of a manifest, or null when it is unusable. Everything
+// optional has a default that matches the commonest shape (Claude's), so a
+// minimal declaration is file + events.
+export function parseHookDescriptor(raw: unknown): AgentHookDescriptor | null {
+  if (!isRecordValue(raw)) return null;
+  const file = typeof raw.file === "string" ? resolveHookFile(raw.file.trim()) : null;
+  if (!file) return null;
+
+  const events: Partial<Record<AgentEvent, string>> = {};
+  if (isRecordValue(raw.events)) {
+    for (const [event, name] of Object.entries(raw.events)) {
+      if (!AGENT_EVENTS.includes(event as AgentEvent)) continue;
+      if (typeof name !== "string" || !name.trim()) continue;
+      events[event as AgentEvent] = name.trim();
+    }
+  }
+  // An agent that can deliver nothing has no hooks to install, which is the
+  // same as declaring none at all.
+  if (Object.keys(events).length === 0) return null;
+
+  let container: AgentHookDescriptor["container"] = { kind: "key", key: "hooks" };
+  if (isRecordValue(raw.container)) {
+    const wrapper = typeof raw.container.wrapper === "string" ? raw.container.wrapper.trim() : "";
+    const key = typeof raw.container.key === "string" ? raw.container.key.trim() : "";
+    if (wrapper) {
+      container = {
+        kind: "wrapper",
+        name: wrapper,
+        extra: isRecordValue(raw.container.extra) ? { ...raw.container.extra } : {},
+      };
+    } else if (key) {
+      container = { kind: "key", key };
+    }
+  }
+
+  let companion: string | null = null;
+  if (typeof raw.companion === "string" && raw.companion.trim()) {
+    const resolved = resolveHookFile(raw.companion.trim());
+    // Same directory as the hook file, so the blast radius of a companion is
+    // the directory the agent already owns.
+    companion = resolved && path.dirname(resolved) === path.dirname(file) ? resolved : null;
+  }
+
+  return {
+    file,
+    ownership: raw.ownership === "whole-file" ? "whole-file" : "merged",
+    container,
+    entry: raw.entry === "flat" ? "flat" : "nested",
+    matcherEvents: Array.isArray(raw.matcherEvents)
+      ? raw.matcherEvents.filter((name): name is string => typeof name === "string" && name.trim() !== "")
+      : [],
+    extraFields: isRecordValue(raw.extraFields) ? { ...raw.extraFields } : {},
+    companion,
+    events,
+  };
+}
+
+// One agent, as Settings → AI Providers lists them.
 export interface AgentPreset {
   // Stable across renames: what an extension stores when it picks one, and
   // what the hook routes address. Safe as a plain object key.
@@ -49,9 +227,13 @@ export interface AgentPreset {
   // with the same program, the same hooks and the same everything else.
   // Empty means this agent has no such mode and the checkbox is not offered.
   skipPermissionsArgs: string;
-  hooks: AgentHookFlavor | null;
+  hooks: AgentHookDescriptor | null;
+  // How to run this CLI for one-shot text, or null when it cannot do that.
+  // An agent with none is still a perfectly good detection and launch entry;
+  // it just cannot answer a commit message.
+  oneShot: AgentOneShot | null;
   // Where to read about this agent, or how to install it - the row's
-  // external-link button in Settings → Agents, and the only useful thing to
+  // external-link button in Settings → AI Providers, and the only useful thing to
   // offer for an agent whose CLI is not on the machine yet. Empty hides the
   // link.
   docsUrl: string;
@@ -75,53 +257,11 @@ export interface AgentPreset {
   contributedBy: string;
 }
 
-// The seed for a settings document that has never stored a list: the three
-// CLIs core already knows as AI providers, one entry each. Each carries its
-// own skip-permissions flag, verified against the installed binaries on
-// 2026-09-11 (`--help`) rather than copied from documentation - Codex spells
-// it differently from the other two.
-export const DEFAULT_AGENTS: readonly AgentPreset[] = [
-  {
-    id: "claude",
-    label: "Claude Code",
-    program: "claude",
-    command: "claude",
-    skipPermissionsArgs: "--dangerously-skip-permissions",
-    hooks: "claude",
-    docsUrl: "https://docs.claude.com/en/docs/claude-code",
-    iconUrl: "/agents/claude.svg",
-    icon: "sparkle",
-    enabled: true,
-    contributedBy: "",
-  },
-  {
-    id: "codex",
-    label: "OpenAI Codex",
-    program: "codex",
-    command: "codex",
-    skipPermissionsArgs: "--dangerously-bypass-approvals-and-sandbox",
-    hooks: "codex",
-    docsUrl: "https://github.com/openai/codex",
-    iconUrl: "/agents/codex.svg",
-    icon: "hubot",
-    enabled: true,
-    contributedBy: "",
-  },
-  {
-    id: "agy",
-    label: "Antigravity",
-    program: "agy",
-    command: "agy",
-    skipPermissionsArgs: "--dangerously-skip-permissions",
-    hooks: "agy",
-    docsUrl: "https://antigravity.google/docs/cli",
-    iconUrl: "/agents/agy.png",
-    icon: "rocket",
-    enabled: true,
-    contributedBy: "",
-  },
-];
-
+// Core ships no agents. "What is an AI agent" is answered entirely by what
+// extensions contribute (manifest `contributes.agents`), so a profile with no
+// agent-contributing extension installed has an empty registry and says so in
+// Settings — see the bundled extensions/agents, which supplies Claude Code and
+// Codex (plans/agents-from-extensions.md).
 // What a row shows for an agent that named no icon of its own.
 export const DEFAULT_AGENT_ICON = "hubot";
 
@@ -138,22 +278,23 @@ function parseAgent(raw: unknown): AgentPreset | null {
   // An entry that can neither be detected nor launched is not an agent, and
   // an id is what everything else addresses it by.
   if (!id || (!program && !command)) return null;
-  const hooks = readString(source, "hooks");
-  const shipped = DEFAULT_AGENTS.find((a) => a.id === id);
   return {
     id,
     label: readString(source, "label") || program || command,
     program,
     command,
     skipPermissionsArgs: readString(source, "skipPermissionsArgs"),
-    hooks: HOOK_FLAVORS.includes(hooks) ? (hooks as AgentHookFlavor) : null,
-    // Presentation only, and filled in from what the app ships for this id
-    // when the stored entry has none: a document written before these
-    // existed - every profile that has ever saved settings - would otherwise
-    // show a blank row forever. A stored value always wins.
-    docsUrl: readString(source, "docsUrl") || shipped?.docsUrl || "",
-    iconUrl: readString(source, "iconUrl") || shipped?.iconUrl || "",
-    icon: readString(source, "icon") || shipped?.icon || DEFAULT_AGENT_ICON,
+    // Never taken from the settings document. A descriptor says which file in
+    // the user's home core may write, and in what shape, so it comes only
+    // from the manifest that declared the agent — a document the user can
+    // hand-edit does not get to redirect core's writer. Documents written by
+    // earlier versions still hold a "claude" / "codex" / "agy" string here;
+    // it is ignored, and resolveAgents puts the real descriptor back.
+    hooks: null,
+    oneShot: null,
+    docsUrl: readString(source, "docsUrl"),
+    iconUrl: readString(source, "iconUrl"),
+    icon: readString(source, "icon") || DEFAULT_AGENT_ICON,
     // Absent means enabled: the settings UI always writes the flag, and a
     // hand-edited entry that left it out means "use it".
     enabled: source.enabled !== false,
@@ -173,22 +314,30 @@ export function setContributedAgentsSource(source: () => Promise<AgentPreset[]>)
   contributedAgentsSource = source;
 }
 
-// The whole registry, disabled entries included: what the settings document
-// holds, plus whatever extensions contribute. An absent or non-array
-// `agents` key means "never configured" and seeds from DEFAULT_AGENTS; a
-// stored array is taken at face value, empty included, so a user who
-// deliberately deletes every agent is not handed the defaults back.
+// The whole registry, disabled entries included: every agent an extension
+// contributes, with the user's own state from the settings document laid over
+// it.
 //
-// A stored entry WINS over a contributed one with the same id, which is what
-// makes "disable this plugin's agent" work: the panel writes the entry back
-// with enabled:false and that override survives.
+// The direction matters and it is the opposite of what it used to be. A
+// contribution is now the ONLY source of an agent's identity — its command
+// line, its icon, and above all its hook descriptor. The settings document
+// contributes one thing: whether the user turned it off. So a stored entry is
+// merged ONTO its contributed one by id, and a stored entry no contribution
+// matches is dropped rather than rendered as a dead row: it is either an
+// agent core used to ship (an old "agy") or one whose extension has been
+// uninstalled. Its flag stays in the document untouched, so reinstalling that
+// extension restores the user's choice exactly.
 export async function resolveAgents(): Promise<AgentPreset[]> {
   const doc = await readSettingsDoc();
   const settings = (doc.settings ?? {}) as Record<string, unknown>;
   const raw = settings.agents;
-  const stored = Array.isArray(raw)
-    ? raw.map(parseAgent).filter((a): a is AgentPreset => a !== null)
-    : DEFAULT_AGENTS.map((a) => ({ ...a }));
+  const stored = new Map<string, AgentPreset>();
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      const parsed = parseAgent(entry);
+      if (parsed) stored.set(parsed.id, parsed);
+    }
+  }
   let contributed: AgentPreset[] = [];
   try {
     contributed = await contributedAgentsSource();
@@ -196,8 +345,13 @@ export async function resolveAgents(): Promise<AgentPreset[]> {
     // A broken manifest must not take the registry down with it.
     console.error("failed to read contributed agents:", err);
   }
-  const ids = new Set(stored.map((a) => a.id));
-  return [...stored, ...contributed.filter((a) => !ids.has(a.id))];
+  return contributed.map((agent) => {
+    // A stored entry under the same id carries the user's enabled choice.
+    // Entries under any other id - including the bare "claude" a
+    // pre-registry document held - match nothing and are simply not applied.
+    const override = stored.get(agent.id);
+    return override ? { ...agent, enabled: override.enabled } : agent;
+  });
 }
 
 // Which of the registry's programs are actually on this machine, so Settings
@@ -226,20 +380,28 @@ export interface AgentSummary {
   // Appended to `command` when the caller offers a "skip permissions" choice
   // and the user takes it. Empty means this agent has no such mode.
   skipPermissionsArgs: string;
-  hooks: AgentHookFlavor | null;
+  // Whether core can install hooks for this agent at all. The descriptor
+  // itself is deliberately not published: it names a file in the user's home
+  // and only core's writer has any business with it.
+  hooks: boolean;
+  // The one-shot form, when this agent has one - ai.ts needs the template
+  // itself to build an argv, and unlike the hook descriptor it names no file
+  // and reveals nothing about the user's machine.
+  oneShot: AgentOneShot | null;
 }
 
 export async function listAgents(): Promise<AgentSummary[]> {
   const agents = await resolveAgents();
   return agents
     .filter((a) => a.enabled)
-    .map(({ id, label, program, command, skipPermissionsArgs, hooks }) => ({
+    .map(({ id, label, program, command, skipPermissionsArgs, hooks, oneShot }) => ({
       id,
       label,
       program,
       command,
       skipPermissionsArgs,
-      hooks,
+      hooks: hooks !== null,
+      oneShot,
     }));
 }
 
@@ -252,16 +414,16 @@ export async function findAgent(id: string): Promise<AgentPreset | undefined> {
 }
 
 // ---- Hook schemas -------------------------------------------------------
-// Everything below is per-agent knowledge of how that CLI wants its hooks
-// written: which file, in what shape, and what it calls each event. Verified
-// against the installed binaries on 2026-09-11 — see the notes on each
-// flavour. It lives here, beside the registry, because "which hook schema
-// does this agent speak" is one of the three facts a registry entry carries.
+// Everything below writes hooks WITHOUT knowing which agent it is writing
+// for. The per-CLI knowledge that used to live here — three files, three
+// shapes, three sets of event names — is now data on the descriptor an
+// extension declares, so adding an agent is a manifest, not a patch to this
+// file (plans/agents-from-extensions.md).
 
 // The events core normalizes to, and the only names a subscriber ever sees.
-// One vocabulary across three CLIs that each spell them differently, so an
-// extension subscribing to "stop" gets Claude's Stop, Codex's Stop and
-// Antigravity's Stop without knowing any of that.
+// One vocabulary over however many CLIs, each spelling them differently, so
+// an extension subscribing to "stop" gets every agent's stop without knowing
+// what any of them calls it.
 export type AgentEvent =
   | "session-start"
   | "prompt-submit"
@@ -276,73 +438,23 @@ export type AgentEvent =
 // core does not install them until the user opts in.
 export const HIGH_FREQUENCY_EVENTS: readonly AgentEvent[] = ["tool-start", "tool-end"];
 
-// normalized event -> the raw event name that agent's CLI uses. An event
-// missing from a flavour's table is one that CLI does not deliver, so core
-// never installs it and never claims it can: agy has no permission event and
-// no working tool events at all (see below), which is why its table is short.
-//
-// This table is also the normalizer's dictionary (agentHooks.ts reads it
-// backwards), so a raw event core does not know about — agy's
-// PostInvocation, a name a future release adds — resolves to no normalized
-// event and is delivered with `event: null` rather than guessed at.
-const EVENT_NAMES: Record<AgentHookFlavor, Partial<Record<AgentEvent, string>>> = {
-  // Claude Code: merged into the top-level "hooks" key of
-  // ~/.claude/settings.json. Tool events take a matcher; the turn-level ones
-  // do not.
-  claude: {
-    "session-start": "SessionStart",
-    "prompt-submit": "UserPromptSubmit",
-    "tool-start": "PreToolUse",
-    "tool-end": "PostToolUse",
-    permission: "Notification",
-    stop: "Stop",
-    "subagent-stop": "SubagentStop",
-  },
-  // Codex: its own whole file, ~/.codex/hooks.json. Same event names as
-  // Claude except PermissionRequest in place of Notification. The schema is
-  // confirmed by experiment; whether Stop actually fires was not verifiable
-  // (see the plan's open questions).
-  codex: {
-    "session-start": "SessionStart",
-    "prompt-submit": "UserPromptSubmit",
-    "tool-start": "PreToolUse",
-    "tool-end": "PostToolUse",
-    permission: "PermissionRequest",
-    stop: "Stop",
-    "subagent-stop": "SubagentStop",
-  },
-  // Antigravity CLI 1.2.1, established by firing hooks rather than by its
-  // docs: SessionStart (undocumented but works), PreInvocation and
-  // PostInvocation (once per model turn each) and Stop are the only events
-  // that fire. PreToolUse/PostToolUse are documented but inert — a real Bash
-  // call fired neither — and there is no permission event at all: with a
-  // permission prompt on screen neither PermissionRequest nor Notification
-  // fired. The CLI also accepts unknown event names silently, so a config it
-  // loads without complaint proves nothing; only firing does.
-  //
-  // PreInvocation is mapped to prompt-submit because it is what marks the
-  // start of a turn for agy. PostInvocation is deliberately absent: it fires
-  // when the model's tool calls are done, which is neither tool-end nor
-  // stop, so it arrives normalized to null with its raw name intact.
-  agy: {
-    "session-start": "SessionStart",
-    "prompt-submit": "PreInvocation",
-    stop: "Stop",
-  },
-};
-
-// Claude's tool events are the only ones anywhere that take a matcher, and
-// "*" is how you say "every tool".
-const CLAUDE_MATCHED_EVENTS: readonly string[] = ["PreToolUse", "PostToolUse"];
+// The same list at runtime, so parseHookDescriptor can reject an event name a
+// manifest invented. Kept beside the type deliberately: adding a member to
+// one and not the other silently drops that event from every descriptor.
+const AGENT_EVENTS: readonly AgentEvent[] = [
+  "session-start",
+  "prompt-submit",
+  "tool-start",
+  "tool-end",
+  "permission",
+  "stop",
+  "subagent-stop",
+];
 
 // Seconds. Generous next to the shim's own `curl -m 2` — the number is only
 // ever reached if the whole shim hangs, and a hook that times out is an agent
 // that stalls, so it errs long rather than tight.
 const HOOK_TIMEOUT_SECONDS = 5;
-
-// Core's key inside agy's named-wrapper file. Also what tells core's own
-// wrapper apart from the user's when reading that file back.
-export const AGY_HOOK_NAME = "tmux-server";
 
 // The one line core ever asks an agent to run. Written at boot by
 // agentHooks.ts (which owns the script's contents); the path is here because
@@ -377,21 +489,20 @@ export function hookCommandFor(agentId: string, rawEvent: string): string {
 // Which of `events` this agent can actually deliver, as its own raw names,
 // in a stable order so two calls produce comparable results (the stale check
 // in hookState compares these sets).
-export function rawEventsFor(flavor: AgentHookFlavor, events: readonly AgentEvent[]): string[] {
-  const table = EVENT_NAMES[flavor];
+export function rawEventsFor(hooks: AgentHookDescriptor, events: readonly AgentEvent[]): string[] {
   const names = new Set<string>();
   for (const event of events) {
-    const raw = table[event];
+    const raw = hooks.events[event];
     if (raw) names.add(raw);
   }
   return [...names].sort();
 }
 
-// The reverse of EVENT_NAMES, for agentHooks.ts's normalizer. A raw name
-// this flavour has no entry for returns null — the event is still delivered,
-// just unnormalized.
-export function normalizeRawEvent(flavor: AgentHookFlavor, rawEvent: string): AgentEvent | null {
-  for (const [event, raw] of Object.entries(EVENT_NAMES[flavor])) {
+// The reverse of the descriptor's event map, for agentHooks.ts's normalizer.
+// A raw name this agent has no entry for returns null — the event is still
+// delivered, just unnormalized.
+export function normalizeRawEvent(hooks: AgentHookDescriptor, rawEvent: string): AgentEvent | null {
+  for (const [event, raw] of Object.entries(hooks.events)) {
     if (raw === rawEvent) return event as AgentEvent;
   }
   return null;
@@ -400,11 +511,10 @@ export function normalizeRawEvent(flavor: AgentHookFlavor, rawEvent: string): Ag
 export interface HookSnippet {
   // Absolute path of the file this belongs in.
   file: string;
-  // "merged" — the file holds other things and core only adds its own part
-  // (Claude's settings.json, or core's own named wrapper inside agy's
-  // hooks.json). "whole-file" — the snippet IS the file's entire contents,
-  // so pasting it over an existing one would discard whatever was there and
-  // the UI has to say so (Codex).
+  // "merged" — the file holds other things and core only adds its own part.
+  // "whole-file" — the snippet IS the file's entire contents, so pasting it
+  // over an existing one would discard whatever was there and the UI has to
+  // say so. Declared per agent by its descriptor.
   ownership: "merged" | "whole-file";
   // The exact text to paste, newline-terminated.
   text: string;
@@ -413,75 +523,58 @@ export interface HookSnippet {
   rawEvents: string[];
 }
 
-function claudeSnippet(agentId: string, rawEvents: string[]): string {
-  const hooks: Record<string, unknown[]> = {};
-  for (const raw of rawEvents) {
-    const entry: Record<string, unknown> = {};
-    // Only the tool events take a matcher, and leaving it off the others
-    // keeps the snippet to exactly what that event accepts.
-    if (CLAUDE_MATCHED_EVENTS.includes(raw)) entry.matcher = "*";
-    entry.hooks = [{ type: "command", command: hookCommandFor(agentId, raw), timeout: HOOK_TIMEOUT_SECONDS }];
-    hooks[raw] = [entry];
-  }
-  return `${JSON.stringify({ hooks }, null, 2)}\n`;
+// One handler, the only thing core ever asks an agent to run.
+function handlerFor(agentId: string, rawEvent: string): Record<string, unknown> {
+  return { type: "command", command: hookCommandFor(agentId, rawEvent), timeout: HOOK_TIMEOUT_SECONDS };
 }
 
-function codexSnippet(agentId: string, rawEvents: string[]): string {
-  const hooks: Record<string, unknown[]> = {};
-  for (const raw of rawEvents) {
-    hooks[raw] = [
-      { hooks: [{ type: "command", command: hookCommandFor(agentId, raw), timeout: HOOK_TIMEOUT_SECONDS }] },
-    ];
-  }
-  // No matcher and no named wrapper: a named wrapper is rejected at startup
-  // with "unknown field, expected 'description' or 'hooks'".
-  return `${JSON.stringify({ description: "tmux-server agent hooks", hooks }, null, 2)}\n`;
+// One event's value, in whichever of the two shapes this agent's parser
+// wants: a list of entries each holding a "hooks" array, or a flat list of
+// handlers. The matcher goes on the entry and only for the events that
+// accept one — putting it on an event that does not is how a file gets
+// rejected at startup.
+function eventValueFor(
+  hooks: AgentHookDescriptor,
+  agentId: string,
+  rawEvent: string,
+): Record<string, unknown>[] {
+  const handler = handlerFor(agentId, rawEvent);
+  if (hooks.entry === "flat") return [handler];
+  const entry: Record<string, unknown> = {};
+  if (hooks.matcherEvents.includes(rawEvent)) entry.matcher = "*";
+  entry.hooks = [handler];
+  return [entry];
 }
 
-function agySnippet(agentId: string, rawEvents: string[]): string {
-  // A named wrapper whose event value is a FLAT array of handlers — no
-  // matcher and, unlike both other agents, no nested "hooks" array. Supplying
-  // one is rejected with: invalid hook "<name>": command hook must specify
-  // 'command'. Antigravity's published docs show the nested form and are
-  // wrong; ~/.gemini/antigravity-cli/cli.log is the authority on what the
-  // parser actually accepted.
-  const wrapper: Record<string, unknown> = { enabled: true };
-  for (const raw of rawEvents) {
-    wrapper[raw] = [{ type: "command", command: hookCommandFor(agentId, raw), timeout: HOOK_TIMEOUT_SECONDS }];
+// The whole document core would write for an agent, from nothing. Used for
+// the pasteable snippet the UI shows; installHooks merges into whatever is
+// already on disk instead.
+function snippetDoc(
+  hooks: AgentHookDescriptor,
+  agentId: string,
+  rawEvents: string[],
+): Record<string, unknown> {
+  const events: Record<string, unknown> = {};
+  for (const raw of rawEvents) events[raw] = eventValueFor(hooks, agentId, raw);
+  if (hooks.container.kind === "wrapper") {
+    return { [hooks.container.name]: { ...hooks.container.extra, ...events } };
   }
-  return `${JSON.stringify({ [AGY_HOOK_NAME]: wrapper }, null, 2)}\n`;
-}
-
-// Where each flavour keeps its hooks. agy also loads a workspace
-// .agents/hooks.json; core writes the home one, which applies everywhere.
-export function hookFileFor(flavor: AgentHookFlavor): string {
-  const home = homedir();
-  switch (flavor) {
-    case "claude":
-      return path.join(home, ".claude", "settings.json");
-    case "codex":
-      return path.join(home, ".codex", "hooks.json");
-    case "agy":
-      return path.join(home, ".gemini", "config", "hooks.json");
-  }
+  return { ...hooks.extraFields, [hooks.container.key]: events };
 }
 
 // The snippet for one agent and one set of normalized events, or null when
-// there is nothing to generate: an agent with no hook flavour, an unsafe id,
-// or a set of events this agent cannot deliver any of.
+// there is nothing to generate: an agent with no hook descriptor, an unsafe
+// id, or a set of events this agent cannot deliver any of.
 export function snippetFor(agent: AgentPreset, events: readonly AgentEvent[]): HookSnippet | null {
   if (!agent.hooks || !isSafeAgentId(agent.id)) return null;
   const rawEvents = rawEventsFor(agent.hooks, events);
   if (rawEvents.length === 0) return null;
-  const file = hookFileFor(agent.hooks);
-  switch (agent.hooks) {
-    case "claude":
-      return { file, ownership: "merged", text: claudeSnippet(agent.id, rawEvents), rawEvents };
-    case "codex":
-      return { file, ownership: "whole-file", text: codexSnippet(agent.id, rawEvents), rawEvents };
-    case "agy":
-      return { file, ownership: "merged", text: agySnippet(agent.id, rawEvents), rawEvents };
-  }
+  return {
+    file: agent.hooks.file,
+    ownership: agent.hooks.ownership,
+    text: `${JSON.stringify(snippetDoc(agent.hooks, agent.id, rawEvents), null, 2)}\n`,
+    rawEvents,
+  };
 }
 
 // ---- The writer ---------------------------------------------------------
@@ -501,115 +594,115 @@ export function snippetFor(agent: AgentPreset, events: readonly AgentEvent[]): H
 //   A timestamped backup beside the file first, then temp-then-rename, so a
 //   crash mid-write cannot leave a user without their agent's settings.
 
-// What agent-monitor's own pasted snippet used to curl, before core took the
-// pipeline over. Finding one means the user has a hook that stopped working
-// when agent-monitor dropped that route, which is worth saying out loud
-// rather than leaving to a changelog line.
-//
-// Matched loosely on purpose: an extension route is mounted at
-// /api/ext/<publisher>.<name>/, so the snippet a user actually pasted says
-// "tmux-server.agent-monitor" — and a sideloaded or renamed copy says
-// something else again. The route name is the part that identifies it.
-const LEGACY_MONITOR_COMMAND = /\/api\/ext\/[^/]*agent-monitor\/event/;
-
+// Core's own entries are recognized by exactly one thing: the command starts
+// with core's shim path. Nothing else in a file is ever read, rewritten or
+// removed, whatever it points at.
 function isCoreHookCommand(command: unknown): boolean {
   return typeof command === "string" && command.startsWith(`${agentHookShimPath} `);
 }
 
 // The agent id core's own command was installed for. Hooks are per config
-// FILE, so two registry entries sharing a CLI (the two Claude Code presets)
-// share one installed entry, and this is whichever of them was installed
-// last — see hookStateFor's stale check.
+// FILE, so two registry entries that share a CLI share one installed entry,
+// and this is whichever of them was installed last - see hookStateFor's stale
+// check.
 function coreHookAgentId(command: string): string {
   return command.slice(agentHookShimPath.length + 1).split(" ")[0] ?? "";
-}
-
-function isLegacyMonitorCommand(command: unknown): boolean {
-  return typeof command === "string" && LEGACY_MONITOR_COMMAND.test(command);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Claude and Codex share one shape: a map of event name to a list of
-// entries, each entry holding a list of {type, command, timeout} handlers
-// (Claude's tool entries also carry a matcher, which is preserved as-is on
-// anything core did not write). Antigravity's is the odd one and is handled
-// separately.
-interface NestedScan {
+// What core found of its own in an agent's config file. Shape-agnostic: the
+// descriptor says where the event map lives and how one event's value is
+// built, and everything below works off that alone.
+interface HookScan {
   // Raw event names core's own handlers are registered for.
   coreEvents: string[];
   // Agent ids core's installed handlers name.
   coreAgentIds: string[];
-  legacyFound: boolean;
 }
 
-function scanNested(hooks: Record<string, unknown>): NestedScan {
-  const coreEvents: string[] = [];
+// Every handler registered under one event's value, in either shape. A
+// "nested" value is a list of entries each carrying its own handler array; a
+// "flat" value is the handler list itself.
+function handlersIn(value: unknown, entry: AgentHookDescriptor["entry"]): unknown[] {
+  if (!Array.isArray(value)) return [];
+  if (entry === "flat") return value;
+  const out: unknown[] = [];
+  for (const item of value) {
+    if (isRecord(item) && Array.isArray(item.hooks)) out.push(...item.hooks);
+  }
+  return out;
+}
+
+// The event maps to scan in a document. One for a keyed container; for a
+// wrapper container it is every wrapper object in the file, because core has
+// to find its own entries even under a name it no longer uses (a rename, an
+// older version). A wrapper's non-array fields — Antigravity's enabled:true —
+// fall out on their own, since an event value is always an array.
+function eventMapsIn(doc: Record<string, unknown>, hooks: AgentHookDescriptor): Record<string, unknown>[] {
+  if (hooks.container.kind === "wrapper") {
+    return Object.values(doc).filter(isRecord);
+  }
+  const map = doc[hooks.container.key];
+  return isRecord(map) ? [map] : [];
+}
+
+function scanHooks(doc: Record<string, unknown>, hooks: AgentHookDescriptor): HookScan {
+  const coreEvents = new Set<string>();
   const coreAgentIds = new Set<string>();
-  let legacyFound = false;
-  for (const [event, entries] of Object.entries(hooks)) {
-    if (!Array.isArray(entries)) continue;
-    let hasCore = false;
-    for (const entry of entries) {
-      const handlers = isRecord(entry) && Array.isArray(entry.hooks) ? entry.hooks : [];
-      for (const handler of handlers) {
+  for (const map of eventMapsIn(doc, hooks)) {
+    for (const [event, value] of Object.entries(map)) {
+      for (const handler of handlersIn(value, hooks.entry)) {
         const command = isRecord(handler) ? handler.command : undefined;
         if (isCoreHookCommand(command)) {
-          hasCore = true;
+          coreEvents.add(event);
           coreAgentIds.add(coreHookAgentId(command as string));
         }
-        if (isLegacyMonitorCommand(command)) legacyFound = true;
       }
     }
-    if (hasCore) coreEvents.push(event);
   }
-  return { coreEvents: coreEvents.sort(), coreAgentIds: [...coreAgentIds], legacyFound };
+  return { coreEvents: [...coreEvents].sort(), coreAgentIds: [...coreAgentIds] };
 }
 
-// Drops every entry core wrote, leaving everything else — including an entry
-// that mixes a core handler with a hand-written one, where only the core
-// handler goes — and prunes an event whose list ends up empty so the file
-// does not accumulate dead keys.
-function stripNestedCoreEntries(hooks: Record<string, unknown>): void {
-  for (const [event, entries] of Object.entries(hooks)) {
-    if (!Array.isArray(entries)) continue;
+// Drops every handler core wrote from a keyed event map, leaving everything
+// else — including an entry that mixes a core handler with a hand-written
+// one, where only the core handler goes — and prunes an event whose list ends
+// up empty so the file does not accumulate dead keys.
+function stripCoreEntries(map: Record<string, unknown>, entry: AgentHookDescriptor["entry"]): void {
+  for (const [event, value] of Object.entries(map)) {
+    if (!Array.isArray(value)) continue;
     const kept: unknown[] = [];
-    for (const entry of entries) {
-      if (!isRecord(entry) || !Array.isArray(entry.hooks)) {
-        kept.push(entry);
+    for (const item of value) {
+      if (entry === "flat") {
+        if (!isCoreHookCommand(isRecord(item) ? item.command : undefined)) kept.push(item);
         continue;
       }
-      const handlers = entry.hooks.filter((handler) => !isCoreHookCommand(isRecord(handler) ? handler.command : undefined));
-      if (handlers.length === entry.hooks.length) {
-        kept.push(entry);
-      } else if (handlers.length > 0) {
-        kept.push({ ...entry, hooks: handlers });
+      if (!isRecord(item) || !Array.isArray(item.hooks)) {
+        kept.push(item);
+        continue;
       }
+      const handlers = item.hooks.filter(
+        (handler) => !isCoreHookCommand(isRecord(handler) ? handler.command : undefined),
+      );
+      if (handlers.length === item.hooks.length) kept.push(item);
+      else if (handlers.length > 0) kept.push({ ...item, hooks: handlers });
     }
-    if (kept.length > 0) hooks[event] = kept;
-    else delete hooks[event];
+    if (kept.length > 0) map[event] = kept;
+    else delete map[event];
   }
 }
 
-function nestedEntryFor(flavor: AgentHookFlavor, agentId: string, rawEvent: string): Record<string, unknown> {
-  const entry: Record<string, unknown> = {};
-  if (flavor === "claude" && CLAUDE_MATCHED_EVENTS.includes(rawEvent)) entry.matcher = "*";
-  entry.hooks = [{ type: "command", command: hookCommandFor(agentId, rawEvent), timeout: HOOK_TIMEOUT_SECONDS }];
-  return entry;
-}
-
-// agy's named wrappers: core owns the one called AGY_HOOK_NAME, and
-// recognizes a wrapper as its own only by the commands inside it — so a
-// wrapper under that name that points somewhere else is someone else's and
-// is left completely alone (installHooks refuses rather than replacing it).
-function isCoreAgyWrapper(wrapper: unknown): boolean {
+// A wrapper core owns, recognized only by the commands inside it — so a
+// wrapper under core's own name that points somewhere else is someone else's
+// and is left completely alone (installHooks refuses rather than replacing
+// it).
+function isCoreWrapper(wrapper: unknown, entry: AgentHookDescriptor["entry"]): boolean {
   if (!isRecord(wrapper)) return false;
   let sawHandler = false;
-  for (const [key, handlers] of Object.entries(wrapper)) {
-    if (key === "enabled" || !Array.isArray(handlers)) continue;
-    for (const handler of handlers) {
+  for (const value of Object.values(wrapper)) {
+    for (const handler of handlersIn(value, entry)) {
       sawHandler = true;
       if (!isCoreHookCommand(isRecord(handler) ? handler.command : undefined)) return false;
     }
@@ -617,25 +710,120 @@ function isCoreAgyWrapper(wrapper: unknown): boolean {
   return sawHandler;
 }
 
-function scanAgy(doc: Record<string, unknown>): NestedScan {
-  const coreEvents = new Set<string>();
-  const coreAgentIds = new Set<string>();
-  let legacyFound = false;
-  for (const wrapper of Object.values(doc)) {
-    if (!isRecord(wrapper)) continue;
-    for (const [key, handlers] of Object.entries(wrapper)) {
-      if (key === "enabled" || !Array.isArray(handlers)) continue;
-      for (const handler of handlers) {
-        const command = isRecord(handler) ? handler.command : undefined;
-        if (isCoreHookCommand(command)) {
-          coreEvents.add(key);
-          coreAgentIds.add(coreHookAgentId(command as string));
-        }
-        if (isLegacyMonitorCommand(command)) legacyFound = true;
-      }
-    }
+// ---- Companions ---------------------------------------------------------
+// A companion is a second file an agent's CLI needs written alongside its
+// hooks, whose contents core cannot generate because the knowledge belongs to
+// the agent, not to core. The extension that declared the agent registers a
+// transform; core reads the file, hands over its current text plus what it
+// just installed, and writes back what comes out.
+//
+// The privilege this hands an extension is real, so it is fenced on every
+// side: the path comes from the manifest (not from the transform's return
+// value) and must sit in the hook file's own directory, the result is capped,
+// and a transform that throws or hangs is logged and skipped rather than
+// taking the install down with it. Core still owns the backup and the
+// temp-then-rename.
+
+// One handler core installed, addressed the way a companion needs to address
+// it: by event and by position, because that is how a trust entry keyed on
+// "<file>:<event>:<group>:<handler>" is built.
+export interface AgentCompanionHandler {
+  rawEvent: string;
+  command: string;
+  timeoutSeconds: number;
+  // Index of the entry within the event's array, and of the handler within
+  // that entry. Always 0 and 0 for what core writes today - core installs one
+  // entry per event with one handler in it - but a companion keying on
+  // position should read them rather than assume.
+  group: number;
+  handler: number;
+}
+
+export interface AgentCompanionRequest {
+  agentId: string;
+  // The hook file core just wrote, which a companion usually has to name.
+  hookFile: string;
+  // What core installed. Empty on uninstall, which is how a transform knows
+  // to remove its entries rather than write them.
+  handlers: AgentCompanionHandler[];
+  // The companion file's current text, or "" when it does not exist yet.
+  current: string;
+}
+
+export type AgentCompanionTransform = (request: AgentCompanionRequest) => string | Promise<string>;
+
+// Registered by extensions.ts as extensions activate, keyed by the namespaced
+// agent id. agents.ts cannot import that module (it already imports this one),
+// so registration comes inward.
+const companions = new Map<string, AgentCompanionTransform>();
+
+export function registerAgentCompanion(agentId: string, transform: AgentCompanionTransform): void {
+  companions.set(agentId, transform);
+}
+
+export function dropAgentCompanions(extensionId: string): void {
+  for (const id of companions.keys()) {
+    if (id === extensionId || id.startsWith(`${extensionId}.`)) companions.delete(id);
   }
-  return { coreEvents: [...coreEvents].sort(), coreAgentIds: [...coreAgentIds], legacyFound };
+}
+
+// 64KB, the same ceiling the hook pipeline puts on an event payload. A
+// config file core writes on a user's behalf has no business being larger.
+const COMPANION_MAX_BYTES = 64 * 1024;
+const COMPANION_TIMEOUT_MS = 2_000;
+
+// Runs an agent's companion transform, if it has one, and writes the result.
+// Returns the backup path when it wrote something. Never throws: the hooks
+// themselves are already on disk by this point, and failing the whole install
+// because a companion misbehaved would leave the user worse off than the
+// warning does.
+async function writeCompanion(
+  agent: AgentPreset,
+  hooks: AgentHookDescriptor,
+  rawEvents: string[],
+): Promise<string | null> {
+  if (!hooks.companion) return null;
+  const transform = companions.get(agent.id);
+  if (!transform) return null;
+
+  const handlers: AgentCompanionHandler[] = rawEvents.map((rawEvent) => ({
+    rawEvent,
+    command: hookCommandFor(agent.id, rawEvent),
+    timeoutSeconds: HOOK_TIMEOUT_SECONDS,
+    group: 0,
+    handler: 0,
+  }));
+
+  try {
+    let current = "";
+    try {
+      current = await readFile(hooks.companion, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    const produced = await Promise.race([
+      Promise.resolve(transform({ agentId: agent.id, hookFile: hooks.file, handlers, current })),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("timed out")), COMPANION_TIMEOUT_MS),
+      ),
+    ]);
+    if (typeof produced !== "string") {
+      console.warn(`agent ${agent.id}: companion returned no text - ${hooks.companion} left alone`);
+      return null;
+    }
+    if (Buffer.byteLength(produced, "utf8") > COMPANION_MAX_BYTES) {
+      console.warn(`agent ${agent.id}: companion output over 64KB - ${hooks.companion} left alone`);
+      return null;
+    }
+    // Nothing to do is the common case on an agent whose companion entries
+    // are already right; writing an identical file would still rotate a
+    // backup, so it is skipped.
+    if (produced === current) return null;
+    return await writeTextFile(hooks.companion, produced);
+  } catch (err) {
+    console.warn(`agent ${agent.id}: companion failed, ${hooks.companion} left alone:`, err);
+    return null;
+  }
 }
 
 export class HookWriteError extends Error {}
@@ -677,7 +865,7 @@ function backupName(file: string): string {
 // the original — a rename within one directory is atomic, so a crash leaves
 // either the old file or the new one and never a truncated mix. The original
 // file's mode is carried over; a new file gets the process umask's.
-async function writeHookDoc(file: string, doc: Record<string, unknown>): Promise<string | null> {
+async function writeTextFile(file: string, text: string): Promise<string | null> {
   await mkdir(path.dirname(file), { recursive: true });
   let backup: string | null = null;
   let mode: number | undefined;
@@ -690,10 +878,14 @@ async function writeHookDoc(file: string, doc: Record<string, unknown>): Promise
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
   const temp = `${file}.tmux-server-tmp-${process.pid}`;
-  await writeFile(temp, `${JSON.stringify(doc, null, 2)}\n`);
+  await writeFile(temp, text);
   if (mode !== undefined) await chmod(temp, mode);
   await rename(temp, file);
   return backup;
+}
+
+async function writeHookDoc(file: string, doc: Record<string, unknown>): Promise<string | null> {
+  return writeTextFile(file, `${JSON.stringify(doc, null, 2)}\n`);
 }
 
 // ---- State ----
@@ -715,10 +907,6 @@ export interface HookState {
   // Set when the file itself could not be read as JSON: nothing was written
   // and nothing will be until it is fixed.
   error: string | null;
-  // An old agent-monitor snippet is still in this file. Independent of
-  // `state` — it is the user's own pasted hook, and all core can do is say
-  // it stopped working.
-  legacyMonitorHook: boolean;
 }
 
 // `wantedEvents` comes from the caller (agentHooks.ts owns the subscriber
@@ -731,15 +919,13 @@ export async function hookStateFor(agent: AgentPreset, events: readonly AgentEve
     wantedEvents: [] as string[],
     staleReason: null,
     error: null,
-    legacyMonitorHook: false,
   };
   if (!agent.hooks) {
     return { ...base, state: "unsupported", file: null, ownership: null };
   }
-  const file = hookFileFor(agent.hooks);
-  const snippet = snippetFor(agent, events);
+  const file = agent.hooks.file;
   const wantedEvents = rawEventsFor(agent.hooks, events);
-  const ownership = snippet?.ownership ?? (agent.hooks === "codex" ? "whole-file" : "merged");
+  const ownership = agent.hooks.ownership;
 
   let doc: Record<string, unknown> | null;
   try {
@@ -755,12 +941,8 @@ export async function hookStateFor(agent: AgentPreset, events: readonly AgentEve
     };
   }
 
-  const scan =
-    doc === null
-      ? { coreEvents: [], coreAgentIds: [], legacyFound: false }
-      : agent.hooks === "agy"
-        ? scanAgy(doc)
-        : scanNested(isRecord(doc.hooks) ? doc.hooks : {});
+  const scan: HookScan =
+    doc === null ? { coreEvents: [], coreAgentIds: [] } : scanHooks(doc, agent.hooks);
 
   const result: HookState = {
     ...base,
@@ -769,7 +951,6 @@ export async function hookStateFor(agent: AgentPreset, events: readonly AgentEve
     ownership,
     installedEvents: scan.coreEvents,
     wantedEvents,
-    legacyMonitorHook: scan.legacyFound,
   };
   if (result.state === "not-installed") return result;
 
@@ -800,6 +981,8 @@ export interface HookWriteResult {
   state: HookState;
   // Where the previous contents were kept, when there were any.
   backup: string | null;
+  // The same, for the agent's companion file when it has one and it changed.
+  companionBackup?: string | null;
 }
 
 export async function installHooks(agent: AgentPreset, events: readonly AgentEvent[]): Promise<HookWriteResult> {
@@ -811,64 +994,70 @@ export async function installHooks(agent: AgentPreset, events: readonly AgentEve
       "Nothing is subscribed to agent hooks yet, so there is nothing to install. Enable an extension that uses them first.",
     );
   }
-  const file = hookFileFor(agent.hooks);
+  const container = agent.hooks.container;
+  const file = agent.hooks.file;
   const doc = (await readHookDoc(file)) ?? {};
 
-  if (agent.hooks === "agy") {
-    // Core owns one named wrapper. Any wrapper that is core's (by command)
-    // is dropped first, so a rename or an old event set leaves nothing
-    // behind, and a name collision with someone else's wrapper is refused
-    // rather than resolved by overwriting it.
+  if (container.kind === "wrapper") {
+    // Core owns one named wrapper. Any wrapper that is core's (by command) is
+    // dropped first, so a rename or an old event set leaves nothing behind,
+    // and a name collision with someone else's wrapper is refused rather than
+    // resolved by overwriting it.
     for (const [name, wrapper] of Object.entries(doc)) {
-      if (isCoreAgyWrapper(wrapper)) delete doc[name];
+      if (isCoreWrapper(wrapper, agent.hooks.entry)) delete doc[name];
     }
-    if (doc[AGY_HOOK_NAME] !== undefined) {
+    if (doc[container.name] !== undefined) {
       throw new HookWriteError(
-        `${file} already has a hook named "${AGY_HOOK_NAME}" that is not core's - rename it and install again`,
+        `${file} already has a hook named "${container.name}" that is not core's - rename it and install again`,
       );
     }
-    const wrapper: Record<string, unknown> = { enabled: true };
-    for (const raw of rawEvents) {
-      wrapper[raw] = [{ type: "command", command: hookCommandFor(agent.id, raw), timeout: HOOK_TIMEOUT_SECONDS }];
-    }
-    doc[AGY_HOOK_NAME] = wrapper;
+    const wrapper: Record<string, unknown> = { ...container.extra };
+    for (const raw of rawEvents) wrapper[raw] = eventValueFor(agent.hooks, agent.id, raw);
+    doc[container.name] = wrapper;
   } else {
-    const hooks = isRecord(doc.hooks) ? { ...doc.hooks } : {};
-    stripNestedCoreEntries(hooks);
+    const map = isRecord(doc[container.key]) ? { ...(doc[container.key] as Record<string, unknown>) } : {};
+    stripCoreEntries(map, agent.hooks.entry);
     for (const raw of rawEvents) {
-      const existing = Array.isArray(hooks[raw]) ? (hooks[raw] as unknown[]) : [];
-      hooks[raw] = [...existing, nestedEntryFor(agent.hooks, agent.id, raw)];
+      const existing = Array.isArray(map[raw]) ? (map[raw] as unknown[]) : [];
+      map[raw] = [...existing, ...eventValueFor(agent.hooks, agent.id, raw)];
     }
-    doc.hooks = hooks;
-    // Codex's file is core's own, and the key is required by its parser.
-    if (agent.hooks === "codex" && typeof doc.description !== "string") {
-      doc.description = "tmux-server agent hooks";
+    doc[container.key] = map;
+    // Fields this CLI's parser requires (Codex's "description"). Only filled
+    // in when absent — whatever the user put there is theirs.
+    for (const [key, value] of Object.entries(agent.hooks.extraFields)) {
+      if (doc[key] === undefined) doc[key] = value;
     }
   }
 
   const backup = await writeHookDoc(file, doc);
-  return { state: await hookStateFor(agent, events), backup };
+  // After the hooks, never before: a companion that names the hook file must
+  // describe what is actually on disk.
+  const companionBackup = await writeCompanion(agent, agent.hooks, rawEvents);
+  return { state: await hookStateFor(agent, events), backup, companionBackup };
 }
 
 export async function uninstallHooks(agent: AgentPreset, events: readonly AgentEvent[]): Promise<HookWriteResult> {
   if (!agent.hooks) throw new HookWriteError(`${agent.label} has no hook format core can write`);
-  const file = hookFileFor(agent.hooks);
+  const container = agent.hooks.container;
+  const file = agent.hooks.file;
   const doc = await readHookDoc(file);
   if (doc === null) return { state: await hookStateFor(agent, events), backup: null };
 
-  if (agent.hooks === "agy") {
+  if (container.kind === "wrapper") {
     for (const [name, wrapper] of Object.entries(doc)) {
-      if (isCoreAgyWrapper(wrapper)) delete doc[name];
+      if (isCoreWrapper(wrapper, agent.hooks.entry)) delete doc[name];
     }
-  } else if (isRecord(doc.hooks)) {
-    const hooks = { ...doc.hooks };
-    stripNestedCoreEntries(hooks);
-    // An emptied hooks key is left as an empty object rather than deleted:
-    // it was there before core wrote anything, and removing a key the user
-    // may have put there is not core's call.
-    doc.hooks = hooks;
+  } else if (isRecord(doc[container.key])) {
+    const map = { ...(doc[container.key] as Record<string, unknown>) };
+    stripCoreEntries(map, agent.hooks.entry);
+    // An emptied container key is left as an empty object rather than
+    // deleted: it was there before core wrote anything, and removing a key
+    // the user may have put there is not core's call.
+    doc[container.key] = map;
   }
 
   const backup = await writeHookDoc(file, doc);
-  return { state: await hookStateFor(agent, events), backup };
+  // No handlers left, which is how a companion knows to take its entries out.
+  const companionBackup = await writeCompanion(agent, agent.hooks, []);
+  return { state: await hookStateFor(agent, events), backup, companionBackup };
 }

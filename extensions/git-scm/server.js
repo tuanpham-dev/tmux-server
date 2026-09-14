@@ -1204,7 +1204,7 @@ export function activate({ router, log, host, getSettings, ai }) {
       }
       sections.push(`Files changed:\n${stat.trim()}`, `Diff:\n${diff}`);
 
-      // gitScm.aiProfile names one of the AIs configured in Settings → AI;
+      // gitScm.aiProfile names one of the AIs configured in Settings → AI Providers;
       // empty (the default) lets the app's own default profile answer.
       const profileId =
         typeof settings["gitScm.aiProfile"] === "string" ? settings["gitScm.aiProfile"].trim() : "";

@@ -1,6 +1,6 @@
 // The app's one AI backend. Everything that turns a prompt into text — the
 // git-scm commit-message button, ai-command, prompts — comes through runAi,
-// so "which AI do I have?" is answered once, in Settings → AI, instead of
+// so "which AI do I have?" is answered once, in Settings → AI Providers, instead of
 // once per extension (plans/core-ai-providers.md).
 //
 // Two provider families:
@@ -17,6 +17,7 @@
 import { execFile } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import path from "node:path";
+import { findAgent, listAgents, oneShotArgs, probeAgentPrograms } from "./agents.js";
 import { readAiSecrets, readSettingsDoc } from "./settingsStore.js";
 
 const TIMEOUT_MS = 60_000;
@@ -56,7 +57,7 @@ export class AiError extends Error {
   }
 }
 
-// One configured AI, as Settings → AI lists them. Several can be set up at
+// One configured AI, as Settings → AI Providers lists them. Several can be set up at
 // once — a CLI you're signed into, a keyed API for the jobs worth paying
 // for — and each caller (core, or any extension) either names one or gets
 // the default.
@@ -72,30 +73,8 @@ export interface AiProfile {
   enabled: boolean;
 }
 
-// The id of the profile synthesized from the pre-profiles settings keys
-// (aiProvider/aiModel/…). Stable, so a caller that stored it before the
-// user ever opened Settings → AI keeps resolving to the same AI once the
-// UI writes the real list.
-const LEGACY_PROFILE_ID = "default";
-
 function readString(source: Record<string, unknown>, key: string): string {
   return typeof source[key] === "string" ? (source[key] as string).trim() : "";
-}
-
-// The pre-profiles settings keys, as one profile. Also the fallback for a
-// settings document whose profile list is empty or unparseable — there is
-// always at least one profile, so runAi never has nothing to run.
-function legacyProfile(settings: Record<string, unknown>): AiProfile {
-  return {
-    id: LEGACY_PROFILE_ID,
-    label: "Default",
-    provider: readString(settings, "aiProvider") || "claude",
-    model: readString(settings, "aiModel"),
-    binaryPath: readString(settings, "aiBinaryPath"),
-    customCommand: readString(settings, "aiCustomCommand"),
-    baseUrl: readString(settings, "aiBaseUrl"),
-    enabled: true,
-  };
 }
 
 function parseProfile(raw: unknown): AiProfile | null {
@@ -121,6 +100,61 @@ function parseProfile(raw: unknown): AiProfile | null {
 interface AiConfigDoc {
   profiles: AiProfile[];
   defaultProfileId: string;
+  // The model chosen for whichever provider is the default, from Settings →
+  // AI Providers' own select. Applied to the default profile only: a caller
+  // that names a profile explicitly gets that profile's own model.
+  defaultModel: string;
+}
+
+// One profile per enabled agent that declared a one-shot form, synthesised
+// rather than stored. This is what "the CLIs come from the agents" means in
+// practice: nobody adds a Claude Code provider by hand, and there is no
+// second place where that CLI is defined. The agent's id IS the profile id,
+// so a stored entry for the same id (a user who set a model or a binary path
+// for it) simply wins.
+//
+// No model of its own: an agent-derived profile runs the CLI's own default
+// model. Naming one means storing a profile with that id, which the settings
+// UI does when you edit the row.
+async function agentProfiles(): Promise<AiProfile[]> {
+  try {
+    const agents = await listAgents();
+    return agents
+      .filter((agent) => agent.oneShot)
+      .map((agent) => ({
+        id: agent.id,
+        label: agent.label,
+        provider: agent.id,
+        model: "",
+        binaryPath: "",
+        customCommand: "",
+        baseUrl: "",
+        enabled: true,
+      }));
+  } catch (err) {
+    // A broken manifest must not take the AI backend down with it — the
+    // stored API providers are independent of this.
+    console.error("failed to read agent-derived AI profiles:", err);
+    return [];
+  }
+}
+
+// The kinds core talks to itself. Anything else in a profile's `provider` is
+// an agent id, resolved against the registry.
+const API_PROVIDERS = new Set(["anthropic", "openai", "custom"]);
+
+// Can this profile actually answer? An API kind always can. A CLI one can
+// only if the agent it names is still installed, enabled and declares a
+// one-shot form.
+//
+// A stored profile that fails this is DROPPED rather than listed, and that is
+// deliberate: before CLIs came from the registry, a profile could name the
+// bare provider "claude", and those entries survive in existing settings
+// documents. Keeping one would leave a broken row that is very likely the
+// user's default, so every AI feature would fail until they noticed. Dropping
+// it lets the default fall through to an agent-derived profile that works.
+function profileIsUsable(profile: AiProfile, agentIds: Set<string>): boolean {
+  return API_PROVIDERS.has(profile.provider) || agentIds.has(profile.provider);
 }
 
 async function readAiConfig(): Promise<AiConfigDoc> {
@@ -128,10 +162,44 @@ async function readAiConfig(): Promise<AiConfigDoc> {
   const settings = (doc.settings ?? {}) as Record<string, unknown>;
   const raw = settings.aiProfiles;
   const parsed = Array.isArray(raw) ? raw.map(parseProfile).filter((p): p is AiProfile => p !== null) : [];
+  const derivable = await agentProfiles();
+  const agentIds = new Set(derivable.map((p) => p.id));
+  const stored = parsed.filter((p) => profileIsUsable(p, agentIds));
+  for (const dropped of parsed.filter((p) => !stored.includes(p))) {
+    console.warn(
+      `ai: ignoring profile "${dropped.label}" - its provider "${dropped.provider}" is not an API kind and names no installed agent`,
+    );
+  }
+  const storedIds = new Set(stored.map((p) => p.id));
+  const derived = derivable.filter((p) => !storedIds.has(p.id));
+  const profiles = [...stored, ...derived];
   return {
-    profiles: parsed.length > 0 ? parsed : [legacyProfile(settings)],
+    // Possibly empty: no stored API provider and no agent offering a one-shot
+    // form. There is no synthesised fallback any more - the pre-profiles flat
+    // settings (aiProvider and friends) are gone - so an empty list surfaces
+    // as defaultProfileOf's "No AI is configured" rather than as a profile
+    // that could only fail.
+    profiles,
     defaultProfileId: readString(settings, "aiProfileId"),
+    defaultModel: readString(settings, "aiDefaultModel"),
   };
+}
+
+// Which profile answers when nothing names one: the configured default, else
+// the first usable one. Its own function because both resolveProfile and
+// listAiProfiles have to agree on it - a picker marking one profile while the
+// backend runs another is the kind of thing nobody notices until a job uses
+// the wrong model.
+function defaultProfileOf(profiles: AiProfile[], defaultProfileId: string): AiProfile {
+  const enabled = profiles.filter((p) => p.enabled);
+  const found = enabled.find((p) => p.id === defaultProfileId) ?? enabled[0] ?? profiles[0];
+  if (!found) {
+    throw new AiError(
+      "missing-command",
+      "No AI is configured - add an API provider, or enable an agent that can answer text, in Settings → AI Providers",
+    );
+  }
+  return found;
 }
 
 // What a caller may choose between: the enabled profiles, in the user's own
@@ -143,20 +211,28 @@ export interface AiProfileSummary {
   label: string;
   provider: string;
   model: string;
+  // The binary this one runs, for a CLI. Empty for an API provider. Published
+  // because the provider id is an AGENT id now ("tmux-server.agents.codex"),
+  // which is not what the user would look for on their PATH - the settings UI
+  // has to be able to name the actual command.
+  program: string;
   isDefault: boolean;
 }
 
 export async function listAiProfiles(): Promise<AiProfileSummary[]> {
-  const { profiles, defaultProfileId } = await readAiConfig();
+  const { profiles, defaultProfileId, defaultModel } = await readAiConfig();
   const enabled = profiles.filter((p) => p.enabled);
-  const fallbackId = enabled.find((p) => p.id === defaultProfileId)?.id ?? enabled[0]?.id ?? "";
-  return enabled.map((p) => ({
-    id: p.id,
-    label: p.label,
-    provider: p.provider,
-    model: p.model,
-    isDefault: p.id === fallbackId,
-  }));
+  const fallbackId = profiles.length > 0 ? defaultProfileOf(profiles, defaultProfileId).id : "";
+  return Promise.all(
+    enabled.map(async (p) => ({
+      id: p.id,
+      label: p.label,
+      provider: p.provider,
+      model: p.id === fallbackId && defaultModel ? defaultModel : p.model,
+      program: API_PROVIDERS.has(p.provider) ? "" : (await findAgent(p.provider))?.program ?? "",
+      isDefault: p.id === fallbackId,
+    })),
+  );
 }
 
 // Explicitly named profile, else the configured default, else the first
@@ -164,15 +240,15 @@ export async function listAiProfiles(): Promise<AiProfileSummary[]> {
 // user has since deleted or disabled falls back rather than failing: its
 // stored id is a preference, not a dependency.
 async function resolveProfile(profileId?: string): Promise<AiProfile> {
-  const { profiles, defaultProfileId } = await readAiConfig();
+  const { profiles, defaultProfileId, defaultModel } = await readAiConfig();
   const wanted = profileId?.trim();
   const named = wanted ? profiles.find((p) => p.id === wanted && p.enabled) : undefined;
-  return (
-    named ??
-    profiles.find((p) => p.id === defaultProfileId && p.enabled) ??
-    profiles.find((p) => p.enabled) ??
-    profiles[0]
-  );
+  if (named) return named;
+  const fallback = defaultProfileOf(profiles, defaultProfileId);
+  // Only the default profile takes the default model. A profile reached by
+  // name keeps its own, so an extension pointed at a specific AI is not
+  // silently re-pointed at a different model.
+  return defaultModel ? { ...fallback, model: defaultModel } : fallback;
 }
 
 // `${base}/${route}` with any trailing slash on the base collapsed, so both
@@ -182,18 +258,19 @@ function endpoint(base: string, fallback: string, route: string): string {
   return `${root}/${route}`;
 }
 
-// Each entry is a one-shot invocation. `agy` takes --model (not -m) like
-// claude, and its plain-text print mode returns cleanly from a non-TTY
-// subprocess on 1.2.0 — verified before this shipped, so no --output-format
-// json parsing is needed (antigravity-cli#76 was 1.0.0/Windows).
-const CLI_PROVIDERS: Record<string, { bin: string; args: (prompt: string, model: string) => string[] }> = {
-  claude: { bin: "claude", args: (prompt, model) => ["-p", ...(model ? ["--model", model] : []), prompt] },
-  codex: { bin: "codex", args: (prompt, model) => ["exec", ...(model ? ["-m", model] : []), prompt] },
-  agy: { bin: "agy", args: (prompt, model) => ["-p", ...(model ? ["--model", model] : []), prompt] },
-};
+// The CLIs that can answer a one-shot prompt are not listed here any more.
+// This module used to hold a table of them keyed by name (`claude -p`,
+// `codex exec`, `agy -p`); each agent now declares its own one-shot form in
+// its manifest and core substitutes and executes it, so adding a CLI is an
+// extension rather than a patch to this file
+// (plans/cli-providers-from-agents.md).
+//
+// An AI profile whose `provider` is not one of the API kinds above is an
+// AGENT ID, resolved against the registry — which is also how the profile
+// list gains an entry per agent without anyone adding one by hand.
 
 // ---- CLI availability ----
-// Which of the CLI providers are actually installed, so Settings → AI can
+// Which of the CLI providers are actually installed, so Settings → AI Providers can
 // grey out a provider that would only ever fail with "claude CLI not found"
 // the first time something asked it for text.
 //
@@ -206,34 +283,22 @@ const CLI_PROVIDERS: Record<string, { bin: string; args: (prompt: string, model:
 const CLI_PROBE_TTL_MS = 15_000;
 let cliProbe: { at: number; value: Record<string, boolean> } | null = null;
 
-// Shared with agents.ts, which asks the same question of each registry
-// entry's program so Settings → Agents can dim an agent whose CLI is not
-// installed. Same reasoning as the comment above: a PATH walk rather than a
-// subprocess per name.
-export async function isOnPath(bin: string): Promise<boolean> {
-  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
-  for (const dir of dirs) {
-    try {
-      await access(path.join(dir, bin), constants.X_OK);
-      return true;
-    } catch {
-      // Not here (or not executable) — keep looking.
-    }
-  }
-  return false;
-}
+// Lives in which.ts now — agents.ts asks the same question of every registry
+// entry and should not have to import the AI provider module to do it.
+// Re-exported here because this module's own callers already had it.
+import { isOnPath } from "./which.js";
+export { isOnPath };
 
-// provider id → installed. Cached briefly: a settings dialog re-reads this
-// on every open, and installing a CLI mid-dialog is not a case worth a
-// filesystem walk per keystroke for.
+// agent id → is its program on PATH. Cached briefly: a settings dialog
+// re-reads this on every open, and installing a CLI mid-dialog is not worth a
+// filesystem walk per keystroke.
+//
+// Delegates to the registry rather than keeping its own list: "which agents
+// are installed" is one question with one answer, and Settings already dims
+// an agent row from the same probe.
 export async function probeCliProviders(): Promise<Record<string, boolean>> {
   if (cliProbe && Date.now() - cliProbe.at < CLI_PROBE_TTL_MS) return cliProbe.value;
-  const value: Record<string, boolean> = {};
-  await Promise.all(
-    Object.entries(CLI_PROVIDERS).map(async ([provider, { bin }]) => {
-      value[provider] = await isOnPath(bin);
-    }),
-  );
+  const value = await probeAgentPrograms();
   cliProbe = { at: Date.now(), value };
   return value;
 }
@@ -251,7 +316,7 @@ function runCli(bin: string, args: string[], provider: string, cwd?: string): Pr
             reject(
               new AiError(
                 "missing-binary",
-                `${provider} CLI not found ("${bin}") - install it, or pick another provider in Settings → AI`,
+                `CLI "${bin}" not found - install it, or pick another AI in Settings → AI Providers`,
               ),
             );
             return;
@@ -303,14 +368,12 @@ async function postJson(url: string, headers: Record<string, string>, body: unkn
 async function resolveKey(profile: AiProfile, custom: boolean): Promise<string> {
   const secrets = await readAiSecrets();
   // Keyed by profile id, so two profiles of the same wire format (OpenAI
-  // itself and an OpenRouter endpoint, say) hold different keys. The
-  // provider-keyed entry is where every key lived before profiles existed —
-  // still read, so an upgrade doesn't ask for keys again.
-  const key = secrets[profile.id] ?? secrets[profile.provider];
+  // itself and an OpenRouter endpoint, say) hold different keys.
+  const key = secrets[profile.id];
   if (!key && !custom) {
     throw new AiError(
       "missing-key",
-      `No API key configured for "${profile.label}" - add one in Settings → AI`,
+      `No API key configured for "${profile.label}" - add one in Settings → AI Providers`,
     );
   }
   return key ?? "";
@@ -335,7 +398,7 @@ async function runAnthropic(prompt: string, model: string, profile: AiProfile): 
 
 async function runOpenai(prompt: string, model: string, profile: AiProfile): Promise<string> {
   if (!model) {
-    throw new AiError("missing-model", "The OpenAI provider needs a model - set one in Settings → AI");
+    throw new AiError("missing-model", "The OpenAI provider needs a model - set one in Settings → AI Providers");
   }
   const baseUrl = profile.baseUrl;
   const key = await resolveKey(profile, !!baseUrl);
@@ -429,8 +492,6 @@ function modelsFromData(data: unknown): AiModelOption[] {
 // yields an empty list, never a crash and never a guess.
 
 const CLI_LIST_TIMEOUT_MS = 20_000;
-// Provider → the subcommand that prints a model list, for those that have one.
-const CLI_LIST_COMMAND: Record<string, string[]> = { agy: ["models"] };
 
 function runCliCapture(bin: string, args: string[]): Promise<string> {
   return new Promise((resolve) => {
@@ -475,11 +536,13 @@ function parseHelpModelNames(out: string): AiModelOption[] {
 }
 
 async function listCliModels(profile: AiProfile): Promise<AiModelOption[]> {
-  const cli = CLI_PROVIDERS[profile.provider];
-  const bin = profile.binaryPath || cli?.bin || profile.provider;
-  const listCommand = CLI_LIST_COMMAND[profile.provider];
-  if (listCommand) {
-    const models = parseCliModelLines(await runCliCapture(bin, listCommand));
+  // The profile's provider is an agent id; the agent knows its own binary and
+  // whether it has a model-listing subcommand.
+  const agent = await findAgent(profile.provider);
+  const bin = profile.binaryPath || agent?.program || profile.provider;
+  const listCommand = agent?.oneShot?.listModelsArgs ?? [];
+  if (listCommand.length > 0) {
+    const models = parseCliModelLines(await runCliCapture(bin, [...listCommand]));
     if (models.length > 0) return models;
   }
   // The help text is the fallback: for a CLI with no list subcommand, and
@@ -574,7 +637,7 @@ export async function runAi(prompt: string, opts: AiRunOptions = {}): Promise<st
     if (!profile.customCommand) {
       throw new AiError(
         "missing-command",
-        `"${profile.label}" needs a command - set one in Settings → AI`,
+        `"${profile.label}" needs a command - set one in Settings → AI Providers`,
       );
     }
     // The user's own command line, run via sh with the prompt appended as its
@@ -582,8 +645,21 @@ export async function runAi(prompt: string, opts: AiRunOptions = {}): Promise<st
     // theirs, and the prompt itself never needs any.
     raw = await runCli("/bin/sh", ["-c", `${profile.customCommand} "$0"`, prompt], "custom", opts.cwd);
   } else {
-    const cli = CLI_PROVIDERS[profile.provider] ?? CLI_PROVIDERS.claude;
-    raw = await runCli(profile.binaryPath || cli.bin, cli.args(prompt, model), profile.provider, opts.cwd);
+    // Any provider that is not an API kind names an agent. Its manifest says
+    // how to run one prompt; core fills the template in and spawns it.
+    const agent = await findAgent(profile.provider);
+    if (!agent?.oneShot) {
+      throw new AiError(
+        "missing-command",
+        `"${profile.label}" points at an agent that cannot answer a single prompt - pick another AI in Settings → AI Providers`,
+      );
+    }
+    raw = await runCli(
+      profile.binaryPath || agent.program,
+      oneShotArgs(agent.oneShot, prompt, model),
+      profile.provider,
+      opts.cwd,
+    );
   }
 
   const text = stripWrappingFence(raw);

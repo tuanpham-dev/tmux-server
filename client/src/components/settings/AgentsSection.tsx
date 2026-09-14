@@ -11,13 +11,16 @@ import type { AppSettings } from "../../settings";
 import Icon from "../Icon";
 import { useSettingsContext } from "./context";
 
-// Settings → Agents. One place answers "what is an AI agent", for the app and
+// Settings → AI Providers. One place answers "what is an AI agent", for the app and
 // every extension that asks (plans/agent-platform-core.md) — which pane is
 // running an agent (SOURCE CONTROL's diff comments, the element pickers in
 // LIVE PREVIEW and PORTS, AGENT MONITOR), which agents can be launched to
 // work on a branch or a ticket, and which hook format each one speaks.
 //
-// Shaped as a catalog rather than an editor: the agents come from the app and
+// The Agents group inside Settings → AI Providers (AiProvidersSection renders
+// it above the API providers).
+//
+// Shaped as a catalog rather than an editor: the agents come from extensions and
 // from extensions that contribute them, so there is nothing to define by
 // hand. Each row is enable/disable plus a link, and an agent whose CLI is not
 // on this machine is dimmed rather than offered as if it would run. The
@@ -143,12 +146,6 @@ function HookDetail({
       {hooks.error && <div className="settings-hint settings-error">{hooks.error}</div>}
       {hooks.state === "stale" && hooks.staleReason && (
         <div className="settings-hint settings-error">{hooks.staleReason}</div>
-      )}
-      {hooks.legacyMonitorHook && (
-        <div className="settings-hint settings-error">
-          This file still has an old AGENT MONITOR hook in it, pasted before hooks moved into the app.
-          It no longer reaches anything - remove it by hand; the app will not touch a hook you wrote.
-        </div>
       )}
 
       {hooks.installedEvents.length > 0 && (
@@ -389,7 +386,6 @@ export default function AgentsSection() {
       program: existing?.program ?? "",
       command: agent.command,
       skipPermissionsArgs: agent.skipPermissionsArgs,
-      hooks: existing?.hooks ?? null,
       docsUrl: agent.docsUrl,
       iconUrl: agent.iconUrl,
       icon: agent.icon,
@@ -457,8 +453,8 @@ export default function AgentsSection() {
           <div className="settings-hint">
             Whether the app launches agents with fewer permission prompts or with manual checks. Each
             agent has its own flag for this and they are not interchangeable, so Yolo appends
-            whichever one that agent documents. A per-launch choice (the New Worktree form, a Start
-            work menu) starts from this and can override it once.
+            whichever one that agent documents. This is the only place it is asked - every launch
+            follows it, including the New Worktree form and an extension&apos;s &quot;Start work&quot;.
           </div>
           <Segmented
             ariaLabel="Agent permissions"
@@ -472,17 +468,25 @@ export default function AgentsSection() {
         </div>
       </div>
 
-      <div className="settings-row">
+      {/* This group's heading, rendered here rather than by the parent
+          section because it carries the count and the count comes from the
+          catalog this component fetches. */}
+      <div className="settings-row settings-group-heading">
         <span className="settings-label">
-          Available agents{" "}
-          <span className="settings-count">
-            {agents.length} {agents.length === 1 ? "agent" : "agents"}
-          </span>
+          Agents{" "}
+          {/* No chip at zero: the empty state below already says "No agents",
+              and "0 agents" above it said the same thing twice. */}
+          {agents.length > 0 && (
+            <span className="settings-count">
+              {agents.length} {agents.length === 1 ? "agent" : "agents"}
+            </span>
+          )}
         </span>
         <div className="settings-hint">
-          The agents the app knows: the ones it ships with, plus any an extension contributes. A
-          dimmed row is one whose command is not on this machine - install it and the row lights up
-          on the next check. Extensions read this list instead of each keeping their own.
+          Every agent an extension contributes. The app itself ships none - the bundled Agents
+          extension supplies Claude Code and Codex, and any extension can add more. A dimmed row is
+          one whose command is not on this machine - install it and the row lights up on the next
+          check. Extensions read this list instead of each keeping their own.
         </div>
       </div>
 
@@ -504,7 +508,9 @@ export default function AgentsSection() {
         {info === null && <div className="settings-hint">Reading the agent list…</div>}
         {info !== null && agents.length === 0 && (
           <div className="settings-hint">
-            No agents. Nothing will be detected as an agent and nothing is offered to launch.
+            No agents. Agents come from extensions, so nothing is detected as an agent and nothing
+            is offered to launch until one is installed - start with the bundled Agents extension in
+            the Extensions tab.
           </div>
         )}
       </div>

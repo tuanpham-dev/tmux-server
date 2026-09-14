@@ -53,7 +53,7 @@ function shimScript(port: number): string {
   return `#!/bin/sh
 # Written by tmux-server at startup — relays one AI agent hook event to the
 # app (see server/src/agentHooks.ts). $1 is the agent's id in Settings ->
-# Agents, $2 the agent's own name for the event, and the event JSON arrives
+# AI Providers, $2 the agent's own name for the event, and the event JSON arrives
 # on stdin. -m 2 mirrors the bell hook: a slow or dead server must never
 # stall an agent mid-turn.
 [ -n "$1" ] || exit 0
@@ -140,7 +140,7 @@ export function dropAgentHookSubscriptions(extensionId: string): void {
 // Every event some enabled subscriber asked for, minus the high-frequency
 // ones while the user has not opted into them. This is what core installs —
 // installing PreToolUse when nothing listens is pure overhead — and what
-// Settings → Agents compares an installed hook against to call it stale.
+// Settings → AI Providers compares an installed hook against to call it stale.
 //
 // The filtering is deliberately visible rather than silent: a subscriber
 // that asked for tool-start while the setting is off simply never receives

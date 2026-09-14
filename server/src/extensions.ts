@@ -16,6 +16,11 @@ import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { listAiProfiles, runAi, type AiProfileSummary, type AiRunOptions } from "./ai.js";
 import {
   DEFAULT_AGENT_ICON,
+  dropAgentCompanions,
+  parseHookDescriptor,
+  parseOneShot,
+  registerAgentCompanion,
+  type AgentCompanionTransform,
   listAgents,
   setContributedAgentsSource,
   type AgentPreset,
@@ -137,7 +142,7 @@ const EDITOR_CAPABILITIES: EditorCapability[] = ["file", "diff", "merge"];
 interface ConfigurationProperty {
   type?: "boolean" | "number" | "integer" | "string";
   // Renders a richer control than a plain text box for a string property.
-  // "ai-profile": a picker of the AIs configured in Settings → AI; the
+  // "ai-profile": a picker of the AIs configured in Settings → AI Providers; the
   // stored value is a profile id to pass as ctx.ai.run's opts.profileId
   // (empty = whatever the user's default profile is).
   format?: string;
@@ -175,7 +180,7 @@ interface ExtensionManifest {
     configuration?: ConfigurationContribution | ConfigurationContribution[];
     terminalEngines?: TerminalEngineContribution[];
     editors?: EditorContribution[];
-    // Agents this extension adds to core's registry (Settings → Agents), so
+    // Agents this extension adds to core's registry (Settings → AI Providers), so
     // a plugin can teach the app about an agent core has never heard of
     // without the user defining one by hand. Declared, not activated: the
     // registry reads these from the manifest, so a contributed agent is
@@ -207,8 +212,15 @@ export interface AgentContribution {
   command?: string;
   // Appended for its no-prompts mode.
   skipPermissionsArgs?: string;
-  // Which hook format its CLI reads: "claude" | "codex" | "agy".
-  hooks?: string;
+  // How core should write this agent's hooks: the file, the shape, and what
+  // the CLI calls each event. See AgentHookDescriptor in agents.ts, and
+  // docs/EXTENSION_API.md for the manifest form. Absent means core installs
+  // no hooks for it.
+  hooks?: unknown;
+  // How to run this CLI for a single prompt - see AgentOneShot in agents.ts.
+  // Declaring it makes this agent available as an AI provider for text jobs;
+  // omitting it means the agent only ever runs in a pane.
+  oneShot?: unknown;
   docsUrl?: string;
   // An image for the agent's row: an absolute URL, or a path inside this
   // extension (resolved to the extension's own file route, the same way its
@@ -681,7 +693,7 @@ export interface ExtensionHostApi {
   // Core's agent-hook pipeline (agentHooks.ts): an AI agent's own hooks
   // report to one core endpoint, and core normalizes each event and fans it
   // out here. An extension no longer ships a snippet, a schema or a route of
-  // its own — all three are core's, surfaced in Settings → Agents.
+  // its own — all three are core's, surfaced in Settings → AI Providers.
   //
   // Events are named in core's own vocabulary ("stop", "permission", …) so a
   // subscriber never learns which CLI it is talking to. `paneId` is the
@@ -691,15 +703,27 @@ export interface ExtensionHostApi {
   // guessed at or dropped.
   //
   // tool-start / tool-end only arrive once the user has turned on
-  // per-tool-call hooks in Settings → Agents; a subscriber that wants them
+  // per-tool-call hooks in Settings → AI Providers; a subscriber that wants them
   // must keep working without them.
   agentHooks: {
     // Returns an unsubscribe. All of an extension's subscriptions are also
     // dropped when its server hook unmounts.
     subscribe(sub: AgentHookSubscription): () => void;
+    // For an agent THIS extension contributed whose descriptor names a
+    // `companion` file: a transform run after core writes that agent's hooks,
+    // taking the companion file's current text and returning what it should
+    // become. Core does the reading and the writing, under the same backup and
+    // temp-then-rename rules as the hook file.
+    //
+    // `agentId` is the bare id from the manifest; core namespaces it. A
+    // transform that throws, hangs or returns something too large is logged
+    // and skipped - the hooks are already installed by then, so it never
+    // fails the install. Registering one for an agent this extension did not
+    // contribute does nothing.
+    provideCompanion(agentId: string, transform: AgentCompanionTransform): void;
   };
   // The app's shared AI backend (ai.ts) — prompt in, text out, using whatever
-  // provider is configured in Settings → AI. An extension supplies the prompt
+  // provider is configured in Settings → AI Providers. An extension supplies the prompt
   // and never sees a provider, a binary or an API key. Rejects with an AiError
   // whose `code` distinguishes "not configured yet" from "the provider broke",
   // so an extension can surface the first as guidance.
@@ -736,7 +760,10 @@ function makeHostApi(id: string): ExtensionHostApi {
   return {
     ports: { list: listTmuxPorts, find: findTmuxPort },
     agents: { list: () => listAgents() },
-    agentHooks: { subscribe: (sub) => subscribeAgentHooks(id, sub) },
+    agentHooks: {
+      subscribe: (sub) => subscribeAgentHooks(id, sub),
+      provideCompanion: (agentId, transform) => registerAgentCompanion(`${id}.${agentId}`, transform),
+    },
     ai: { run: (prompt, opts) => runAi(prompt, opts), listProfiles: () => listAiProfiles() },
     secrets: {
       get: (name) => readExtensionSecret(id, name),
@@ -785,7 +812,14 @@ async function contributedAgents(): Promise<AgentPreset[]> {
       // Same floor the settings document's own entries have to clear: an
       // entry that can neither be detected nor launched is not an agent.
       if (!id || (!program && !command)) continue;
-      const hooks = typeof raw?.hooks === "string" ? raw.hooks.trim() : "";
+      // A descriptor core can act on, or null. Parsed by agents.ts because
+      // it is agents.ts that writes the file it names — including the check
+      // that the path stays inside $HOME. A malformed one costs the agent its
+      // hooks, not its row: it is still a usable detection and launch preset.
+      const hooks = parseHookDescriptor(raw?.hooks);
+      if (raw?.hooks !== undefined && hooks === null) {
+        console.warn(`extension ${ext.id}: agent "${id}" has an unusable hooks descriptor - ignoring it`);
+      }
       out.push({
         id: `${ext.id}.${id}`,
         label: (typeof raw?.label === "string" && raw.label.trim()) || program || command,
@@ -793,7 +827,10 @@ async function contributedAgents(): Promise<AgentPreset[]> {
         command,
         skipPermissionsArgs:
           typeof raw?.skipPermissionsArgs === "string" ? raw.skipPermissionsArgs.trim() : "",
-        hooks: hooks === "claude" || hooks === "codex" || hooks === "agy" ? hooks : null,
+        hooks,
+        // How to run this CLI for one-shot text (ai.ts). Absent means this
+        // agent is not offered as a text provider at all.
+        oneShot: parseOneShot(raw?.oneShot),
         docsUrl: typeof raw?.docsUrl === "string" ? raw.docsUrl.trim() : "",
         // An extension-relative path becomes a URL here rather than in the
         // client: whoever renders a row should not have to know which
@@ -893,6 +930,7 @@ export function unmountServerHook(id: string): void {
   serverHooks.delete(id);
   apiMutationListeners.delete(id);
   dropAgentHookSubscriptions(id);
+  dropAgentCompanions(id);
 }
 
 export async function loadEnabledServerHooks(): Promise<void> {

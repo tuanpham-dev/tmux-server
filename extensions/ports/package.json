@@ -2,7 +2,7 @@
   "name": "ports",
   "private": true,
   "publisher": "tmux-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Ports",
   "description": "Built-in PORTS explorer section: listening ports inside tmux sessions, with open-in-browser, copy-URL, tunnel-command, and kill-process actions (bundled — see extensions/build.mjs).",
   "icon": "./icon.svg",
@@ -22,11 +22,6 @@
             "A port's Open action opens it in a new browser tab."
           ],
           "description": "What a port row's Open action does. Both are always available from the row's context menu regardless of this setting."
-        },
-        "ports.agentPrograms": {
-          "type": "string",
-          "default": "",
-          "description": "Deprecated - Settings → Agents now holds the one list of AI agents, and the port proxy viewer's element picker \"Send to Agent\" uses it. A value here still overrides that list for this version; clear it to follow Settings → Agents. Comma-separated foreground commands (tmux's pane_current_command), e.g. \"claude,codex\"."
         },
         "ports.sendAutoSubmit": {
           "type": "boolean",

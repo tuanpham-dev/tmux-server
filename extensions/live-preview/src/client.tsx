@@ -43,11 +43,11 @@ function readPollInterval(): number {
   return Math.min(10000, Math.max(250, value));
 }
 
-// Which panes count as an agent comes from core's registry (Settings →
-// Agents) now, with this extension's own deprecated setting still winning
-// while it is set - see _shared/agentTarget's resolveAgentTargets.
+// Which panes count as an agent comes from core's registry (Settings → AI
+// Providers), and from nowhere else. This extension had its own agentPrograms
+// setting until the migration; it is gone, not deprecated.
 function agentTargets(): Promise<AgentTargetProgram[]> {
-  return resolveAgentTargets(extSettings?.get("livePreview.agentPrograms"));
+  return resolveAgentTargets();
 }
 
 function readSendAutoSubmit(): boolean {

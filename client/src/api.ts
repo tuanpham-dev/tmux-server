@@ -100,7 +100,7 @@ export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
 // through GET /api/agents or host.agents.list(), so anything asking core
 // "which agents are there" gets one answer.
 //
-// Settings → Agents edits the list through the settings document like any
+// Settings → AI Providers edits the list through the settings document like any
 // other core setting, not through this call — there is no write route.
 export interface AgentSummaryDto {
   id: string;
@@ -119,7 +119,7 @@ export function fetchAgents(): Promise<{ agents: AgentSummaryDto[] }> {
 
 // Agent hooks: what core would install for each agent, what is actually in
 // that agent's own config file right now, and which extensions asked for it.
-// Settings → Agents shows all of it, so "why does this say stale" is
+// Settings → AI Providers shows all of it, so "why does this say stale" is
 // answerable there (see server/src/agents.ts's writer).
 export interface AgentHookSnippetDto {
   // Absolute path of the file the snippet belongs in.
@@ -166,9 +166,6 @@ export interface AgentHookStateDto {
   // The config file exists but could not be read as JSON: nothing has been
   // written to it and nothing will be until it is fixed.
   error: string | null;
-  // An old pasted agent-monitor hook is still in this file - the user's own,
-  // which core never touches, and which stopped working when that route went.
-  legacyMonitorHook: boolean;
   snippet: AgentHookSnippetDto | null;
 }
 
@@ -245,8 +242,58 @@ export function getAiCliStatus(): Promise<Record<string, boolean>> {
   return request("/api/ai-cli");
 }
 
+// The agents offered when starting something in a new session - the New
+// Worktree form's picker. The app's own Yolo/Manual choice is applied here so
+// the caller launches `command` as given: the same rule the shared extension
+// helper follows, so a worktree started from the form and one started from a
+// "Start work" button run the same line.
+export interface AgentLaunchOption {
+  name: string;
+  command: string;
+}
+
+export async function fetchAgentLaunchOptions(): Promise<AgentLaunchOption[]> {
+  const body = await request<{
+    agents?: { label?: string; command?: string; skipPermissionsArgs?: string }[];
+    skipPermissions?: boolean;
+  }>("/api/agents");
+  const skip = body.skipPermissions === true;
+  return (body.agents ?? [])
+    .filter((a) => (a.command ?? "") !== "")
+    .map((a) => {
+      const command = a.command as string;
+      const args = a.skipPermissionsArgs ?? "";
+      return {
+        name: a.label || command,
+        command: skip && args ? `${command} ${args}` : command,
+      };
+    });
+}
+
+// Every AI a job may be pointed at: the stored API providers plus one per
+// agent that can answer a single prompt. The settings document holds only the
+// first kind, so this is the one place the full list exists.
+export interface AiProfileOption {
+  id: string;
+  label: string;
+  // One of the API kinds, or the id of the agent this profile runs. Only used
+  // to decide whether a model list can be fetched for it.
+  provider: string;
+  model: string;
+  // The binary a CLI one runs ("codex"), which is not its provider id
+  // ("tmux-server.agents.codex"). Empty for an API provider.
+  program: string;
+  // Which one answers when a caller names no profile at all.
+  isDefault: boolean;
+}
+
+export async function fetchAiProfiles(): Promise<AiProfileOption[]> {
+  const body = await request<{ profiles?: AiProfileOption[] }>("/api/ai-profiles");
+  return body.profiles ?? [];
+}
+
 // An empty `key` clears the stored one. `profileId` is an AI profile's id
-// (Settings → AI Providers); the two legacy provider names still work server-side.
+// (Settings → AI Providers).
 export function setAiKey(profileId: string, key: string): Promise<void> {
   return request("/api/ai-key", {
     method: "PUT",

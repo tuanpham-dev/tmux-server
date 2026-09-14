@@ -27,7 +27,7 @@ export function activate(ctx: ExtensionContext): void {
 
   // Same form, but preselects the first configured run command — for when
   // starting an agent is the point, not an afterthought. The list itself is
-  // the worktreeRunCommands app setting.
+  // the app's agent registry (Settings → AI Providers).
   ctx.registerCommand({
     id: "newAgentSession",
     label: "Worktrees: New Agent Session…",
