@@ -15,6 +15,19 @@ import { type NextFunction, type Request, type Response, type Router } from "exp
 import { createExtensionRouter, runExtensionRouter } from "./extensionRouter.js";
 import { recordServerDeactivate, runServerDeactivate } from "./extensionLifecycle.js";
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
+import { expandHome } from "./files.js";
+import {
+  createSession,
+  createWindow,
+  invalidateSessionsCache,
+  killSession,
+  listSessionPanes,
+  listSessions,
+  sendTextToSession,
+  type SessionPane,
+  type TmuxSession,
+} from "./tmux.js";
+import { createWorktree, listWorktrees, removeWorktree, type WorktreeListing } from "./gitWorktrees.js";
 import { listAiProfiles, runAi, type AiProfileSummary, type AiRunOptions } from "./ai.js";
 import {
   DEFAULT_AGENT_ICON,
@@ -23,6 +36,7 @@ import {
   parseOneShot,
   registerAgentCompanion,
   type AgentCompanionTransform,
+  launchCommand,
   listAgents,
   setContributedAgentsSource,
   type AgentPreset,
@@ -691,6 +705,53 @@ export interface ExtensionHostApi {
   // Enabled entries only, in the user's own order.
   agents: {
     list(): Promise<AgentSummary[]>;
+    // The line that starts one enabled agent (ids are `<extensionId>.<agentId>`),
+    // with the user's global Yolo/Manual choice (Settings → AI Providers)
+    // already applied: `skipPermissionsArgs` is appended only under Yolo. The
+    // same rule the client-side launch presets apply, kept in core so a
+    // launcher with no browser connected never has to re-derive it. null for
+    // an unknown or disabled id, or an agent with no launch command.
+    launchCommand(id: string): Promise<string | null>;
+  };
+  // tmux sessions (tmux.ts) - the same functions behind core's /api/sessions
+  // routes, so a server hook can start and drive a session from a timer with
+  // no client connected. Nothing here asks for confirmation: kill() kills.
+  // Incoming `cwd` may be `~`-shortened and is expanded here; session paths
+  // on the way out are `~`-shortened, exactly as GET /api/sessions returns
+  // them.
+  sessions: {
+    list(): Promise<TmuxSession[]>;
+    // tmux picks a name when `name` is omitted. Starts at the git root
+    // containing `cwd` unless `exactCwd`.
+    create(name?: string, cwd?: string, exactCwd?: boolean): Promise<TmuxSession>;
+    // Returns the new window's index. Without `cwd`, the session's own path.
+    createWindow(session: string, cwd?: string): Promise<number>;
+    // Types `text` literally into the session's active pane, then Enter when
+    // `submit`. Without `windowIndex` it targets tmux's current window for
+    // the session, which is whichever last had focus.
+    sendText(session: string, text: string, submit: boolean, windowIndex?: number): Promise<void>;
+    // Idempotent: a session that is already gone is not an error.
+    kill(name: string): Promise<void>;
+    // Every pane across every window, with its stable `%`-prefixed pane id.
+    listPanes(session: string): Promise<SessionPane[]>;
+  };
+  // git worktrees (gitWorktrees.ts), the functions behind core's
+  // /api/git/worktrees routes. `cwd`/`path` may be `~`-shortened and are
+  // expanded here; paths on the way out are absolute. create/remove reject
+  // with an error carrying a `status` (400/404/409) for refusals.
+  worktrees: {
+    list(dir: string, opts?: { dirty?: boolean; branches?: boolean }): Promise<WorktreeListing>;
+    // mode "new" branches off `base` (default HEAD); `location` is a template
+    // over {repo} and {branch}, default "{repo}/.worktrees/{branch}".
+    create(opts: {
+      cwd: string;
+      branch: string;
+      base?: string;
+      mode: "new" | "existing";
+      location?: string;
+    }): Promise<{ path: string; branch: string }>;
+    // Removes the checkout, keeping the branch. Never the main worktree.
+    remove(opts: { cwd: string; path: string; force?: boolean }): Promise<{ removed: string }>;
   };
   // Core's agent-hook pipeline (agentHooks.ts): an AI agent's own hooks
   // report to one core endpoint, and core normalizes each event and fans it
@@ -761,7 +822,40 @@ export interface ExtensionHostApi {
 function makeHostApi(id: string): ExtensionHostApi {
   return {
     ports: { list: listTmuxPorts, find: findTmuxPort },
-    agents: { list: () => listAgents() },
+    agents: { list: () => listAgents(), launchCommand: (agentId) => launchCommand(agentId) },
+    sessions: {
+      list: () => listSessions(),
+      // Core's own routes drop the ≤500ms session-listing cache after any
+      // mutating request; a call from a timer has no request, so do it here.
+      create: async (name, cwd, exactCwd = false) => {
+        try {
+          return await createSession(name, cwd ? expandHome(cwd) : undefined, exactCwd);
+        } finally {
+          invalidateSessionsCache();
+        }
+      },
+      createWindow: async (session, cwd) => {
+        try {
+          return await createWindow(session, cwd ? expandHome(cwd) : undefined);
+        } finally {
+          invalidateSessionsCache();
+        }
+      },
+      sendText: (session, text, submit, windowIndex) => sendTextToSession(session, text, submit, windowIndex),
+      kill: async (name) => {
+        try {
+          await killSession(name);
+        } finally {
+          invalidateSessionsCache();
+        }
+      },
+      listPanes: (session) => listSessionPanes(session),
+    },
+    worktrees: {
+      list: (dir, opts) => listWorktrees(expandHome(dir), opts),
+      create: (opts) => createWorktree({ ...opts, cwd: expandHome(opts.cwd) }),
+      remove: (opts) => removeWorktree({ ...opts, cwd: expandHome(opts.cwd), path: expandHome(opts.path) }),
+    },
     agentHooks: {
       subscribe: (sub) => subscribeAgentHooks(id, sub),
       provideCompanion: (agentId, transform) => registerAgentCompanion(`${id}.${agentId}`, transform),

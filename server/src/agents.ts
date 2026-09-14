@@ -405,6 +405,24 @@ export async function listAgents(): Promise<AgentSummary[]> {
     }));
 }
 
+// The line that starts an enabled agent, with the global Yolo/Manual choice
+// (settings.agentPermissions) already applied - the server-side twin of what
+// resolveAgentPresets in extensions/_shared/agentTarget.ts builds from
+// GET /api/agents, and the same rule: append skipPermissionsArgs only under
+// "yolo", and only when the agent has such a mode. A launcher running with no
+// browser connected (an automation's scheduler tick) has no client to ask, so
+// the rule is applied here rather than copied into each extension. Null for
+// an unknown or disabled id, and for an agent with no launch command at all
+// (a detection-only entry) - there is nothing to type for it.
+export async function launchCommand(id: string): Promise<string | null> {
+  const agent = (await listAgents()).find((a) => a.id === id);
+  if (!agent || !agent.command) return null;
+  const doc = await readSettingsDoc();
+  const settings = (doc.settings ?? {}) as Record<string, unknown>;
+  const yolo = settings.agentPermissions === "yolo";
+  return yolo && agent.skipPermissionsArgs ? `${agent.command} ${agent.skipPermissionsArgs}` : agent.command;
+}
+
 // One agent by id, disabled ones included — the hook routes address an agent
 // directly and must still be able to uninstall hooks for one the user has
 // since switched off.

@@ -44,6 +44,7 @@ A VSCode-style web UI for tmux. Open folders as projects — each backed by its 
 - **Extensions** — install VS Code color themes and icon themes unchanged, contribute custom terminal fonts, or a small custom extension that adds a command, a file viewer, a sidebar panel, a session-window action, and a server route. See [Extensions](#extensions) below.
 - **Auto-reconnect** — a dropped connection (server restart, laptop sleep) reconnects automatically instead of losing the tab; open tabs also survive a browser reload.
 - **Installable PWA** — installable app shell with offline caching for the UI; terminal/session traffic (`/api`, `/ws`) is always network-only.
+- **Agent orchestration (optional extensions)** - install **Agent Tasks** from the extensions registry to hand several agents owned, dependency-ordered work from one AGENT TASKS tab: each worker gets its own session and worktree, reports back through an `agent-task` command and its own hooks, asks you decisions you answer in the panel, and is marked lost if its pane dies. **Automations** adds scheduled and event-triggered agent work (a daily or cron prompt, or a task started when another fails) that runs on the server with no browser open. Extensions reach sessions, worktrees and an agent's launch command through `host.sessions`, `host.worktrees` and `host.agents.launchCommand` (see [docs/EXTENSION_API.md](docs/EXTENSION_API.md)).
 
 ## Keyboard & mouse
 
