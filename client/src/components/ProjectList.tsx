@@ -64,6 +64,9 @@ export interface ProjectListProps {
     sessionName?: string;
     runCommand?: string;
   }) => Promise<void>;
+  // Clean Up Worktrees for a repository project: removes its worktrees that
+  // are safe to lose, after a confirmation (useSessionActions').
+  onCleanUpWorktrees: (node: ProjectNode) => Promise<void>;
   // The repository's local branches, fetched when the create form opens —
   // they aren't part of the tree's poll.
   loadBranches: (cwd: string) => Promise<WorktreeBranch[]>;
@@ -80,10 +83,16 @@ export interface ProjectListProps {
   windowMenuItems: (session: string, win: TmuxWindow) => MenuItem[];
   extensionWindowActions: RegisteredWindowAction[];
   resolvedBindings: Record<string, Keybinding[]>;
-  // Lets the host open this tree's create-worktree form from outside (the
-  // worktrees extension's palette commands). Only the sidebar's instance
-  // registers one — the status bar's popover copy stays a viewer.
-  registerNewWorktreeBridge?: (open: ((runCommandIndex?: number) => void) | null) => void;
+  // Lets the host drive this tree's worktree actions from outside (the
+  // worktrees extension's palette commands): open the create form, or clean
+  // up a repository's worktrees. Only the sidebar's instance registers one —
+  // the status bar's popover copy stays a viewer.
+  registerWorktreeBridge?: (bridge: WorktreeBridgeHandlers | null) => void;
+}
+
+export interface WorktreeBridgeHandlers {
+  open: (runCommandIndex?: number) => void;
+  cleanUp: () => void;
 }
 
 // A single flattened, keyboard-navigable row. Project rows hold either their
@@ -138,6 +147,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     onNewTerminalInProject,
     onNewTerminalInWorktree,
     onCreateWorktree,
+    onCleanUpWorktrees,
     loadBranches,
     worktreeAgents,
     onShowMenu,
@@ -146,7 +156,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     windowMenuItems,
     extensionWindowActions,
     resolvedBindings,
-    registerNewWorktreeBridge,
+    registerWorktreeBridge,
   },
   ref,
 ) {
@@ -379,27 +389,40 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   const treeRef = useRef({ nodes, activeSessionName, repoIndex });
   treeRef.current = { nodes, activeSessionName, repoIndex };
 
+  // Stable across renders so the effect below registers once; it reads the
+  // latest handler through this ref.
+  const cleanUpRef = useRef(onCleanUpWorktrees);
+  cleanUpRef.current = onCleanUpWorktrees;
+
   useEffect(() => {
-    if (!registerNewWorktreeBridge) return;
-    registerNewWorktreeBridge((runCommandIndex?: number) => {
-      const { nodes: live, activeSessionName: active, repoIndex: repos } = treeRef.current;
+    if (!registerWorktreeBridge) return;
+    // The project you're working in, else the first one that passes.
+    const pickTarget = (passes: (n: ProjectNode) => boolean): ProjectNode | undefined => {
+      const { nodes: live, activeSessionName: active } = treeRef.current;
       const owns = (n: ProjectNode) =>
         [...n.sessions, ...n.worktrees.flatMap((w) => w.sessions)].some((s) => s.name === active);
-      // Same test as canCreateWorktree, off the ref: this callback is
-      // registered once and would otherwise pin the first render's repoIndex.
-      const canCreate = (n: ProjectNode) =>
-        !n.dead && !!n.cwd && (n.worktrees.length > 0 || repos.has(n.cwd));
-      // The project you're working in, else the first one that has a
-      // repository to create in.
-      const target = live.find((n) => canCreate(n) && owns(n)) ?? live.find((n) => canCreate(n));
-      if (!target) return;
-      openCreateForm(target);
-      if (runCommandIndex !== undefined) {
-        setForm((f) => ({ ...f, run: String(runCommandIndex) }));
-      }
+      return live.find((n) => passes(n) && owns(n)) ?? live.find((n) => passes(n));
+    };
+    registerWorktreeBridge({
+      open: (runCommandIndex?: number) => {
+        const { repoIndex: repos } = treeRef.current;
+        // Same test as canCreateWorktree, off the ref: this callback is
+        // registered once and would otherwise pin the first render's repoIndex.
+        const target = pickTarget((n) => !n.dead && !!n.cwd && (n.worktrees.length > 0 || repos.has(n.cwd)));
+        if (!target) return;
+        openCreateForm(target);
+        if (runCommandIndex !== undefined) {
+          setForm((f) => ({ ...f, run: String(runCommandIndex) }));
+        }
+      },
+      cleanUp: () => {
+        // Same gate as the row's menu item: a repository with linked worktrees.
+        const target = pickTarget((n) => !n.dead && !!n.cwd && n.worktrees.length > 1);
+        if (target) void cleanUpRef.current(target);
+      },
     });
-    return () => registerNewWorktreeBridge(null);
-  }, [registerNewWorktreeBridge, openCreateForm]);
+    return () => registerWorktreeBridge(null);
+  }, [registerWorktreeBridge, openCreateForm]);
 
   const rowsById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const rowIds = useMemo(() => rows.map((r) => r.id), [rows]);

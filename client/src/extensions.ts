@@ -442,6 +442,12 @@ export interface ExtensionContext {
     // first. runCommandIndex preselects one of the configured worktree run
     // agents (the app's registry, Settings → AI Providers); omit it for none.
     newWorktree(opts?: { runCommandIndex?: number }): void;
+    // Starts Clean Up Worktrees on the active repository project (or the
+    // first one with linked worktrees), revealing the PROJECTS tree first:
+    // lists the worktrees that are safe to remove (folder already deleted, or
+    // clean and merged, and no tmux session) and removes them once the user
+    // confirms. Branches are kept. A no-op when no project has worktrees.
+    cleanUpWorktrees(): void;
     // Opens a tmux session's active window as a window-tab. When no session
     // by that name exists, opts.createCwd creates it there first (same
     // create-then-open path the sidebar's own pinned-session restore uses);
@@ -1252,32 +1258,45 @@ export function setProjectsFocusBridge(side: SidebarSide, bridge: ProjectsFocusB
   projectsFocusBridges[side] = bridge;
 }
 
-interface NewWorktreeBridge {
+interface WorktreeBridge {
   // Opens the PROJECTS tree's inline create-worktree form on the active
   // project (or the first repository project), optionally preselecting one
   // of the configured run commands by index.
   open(runCommandIndex?: number): void;
+  // Starts Clean Up Worktrees on the active repository project (or the first
+  // one with linked worktrees).
+  cleanUp(): void;
 }
 
-const newWorktreeBridges: Partial<Record<SidebarSide, NewWorktreeBridge | null>> = {};
+const worktreeBridges: Partial<Record<SidebarSide, WorktreeBridge | null>> = {};
 
-export function setNewWorktreeBridge(side: SidebarSide, bridge: NewWorktreeBridge | null): void {
-  newWorktreeBridges[side] = bridge;
+export function setWorktreeBridge(side: SidebarSide, bridge: WorktreeBridge | null): void {
+  worktreeBridges[side] = bridge;
 }
 
-// Backs ExtensionContext.app.newWorktree: reveal the PROJECTS panel, then
-// hand off to the tree on whichever side is showing it. Worktrees used to be
-// an extension's own panel; this is what its commands drive now that the
-// tree owns them. See plans/worktrees-into-projects.md.
-export function openNewWorktreeForm(runCommandIndex?: number): void {
+// Reveals the PROJECTS panel and returns the tree's worktree bridge on
+// whichever side is showing it. Worktrees used to be an extension's own
+// panel; this is what its commands drive now that the tree owns them. See
+// plans/worktrees-into-projects.md.
+function revealWorktreeBridge(): WorktreeBridge | null {
   const bridge = sidebarLayoutBridge;
-  if (!bridge) return;
+  if (!bridge) return null;
   const tabId = bridge.tabOfPanel("projects");
-  if (!tabId) return;
+  if (!tabId) return null;
   const side = revealTab(tabId);
-  if (!side) return;
+  if (!side) return null;
   projectsFocusBridges[side]?.focus();
-  newWorktreeBridges[side]?.open(runCommandIndex);
+  return worktreeBridges[side] ?? null;
+}
+
+// Backs ExtensionContext.app.newWorktree.
+export function openNewWorktreeForm(runCommandIndex?: number): void {
+  revealWorktreeBridge()?.open(runCommandIndex);
+}
+
+// Backs ExtensionContext.app.cleanUpWorktrees.
+export function startWorktreeCleanup(): void {
+  revealWorktreeBridge()?.cleanUp();
 }
 
 interface ExplorerPanelFocusBridge {
@@ -1679,6 +1698,9 @@ function makeContext(ext: ExtensionInfo, runtime: ExtensionRuntime): ExtensionCo
       },
       newWorktree(opts) {
         openNewWorktreeForm(opts?.runCommandIndex);
+      },
+      cleanUpWorktrees() {
+        startWorktreeCleanup();
       },
       revealSidebarPanel(panelId) {
         const namespaced = `ext.${ext.id}.${panelId}`;

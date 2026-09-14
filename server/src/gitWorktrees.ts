@@ -330,3 +330,139 @@ export async function removeWorktree(opts: {
   pruneEmptyContainer(repo, match.path);
   return { removed: match.path };
 }
+
+// ---- Clean Up Worktrees ----
+//
+// Finds the worktrees that are safe to remove in bulk, then removes them. Two
+// kinds qualify, and nothing else:
+//
+//   * "missing": git still lists the worktree but its directory is gone
+//     (prunable). Removing it only drops git's stale bookkeeping.
+//   * "merged": its checkout is clean and its HEAD is already contained in
+//     the main worktree's HEAD, or in that branch's upstream. Nothing in it
+//     would be lost; that also covers a worktree created and never used.
+//
+// Locked, dirty and unmerged worktrees are reported as kept, with the reason,
+// so the confirmation can say what it is leaving alone. Branches are always
+// kept, the same as removeWorktree. Sessions are tmux's business, not git's:
+// the client leaves out any worktree that still has one before applying.
+
+export type CleanupRemoveReason = "missing" | "merged";
+export type CleanupKeepReason = "locked" | "dirty" | "unmerged";
+
+export interface CleanupEntry<Reason> {
+  path: string;
+  branch: string | null;
+  reason: Reason;
+}
+
+export interface WorktreeCleanupPlan {
+  repo: string;
+  removable: CleanupEntry<CleanupRemoveReason>[];
+  kept: CleanupEntry<CleanupKeepReason>[];
+}
+
+async function isAncestor(commit: string, of: string, repo: string): Promise<boolean> {
+  try {
+    await git(["merge-base", "--is-ancestor", commit, of], repo);
+    return true;
+  } catch {
+    // Exit 1 is "not an ancestor"; anything else (an unknown commit) is
+    // treated the same way, which errs on the side of keeping the worktree.
+    return false;
+  }
+}
+
+// The commits a worktree counts as merged into: the main worktree's HEAD and,
+// when its branch tracks one, that upstream. The upstream matters because a
+// branch merged on the remote shows up there before the local main is pulled.
+async function mergeTargets(repo: string): Promise<string[]> {
+  const targets: string[] = [];
+  try {
+    targets.push((await git(["rev-parse", "HEAD"], repo)).trim());
+  } catch {
+    return targets;
+  }
+  try {
+    const upstream = (await git(["rev-parse", "--verify", "--quiet", "HEAD@{upstream}"], repo)).trim();
+    if (upstream) targets.push(upstream);
+  } catch {
+    // No upstream configured: HEAD alone.
+  }
+  return targets;
+}
+
+export async function planWorktreeCleanup(cwd: string): Promise<WorktreeCleanupPlan> {
+  const repo = await mainRepoRoot(cwd);
+  if (!repo) throw new WorktreeError(`${cwd} is not inside a git repository`, 400);
+  const worktrees = parseWorktrees(await git(["worktree", "list", "--porcelain"], repo));
+  const targets = await mergeTargets(repo);
+  const plan: WorktreeCleanupPlan = { repo, removable: [], kept: [] };
+  await Promise.all(
+    worktrees
+      .filter((wt) => !wt.main)
+      .map(async (wt) => {
+        const entry = { path: wt.path, branch: wt.branch };
+        if (wt.locked) return plan.kept.push({ ...entry, reason: "locked" });
+        if (wt.prunable) return plan.removable.push({ ...entry, reason: "missing" });
+        if (await isDirty(wt.path)) return plan.kept.push({ ...entry, reason: "dirty" });
+        const head = wt.head;
+        let merged = false;
+        if (head) {
+          for (const target of targets) {
+            if (await isAncestor(head, target, repo)) {
+              merged = true;
+              break;
+            }
+          }
+        }
+        if (merged) plan.removable.push({ ...entry, reason: "merged" });
+        else plan.kept.push({ ...entry, reason: "unmerged" });
+      }),
+  );
+  // Promise.all settles in completion order; list them the way git does.
+  const order = new Map(worktrees.map((wt, i) => [wt.path, i]));
+  const byGitOrder = (a: { path: string }, b: { path: string }) =>
+    (order.get(a.path) ?? 0) - (order.get(b.path) ?? 0);
+  plan.removable.sort(byGitOrder);
+  plan.kept.sort(byGitOrder);
+  return plan;
+}
+
+// Removes the requested worktrees, but only those a fresh plan still calls
+// removable: the user confirmed a list that may be seconds old, and a worktree
+// that picked up changes since then must not be swept away with the rest. No
+// --force anywhere. One refusal doesn't stop the others.
+export async function cleanUpWorktrees(opts: {
+  cwd: string;
+  paths: string[];
+}): Promise<{ removed: string[]; skipped: { path: string; error: string }[] }> {
+  const plan = await planWorktreeCleanup(opts.cwd);
+  const removable = new Map(plan.removable.map((e) => [path.resolve(e.path), e]));
+  const removed: string[] = [];
+  const skipped: { path: string; error: string }[] = [];
+  let pruneNeeded = false;
+  for (const requested of opts.paths) {
+    const entry = removable.get(path.resolve(requested));
+    if (!entry) {
+      skipped.push({ path: requested, error: "no longer safe to remove" });
+      continue;
+    }
+    if (entry.reason === "missing") {
+      // Nothing on disk to remove; the prune below drops git's record of it.
+      pruneNeeded = true;
+      removed.push(entry.path);
+      continue;
+    }
+    try {
+      await git(["worktree", "remove", entry.path], plan.repo);
+      removed.push(entry.path);
+      pruneNeeded = true;
+    } catch (err) {
+      skipped.push({ path: entry.path, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  if (pruneNeeded) await git(["worktree", "prune"], plan.repo).catch(() => {});
+  for (const p of removed) pruneEmptyContainer(plan.repo, p);
+  return { removed, skipped };
+}

@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project, RepoInfo, TmuxSession, WorktreeInfo } from "../types";
-import { bumpRecent, projectName, projectTree, sessionNameForProject, worktreeForPath } from "./projects";
+import {
+  bumpRecent,
+  isLinkedWorktreePath,
+  projectName,
+  projectTree,
+  sessionNameForProject,
+  withoutWorktreeRecents,
+  worktreeContainer,
+  worktreeForPath,
+} from "./projects";
 
 function makeSession(overrides: Partial<TmuxSession>): TmuxSession {
   return { id: "$1", name: "session", created: 0, attached: 0, path: "~/works/app", windows: [], ...overrides };
@@ -114,6 +123,84 @@ describe("worktreeForPath", () => {
   it("matches on path segments, not string prefixes", () => {
     const { worktrees } = nestedRepo();
     expect(worktreeForPath(worktrees, "~/works/app-other")).toBeUndefined();
+  });
+});
+
+describe("isLinkedWorktreePath", () => {
+  it("is true at or under a linked worktree, false for the main checkout", () => {
+    const repo = nestedRepo();
+    const index = indexFor(["~/works/app"], repo);
+    expect(isLinkedWorktreePath(index, "~/works/app/.worktrees/feature")).toBe(true);
+    expect(isLinkedWorktreePath(index, "~/works/app/.worktrees/feature/src")).toBe(true);
+    expect(isLinkedWorktreePath(index, "~/works/app")).toBe(false);
+    expect(isLinkedWorktreePath(index, "~/works/app/src")).toBe(false);
+  });
+
+  it("is false for a folder no known repository contains", () => {
+    expect(isLinkedWorktreePath(indexFor(["~/works/app"], nestedRepo()), "~/works/other")).toBe(false);
+    expect(isLinkedWorktreePath(new Map(), "~/works/app/.worktrees/feature")).toBe(false);
+  });
+
+  it("lets the innermost repository own a path when repositories nest", () => {
+    const outer: RepoInfo = {
+      repo: "~/works",
+      worktrees: [makeWorktree({ path: "~/works", branch: "main", main: true })],
+      branches: [],
+    };
+    const inner = nestedRepo();
+    const index = new Map([
+      ["~/works", outer],
+      ["~/works/app", inner],
+    ]);
+    expect(isLinkedWorktreePath(index, "~/works/app/.worktrees/feature")).toBe(true);
+  });
+});
+
+describe("worktreeContainer", () => {
+  it("resolves the default location to the folder inside the repository", () => {
+    expect(worktreeContainer("{repo}/.worktrees/{branch}", "~/works/app")).toBe("~/works/app/.worktrees");
+    expect(worktreeContainer("wt/{branch}", "/srv/app")).toBe("/srv/app/wt");
+  });
+
+  it("refuses templates whose folder could be an unrelated project", () => {
+    expect(worktreeContainer("{repo}-{branch}", "~/works/app")).toBeNull();
+    expect(worktreeContainer("../wt/{branch}", "~/works/app")).toBeNull();
+    expect(worktreeContainer("{repo}/{branch}/{branch}", "~/works/app")).toBeNull();
+    expect(worktreeContainer("/elsewhere/{branch}", "~/works/app")).toBeNull();
+  });
+});
+
+describe("isLinkedWorktreePath with a location", () => {
+  it("counts a folder in the worktree container even after git forgot it", () => {
+    const index = indexFor(["~/works/app"], nestedRepo());
+    const location = "{repo}/.worktrees/{branch}";
+    expect(isLinkedWorktreePath(index, "~/works/app/.worktrees/removed", location)).toBe(true);
+    expect(isLinkedWorktreePath(index, "~/works/app/.worktrees/removed", undefined)).toBe(false);
+    expect(isLinkedWorktreePath(index, "~/works/app/client", location)).toBe(false);
+    expect(isLinkedWorktreePath(index, "~/works/app", location)).toBe(false);
+  });
+});
+
+describe("withoutWorktreeRecents", () => {
+  it("drops unpinned linked-worktree entries and keeps pins and projects", () => {
+    const index = indexFor(["~/works/app"], nestedRepo());
+    const projects = [
+      makeProject({ cwd: "~/works/app" }),
+      makeProject({ cwd: "~/works/app/.worktrees/feature" }),
+      makeProject({ cwd: "~/works/app/.worktrees/pinned", pinned: true }),
+    ];
+    // The pinned one isn't a listed worktree here, so give it one.
+    const repo = nestedRepo();
+    repo.worktrees.push(makeWorktree({ path: "~/works/app/.worktrees/pinned", branch: "pinned" }));
+    const result = withoutWorktreeRecents(projects, indexFor(["~/works/app"], repo));
+    expect(result.map((p) => p.cwd)).toEqual(["~/works/app", "~/works/app/.worktrees/pinned"]);
+    expect(withoutWorktreeRecents(projects, new Map())).toBe(projects);
+    expect(withoutWorktreeRecents([projects[0]], index)).toEqual([projects[0]]);
+  });
+
+  it("returns the same array when nothing changes", () => {
+    const projects = [makeProject({ cwd: "~/works/app" })];
+    expect(withoutWorktreeRecents(projects, indexFor(["~/works/app"], nestedRepo()))).toBe(projects);
   });
 });
 

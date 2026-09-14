@@ -458,6 +458,42 @@ export function removeWorktree(body: {
   });
 }
 
+// Clean Up Worktrees, step one: which worktrees a bulk cleanup would remove
+// (directory missing, or clean and already merged) and which it keeps, and
+// why. Read-only. Sessions are the caller's to account for.
+export interface WorktreeCleanupEntry<Reason extends string> {
+  path: string;
+  branch: string | null;
+  reason: Reason;
+}
+
+export interface WorktreeCleanupPlan {
+  repo: string;
+  removable: WorktreeCleanupEntry<"missing" | "merged">[];
+  kept: WorktreeCleanupEntry<"locked" | "dirty" | "unmerged">[];
+}
+
+export function planWorktreeCleanup(cwd: string): Promise<WorktreeCleanupPlan> {
+  return request("/api/git/worktrees/cleanup/plan", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cwd }),
+  });
+}
+
+// Step two: removes the confirmed paths. The server re-checks each one, so a
+// worktree that changed since the plan is skipped rather than removed.
+export function cleanUpWorktrees(body: {
+  cwd: string;
+  paths: string[];
+}): Promise<{ removed: string[]; skipped: { path: string; error: string }[] }> {
+  return request("/api/git/worktrees/cleanup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export function openFile(
   session: string,
   filePath: string,

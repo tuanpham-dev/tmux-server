@@ -3,6 +3,7 @@ import * as api from "../api";
 import { copyText } from "../clipboard";
 import {
   bumpRecent,
+  isLinkedWorktreePath,
   projectName,
   sessionNameForBranch,
   sessionNameForProject,
@@ -12,7 +13,7 @@ import {
 import { isRealTab, tabVirtualPath } from "../lib/tabs";
 import type { SplitDirection } from "../lib/splits";
 import type { AppSettings } from "../settings";
-import type { MenuItem, Project, Tab, TmuxSession, TmuxWindow, WorktreeBranch } from "../types";
+import type { MenuItem, Project, RepoInfo, Tab, TmuxSession, TmuxWindow, WorktreeBranch } from "../types";
 
 // createWindow's server call returns void (see server/src/tmux.ts), so the
 // window it just created isn't known until the next session list fetch —
@@ -77,20 +78,37 @@ export function useSessionActions(
   // base tabMenuItems' "Copy Relative Path" resolves against, matching the
   // tree's own copyFileRelativePath semantics.
   filesRootDir: string | null,
+  // Which repository each session folder belongs to (useWorktrees). Read to
+  // keep linked worktrees out of the recent-projects list, and to name a
+  // cleanup's target.
+  repoIndex: Map<string, RepoInfo>,
 ) {
   // Opens the project rooted in `cwd`: focuses the live session already
   // rooted there, or creates one — named after the folder, started in
   // exactly that folder (exactCwd) so session_path round-trips and the
   // panel's cwd matching holds. Every open (not a failed create) records
-  // the folder into the recents registry via bumpRecent. Returns the
+  // the folder into the recents registry via bumpRecent, except a linked
+  // worktree: those are reached through their project's worktree level, so
+  // opts.recordRecent: false skips it for a worktree the tree doesn't list
+  // yet (one created moments ago), and isLinkedWorktreePath catches every
+  // other route in (the folder picker, `tmux-server open`). Returns the
   // session's name (undefined on failure) — useOpenTarget's file-open path
   // needs it as the open-file API's session target.
   const openProject = useCallback(
-    async (cwd: string, preferredName?: string): Promise<string | undefined> => {
+    async (
+      cwd: string,
+      preferredName?: string,
+      opts: { recordRecent?: boolean } = {},
+    ): Promise<string | undefined> => {
+      const record = () => {
+        if (opts.recordRecent === false) return;
+        if (isLinkedWorktreePath(repoIndex, cwd, settingsRef.current.worktreeLocation)) return;
+        setProjects((prev) => bumpRecent(prev, cwd));
+      };
       try {
         const live = sessions.find((s) => s.path === cwd);
         if (live) {
-          setProjects((prev) => bumpRecent(prev, cwd));
+          record();
           const activeIndex =
             live.windows.find((w) => w.active)?.index ?? live.windows[0]?.index;
           if (activeIndex !== undefined) await openWindowTab(live.name, activeIndex);
@@ -105,7 +123,7 @@ export function useSessionActions(
           ? sessionNameForProject(preferredName, taken)
           : sessionNameForProject(cwd, taken);
         const created = await api.createSession(name, cwd, true);
-        setProjects((prev) => bumpRecent(prev, cwd));
+        record();
         await refresh();
         const activeIndex = created.windows.find((w) => w.active)?.index;
         if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
@@ -115,7 +133,7 @@ export function useSessionActions(
         return undefined;
       }
     },
-    [sessions, refresh, openWindowTab, showError, setProjects],
+    [sessions, refresh, openWindowTab, showError, setProjects, repoIndex, settingsRef],
   );
 
   // Pins/unpins the project a session's folder belongs to (keyed by
@@ -342,18 +360,21 @@ export function useSessionActions(
   ];
 
   // A worktree row's click: focus its most-recent terminal, or start a
-  // session in it — named after its branch, not the checkout folder.
+  // session in it — named after its branch, not the checkout folder. Never
+  // recorded into recents: the worktree is reached through its project. The
+  // main worktree is the project's own folder, so that one still counts.
   const openWorktree = useCallback(
     async (node: WorktreeNode) => {
+      const recordRecent = node.worktree.main;
       const live = node.sessions[0];
       if (live) {
         const activeIndex = live.windows.find((w) => w.active)?.index ?? live.windows[0]?.index;
         if (activeIndex !== undefined) await openWindowTab(live.name, activeIndex);
-        setProjects((prev) => bumpRecent(prev, node.worktree.path));
+        if (recordRecent) setProjects((prev) => bumpRecent(prev, node.worktree.path));
         return;
       }
       const branch = node.worktree.branch;
-      await openProject(node.worktree.path, branch ? sessionNameForBranch(branch) : undefined);
+      await openProject(node.worktree.path, branch ? sessionNameForBranch(branch) : undefined, { recordRecent });
     },
     [openWindowTab, openProject, setProjects],
   );
@@ -376,6 +397,69 @@ export function useSessionActions(
       else if (node.cwd) await openProject(node.cwd);
     },
     [createWindow, openProject],
+  );
+
+  // Clean Up Worktrees: removes, in one go, the worktrees of a repository
+  // that are safe to lose — a directory that is already gone, or a clean
+  // checkout whose commits are all merged. The server decides what is safe;
+  // this adds the one thing it can't know, that a worktree still has a tmux
+  // session, and leaves those alone. The confirmation lists every removal
+  // and every keep with its reason. Branches always survive.
+  const cleanUpWorktrees = useCallback(
+    async (node: ProjectNode): Promise<void> => {
+      const cwd = node.cwd;
+      if (!cwd) return;
+      let plan: api.WorktreeCleanupPlan;
+      try {
+        plan = await api.planWorktreeCleanup(cwd);
+      } catch (err) {
+        showError(err);
+        return;
+      }
+      const withSessions = new Set(node.worktrees.filter((w) => w.sessions.length > 0).map((w) => w.key));
+      const label = (e: { path: string; branch: string | null }) => e.branch ?? projectName(e.path);
+      const remove = plan.removable.filter((e) => !withSessions.has(e.path));
+      const kept = [
+        ...plan.removable
+          .filter((e) => withSessions.has(e.path))
+          .map((e) => ({ name: label(e), why: "has a session" })),
+        ...plan.kept.map((e) => ({
+          name: label(e),
+          why: e.reason === "dirty" ? "uncommitted changes" : e.reason === "locked" ? "locked" : "not merged",
+        })),
+      ];
+      const keptLines = kept.map((k) => `  ${k.name} - ${k.why}`).join("\n");
+      const repoName = projectName(plan.repo);
+      if (remove.length === 0) {
+        showError(
+          kept.length > 0
+            ? `Nothing to clean up in ${repoName}. Every worktree is kept: ${kept.map((k) => `${k.name} (${k.why})`).join(", ")}.`
+            : `Nothing to clean up in ${repoName}. It has no worktrees besides its own checkout.`,
+        );
+        return;
+      }
+      const removeLines = remove
+        .map((e) => `  ${label(e)} - ${e.reason === "missing" ? "folder already deleted" : "merged, no changes"}`)
+        .join("\n");
+      const message =
+        `Remove ${remove.length === 1 ? "1 worktree" : `${remove.length} worktrees`} from ${repoName}?\n\n${removeLines}` +
+        (kept.length > 0 ? `\n\nKept:\n${keptLines}` : "") +
+        "\n\nBranches are kept.";
+      if (!(await confirmDialog(message, "Clean Up"))) return;
+      try {
+        const result = await api.cleanUpWorktrees({ cwd: plan.repo, paths: remove.map((e) => e.path) });
+        await refresh();
+        if (result.skipped.length > 0) {
+          showError(
+            `Removed ${result.removed.length}, skipped ${result.skipped.length}: ` +
+              result.skipped.map((s) => `${projectName(s.path)} (${s.error})`).join(", "),
+          );
+        }
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [confirmDialog, refresh, showError],
   );
 
   // Menu for a project row: a plain folder, a repository header, or a dead
@@ -407,9 +491,16 @@ export function useSessionActions(
       if (all.length > 0) {
         items.push({ label: "Close Project", danger: true, onClick: () => void closeSessions(node.label, all) });
       }
+      // A repository row with a worktree level — the only kind with linked
+      // worktrees to clean up.
+      if (node.worktrees.length > 1) {
+        items.push({ label: "", separator: true, onClick: () => {} });
+        items.push({ label: "Clean Up Worktrees…", onClick: () => void cleanUpWorktrees(node) });
+      }
       return items;
     },
     [
+      cleanUpWorktrees,
       openProject,
       unpinProject,
       removeRecentProject,
@@ -458,9 +549,12 @@ export function useSessionActions(
         showError(err);
         return;
       }
+      // Not in the tree's listing until its next poll, so the recents skip
+      // has to be explicit here.
       const name = await openProject(
         created.path,
         opts.sessionName?.trim() || sessionNameForBranch(created.branch),
+        { recordRecent: false },
       );
       if (!name || !opts.runCommand) return;
       void sendTextWithRetries(name, opts.runCommand).catch((err: unknown) => showError(err));
@@ -685,6 +779,7 @@ export function useSessionActions(
     newTerminalInProject,
     newTerminalInWorktree,
     togglePinProject,
+    cleanUpWorktrees,
     recentProjectMenuItems,
     windowMenuItems,
     tabMenuItems,

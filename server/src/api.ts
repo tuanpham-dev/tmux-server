@@ -59,6 +59,8 @@ import {
   createWorktree,
   listWorktrees,
   removeWorktree,
+  planWorktreeCleanup,
+  cleanUpWorktrees,
   repoIdentity,
   WorktreeError,
   type Branch,
@@ -1188,6 +1190,43 @@ api.post("/git/worktrees/remove", async (req, res) => {
       force: force === true,
     });
     res.json({ removed: shortenHome(removed.removed) });
+  } catch (err) {
+    res.status(err instanceof WorktreeError ? err.status : 500).json({ error: errMessage(err) });
+  }
+});
+
+// Clean Up Worktrees, step one: what a bulk cleanup would remove and what
+// it would keep, and why. Read-only.
+api.post("/git/worktrees/cleanup/plan", async (req, res) => {
+  const { cwd } = req.body ?? {};
+  if (typeof cwd !== "string" || !cwd) {
+    res.status(400).json({ error: "cwd is required" });
+    return;
+  }
+  try {
+    const plan = await planWorktreeCleanup(expandHome(cwd));
+    const shorten = <T extends { path: string }>(entries: T[]) =>
+      entries.map((e) => ({ ...e, path: shortenHome(e.path) }));
+    res.json({ repo: shortenHome(plan.repo), removable: shorten(plan.removable), kept: shorten(plan.kept) });
+  } catch (err) {
+    res.status(err instanceof WorktreeError ? err.status : 500).json({ error: errMessage(err) });
+  }
+});
+
+// Step two: removes the confirmed paths, each re-checked against a fresh plan.
+// Branches are kept, and this route never touches tmux.
+api.post("/git/worktrees/cleanup", async (req, res) => {
+  const { cwd, paths } = req.body ?? {};
+  if (typeof cwd !== "string" || !cwd || !Array.isArray(paths) || !paths.every((p) => typeof p === "string")) {
+    res.status(400).json({ error: "cwd and paths are required" });
+    return;
+  }
+  try {
+    const result = await cleanUpWorktrees({ cwd: expandHome(cwd), paths: paths.map((p: string) => expandHome(p)) });
+    res.json({
+      removed: result.removed.map((p) => shortenHome(p)),
+      skipped: result.skipped.map((s) => ({ ...s, path: shortenHome(s.path) })),
+    });
   } catch (err) {
     res.status(err instanceof WorktreeError ? err.status : 500).json({ error: errMessage(err) });
   }

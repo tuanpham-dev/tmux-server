@@ -3,7 +3,7 @@ import { setContextKey } from "../contextKeys";
 import {
   getRootDecorations,
   setExplorerPanelFocusBridge,
-  setNewWorktreeBridge,
+  setWorktreeBridge,
   setProjectsFocusBridge,
   type RegisteredSidebarPanel,
   type RegisteredWindowAction,
@@ -33,7 +33,7 @@ import type {
 import ExtensionsPanel from "./ExtensionsPanel";
 import FileTree from "./FileTree";
 import Icon from "./Icon";
-import ProjectList, { type ProjectListHandle, type ProjectListProps } from "./ProjectList";
+import ProjectList, { type ProjectListHandle, type ProjectListProps, type WorktreeBridgeHandlers } from "./ProjectList";
 import SidebarTabStrip, { type SidebarTabInfo } from "./SidebarTabStrip";
 
 
@@ -432,12 +432,12 @@ export default function Sidebar({
     return () => setExplorerPanelFocusBridge(side, null);
   }, []);
 
-  // Lets the worktrees extension's palette commands open the tree's create
-  // form on this side. Stable identity so ProjectList's effect registers
-  // once, not on every render.
-  const registerNewWorktreeBridge = useCallback(
-    (open: ((runCommandIndex?: number) => void) | null) => {
-      setNewWorktreeBridge(side, open ? { open } : null);
+  // Lets the worktrees extension's palette commands reach the tree's
+  // worktree actions on this side. Stable identity so ProjectList's effect
+  // registers once, not on every render.
+  const registerWorktreeBridge = useCallback(
+    (bridge: WorktreeBridgeHandlers | null) => {
+      setWorktreeBridge(side, bridge);
     },
     [side],
   );
@@ -511,7 +511,7 @@ export default function Sidebar({
         <ProjectList
           ref={projectListRef}
           {...projectListProps}
-          registerNewWorktreeBridge={registerNewWorktreeBridge}
+          registerWorktreeBridge={registerWorktreeBridge}
         />
       );
     }

@@ -55,7 +55,13 @@ import { useGitRootDir } from "./hooks/useGitRootDir";
 import { useThemeAssets } from "./hooks/useThemeAssets";
 import type { MenuItem, MenuState, OpenTargetPayload, RegistrySourceResult, Tab, TmuxSession } from "./types";
 import { groupKeyForTab, isRealTab } from "./lib/tabs";
-import { bumpRecent, projectName, sessionNameForProject } from "./lib/projects";
+import {
+  bumpRecent,
+  isLinkedWorktreePath,
+  projectName,
+  sessionNameForProject,
+  withoutWorktreeRecents,
+} from "./lib/projects";
 import { leaves } from "./lib/splits";
 import { emitPollTick } from "./lib/pollTick";
 import { rewriteLocalUrl } from "./lib/openUrlRewrite";
@@ -1077,6 +1083,7 @@ export default function App() {
     openWorktree,
     newTerminalInProject,
     newTerminalInWorktree,
+    cleanUpWorktrees,
     recentProjectMenuItems,
     windowMenuItems,
     tabMenuItems,
@@ -1099,7 +1106,16 @@ export default function App() {
     splitGroup,
     moveTabToAdjacentGroup,
     resolvedFilesRootDir,
+    repoIndex,
   );
+
+  // Linked worktrees stopped being recorded as recent projects; this sweeps
+  // out the ones recorded before that, as each repository's listing arrives.
+  // Pins stay. withoutWorktreeRecents hands back the same array when there is
+  // nothing to drop, so a quiet tick costs no re-render and no settings sync.
+  useEffect(() => {
+    setProjects((prev) => withoutWorktreeRecents(prev, repoIndex, settings.worktreeLocation));
+  }, [repoIndex, setProjects, settings.worktreeLocation]);
 
   // `tmux-server open` bridge (plans/cli-open-command.md): openProject is
   // only available past this point, so the SSE listener declared above
@@ -1170,13 +1186,15 @@ export default function App() {
           target = created.name;
           await refresh();
         }
-        setProjects((prev) => bumpRecent(prev, cwd));
+        if (!isLinkedWorktreePath(repoIndex, cwd, settingsRef.current.worktreeLocation)) {
+          setProjects((prev) => bumpRecent(prev, cwd));
+        }
         newTerminal(target);
       } catch (err) {
         showError(err);
       }
     },
-    [sessions, refresh, setProjects, newTerminal, showError],
+    [sessions, refresh, setProjects, newTerminal, showError, repoIndex, settingsRef],
   );
 
   // ctx.app.openSessionWindow / ctx.app.killSession (extensions.ts) — the
@@ -1870,6 +1888,7 @@ export default function App() {
       onNewTerminalInProject: newTerminalInProject,
       onNewTerminalInWorktree: newTerminalInWorktree,
       onCreateWorktree: createWorktreeSession,
+      onCleanUpWorktrees: cleanUpWorktrees,
       loadBranches: loadWorktreeBranches,
       worktreeAgents,
       onShowMenu: showMenu,
@@ -1895,6 +1914,7 @@ export default function App() {
       newTerminalInProject,
       newTerminalInWorktree,
       createWorktreeSession,
+      cleanUpWorktrees,
       loadWorktreeBranches,
       worktreeAgents,
       settings.agentPermissions,

@@ -32,6 +32,72 @@ export function sessionNameForBranch(branch: string): string {
   return branch.replace(/[.:/\s]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+// The folder a worktree location template puts every checkout in, for one
+// repository — "{repo}/.worktrees/{branch}" gives "<repo>/.worktrees". Only
+// answered when that folder is unambiguous and inside the repository: the
+// template must end in its own "/{branch}" segment, with no other {branch}.
+// A template like "{repo}-{branch}" or "../wt/{branch}" names folders that
+// could just as well be unrelated projects, so it answers null.
+export function worktreeContainer(template: string, repo: string): string | null {
+  const t = template.trim();
+  const suffix = "/{branch}";
+  if (!t.endsWith(suffix)) return null;
+  let dir = t.slice(0, -suffix.length);
+  if (dir.includes("{branch}")) return null;
+  dir = dir.replaceAll("{repo}", repo);
+  if (!dir.startsWith("/") && !dir.startsWith("~")) dir = `${repo}/${dir}`;
+  const segments: string[] = [];
+  for (const seg of dir.split("/")) {
+    if (seg === "." || (seg === "" && segments.length > 0)) continue;
+    if (seg === "..") segments.pop();
+    else segments.push(seg);
+  }
+  const resolved = segments.join("/");
+  return resolved.startsWith(repo + "/") ? resolved : null;
+}
+
+// Whether a folder sits in a linked worktree (any worktree but the
+// repository's own checkout) of a repository the tree knows about. Those are
+// reached through their project's worktree level, so they don't belong in the
+// recent-projects list: each one would otherwise add an entry named after a
+// branch folder, crowding out the projects themselves.
+//
+// Two ways to count: git lists the folder as a linked worktree, or it sits in
+// the repository's worktree container (`location`, the worktreeLocation
+// setting) — which also catches a worktree already removed, that git has
+// forgotten. `repoIndex` only knows repositories some live session is rooted
+// in, so an unknown folder answers false and is recorded as usual.
+export function isLinkedWorktreePath(
+  repoIndex: Map<string, RepoInfo>,
+  cwd: string,
+  location?: string,
+): boolean {
+  // Longest match across every repository, not the first: a repository can
+  // sit inside another one's folder, and only the innermost owns the path.
+  let best: { owner: WorktreeInfo; repo: string } | undefined;
+  for (const repo of repoIndex.values()) {
+    const owner = worktreeForPath(repo.worktrees, cwd);
+    if (owner && (!best || owner.path.length > best.owner.path.length)) best = { owner, repo: repo.repo };
+  }
+  if (!best) return false;
+  if (!best.owner.main) return true;
+  const container = location ? worktreeContainer(location, best.repo) : null;
+  return container !== null && cwd.startsWith(container + "/");
+}
+
+// Drops unpinned recents entries that turn out to be linked worktrees — ones
+// recorded before worktrees stopped being added. A pin is the user's explicit
+// choice and stays. Returns the same array when nothing changes, so a state
+// setter can bail out without a re-render or a sync.
+export function withoutWorktreeRecents(
+  projects: Project[],
+  repoIndex: Map<string, RepoInfo>,
+  location?: string,
+): Project[] {
+  const next = projects.filter((p) => p.pinned || !isLinkedWorktreePath(repoIndex, p.cwd, location));
+  return next.length === projects.length ? projects : next;
+}
+
 // How many unpinned entries the recents list keeps — pinned entries never
 // count against (or get evicted by) the cap.
 const RECENTS_CAP = 15;
