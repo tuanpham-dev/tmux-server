@@ -44,6 +44,18 @@ try {
   // No .env file — every variable it could set has a fallback.
 }
 
+// Backstop for a rejected promise nobody awaited - an extension's socket
+// server, timer or hook callback, where no request exists to fail. Node's
+// default is to exit the process, which takes every session's terminal down
+// over one stray rejection. Route handlers are already covered where they
+// enter (extensions.ts's createExtensionRouter); this is the net under
+// everything else. Deliberately NOT paired with an uncaughtException handler:
+// a synchronous throw can leave state half-updated, and keeping the process
+// alive after one is a different decision.
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandled promise rejection (server kept running):", reason);
+});
+
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT ?? 3001);
 

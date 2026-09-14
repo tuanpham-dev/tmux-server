@@ -1103,13 +1103,30 @@ its secrets with it.
 
 Caveats:
 
+- Route handlers may be `async`. A handler that throws or rejects - before
+  or after an `await` - answers that one request with
+  `500 { "error": "<message>" }` (logged with your extension's id) and the
+  server keeps serving; `router.get/post/put/patch/delete/all/use` and
+  `router.route(...)` are all covered, and your own 4-argument error
+  middleware still sees its errors first. Anything outside a route - a timer,
+  a socket server, an `onEvent` callback - has no request to fail: core logs
+  an unhandled rejection there and keeps running, but catch your own errors
+  anyway. **Cores older than this change exit the whole server on a rejected
+  route handler**, so an extension that may be installed on one should still
+  wrap its async handlers itself.
 - One activation per process per enable — but a disable→enable cycle
   within one server process calls `activate` again on the already-resident
   module. Module-level state persists across that; guard one-time setup
   (e.g. a unix-socket listener) accordingly, or key it per-activation.
-- Long-lived children/watchdogs you spawn are yours to clean up; the host
-  only unmounts your routes. See `git-scm/server.js` for a worked example
-  of process-group management and timers.
+- Export an optional `deactivate()` from the server entry and the host calls
+  it when the extension is disabled or uninstalled, after your routes and
+  `agentHooks` subscriptions are already gone. Close sockets, clear timers
+  and stop children there - without it they keep running in the resident
+  module after a disable. It may be async; the host does not wait for it,
+  and a throw or rejection is logged, never surfaced to the user's disable.
+  A later re-enable calls `activate` again on the same module. See
+  `git-scm/server.js` for a worked example of process-group management and
+  timers.
 - `cwd`-style parameters may arrive `~`-shortened (the client displays
   them that way) — expand before touching the filesystem.
 

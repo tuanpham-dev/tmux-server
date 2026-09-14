@@ -11,7 +11,9 @@ import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/pro
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { Router, type NextFunction, type Request, type Response } from "express";
+import { type NextFunction, type Request, type Response, type Router } from "express";
+import { createExtensionRouter, runExtensionRouter } from "./extensionRouter.js";
+import { recordServerDeactivate, runServerDeactivate } from "./extensionLifecycle.js";
 import { findTmuxPort, listTmuxPorts } from "./ports.js";
 import { listAiProfiles, runAi, type AiProfileSummary, type AiRunOptions } from "./ai.js";
 import {
@@ -855,12 +857,13 @@ export function getServerHookRouter(id: string): Router | undefined {
 }
 
 export function extensionHookMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const router = serverHooks.get(req.params.extId);
+  const id = req.params.extId;
+  const router = serverHooks.get(id);
   if (!router) {
     res.status(404).json({ error: "extension not found or has no active server hook" });
     return;
   }
-  router(req, res, next);
+  runExtensionRouter(id, router, req, res, next);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -903,7 +906,7 @@ export async function mountServerHookIfNeeded(
       console.error(`extension ${id}: server entry has no activate() export`);
       return;
     }
-    const router = Router();
+    const router = createExtensionRouter();
     const host = makeHostApi(id);
     activate({
       router,
@@ -921,6 +924,8 @@ export async function mountServerHookIfNeeded(
       host,
     });
     serverHooks.set(id, router);
+    // Only after activate() returned - see extensionLifecycle.ts.
+    recordServerDeactivate(id, mod);
   } catch (err) {
     console.error(`extension ${id}: failed to load server hook:`, err);
   }
@@ -931,6 +936,9 @@ export function unmountServerHook(id: string): void {
   apiMutationListeners.delete(id);
   dropAgentHookSubscriptions(id);
   dropAgentCompanions(id);
+  // Last, so the extension tears down after its routes and subscriptions are
+  // already gone and nothing new can reach it mid-teardown.
+  runServerDeactivate(id);
 }
 
 export async function loadEnabledServerHooks(): Promise<void> {
