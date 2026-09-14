@@ -86,6 +86,23 @@ export interface HoveredLink {
   line?: number;
 }
 
+// 0-based cell on the tmux client's live screen (row 0 = top of the screen,
+// not of local scrollback) — lets the server resolve a path link against the
+// pane it's printed in.
+export interface ScreenCell {
+  row: number;
+  col: number;
+}
+
+// A tmux pane's logical line that tmux wrapped across rows — see readPaneLines.
+export interface PaneLine {
+  left: number;
+  width: number;
+  // Screen row of the line's first row; negative when it began in history.
+  startRow: number;
+  text: string;
+}
+
 export interface TerminalEngineOptions {
   // Element the engine mounts into (TerminalView's `screen` ref, never the
   // outer host) — sibling widgets stay outside whatever key/paste
@@ -104,7 +121,14 @@ export interface TerminalEngineOptions {
   // Link detection (regex/path scanning) is engine-agnostic and lives in
   // terminalLinks.ts; these are the app-level callbacks it already takes,
   // passed straight through by whichever adapter the engine module uses.
-  resolvePaths: (paths: string[]) => Promise<(string | null)[]>;
+  // `cells` is index-aligned with `paths`: each candidate's first screen
+  // cell, or null when it isn't on the live screen.
+  resolvePaths: (paths: string[], cells?: (ScreenCell | null)[]) => Promise<(string | null)[]>;
+  // The rejoined wrapped line per side-by-side pane under a live screen row
+  // — a split pane's wraps reach the terminal as hard line breaks, so the
+  // engine can't stitch them from its own buffer. Optional: an engine or
+  // host without it just doesn't link paths wrapped inside split panes.
+  readPaneLines?: (row: number) => Promise<PaneLine[]>;
   onOpenUrl: (url: string) => void;
   onOpenFile: (path: string, line?: number) => void;
   onOpenFileSecondary: (path: string, line?: number) => void;

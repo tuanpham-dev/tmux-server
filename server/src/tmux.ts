@@ -5,6 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { getGitRoot } from "./files.js";
+import { groupWrappedRows } from "./pathLinks.js";
 import { openShimPath } from "./openUrl.js";
 import { isServerOnlyVar, spawnEnv } from "./spawnEnv.js";
 
@@ -696,6 +697,98 @@ async function listPaneGeometry(session: string): Promise<GeometryPane[]> {
         pid: Number(pid),
       };
     });
+}
+
+export interface LinkPane {
+  id: string;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  historySize: number;
+  cwd: string;
+}
+
+// Pane rectangles in the attached client's SCREEN rows, for terminal file
+// links (resolve-paths / pane-lines in api.ts). Unlike listPaneGeometry's
+// window-relative rows, three corrections apply — each verified by rendering
+// a nested tmux and locating per-pane markers:
+//  - a top status line pushes every pane down by its line count (status
+//    "on" = 1, "2".."5" = that many); a bottom one changes nothing.
+//  - pane-border-status top needs nothing: pane_top already counts it.
+//  - a zoomed window still lists the hidden panes with their old, overlapping
+//    geometry, so only the active (zoomed) pane is returned.
+export async function listLinkPanes(session: string): Promise<LinkPane[]> {
+  const [out, status] = await Promise.all([
+    tmux([
+      "list-panes",
+      "-t",
+      `=${session}:`,
+      "-F",
+      "#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_right}\t#{pane_bottom}\t#{pane_width}\t#{history_size}\t#{pane_active}\t#{window_zoomed_flag}\t#{pane_current_path}",
+    ]),
+    tmux(["display-message", "-t", `=${session}:`, "-p", "#{status}\t#{status-position}"]),
+  ]);
+  const [statusValue, statusPosition] = status.trim().split("\t");
+  const statusLines = statusValue === "on" ? 1 : /^\d$/.test(statusValue) ? Number(statusValue) : 0;
+  const offset = statusPosition === "top" ? statusLines : 0;
+  const rows = out
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.split("\t"));
+  const zoomed = rows.some((r) => r[8] === "1");
+  return rows
+    .filter((r) => !zoomed || r[7] === "1")
+    .map(([id, left, top, right, bottom, width, historySize, , , cwd]) => ({
+      id,
+      left: Number(left),
+      top: Number(top) + offset,
+      right: Number(right),
+      bottom: Number(bottom) + offset,
+      width: Number(width),
+      historySize: Number(historySize),
+      cwd,
+    }));
+}
+
+export interface PaneLine {
+  left: number;
+  width: number;
+  startRow: number;
+  text: string;
+}
+
+// How far above/below the hovered row a wrapped logical line is followed.
+const PANE_LINE_REACH = 50;
+
+// For a screen row, each pane's logical line covering that row, when tmux
+// wrapped it across more than one row. A split pane's wraps reach the
+// browser as hard line breaks (tmux can't let the outer terminal autowrap
+// at a pane edge), so the client can't stitch them itself. `-N` rows are
+// grouped by the `-J` capture of the same range (see groupWrappedRows).
+// startRow is a screen row and may be negative (the line began in history).
+export async function paneLinesAtRow(session: string, row: number): Promise<PaneLine[]> {
+  const panes = (await listLinkPanes(session)).filter((p) => row >= p.top && row <= p.bottom);
+  const lines = await Promise.all(
+    panes.map(async (pane): Promise<PaneLine | null> => {
+      const paneRow = row - pane.top;
+      const start = Math.max(paneRow - PANE_LINE_REACH, -pane.historySize);
+      const end = Math.min(paneRow + PANE_LINE_REACH, pane.bottom - pane.top);
+      const range = ["-S", String(start), "-E", String(end)];
+      const [plain, joined] = await Promise.all([
+        tmux(["capture-pane", "-p", "-N", "-t", pane.id, ...range]),
+        tmux(["capture-pane", "-p", "-J", "-t", pane.id, ...range]),
+      ]);
+      const group = groupWrappedRows(plain.split("\n").slice(0, end - start + 1), joined.split("\n")).find(
+        (g) => paneRow - start >= g.firstRow && paneRow - start <= g.lastRow,
+      );
+      if (!group || group.firstRow === group.lastRow) return null;
+      return { left: pane.left, width: pane.width, startRow: pane.top + start + group.firstRow, text: group.text };
+    }),
+  );
+  return lines.filter((l): l is PaneLine => l !== null);
 }
 
 const HSCROLL_MAX_TICKS = 50;

@@ -72,6 +72,7 @@ import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } fr
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
 import { shellIntegrationPath, shellIntegrationSourceLine } from "./shellIntegration.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
+import { paneAtCell, resolveLinkPath, type ScreenCell } from "./pathLinks.js";
 import {
   mergeSettingsDoc,
   readAiSecrets,
@@ -95,7 +96,9 @@ import {
   paneSessionInfo,
   openLazygitWindow,
   openFileInWindow,
+  listLinkPanes,
   paneCurrentPath,
+  paneLinesAtRow,
   renameSession,
   renameWindow,
   resetWindowName,
@@ -716,27 +719,63 @@ api.post("/sessions/:name/open-merge", async (req, res) => {
 });
 
 // Validates terminal-link file-path candidates for the ctrl+click link
-// provider (see client/src/terminalLinks.ts): relative candidates resolve
-// against the session's active pane cwd (mirroring createWindow's own
-// #{pane_current_path} lookup), then each is checked with isFile so only
-// real files become clickable — a path-shaped string in scrollback output
-// (e.g. a comment, a log line) never turns into a false-positive link.
+// provider (see client/src/terminalLinks.ts). Each candidate may carry the
+// 0-based screen cell of its first character (`cells`, index-aligned, null
+// for a candidate in local scrollback); it then resolves against the cwd of
+// the pane under that cell, else the session's active pane. The lookup
+// order past that cwd (git top-level, diff a/ b/ prefixes) lives in
+// resolveLinkPath. Only regular files come back — a path-shaped string in
+// output (a comment, a log line) never turns into a false-positive link.
 api.post("/sessions/:name/resolve-paths", async (req, res) => {
   const candidates = Array.isArray(req.body?.paths)
     ? req.body.paths.filter((p: unknown): p is string => typeof p === "string")
     : [];
+  const rawCells: unknown[] = Array.isArray(req.body?.cells) ? req.body.cells : [];
+  const cellAt = (i: number): ScreenCell | null => {
+    const c = rawCells[i] as { row?: unknown; col?: unknown } | null | undefined;
+    return c && typeof c.row === "number" && typeof c.col === "number" ? { row: c.row, col: c.col } : null;
+  };
   try {
-    const cwd = await paneCurrentPath(req.params.name);
+    const [activeCwd, panes] = await Promise.all([
+      paneCurrentPath(req.params.name),
+      rawCells.length ? listLinkPanes(req.params.name).catch(() => []) : Promise.resolve([]),
+    ]);
+    const roots = new Map<string, Promise<string | null>>();
+    const gitRoot = (dir: string) => {
+      let root = roots.get(dir);
+      if (!root) {
+        root = getGitRoot(dir);
+        roots.set(dir, root);
+      }
+      return root;
+    };
     const results = await Promise.all(
-      candidates.map(async (raw: string) => {
-        const expanded = expandHome(raw);
-        const abs = path.isAbsolute(expanded) ? expanded : path.join(cwd, expanded);
-        return (await isFile(abs)) ? abs : null;
+      candidates.map((raw: string, i: number) => {
+        const cell = cellAt(i);
+        const cwd = (cell && paneAtCell(panes, cell)?.cwd) || activeCwd;
+        return resolveLinkPath(raw, cwd, { isFile, gitRoot });
       }),
     );
     res.status(200).json({ results });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
+  }
+});
+
+// The rejoined logical line under a screen row, per side-by-side pane, when
+// tmux wrapped it across rows (see paneLinesAtRow) — lets the link provider
+// detect a path that a split pane broke with a hard line break. Best-effort:
+// any failure is just "nothing to add".
+api.post("/sessions/:name/pane-lines", async (req, res) => {
+  const row = req.body?.row;
+  if (typeof row !== "number" || !Number.isInteger(row) || row < 0) {
+    res.status(400).json({ error: "row must be a non-negative integer" });
+    return;
+  }
+  try {
+    res.status(200).json({ lines: await paneLinesAtRow(req.params.name, row) });
+  } catch {
+    res.status(200).json({ lines: [] });
   }
 });
 

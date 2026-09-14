@@ -46,6 +46,7 @@ export async function createXtermEngine(
     theme,
     onData,
     resolvePaths,
+    readPaneLines,
     onOpenUrl,
     onOpenFile,
     onOpenFileSecondary,
@@ -185,36 +186,36 @@ export async function createXtermEngine(
     },
   };
 
-  const linkProviderDisposable = term.registerLinkProvider(
-    buildXtermLinkProvider(term, {
-      resolvePaths,
-      onOpenUrl,
-      onOpenFile,
-      onOpenFileSecondary,
-      onHoverChange: (link) => {
-        if (link) {
-          // ILink.hover carries no MouseEvent (unlike term.options.linkHandler
-          // above), so the tooltip is positioned from the dedicated mousemove
-          // tracker — same pattern the ghostty engine uses.
-          const hostRect = term.element?.getBoundingClientRect();
-          if (hostRect) {
-            hoverTooltip.textContent = link.text;
-            hoverTooltip.style.left = `${lastMouse.x - hostRect.left + 12}px`;
-            hoverTooltip.style.top = `${lastMouse.y - hostRect.top + 16}px`;
-            hoverTooltip.style.display = "block";
-          }
-          onLinkHoverChange((e) => link.activate(e, link.text), {
-            kind: link.kind,
-            target: link.target,
-            line: link.line,
-          });
-        } else {
-          hideTooltip();
-          onLinkHoverChange(null);
+  const linkProvider = buildXtermLinkProvider(term, {
+    resolvePaths,
+    readPaneLines,
+    onOpenUrl,
+    onOpenFile,
+    onOpenFileSecondary,
+    onHoverChange: (link) => {
+      if (link) {
+        // ILink.hover carries no MouseEvent (unlike term.options.linkHandler
+        // above), so the tooltip is positioned from the dedicated mousemove
+        // tracker — same pattern the ghostty engine uses.
+        const hostRect = term.element?.getBoundingClientRect();
+        if (hostRect) {
+          hoverTooltip.textContent = link.text;
+          hoverTooltip.style.left = `${lastMouse.x - hostRect.left + 12}px`;
+          hoverTooltip.style.top = `${lastMouse.y - hostRect.top + 16}px`;
+          hoverTooltip.style.display = "block";
         }
-      },
-    }),
-  );
+        onLinkHoverChange((e) => link.activate(e, link.text), {
+          kind: link.kind,
+          target: link.target,
+          line: link.line,
+        });
+      } else {
+        hideTooltip();
+        onLinkHoverChange(null);
+      }
+    },
+  });
+  const linkProviderDisposable = term.registerLinkProvider(linkProvider);
 
   const dataSub = term.onData(onData);
 
@@ -577,6 +578,7 @@ export async function createXtermEngine(
       renderSub.dispose();
       renderListeners.clear();
       linkProviderDisposable.dispose();
+      linkProvider.dispose();
       hoverTooltip.remove();
       term.dispose();
     },

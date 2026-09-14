@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
+import { createPathResolver } from "../pathResolver";
 import { copyText } from "../clipboard";
 import { getContextGetter } from "../contextKeys";
 import { GHOSTTY_ENGINE_ID, loadEngine, XTERM_ENGINE_ID } from "../engines";
@@ -275,6 +276,9 @@ export default function TerminalView({
   // The WS attaches to the name the tab was opened with; a later rename only
   // changes the display title, the existing attachment survives it.
   const attachNameRef = useRef(attachName);
+  // One cached path resolver per view, shared by hover links, touch Open and
+  // right-click (see pathResolver.ts).
+  const resolvePathsRef = useRef(createPathResolver(() => attachNameRef.current));
   const initialSettings = useRef(settings);
 
   // Scrollback search overlay. sendSearchRef is set inside the mount effect
@@ -724,7 +728,8 @@ export default function TerminalView({
         theme,
         isVisible: () => visibleRef.current,
         onData: forwardInput,
-        resolvePaths: (paths) => api.resolvePaths(attachNameRef.current, paths).then((r) => r.results),
+        resolvePaths: (paths, cells) => resolvePathsRef.current(paths, cells),
+        readPaneLines: (row) => api.paneLines(attachNameRef.current, row).then((r) => r.lines),
         onOpenUrl: openUrl,
         onOpenFile: (path, line) => onOpenFileRef.current?.(path, line),
         onOpenFileSecondary: (path, line) => onOpenFileSecondaryRef.current?.(path, line),
@@ -1674,9 +1679,9 @@ export default function TerminalView({
         if (range.candidate?.kind === "path") {
           const target = range.candidate.target;
           const line = range.candidate.line;
-          api.resolvePaths(attachNameRef.current, [target]).then((r) => {
+          const cell = startRC.row >= 0 ? { row: startRC.row, col: startRC.col } : null;
+          resolvePathsRef.current([target], [cell]).then(([resolved]) => {
             if (touchSelGen !== gen || !activeSel) return;
-            const resolved = r.results[0];
             if (!resolved) return;
             setActiveSel({ ...activeSel, open: { kind: "path", target: resolved, line } });
           });
@@ -2228,7 +2233,13 @@ export default function TerminalView({
     const row = cell.row - 1;
     const stitched = engine.readStitchedLine(row);
     if (!stitched) return null;
-    return rangeAt(stitched.text, (row - stitched.startLine) * engine.cols + col)?.candidate ?? null;
+    const candidate = rangeAt(stitched.text, (row - stitched.startLine) * engine.cols + col)?.candidate;
+    if (!candidate) return null;
+    // The candidate's first screen cell, so its path resolves against the
+    // pane it's printed in (null when that cell is above the live screen).
+    const startRow = stitched.startLine + Math.floor(candidate.startIdx / engine.cols);
+    const startCell = startRow >= 0 ? { row: startRow, col: candidate.startIdx % engine.cols } : null;
+    return { ...candidate, cell: startCell };
   };
   const candidateAtPointRef = useRef(candidateAtPoint);
   candidateAtPointRef.current = candidateAtPoint;
@@ -2312,10 +2323,8 @@ export default function TerminalView({
       show({ kind: "url", target: candidate.target });
       return;
     }
-    api
-      .resolvePaths(attachNameRef.current, [candidate.target])
-      .then((r) => {
-        const resolved = r.results[0];
+    resolvePathsRef.current([candidate.target], [candidate.cell])
+      .then(([resolved]) => {
         show(resolved ? { kind: "path", target: resolved, line: candidate.line } : null);
       })
       .catch(() => show(null));

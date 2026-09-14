@@ -529,15 +529,33 @@ export function openMerge(
   });
 }
 
-// Validates terminal-link file-path candidates against the session's active
-// pane cwd — see the matching server route for the resolution rules. Result
+// Validates terminal-link file-path candidates — see the matching server
+// route for the resolution rules. `cells` (index-aligned, optional) carries
+// each candidate's screen cell so it resolves against its own pane. Result
 // array is index-aligned with `paths`; a null entry means "not a real file,
-// don't linkify it".
-export function resolvePaths(session: string, paths: string[]): Promise<{ results: (string | null)[] }> {
+// don't linkify it". Callers go through pathResolver.ts, which caches.
+export function resolvePaths(
+  session: string,
+  paths: string[],
+  cells?: ({ row: number; col: number } | null)[],
+): Promise<{ results: (string | null)[] }> {
   return request(`/api/sessions/${encodeURIComponent(session)}/resolve-paths`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ paths }),
+    body: JSON.stringify(cells ? { paths, cells } : { paths }),
+  });
+}
+
+// Rejoined wrapped lines per side-by-side pane under a screen row — see the
+// pane-lines server route.
+export function paneLines(
+  session: string,
+  row: number,
+): Promise<{ lines: { left: number; width: number; startRow: number; text: string }[] }> {
+  return request(`/api/sessions/${encodeURIComponent(session)}/pane-lines`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ row }),
   });
 }
 

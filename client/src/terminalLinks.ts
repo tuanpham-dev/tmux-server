@@ -9,9 +9,28 @@ const SLASHED_PATH = /\b[\w.-]+\/[\w./-]+/;
 // start with a letter, not a digit — otherwise "3.14" reads as a file named
 // "3" with extension "14".
 const NAMED_FILE = /\b[\w-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/;
+// Well-known files with no extension (or only a leading dot) that the forms
+// above can't see when printed bare — "Makefile", "LICENSE", ".gitignore".
+// A fixed list rather than any bare word, so ordinary prose never turns into
+// an existence check. The slashed and prefixed forms already cover
+// "docker/Dockerfile" and "./Makefile", so this only needs the bare name.
+const KNOWN_NAMES = [
+  "Makefile", "makefile", "GNUmakefile", "Dockerfile", "Containerfile", "Jenkinsfile",
+  "Vagrantfile", "Gemfile", "Rakefile", "Procfile", "Brewfile", "Justfile", "justfile",
+  "Caddyfile", "Taskfile", "LICENSE", "LICENCE", "COPYING", "README", "CHANGELOG",
+  "AUTHORS", "NOTICE", "CODEOWNERS", ".gitignore", ".gitattributes", ".dockerignore",
+  ".editorconfig", ".env", ".npmrc", ".nvmrc", ".prettierrc", ".bashrc", ".zshrc", ".profile",
+];
+// Lookarounds instead of \b: \b can't anchor before a leading dot, and the
+// trailing check has to let "LICENSE." (sentence end) through while
+// rejecting "Makefile.bak" or "README-old".
+const KNOWN_FILE = new RegExp(
+  `(?<![\\w./~-])(?:${KNOWN_NAMES.map((n) => n.replace(/\./g, "\\.")).join("|")})(?![\\w-]|\\.\\w)`,
+);
 
+// KNOWN_FILE is last so the :line[:col] group (m[1]) stays shared by all.
 const PATH_RE = new RegExp(
-  `(?:${PREFIXED_PATH.source}|${SLASHED_PATH.source}|${NAMED_FILE.source})(?::(\\d+)(?::\\d+)?)?`,
+  `(?:${PREFIXED_PATH.source}|${SLASHED_PATH.source}|${NAMED_FILE.source}|${KNOWN_FILE.source})(?::(\\d+)(?::\\d+)?)?`,
   "g",
 );
 
