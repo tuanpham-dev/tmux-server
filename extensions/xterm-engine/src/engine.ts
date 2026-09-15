@@ -422,6 +422,7 @@ export async function createXtermEngine(
       return term.rows;
     },
     write: (data) => term.write(data),
+    whenWritten: (done) => term.write("", done),
     focus: () => term.focus(),
     focusInput: () => term.textarea?.focus(),
     setSoftKeyboardSuppressed: (suppressed) => {

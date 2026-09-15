@@ -52,7 +52,11 @@ async function pass(): Promise<boolean> {
     // Acknowledged before typing: a failure after this point leaves a window
     // without its agent, never one with the line typed twice.
     await done();
-    if (line) await sendTextToWindow(w.id, line, true).catch(() => {});
+    // Ctrl+U first clears anything already on the prompt, so stray input
+    // can't turn the command into something else. PowerShell has no such
+    // binding by default, so Windows types the line as it is.
+    const clear = process.platform === "win32" ? "" : "\x15";
+    if (line) await sendTextToWindow(w.id, `${clear}${line}`, true).catch(() => {});
   }
   return true;
 }

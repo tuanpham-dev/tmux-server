@@ -65,6 +65,19 @@ test('keeps the newest timestamp when it collapses', () => {
   assert.ok(!String(out).includes(banner(1).trim()));
 });
 
+test('switches off the modes a program in the history left on', () => {
+  // claude turns on focus reporting; restored, the new shell got \x1b[O every
+  // time the browser tab lost focus.
+  const history = 'claude ui\x1b[?1004h\x1b[?2004h\x1b[?1000h\x1b[?1049h\r\n';
+  const out = appendBanner(history, banner(1));
+  const tail = out.slice(history.length);
+  for (const off of ['\x1b[?1004l', '\x1b[?2004l', '\x1b[?1000l', '\x1b[?1049l', '\x1b[?25h']) {
+    assert.ok(tail.includes(off), JSON.stringify(off));
+  }
+  // And restoring again does not stack resets any more than banners.
+  assert.equal(appendBanner(out, banner(2)).length, out.length);
+});
+
 test('does the same to the byte-exact sidecar', () => {
   const once = appendBannerRaw(Buffer.from('history\r\n', 'latin1'), banner(1));
   const twice = appendBannerRaw(once, banner(2));

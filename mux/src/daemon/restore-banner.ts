@@ -21,13 +21,26 @@
 //
 // So: strip every banner the saved scrollback carries, then add the new one.
 
-/** One banner line, with the dim SGR pair it is wrapped in. Matching on the
- *  escape sequence rather than the words is what keeps this from eating a line
- *  of someone's own output that happens to say the same thing. */
-const BANNER = /\r?\n?\x1b\[2m\[restored [^\]]*\]\x1b\[0m\r?\n?/g;
+/**
+ * Switches off what the programs in the saved history turned on and can no
+ * longer turn off: the alternate screen, focus and mouse reporting, bracketed
+ * paste, application cursor keys, a hidden cursor. Left on, a replayed
+ * terminal keeps them for the new shell, so switching browser tabs sends it
+ * focus reports and a click sends it mouse reports, all as typed junk.
+ */
+export const MODE_RESET =
+  '\x1b[0m\x1b[?1049l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1l\x1b>\x1b[?25h';
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** One banner line, with the dim SGR pair it is wrapped in (and the mode reset
+ *  in front of it). Matching on the escape sequence rather than the words is
+ *  what keeps this from eating a line of someone's own output that happens to
+ *  say the same thing. */
+const BANNER = new RegExp(`(?:${escapeRegExp(MODE_RESET)})?\\r?\\n?\\x1b\\[2m\\[restored [^\\]]*\\]\\x1b\\[0m\\r?\\n?`, 'g');
 
 export function bannerText(when: Date): string {
-  return `\r\n\x1b[2m[restored ${when.toLocaleString()}]\x1b[0m\r\n`;
+  return `${MODE_RESET}\r\n\x1b[2m[restored ${when.toLocaleString()}]\x1b[0m\r\n`;
 }
 
 /** Saved scrollback with every previous banner removed and `banner` appended. */

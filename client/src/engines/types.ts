@@ -159,6 +159,9 @@ export interface TerminalEngineHandle {
   // wsAttach.ts) — both engines' underlying write() already accept it
   // alongside string.
   write(data: string | Uint8Array): void;
+  // Calls `done` once everything written so far has been parsed. Optional:
+  // an engine that parses synchronously can leave it out.
+  whenWritten?(done: () => void): void;
   // General terminal focus (e.g. tab activation, search close).
   focus(): void;
   // Focuses whichever element actually receives keyboard input — may

@@ -1,3 +1,4 @@
+import { stripTerminalReplies } from "../lib/terminalReplies";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { createPathResolver } from "../pathResolver";
@@ -499,14 +500,19 @@ export default function TerminalView({
       // echo fork) below, and the engine's own onData (real typed/pasted/
       // composed input) additionally goes through sticky-Ctrl via
       // forwardInput.
-      // False from each (re)connect until the server's "replayed" frame; input
-      // meanwhile waits in heldInput (see connect below).
+      // False from each (re)connect until the server's "replayed" frame has
+      // arrived and the engine has parsed every replayed byte; input meanwhile
+      // waits in heldInput (see connect below). What the terminal answers on
+      // its own to queries in the replayed history is dropped rather than
+      // held: those answers were for a program that is gone, and delivered
+      // they land in the shell as typed junk (and garble a resume command).
       let replayDone = false;
       const heldInput: string[] = [];
       const sendInput = (data: string) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         if (!replayDone) {
-          heldInput.push(data);
+          const typed = stripTerminalReplies(data);
+          if (typed) heldInput.push(typed);
           return;
         }
         ws.send(JSON.stringify({ type: "input", data }));
@@ -931,8 +937,14 @@ export default function TerminalView({
           if (msg.type === "host" && msg.platform === "win32") {
             engine.setWindowsPty?.(Number.isFinite(msg.windowsBuild) ? msg.windowsBuild : 0);
           } else if (msg.type === "replayed") {
-            replayDone = true;
-            for (const data of heldInput.splice(0)) ws.send(JSON.stringify({ type: "input", data }));
+            const socket = ws;
+            const release = () => {
+              if (ws !== socket || replayDone) return;
+              replayDone = true;
+              for (const data of heldInput.splice(0)) ws.send(JSON.stringify({ type: "input", data }));
+            };
+            if (engine.whenWritten) engine.whenWritten(release);
+            else release();
           } else if (msg.type === "windowSwitched" && Number.isFinite(msg.windowIndex)) {
             onWindowSwitchRef.current?.(msg.windowIndex);
           } else if (
