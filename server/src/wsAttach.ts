@@ -1,115 +1,54 @@
 import type { IncomingMessage } from "node:http";
-import * as pty from "node-pty";
 import { WebSocket } from "ws";
-import { registerAttach, type AttachCallbacks } from "./attachWatcher.js";
-import { spawnEnv } from "./spawnEnv.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
-import {
-  applyTmuxOptions,
-  exitCopyMode,
-  getAttachIdentity,
-  getScrollState,
-  invalidateScrollState,
-  isWindowTabSession,
-  promptJump,
-  scrollHorizontal,
-  scrollTo,
-  searchScrollback,
-  sessionGroupKey,
-  type SearchAction,
-} from "./tmux.js";
+import { scrollHorizontal } from "./editor.js";
+import { getMultiplexer, type AttachHandle } from "./multiplexer.js";
+import { findWindow, isWindowTabName, listSessions } from "./terminals.js";
+
+// Bridges one browser WebSocket to one attach on the terminal engine. The
+// `session` query parameter is either a session name (the viewer follows the
+// session's current window) or a window tab's "@<window-id>" (pinned to that
+// window). Terminal bytes travel as binary frames; control as JSON text.
+// Closing the socket only detaches: the terminal keeps running.
 
 interface ClientMsg {
-  type:
-    | "input"
-    | "resize"
-    | "scrollQuery"
-    | "scrollTo"
-    | "hscroll"
-    | "search"
-    | "promptJump"
-    | "exitCopyMode"
-    | "ping";
+  type: "input" | "resize" | "activate" | "hscroll" | "ping";
   data?: string;
   cols?: number;
   rows?: number;
-  line?: number;
   amount?: number;
-  col?: number;
-  row?: number;
-  action?: SearchAction;
-  query?: string;
-  dir?: "prev" | "next";
 }
 
-const SEARCH_ACTIONS = new Set<SearchAction>(["start", "next", "prev", "cancel"]);
-
-// Backpressure for a fast pane + slow/backgrounded client: without this,
-// term.onData -> ws.send piles up in ws's internal send buffer without
-// bound (ws has no drain event to await). Pausing the PTY leaves the
-// output sitting in tmux itself, same as a slow real terminal would see —
-// verified live (plans/perf-and-leak-hardening.md) that tmux just repaints
-// the final screen on resume rather than replaying the backlog.
-const HIGH_WATER = 1024 * 1024;
-const LOW_WATER = 256 * 1024;
-const RESUME_POLL_MS = 50;
-
 // A client that vanishes without a TCP FIN (phone sleep, network drop, NAT
-// idle timeout) never triggers "close" on its own — the attach PTY would
-// outlive it indefinitely, holding the session "attached" and eventually
-// pausing at HIGH_WATER. Protocol-level pings (browsers auto-reply, no
-// client code involved) detect the dead path; terminate() fires "close",
-// which kills the PTY.
+// idle timeout) never fires "close" on its own. Protocol-level pings (browsers
+// answer automatically) detect the dead path; terminate() then fires "close",
+// which detaches.
 const PEER_PING_MS = 30_000;
 
-export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number): void {
+// How often a viewer is told what's running in its window, so a tab can show
+// "vim" or react to an agent starting.
+const COMMAND_POLL_MS = 1_000;
+
+export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
   const url = new URL(req.url ?? "", "http://localhost");
-  const session = url.searchParams.get("session");
-  if (!session) {
+  const target = url.searchParams.get("session");
+  if (!target) {
     ws.close(4000, "missing session parameter");
     return;
   }
-
-  // Spawn at the client's real grid size (sent as query params) instead of
-  // a fixed 80x24: tmux's default window-size latest resizes the window to
-  // each newly-attached client, so an 80x24 spawn bounces the window to
-  // 80x24 and back once the client's post-open "resize" message lands —
-  // two SIGWINCH reflows for every full-screen TUI in the session. On a
-  // fast local link the resize usually races ahead of the attach and hides
-  // this; on a slow/proxied link (phone waking after a long disconnect)
-  // the double reflow ran for real and left panes visibly garbled.
   const parseDim = (v: string | null): number | null => {
     const n = Number(v);
     return Number.isInteger(n) && n > 0 && n <= 10_000 ? n : null;
   };
   const cols = parseDim(url.searchParams.get("cols")) ?? 80;
   const rows = parseDim(url.searchParams.get("rows")) ?? 24;
-
-  const term = pty.spawn("tmux", ["attach-session", "-t", `=${session}`], {
-    name: "xterm-256color",
-    cols,
-    rows,
-    cwd: process.env.HOME,
-    // spawnEnv: don't hand the server's own config (PORT, AUTH_TOKEN, ...)
-    // to the attach client — see spawnEnv.ts.
-    env: { ...spawnEnv(), TERM: "xterm-256color" } as Record<string, string>,
-    // Skips node-pty's own utf8-decode-then-JSON-escape round trip for
-    // every output chunk — onData below gets the PTY's raw bytes and ships
-    // them as a binary WS frame instead. IPty.onData is typed string
-    // regardless of this option (verified empirically: with encoding: null
-    // it emits real Buffers at runtime) — cast at the one call site below.
-    encoding: null,
-  });
+  const pinned = isWindowTabName(target);
+  const windowId = pinned ? target.slice(1) : null;
 
   const send = (payload: object) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
   };
 
-  // Dead-peer reaper — see PEER_PING_MS. Missing two consecutive pongs
-  // (~60s of silence from a peer that answers automatically when alive)
-  // means the path is gone, not slow.
   let peerAlive = true;
   ws.on("pong", () => {
     peerAlive = true;
@@ -124,212 +63,119 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage, port: number):
     ws.ping();
   }, PEER_PING_MS);
 
-  let paused = false;
-  let resumePoll: NodeJS.Timeout | null = null;
-  const stopResumePoll = () => {
-    if (resumePoll) {
-      clearInterval(resumePoll);
-      resumePoll = null;
-    }
+  let handle: AttachHandle | null = null;
+  let ended = false;
+  // Which session this viewer belongs to, for routing command events and
+  // following window switches. Resolved after attach for a pinned window.
+  let sessionName: string | null = pinned ? null : target;
+  let lastCommand: string | null = null;
+  let commandPoll: NodeJS.Timeout | null = null;
+
+  const end = () => {
+    if (ended) return;
+    ended = true;
+    clearInterval(peerPing);
+    if (commandPoll) clearInterval(commandPoll);
+    unsubscribeEvents();
+    handle?.close();
+    handle = null;
   };
 
-  term.onData((data) => {
-    // Binary WS frame — every other message in this file (scroll, exit,
-    // command, ...) stays JSON text, so the frame type itself is the
-    // discriminator the client dispatches on (see TerminalView's onmessage).
-    if (ws.readyState === WebSocket.OPEN) ws.send(data as unknown as Buffer);
-    if (!paused && ws.bufferedAmount > HIGH_WATER) {
-      paused = true;
-      term.pause();
-      resumePoll = setInterval(() => {
-        if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount <= LOW_WATER) {
-          stopResumePoll();
-          if (paused) {
-            paused = false;
-            term.resume();
-          }
-        }
-      }, RESUME_POLL_MS);
-    }
-  });
-
-  // The shared attach watcher notices tmux-native navigation this attach
-  // can't report itself: the pinned window vanishing (close the tab, as the
-  // old per-attach pin watcher did), a deliberate window switch inside a
-  // window tab, or the client being switch-client'ed to another session.
-  // The watcher reverts the deviation server-side; these callbacks only tell
-  // the client which tab to surface. For a window tab, select-window already
-  // ran (createWindowTab) before the client ever attaches, so whatever
-  // window is current at registration is the pinned one.
-  let exited = false;
-  let unregister: (() => void) | null = null;
-  const callbacks: AttachCallbacks = {
-    onPinnedGone: () => term.kill(),
-    onWindowSwitched: (windowIndex) => send({ type: "windowSwitched", windowIndex }),
-    onSessionSwitched: (targetSession, windowIndex) =>
-      send({ type: "sessionSwitched", session: targetSession, windowIndex }),
-    onCommandChanged: (command) => send({ type: "command", command }),
-  };
-  getAttachIdentity(session)
-    .then(({ sessionId, windowId, serverPid }) => {
-      // Fire-and-forget, same as the rest of this chain: this handler
-      // already runs asynchronously (relative to the WS handshake and the
-      // "close" listener below, both registered synchronously beforehand),
-      // so there's no new leak window from awaiting it here — but nothing
-      // downstream depends on it finishing either.
-      void applyTmuxOptions(port, serverPid);
-      if (exited) return;
-      unregister = registerAttach(
-        term.pid,
-        sessionId,
-        isWindowTabSession(session) ? windowId : null,
-        callbacks,
-      );
-    })
-    .catch(() => {});
-
-  // Live command lifecycle frames (plans/warp-features.md): shell-integration
-  // reports for panes in this attach's session, matched on the
-  // group-or-name key (sessionGroupKey) rather than the session name —
-  // this attach's target is usually a grouped tmuxserver-view-* session
-  // whose name never equals the base session the pane lives in, but whose
-  // group does. Key resolves async after attach; the frames race it only
-  // for commands finishing within the first few ms.
-  let attachKey: string | null = null;
-  sessionGroupKey(session)
-    .then((key) => {
-      attachKey = key;
-    })
-    .catch(() => {});
   const unsubscribeEvents = subscribeCommandEvents((frame) => {
-    if (attachKey !== null && frame.sessionKey === attachKey) {
+    if (sessionName !== null && frame.sessionKey === sessionName) {
       send({ type: "commandEvent", ...frame });
     }
   });
 
-  term.onExit(() => {
-    exited = true;
-    stopResumePoll();
-    unregister?.();
-    unregister = null;
-    unsubscribeEvents();
-    send({ type: "exit" });
-    if (ws.readyState === WebSocket.OPEN) ws.close();
-  });
-
-  // Snap-to-bottom on typing (see TerminalView's snapToBottomIfScrolled):
-  // leaving copy-mode is a tmux subprocess round trip, while ordinary input
-  // is a synchronous write to the attach PTY — so a keystroke sent right
-  // after the exit request would otherwise overtake it and land in copy-mode
-  // as a command instead of reaching the shell. While an exit is in flight
-  // this holds the tail of a promise chain every subsequent write queues
-  // behind; it self-clears once the chain drains, putting normal typing back
-  // on the direct path.
-  let inputChain: Promise<void> | null = null;
-
-  const writeInput = (data: string) => {
-    if (inputChain === null) {
-      term.write(data);
-      return;
+  const pollCommand = async () => {
+    const sessions = await listSessions();
+    let command: string | undefined;
+    if (windowId) {
+      for (const s of sessions) {
+        const w = s.windows.find((x) => x.id === windowId);
+        if (w) {
+          sessionName = s.name;
+          command = w.command;
+        }
+      }
+    } else {
+      command = sessions.find((s) => s.name === sessionName)?.windows.find((w) => w.active)?.command;
     }
-    const chain = inputChain.then(() => {
-      if (!exited) term.write(data);
-    });
-    inputChain = chain;
-    void chain.finally(() => {
-      if (inputChain === chain) inputChain = null;
-    });
+    if (command !== undefined && command !== lastCommand) {
+      lastCommand = command;
+      send({ type: "command", command });
+    }
   };
 
-  const pushScrollState = () => {
-    // The pane just moved, so the coalescing cache in getScrollState holds a
-    // pre-move answer — drop it, or the thumb snaps back to the old position.
-    invalidateScrollState(session);
-    return getScrollState(session)
-      .then((state) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "scroll", ...state }));
-        }
-      })
-      .catch(() => {});
+  // Messages that arrive while the attach is still being set up are held and
+  // replayed once it exists, so a fast first keystroke or resize isn't lost.
+  const early: ClientMsg[] = [];
+
+  const handleMessage = (msg: ClientMsg) => {
+    if (!handle) {
+      early.push(msg);
+      return;
+    }
+    if (msg.type === "input" && typeof msg.data === "string") {
+      handle.write(msg.data);
+    } else if (msg.type === "resize" && Number.isInteger(msg.cols) && Number.isInteger(msg.rows) && msg.cols! > 0 && msg.rows! > 0) {
+      handle.resize(msg.cols!, msg.rows!);
+    } else if (msg.type === "activate") {
+      handle.activate();
+    } else if (msg.type === "hscroll" && Number.isFinite(msg.amount)) {
+      const where = windowId ? { windowId } : { session: target };
+      void scrollHorizontal(where, msg.amount!).catch(() => {});
+    }
   };
 
   ws.on("message", (raw) => {
-    // A message already in flight when the PTY exits can still arrive here
-    // before the WS finishes closing — term.resize() on an exited PTY throws
-    // ioctl EBADF synchronously, which is fatal since this runs inside a
-    // "message" event callback (uncaught there crashes the whole process).
-    if (exited) return;
+    if (ended) return;
     let msg: ClientMsg;
     try {
       msg = JSON.parse(raw.toString());
     } catch {
       return;
     }
+    // App-level liveness probe from the client's half-open detection —
+    // protocol pings aren't visible to browser JS.
     if (msg.type === "ping") {
-      // App-level liveness probe from the client's half-open detection
-      // (TerminalView) — protocol pings aren't available to browser JS, so
-      // the client proves the path with a JSON round trip instead.
       send({ type: "pong" });
-    } else if (msg.type === "input" && typeof msg.data === "string") {
-      writeInput(msg.data);
-    } else if (msg.type === "exitCopyMode") {
-      // Only the first request opens a chain; later keystrokes arriving
-      // during the same exit just queue on it via writeInput above.
-      if (inputChain === null) {
-        const chain = exitCopyMode(session).then(pushScrollState);
-        inputChain = chain;
-        void chain.finally(() => {
-          if (inputChain === chain) inputChain = null;
-        });
-      }
-    } else if (msg.type === "scrollQuery") {
-      getScrollState(session)
-        .then((state) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "scroll", ...state }));
-          }
-        })
-        .catch(() => {});
-    } else if (msg.type === "scrollTo" && Number.isFinite(msg.line)) {
-      scrollTo(session, msg.line!)
-        .then(pushScrollState)
-        .catch(() => {});
-    } else if (
-      msg.type === "search" &&
-      msg.action !== undefined &&
-      SEARCH_ACTIONS.has(msg.action) &&
-      (msg.action !== "start" || typeof msg.query === "string")
-    ) {
-      searchScrollback(session, msg.action, msg.query)
-        .then(pushScrollState)
-        .catch(() => {});
-    } else if (msg.type === "promptJump" && (msg.dir === "prev" || msg.dir === "next")) {
-      promptJump(session, msg.dir)
-        .then(pushScrollState)
-        .catch(() => {});
-    } else if (
-      msg.type === "hscroll" &&
-      Number.isFinite(msg.amount) &&
-      Number.isFinite(msg.col) &&
-      Number.isFinite(msg.row)
-    ) {
-      scrollHorizontal(session, msg.amount!, msg.col!, msg.row!).catch(() => {});
-    } else if (
-      msg.type === "resize" &&
-      Number.isInteger(msg.cols) &&
-      Number.isInteger(msg.rows) &&
-      msg.cols! > 0 &&
-      msg.rows! > 0
-    ) {
-      term.resize(msg.cols!, msg.rows!);
+      return;
     }
+    handleMessage(msg);
   });
 
-  ws.on("close", () => {
-    clearInterval(peerPing);
-    stopResumePoll();
-    unsubscribeEvents();
-    term.kill();
-  });
+  ws.on("close", end);
+  ws.on("error", end);
+
+  getMultiplexer()
+    .attach(target, { pinned, cols, rows }, {
+      output: (data) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(data);
+      },
+      replayed: () => send({ type: "replayed" }),
+      windowSwitched: (index) => send({ type: "windowSwitched", windowIndex: index }),
+      resized: (c, r) => send({ type: "resize", cols: c, rows: r }),
+      closed: () => {
+        send({ type: "exit" });
+        end();
+        if (ws.readyState === WebSocket.OPEN) ws.close();
+      },
+    })
+    .then(async (h) => {
+      if (ended) {
+        h.close();
+        return;
+      }
+      handle = h;
+      if (windowId) sessionName = (await findWindow(windowId))?.session ?? null;
+      for (const msg of early.splice(0)) handleMessage(msg);
+      void pollCommand().catch(() => {});
+      commandPoll = setInterval(() => void pollCommand().catch(() => {}), COMMAND_POLL_MS);
+    })
+    .catch(() => {
+      send({ type: "exit" });
+      end();
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+    });
 }

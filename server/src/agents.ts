@@ -22,6 +22,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { isOnPath } from "./which.js";
 import { readSettingsDoc } from "./settingsStore.js";
+import { configDir } from "./configDir.js";
 
 // How one agent's CLI wants its hooks written, as data rather than as code.
 // Core used to carry three hard-coded flavours (claude / codex / agy); it now
@@ -215,11 +216,16 @@ export interface AgentPreset {
   // what the hook routes address. Safe as a plain object key.
   id: string;
   label: string;
-  // tmux's pane_current_command for a pane running this agent. Empty means
+  // The foreground command a window running this agent reports. Empty means
   // "launch preset only" — nothing will ever be detected as this agent.
   program: string;
   // The full command line that starts it. Empty means "detection only".
   command: string;
+  // The command line that picks up where the agent left off in the same
+  // folder ("claude --continue"), typed into a window that was running it
+  // when the terminals come back after a restart. Empty means it isn't
+  // resumed: the restored window is left at a shell prompt.
+  resume: string;
   // The argument(s) appended to `command` to start this agent with its
   // permission prompts off - its "yolo mode". A parameter rather than a
   // second registry entry, because every agent has one and the pair only
@@ -284,6 +290,7 @@ function parseAgent(raw: unknown): AgentPreset | null {
     program,
     command,
     skipPermissionsArgs: readString(source, "skipPermissionsArgs"),
+    resume: readString(source, "resume"),
     // Never taken from the settings document. A descriptor says which file in
     // the user's home core may write, and in what shape, so it comes only
     // from the manifest that declared the agent — a document the user can
@@ -380,6 +387,8 @@ export interface AgentSummary {
   // Appended to `command` when the caller offers a "skip permissions" choice
   // and the user takes it. Empty means this agent has no such mode.
   skipPermissionsArgs: string;
+  // How to resume it after a restart; empty when it isn't resumed.
+  resume: string;
   // Whether core can install hooks for this agent at all. The descriptor
   // itself is deliberately not published: it names a file in the user's home
   // and only core's writer has any business with it.
@@ -394,12 +403,13 @@ export async function listAgents(): Promise<AgentSummary[]> {
   const agents = await resolveAgents();
   return agents
     .filter((a) => a.enabled)
-    .map(({ id, label, program, command, skipPermissionsArgs, hooks, oneShot }) => ({
+    .map(({ id, label, program, command, skipPermissionsArgs, resume, hooks, oneShot }) => ({
       id,
       label,
       program,
       command,
       skipPermissionsArgs,
+      resume,
       hooks: hooks !== null,
       oneShot,
     }));
@@ -417,10 +427,23 @@ export async function listAgents(): Promise<AgentSummary[]> {
 export async function launchCommand(id: string): Promise<string | null> {
   const agent = (await listAgents()).find((a) => a.id === id);
   if (!agent || !agent.command) return null;
+  return withPermissions(agent, agent.command);
+}
+
+// The line that resumes an enabled agent after a restart, under the same
+// Yolo/Manual rule as launchCommand. Null for an unknown or disabled id, or
+// an agent that declares no resume command.
+export async function resumeCommand(id: string): Promise<string | null> {
+  const agent = (await listAgents()).find((a) => a.id === id);
+  if (!agent || !agent.resume) return null;
+  return withPermissions(agent, agent.resume);
+}
+
+async function withPermissions(agent: AgentSummary, line: string): Promise<string> {
   const doc = await readSettingsDoc();
   const settings = (doc.settings ?? {}) as Record<string, unknown>;
   const yolo = settings.agentPermissions === "yolo";
-  return yolo && agent.skipPermissionsArgs ? `${agent.command} ${agent.skipPermissionsArgs}` : agent.command;
+  return yolo && agent.skipPermissionsArgs ? `${line} ${agent.skipPermissionsArgs}` : line;
 }
 
 // One agent by id, disabled ones included — the hook routes address an agent
@@ -480,8 +503,7 @@ const HOOK_TIMEOUT_SECONDS = 5;
 // recognizes its own entries by this path and nothing else, which is what
 // keeps a hand-written hook from ever being read, rewritten or removed.
 export const agentHookShimPath = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
-  "tmux-server",
+  configDir,
   "bin",
   "agent-hook",
 );

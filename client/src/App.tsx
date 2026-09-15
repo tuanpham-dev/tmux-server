@@ -1235,7 +1235,7 @@ export default function App() {
           if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
           return;
         }
-        showError(new Error(`No tmux session named "${sessionName}"`));
+        showError(new Error(`No session named "${sessionName}"`));
       })();
     });
     setKillSessionHandler((sessionName) => {

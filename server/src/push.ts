@@ -1,17 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import webpush from "web-push";
+import { configDir } from "./configDir.js";
 
 // VAPID keys + push subscriptions, stored beside settings.json in the same
 // config dir (settingsStore.ts's convention) — a separate file rather than
 // folded into the synced settings doc, since a PushSubscription is
 // inherently device/browser-specific (tied to that browser's own service
 // worker registration), unlike settings.json's cross-device-synced fields.
-const configDir = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
-  "tmux-server",
-);
 const pushPath = path.join(configDir, "push.json");
 
 export interface PushSubscriptionRecord {

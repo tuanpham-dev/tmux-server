@@ -22,7 +22,7 @@ export function activate({ router, host }) {
     }
     const entry = await host.ports.find(port);
     if (!entry || entry.pid === undefined) {
-      res.status(404).json({ error: "port not found in tmux sessions" });
+      res.status(404).json({ error: "port not found in any terminal session" });
       return;
     }
     const pid = entry.pid;

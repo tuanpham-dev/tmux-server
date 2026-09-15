@@ -65,7 +65,7 @@ export function setNvimProvider(deps: NvimProviderDeps): void {
   nvimProvider = {
     id: EDITOR_NVIM_ID,
     extensionId: null,
-    label: "nvim (tmux pane)",
+    label: "nvim (terminal window)",
     capabilities: ["file", "diff", "merge"],
     openFile: deps.openFile,
     openDiff: deps.openDiff,

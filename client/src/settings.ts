@@ -152,12 +152,23 @@ export interface AppSettings {
   //     link or with text selected, where the menu is more useful.
   rightClickBehavior: "menu" | "forward" | "paste";
   // Typing while the pane is scrolled back jumps it to the live tail first,
-  // the way a normal terminal emulator does, instead of letting the key be
-  // eaten as a tmux copy-mode command. PageUp/PageDown are exempt — moving
-  // within the scrollback is their whole job — as are the wheel and the app's
-  // own terminal.* keybindings (find, copy, prompt jumps), which stay usable
-  // while scrolled. Turn it off to keep tmux's native copy-mode keys.
+  // the way a normal terminal emulator does. PageUp/PageDown are exempt —
+  // moving within the scrollback is their whole job — as are the wheel and
+  // the app's own terminal.* keybindings (find, copy, prompt jumps), which
+  // stay usable while scrolled.
   scrollbackSnapToBottom: boolean;
+  // The shell new terminal windows run; empty means the account's own
+  // ($SHELL). Applied to windows created after the change.
+  terminalShell: string;
+  // Keep each window's output on disk so it comes back after a restart.
+  // Off still brings back sessions, windows and folders, just not history.
+  saveScrollback: boolean;
+  // Bring sessions back when the terminal daemon starts (after a reboot, or
+  // after it was stopped).
+  restoreSessionsOnStart: boolean;
+  // After a restore, type an agent's resume command ("claude --continue")
+  // into windows that were running it.
+  resumeAgentsOnRestore: boolean;
   // The bottom status bar (RAM, terminals, listening ports). Hidden on
   // touch devices regardless — a phone has no room for it.
   showStatusBar: boolean;
@@ -313,6 +324,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   copySelection: "joinWrapped",
   rightClickBehavior: "menu",
   scrollbackSnapToBottom: true,
+  terminalShell: "",
+  saveScrollback: true,
+  restoreSessionsOnStart: true,
+  resumeAgentsOnRestore: true,
   showStatusBar: true,
   customTitleBar: true,
   commandCenterAction: "quickSwitcher",

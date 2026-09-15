@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { type NextFunction, type Request, type Response, type Router } from "express";
@@ -23,10 +23,12 @@ import {
   killSession,
   listSessionPanes,
   listSessions,
+  selectWindow,
   sendTextToSession,
+  sendTextToWindow,
   type SessionPane,
   type TmuxSession,
-} from "./tmux.js";
+} from "./terminals.js";
 import { createWorktree, listWorktrees, removeWorktree, type WorktreeListing } from "./gitWorktrees.js";
 import { listAiProfiles, runAi, type AiProfileSummary, type AiRunOptions } from "./ai.js";
 import {
@@ -54,11 +56,8 @@ import {
   readSettingsDoc,
   writeExtensionSecret,
 } from "./settingsStore.js";
+import { configDir } from "./configDir.js";
 
-const configDir = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
-  "tmux-server",
-);
 export const extensionsDir = path.join(configDir, "extensions");
 const stateFilePath = path.join(configDir, "extensions-state.json");
 
@@ -222,10 +221,12 @@ interface ExtensionManifest {
 export interface AgentContribution {
   id: string;
   label?: string;
-  // tmux's pane_current_command for a pane running it (detection).
+  // The foreground command a window running it reports (detection).
   program?: string;
   // The full launch line (launch presets).
   command?: string;
+  // The line that resumes it after the terminals restart ("claude --continue").
+  resume?: string;
   // Appended for its no-prompts mode.
   skipPermissionsArgs?: string;
   // How core should write this agent's hooks: the file, the shape, and what
@@ -713,7 +714,7 @@ export interface ExtensionHostApi {
     // an unknown or disabled id, or an agent with no launch command.
     launchCommand(id: string): Promise<string | null>;
   };
-  // tmux sessions (tmux.ts) - the same functions behind core's /api/sessions
+  // Terminal sessions (terminals.ts) - the same functions behind core's /api/sessions
   // routes, so a server hook can start and drive a session from a timer with
   // no client connected. Nothing here asks for confirmation: kill() kills.
   // Incoming `cwd` may be `~`-shortened and is expanded here; session paths
@@ -721,18 +722,26 @@ export interface ExtensionHostApi {
   // them.
   sessions: {
     list(): Promise<TmuxSession[]>;
-    // tmux picks a name when `name` is omitted. Starts at the git root
+    // Named after its folder when `name` is omitted. Starts at the git root
     // containing `cwd` unless `exactCwd`.
     create(name?: string, cwd?: string, exactCwd?: boolean): Promise<TmuxSession>;
     // Returns the new window's index. Without `cwd`, the session's own path.
-    createWindow(session: string, cwd?: string): Promise<number>;
-    // Types `text` literally into the session's active pane, then Enter when
-    // `submit`. Without `windowIndex` it targets tmux's current window for
-    // the session, which is whichever last had focus.
+    // A `name` is kept as given; without one the window is named after what
+    // runs in it.
+    createWindow(session: string, cwd?: string, name?: string): Promise<number>;
+    // Makes a window the session's current one.
+    selectWindow(session: string, index: number): Promise<void>;
+    // Types `text` literally into the session's window, then Enter when
+    // `submit`. Without `windowIndex` it targets the session's current window,
+    // which is whichever last had focus.
     sendText(session: string, text: string, submit: boolean, windowIndex?: number): Promise<void>;
+    // The same, addressed by window id ($TMUX_SERVER_WINDOW inside the window,
+    // or a pane's `id` from listPanes) — stable across renumbering.
+    sendTextToWindow(windowId: string, text: string, submit: boolean): Promise<void>;
     // Idempotent: a session that is already gone is not an error.
     kill(name: string): Promise<void>;
-    // Every pane across every window, with its stable `%`-prefixed pane id.
+    // One entry per window (a window is one terminal), with its stable window
+    // id as `id` and what's running in it as `command`.
     listPanes(session: string): Promise<SessionPane[]>;
   };
   // git worktrees (gitWorktrees.ts), the functions behind core's
@@ -834,14 +843,16 @@ function makeHostApi(id: string): ExtensionHostApi {
           invalidateSessionsCache();
         }
       },
-      createWindow: async (session, cwd) => {
+      createWindow: async (session, cwd, name) => {
         try {
-          return await createWindow(session, cwd ? expandHome(cwd) : undefined);
+          return await createWindow(session, cwd ? expandHome(cwd) : undefined, name);
         } finally {
           invalidateSessionsCache();
         }
       },
+      selectWindow: (session, index) => selectWindow(session, index),
       sendText: (session, text, submit, windowIndex) => sendTextToSession(session, text, submit, windowIndex),
+      sendTextToWindow: (windowId, text, submit) => sendTextToWindow(windowId, text, submit),
       kill: async (name) => {
         try {
           await killSession(name);
@@ -923,6 +934,7 @@ async function contributedAgents(): Promise<AgentPreset[]> {
         command,
         skipPermissionsArgs:
           typeof raw?.skipPermissionsArgs === "string" ? raw.skipPermissionsArgs.trim() : "",
+        resume: typeof raw?.resume === "string" ? raw.resume.trim() : "",
         hooks,
         // How to run this CLI for one-shot text (ai.ts). Absent means this
         // agent is not offered as a text provider at all.

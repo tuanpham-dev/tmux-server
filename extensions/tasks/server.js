@@ -1,24 +1,17 @@
 // Server hook for the tasks extension — discovers package.json scripts across
-// the active directory's workspace and runs them in named tmux windows. Plain
-// ESM (no build step), like ports'/git-scm's hooks: the server runs under tsx
-// in both dev and prod, so this loads as-is.
-//
-// tmux is driven with execFile("tmux", [...]) — never a shell string — since
-// window names and script names are user data. Core's tmux helpers are
-// deliberately not imported: extensions talk only to their activate() context,
-// so the "no server running" tolerance below is this extension's own copy of
-// core's emptyIfNoServer.
+// the active directory's workspace and runs them in named terminal windows.
+// Plain ESM (no build step), like ports'/git-scm's hooks: the server runs
+// under tsx in both dev and prod, so this loads as-is. Windows are driven
+// through core's host.sessions; script names are typed into a shell, so they
+// are quoted (shellQuote below).
 //
 // cwd/dir are trusted the same way /api/fs and git-scm are: a single-user local
 // dev tool gated on Host/Origin (server/src/security.ts), with cwd supplied by
 // the client's already-trusted active context. The one hard gate is /run, which
 // only ever types a script that is declared in the target package.json.
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import fg from "fast-glob";
-
-const TMUX_TIMEOUT = 5000;
 
 // A window whose foreground process is one of these is sitting at a prompt —
 // the script it was created for has exited, so it can be re-typed into rather
@@ -28,22 +21,6 @@ const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh"]);
 // Script names are typed into a shell, so anything outside this set has to be
 // quoted (see shellQuote in extensions/ports/src/client.tsx for the same idiom).
 const BARE_SCRIPT = /^[A-Za-z0-9_.:-]+$/;
-
-function tmux(args) {
-  return new Promise((resolve, reject) => {
-    execFile("tmux", args, { encoding: "utf8", timeout: TMUX_TIMEOUT, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr.trim() || err.message));
-      else resolve(stdout);
-    });
-  });
-}
-
-// Same three phrasings core's emptyIfNoServer swallows: with no tmux server (or
-// no session for "-t" to resolve against) there is simply nothing to list.
-function emptyIfNoServer(err) {
-  if (/no server running|error connecting|no current target/i.test(err.message)) return "";
-  throw err;
-}
 
 // POSIX single-quoting: close, escape, reopen ('\'') — the only form that is
 // safe for every byte a script name can contain.
@@ -166,45 +143,22 @@ function describePackage(dir, root, activeDir, runningNames) {
   };
 }
 
-function parseWindows(raw) {
-  return raw
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [windowId, windowName, paneId, command] = line.split("\t");
-      return { windowId, windowName, paneId, command };
-    });
-}
-
-// One list-windows per request answers both "is this script running" for every
-// row and "which window do I reuse" for /run. "=<session>:" pins the target to
-// an exact session name (no fnmatch/prefix fallback).
-async function listWindows(session) {
-  const raw = await tmux([
-    "list-windows",
-    "-t",
-    `=${session}:`,
-    "-F",
-    "#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_current_command}",
-  ]).catch(emptyIfNoServer);
-  return parseWindows(raw);
+// One listing per request answers both "is this script running" for every row
+// and "which window do I reuse" for /run.
+async function listWindows(sessions, session) {
+  const windows = await sessions.listPanes(session);
+  return windows.map((w) => ({ windowId: w.id, index: w.windowIndex, windowName: w.title, command: w.command }));
 }
 
 function isRunning(win) {
   return !SHELLS.has(win.command);
 }
 
-async function sendCommand(paneId, command) {
-  // -l types the line literally (no key-name interpretation); Enter is a
-  // separate call because a literal send can't also carry a key name.
-  await tmux(["send-keys", "-t", paneId, "-l", command]);
-  await tmux(["send-keys", "-t", paneId, "Enter"]);
-}
-
-export function activate({ router, log }) {
+export function activate({ router, log, host }) {
+  const sessions = host.sessions;
   // Every package the active directory's workspace contains, with per-script
   // running flags. session is optional: without it nothing is "running", which
-  // is also the degraded answer when tmux can't be queried at all.
+  // is also the degraded answer when the terminals can't be listed at all.
   router.get("/scripts", async (req, res) => {
     const cwd = typeof req.query.cwd === "string" ? req.query.cwd : "";
     if (!cwd || !path.isAbsolute(cwd)) {
@@ -225,11 +179,11 @@ export function activate({ router, log }) {
       const runningNames = new Set();
       if (session) {
         try {
-          for (const win of await listWindows(session)) {
+          for (const win of await listWindows(sessions, session)) {
             if (isRunning(win)) runningNames.add(win.windowName);
           }
         } catch {
-          // tmux unavailable/erroring — every row degrades to running:false.
+          // Terminals unavailable — every row degrades to running:false.
         }
       }
 
@@ -255,10 +209,10 @@ export function activate({ router, log }) {
     }
   });
 
-  // Runs a declared script in its own tmux window, reusing the window from a
+  // Runs a declared script in its own window, reusing the window from a
   // previous run when the name still matches: a live script is only switched
   // to, a finished one is re-typed into (typing into the surviving shell keeps
-  // the previous output scrollback alive, unlike `new-window <command>`).
+  // the previous output in scrollback).
   router.post("/run", async (req, res) => {
     const { session, dir, script } = req.body ?? {};
     if (typeof session !== "string" || !session || typeof dir !== "string" || !path.isAbsolute(dir) || typeof script !== "string" || !script) {
@@ -279,30 +233,22 @@ export function activate({ router, log }) {
     const name = taskWindowName(script, dir);
 
     try {
-      const existing = (await listWindows(session)).find((win) => win.windowName === name);
+      const existing = (await listWindows(sessions, session)).find((win) => win.windowName === name);
       if (existing) {
-        // "=session:@id", not the bare window id: task windows are shared
-        // into grouped view sessions (tmuxserver-view-*), and a bare id
-        // resolves against tmux's own "current session" — observed selecting
-        // the window inside a view session while the real session stayed put.
-        // Same targeting rule as core selectWindowById (server/src/tmux.ts).
         if (isRunning(existing)) {
-          await tmux(["select-window", "-t", `=${session}:${existing.windowId}`]);
+          await sessions.selectWindow(session, existing.index);
           res.json({ reused: true, running: true });
           return;
         }
-        await sendCommand(existing.paneId, command);
-        await tmux(["select-window", "-t", `=${session}:${existing.windowId}`]);
+        await sessions.sendTextToWindow(existing.windowId, command, true);
+        await sessions.selectWindow(session, existing.index);
         res.json({ reused: true, running: false });
         return;
       }
-      // -n pins the name (tmux turns automatic-rename off for it), which is
-      // what makes the reuse match survive across runs; new-window selects the
-      // window it creates.
-      const paneId = (
-        await tmux(["new-window", "-t", `=${session}:`, "-c", dir, "-n", name, "-P", "-F", "#{pane_id}"])
-      ).trim();
-      await sendCommand(paneId, command);
+      // A named window keeps its name, which is what makes the reuse match
+      // survive across runs. A new window becomes the session's current one.
+      const index = await sessions.createWindow(session, dir, name);
+      await sessions.sendText(session, command, true, index);
       res.json({ reused: false });
     } catch (err) {
       res.status(500).json({ error: err.message });

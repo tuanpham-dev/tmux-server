@@ -10,11 +10,10 @@
 //
 // This module never writes anything and treats every read as best-effort: a
 // missing/malformed file just contributes nothing.
-import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { claudeSessionsByPane } from "./claudePanes.mjs";
+import { claudeSessionsByWindow } from "./claudePanes.mjs";
 
 const CLAUDE_PROJECTS_DIR = path.join(homedir(), ".claude", "projects");
 
@@ -27,7 +26,7 @@ const CLAUDE_PROJECTS_DIR = path.join(homedir(), ".claude", "projects");
 const ACTIVE_THRESHOLD_MS = 15_000;
 
 // Window cwds arrive in the client's display form, which may be
-// "~"-shortened (core tmux.ts's shortenHome) — Claude Code's project-dir
+// "~"-shortened (core files.ts's shortenHome) — Claude Code's project-dir
 // naming is keyed off the real absolute path.
 function expandHome(p) {
   if (p === "~") return homedir();
@@ -115,43 +114,31 @@ async function readMeta(metaPath) {
 // A window's subagents belong to the Claude session running in it, not to
 // "the newest transcript in its cwd": with two Claude windows in one
 // directory, that rule gave both windows the same session, so both showed
-// the other's subagents. The session comes from the pane (claudePanes.mjs);
+// the other's subagents. The session comes from the window (claudePanes.mjs);
 // the newest-transcript rule stays only as the fallback for a CLI that
-// wrote no session file (an older Claude Code, or one started outside tmux).
+// wrote no session file (an older Claude Code, or one started elsewhere).
 
-const TMUX_TIMEOUT = 5000;
+// Set by activate(): the host's terminal sessions.
+let sessionsApi = null;
 
-function listPanes() {
-  return new Promise((resolve) => {
-    execFile(
-      "tmux",
-      ["list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{window_index}"],
-      { encoding: "utf8", timeout: TMUX_TIMEOUT },
-      // No tmux server, or any failure: no panes, so every window falls back.
-      (err, stdout) => resolve(err ? "" : stdout),
-    );
-  });
-}
-
-// "session:index" -> pane ids in that window. list-panes -a repeats a pane
-// under every grouped view session it belongs to; each copy is recorded
-// under its own session name, and the client asks by the name it shows.
+// "session:index" -> the window ids at that address (one per window).
 async function panesByWindow() {
   const byWindow = new Map();
-  for (const line of (await listPanes()).split("\n")) {
-    const [paneId, sessionName, windowIndex] = line.split("\t");
-    if (!paneId || windowIndex === undefined) continue;
-    const key = `${sessionName}:${windowIndex}`;
-    if (!byWindow.has(key)) byWindow.set(key, []);
-    byWindow.get(key).push(paneId);
+  if (!sessionsApi) return byWindow;
+  try {
+    for (const session of await sessionsApi.list()) {
+      for (const w of session.windows) byWindow.set(`${session.name}:${w.index}`, [w.id]);
+    }
+  } catch {
+    // Engine unreachable: no windows, so every window falls back.
   }
   return byWindow;
 }
 
 // { projectDir, sessionId } for a window, or null when it has no session.
 async function resolveWindowSession(win, panes, sessions) {
-  for (const paneId of panes.get(`${win.sessionName}:${win.windowIndex}`) ?? []) {
-    const session = sessions.get(paneId);
+  for (const windowId of panes.get(`${win.sessionName}:${win.windowIndex}`) ?? []) {
+    const session = sessions.get(windowId);
     if (session) {
       const cwd = session.cwd ?? expandHome(win.cwd);
       return { projectDir: path.join(CLAUDE_PROJECTS_DIR, cwdToProjectDirName(cwd)), sessionId: session.sessionId };
@@ -191,7 +178,7 @@ const countsCache = new Map(); // sessionId -> { at, value }
 // the client's own "session:index" so it maps straight back to its rows.
 // Windows with zero running agents are omitted.
 async function getCounts(windows) {
-  const [panes, sessions] = await Promise.all([panesByWindow(), claudeSessionsByPane()]);
+  const [panes, sessions] = await Promise.all([panesByWindow(), claudeSessionsByWindow()]);
   const result = {};
   const now = Date.now();
   await Promise.all(
@@ -275,7 +262,7 @@ async function summarizeAgent(file) {
 // transcript, unlike the cheap getCounts above. Only called while the
 // popover is open, not on every counts poll.
 async function getSubagentDetails(win) {
-  const [panes, sessions] = await Promise.all([panesByWindow(), claudeSessionsByPane()]);
+  const [panes, sessions] = await Promise.all([panesByWindow(), claudeSessionsByWindow()]);
   const resolved = await resolveWindowSession(win, panes, sessions);
   if (!resolved) return [];
   const files = await listSubagentFiles(resolved.projectDir, resolved.sessionId);
@@ -293,7 +280,8 @@ function readWindow(value) {
   return { key: typeof key === "string" ? key : `${sessionName}:${index}`, sessionName, windowIndex: index, cwd };
 }
 
-export function activate({ router }) {
+export function activate({ router, host }) {
+  sessionsApi = host?.sessions ?? null;
   router.post("/counts", async (req, res) => {
     const windows = Array.isArray(req.body?.windows) ? req.body.windows.map(readWindow).filter(Boolean) : [];
     try {

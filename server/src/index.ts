@@ -1,17 +1,24 @@
+// First: server/.env has to be in process.env before any other module loads.
+import "./loadEnv.js";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { agentHookBodyParser, ensureAgentHookShim } from "./agentHooks.js";
+import { resumeRestoredAgents } from "./agentResume.js";
+import { applyTerminalSettings } from "./terminalSettings.js";
 import { api } from "./api.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import { loadEnabledServerHooks } from "./extensions.js";
+import { getMultiplexer } from "./multiplexer.js";
+import { startDaemonLink } from "./mux.js";
 import { ensureOpenShim } from "./openUrl.js";
-import { notifyCommandDone } from "./push.js";
+import { notifyBell, notifyCommandDone } from "./push.js";
 import { readSettingsDoc } from "./settingsStore.js";
 import { ensureShellIntegration } from "./shellIntegration.js";
 import { getTunnelablePorts } from "./ports.js";
+import { windowAddress } from "./terminals.js";
 import {
   handleProxyRequest,
   handleProxyUpgrade,
@@ -30,19 +37,9 @@ import {
   portFromProxyHost,
   tokenFromRequest,
 } from "./security.js";
-import { startViewSweeper } from "./viewSweeper.js";
 import { handleAttach } from "./wsAttach.js";
 import { handleTunnel } from "./wsTunnel.js";
 
-// Optional server/.env (gitignored), e.g. NEW_SESSION_CWD — resolved relative
-// to this file so it's found no matter which directory the server starts from.
-// Consumers read process.env at call time, so loading after the imports above
-// is safe.
-try {
-  process.loadEnvFile(path.resolve(import.meta.dirname, "../.env"));
-} catch {
-  // No .env file — every variable it could set has a fallback.
-}
 
 // Backstop for a rejected promise nobody awaited - an extension's socket
 // server, timer or hook callback, where no request exists to fail. Node's
@@ -153,7 +150,7 @@ app.use((req, res, next) => {
     getTunnelablePorts()
       .then((allowed) => {
         if (!allowed.has(subdomainPort)) {
-          res.status(403).json({ error: `port ${subdomainPort} is not open to a tmux session` });
+          res.status(403).json({ error: `port ${subdomainPort} is not open to a terminal session` });
           return;
         }
         handleProxyRequest(req, res, subdomainPort, req.url ?? "/", null);
@@ -170,7 +167,7 @@ app.use((req, res, next) => {
     getTunnelablePorts()
       .then((allowed) => {
         if (!allowed.has(parsed.port)) {
-          res.status(403).json({ error: `port ${parsed.port} is not open to a tmux session` });
+          res.status(403).json({ error: `port ${parsed.port} is not open to a terminal session` });
           return;
         }
         const search = req.url && req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
@@ -291,7 +288,7 @@ server.on("upgrade", (req, socket, head) => {
   const parsedProxy = subdomainPort === null ? parseProxyPath(pathname) : null;
   if (pathname === "/ws/attach") {
     wss.handleUpgrade(req, socket, head, (ws) => {
-      handleAttach(ws, req, PORT);
+      handleAttach(ws, req);
     });
   } else if (pathname === "/ws/tunnel") {
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -343,7 +340,19 @@ server.listen(PORT, HOST, () => {
   console.log(`tmux-server server listening on http://${HOST}:${PORT}`);
 });
 
-startViewSweeper();
+// The terminal daemon: tell it which server its shells report to, and turn
+// its bells into push notifications. A bell is keyed "session:index", the
+// address a notification opens.
+startDaemonLink(PORT);
+applyTerminalSettings().catch((err) => console.error("failed to apply terminal settings:", err));
+resumeRestoredAgents();
+getMultiplexer().onEvent((event) => {
+  if (event.event === "sessions-changed") resumeRestoredAgents();
+  if (event.event !== "bell") return;
+  windowAddress(event.windowId)
+    .then((addr) => (addr ? notifyBell(`${addr.session}:${addr.index}`) : undefined))
+    .catch(() => {});
+});
 loadEnabledServerHooks().catch((err) => {
   console.error("failed to load extension server hooks:", err);
 });

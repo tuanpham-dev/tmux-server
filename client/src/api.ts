@@ -91,7 +91,7 @@ export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
 export interface AgentSummaryDto {
   id: string;
   label: string;
-  // tmux's pane_current_command for a pane running this agent (detection).
+  // the foreground command a window running this agent reports (detection).
   program: string;
   // The full launch line (launch presets).
   command: string;
@@ -543,19 +543,6 @@ export function resolvePaths(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(cells ? { paths, cells } : { paths }),
-  });
-}
-
-// Rejoined wrapped lines per side-by-side pane under a screen row — see the
-// pane-lines server route.
-export function paneLines(
-  session: string,
-  row: number,
-): Promise<{ lines: { left: number; width: number; startRow: number; text: string }[] }> {
-  return request(`/api/sessions/${encodeURIComponent(session)}/pane-lines`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ row }),
   });
 }
 

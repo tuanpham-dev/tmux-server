@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { buildProcessMap, listAllPanePids, type PaneMaps, type ProcInfo } from "./tmux.js";
+import { buildProcessMap, type ProcInfo } from "./processes.js";
+import { listAllWindowPids } from "./terminals.js";
 
 export interface ListeningPort {
   port: number;
@@ -108,7 +109,7 @@ function computeOwnAncestors(procMap: Map<number, ProcInfo>, panePids: Map<numbe
 
 // "own": the chain hit tmux-server's own ancestry — hard-excluded, no
 // fallback. "unknown": the chain dead-ended (reparented orphan, exited
-// parent) — eligible for the TMUX_PANE environ fallback below.
+// parent) — eligible for the TMUX_SERVER_WINDOW environ fallback below.
 type Attribution = { session: string } | "own" | "unknown";
 
 // Walks a port's owning pid up its parent chain looking for a tmux pane.
@@ -131,16 +132,17 @@ function attributeToSession(
   return "unknown";
 }
 
-// TMUX_PANE survives reparenting: when the shell/agent that spawned a process
-// exits, the process is reparented to pid 1 and the ppid walk above dead-ends,
-// but the pane id it was spawned in stays in its (immutable) /proc environ.
+// TMUX_SERVER_WINDOW survives reparenting: when the shell/agent that spawned a
+// process exits, the process is reparented to pid 1 and the ppid walk above
+// dead-ends, but the window id it was spawned in stays in its (immutable)
+// /proc environ.
 // Same-user readable only — the same constraint ss's process column already
 // imposes, so this can never attribute a port ss couldn't name.
-async function readTmuxPaneFromEnviron(pid: number): Promise<string | null> {
+async function readWindowFromEnviron(pid: number): Promise<string | null> {
   try {
     const raw = await readFile(`/proc/${pid}/environ`, "utf8");
     for (const entry of raw.split("\0")) {
-      if (entry.startsWith("TMUX_PANE=")) return entry.slice("TMUX_PANE=".length);
+      if (entry.startsWith("TMUX_SERVER_WINDOW=")) return entry.slice("TMUX_SERVER_WINDOW=".length);
     }
   } catch {
     // Exited, foreign-user, or no /proc (macOS) — unattributable.
@@ -149,13 +151,13 @@ async function readTmuxPaneFromEnviron(pid: number): Promise<string | null> {
 }
 
 // Listening ports whose owning process lives inside a tmux pane's process
-// tree, by ppid walk or — for orphaned trees — by TMUX_PANE environ.
+// tree, by ppid walk or — for orphaned trees — by TMUX_SERVER_WINDOW environ.
 // Everything else (system services, tmux-server's own server and dev
 // tooling, processes from panes since closed) is excluded.
 async function scanTmuxPorts(): Promise<ListeningPort[]> {
   const [ports, panes, procMap] = await Promise.all([
     listPorts(),
-    listAllPanePids(),
+    listAllWindowPids(),
     buildProcessMap(),
   ]);
   const ownAncestors = computeOwnAncestors(procMap, panes.byPid);
@@ -166,8 +168,8 @@ async function scanTmuxPorts(): Promise<ListeningPort[]> {
       const result = attributeToSession(port.pid, procMap, panes.byPid, ownAncestors);
       if (result === "own") return null;
       if (result !== "unknown") return { ...port, session: result.session };
-      const paneId = await readTmuxPaneFromEnviron(port.pid);
-      const session = paneId ? panes.byPaneId.get(paneId) : undefined;
+      const windowId = await readWindowFromEnviron(port.pid);
+      const session = windowId ? panes.byWindowId.get(windowId) : undefined;
       return session ? { ...port, session } : null;
     }),
   );

@@ -4,14 +4,10 @@
 // connected client over SSE — the focused app tab then opens the URL in the
 // user's actual browser, rewriting loopback ports to the app's port proxy.
 import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import type { Response } from "express";
+import { configDir } from "./configDir.js";
 
-const configDir = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
-  "tmux-server",
-);
 const shimBinDir = path.join(configDir, "bin");
 
 // The canonical shim path — what applyTmuxOptions points tmux's global

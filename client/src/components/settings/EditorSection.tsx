@@ -15,7 +15,7 @@ export default function EditorSection() {
   const editorOptions = [
     // Core's own editor, always present — it can't be uninstalled, and it's
     // the fallback for any capability the selection doesn't claim.
-    { id: EDITOR_NVIM_ID, label: "nvim (tmux pane)" },
+    { id: EDITOR_NVIM_ID, label: "nvim (terminal window)" },
     ...extensions
       .filter((ext) => ext.enabled)
       .flatMap((ext) => ext.editors.map((e) => ({ id: `ext.${ext.id}.${e.id}`, label: e.label }))),
