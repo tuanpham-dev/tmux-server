@@ -44,9 +44,8 @@ export interface ProjectListProps {
   onRenameWindow: (session: string, win: TmuxWindow) => void;
   onTogglePinSession: (name: string) => void;
   onNewWindowInSession: (session: string) => void;
-  // Opens (or creates, for a dead pinned project) the session rooted in this
-  // folder — see useSessionActions' openProject. Live project rows route
-  // their click here too: it focuses the most-recent terminal.
+  // Opens the session rooted in this folder — see useSessionActions'
+  // openProject. It focuses the project's most-recent terminal.
   onOpenProject: (cwd: string) => void;
   // A worktree row's click: focus its most-recent terminal, or start a
   // session in it named after its branch when it has none.
@@ -364,7 +363,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       const id = projectRowId(node);
       const blockStart = out.length;
       out.push({ kind: "project", id, node, parentId: null, depth: 0 });
-      if (node.dead || collapsedRows.has(id)) {
+      if (collapsedRows.has(id)) {
         if (node.key === activeProjectKey) pos.set(id, "solo");
         continue;
       }
@@ -408,7 +407,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
         const { repoIndex: repos } = treeRef.current;
         // Same test as canCreateWorktree, off the ref: this callback is
         // registered once and would otherwise pin the first render's repoIndex.
-        const target = pickTarget((n) => !n.dead && !!n.cwd && (n.worktrees.length > 0 || repos.has(n.cwd)));
+        const target = pickTarget((n) => !!n.cwd && (n.worktrees.length > 0 || repos.has(n.cwd)));
         if (!target) return;
         openCreateForm(target);
         if (runCommandIndex !== undefined) {
@@ -417,7 +416,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       },
       cleanUp: () => {
         // Same gate as the row's menu item: a repository with linked worktrees.
-        const target = pickTarget((n) => !n.dead && !!n.cwd && n.worktrees.length > 1);
+        const target = pickTarget((n) => !!n.cwd && n.worktrees.length > 1);
         if (target) void cleanUpRef.current(target);
       },
     });
@@ -435,7 +434,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   // Which rows have something to collapse — project rows with children, and
   // worktree rows with terminals.
   const isCollapsible = (row: Row): boolean =>
-    (row.kind === "project" && !row.node.dead && (row.node.sessions.length > 0 || row.node.worktrees.length > 0)) ||
+    (row.kind === "project" && (row.node.sessions.length > 0 || row.node.worktrees.length > 0)) ||
     (row.kind === "worktree" && row.node.sessions.length > 0);
 
   // A project row offers the create form only when it actually has a
@@ -449,7 +448,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   // and a single-worktree project's cwd IS its session path, the key it is
   // stored under.
   const canCreateWorktree = (node: ProjectNode) =>
-    !node.dead && !!node.cwd && (node.worktrees.length > 0 || repoIndex.has(node.cwd));
+    !!node.cwd && (node.worktrees.length > 0 || repoIndex.has(node.cwd));
 
   // Set right after useListNavigation below (same render) — lets onCollapse
   // move focus to a row's parent without a circular reference to the hook
@@ -470,10 +469,6 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
         return;
       }
       const node = row.node;
-      if (node.dead) {
-        if (node.cwd) onOpenProject(node.cwd);
-        return;
-      }
       if (node.sessions.length > 0) {
         // Focus the project's most-recent terminal (openProject's live
         // branch) rather than tmux's open-every-window; Open All Terminals
@@ -636,29 +631,6 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
   const renderProjectRow = (row: Extract<Row, { kind: "project" }>) => {
     const node = row.node;
     const rowProps = nav.getRowProps(row.id);
-    if (node.dead) {
-      const cwd = node.cwd ?? node.key;
-      return (
-        <div className="session-row">
-          <button
-            className="session-item project-item dead-session-item"
-            title={`${cwd} (not running - click to open)`}
-            onClick={() => onOpenProject(cwd)}
-            {...menuBindings(row)}
-            tabIndex={rowProps.tabIndex}
-            ref={rowProps.ref}
-            onFocus={rowProps.onFocus}
-          >
-            <Icon name="pinned" className="pin-indicator" />
-            <span className="session-name">{node.label}</span>
-            <span className="item-cwd">{cwd}</span>
-          </button>
-          <button className="row-add-button" title="Open project" tabIndex={-1} onClick={() => onOpenProject(cwd)}>
-            <Icon name="add" />
-          </button>
-        </div>
-      );
-    }
     const members = [...node.sessions, ...node.worktrees.flatMap((w) => w.sessions)];
     const isActive = activeSessionName !== null && members.some((m) => m.name === activeSessionName);
     const anyAttached = members.some((m) => m.attached > 0);

@@ -1938,7 +1938,7 @@ export default function App() {
     ],
   );
 
-  // The sidebar tree shows pins and dead projects, so it gets the registry;
+  // The sidebar tree shows pins, so it gets the registry;
   // the status bar's terminals popover deliberately passes none.
   const sidebarProjectListProps = useMemo(
     () => ({ ...projectListProps, projects }),

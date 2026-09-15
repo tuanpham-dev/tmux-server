@@ -140,10 +140,9 @@ export interface WorktreeNode {
   sessions: TmuxSession[];
 }
 
-// One project row. Either a live project — a repository with worktrees, or a
-// plain folder whose sessions sit directly under it — or a dead pinned
-// project, kept visible so one click restores its session in exactly that
-// folder.
+// One project row: a repository with worktrees, or a plain folder whose
+// sessions sit directly under it. Pinned projects with no live session are
+// not rows; they are listed in the Open Recent menu.
 //
 // `sessions` and `worktrees` are mutually exclusive in practice: a repository
 // project puts every session on a worktree node, a plain-folder project has
@@ -154,7 +153,6 @@ export interface ProjectNode {
   cwd: string | null;
   label: string;
   pinned: boolean;
-  dead: boolean;
   sessions: TmuxSession[];
   worktrees: WorktreeNode[];
 }
@@ -188,9 +186,8 @@ export function worktreeLabel(wt: WorktreeInfo): string {
   return projectName(wt.path);
 }
 
-// Live projects first, in the tmux order of the first session that put each
-// one on screen, then a dead row for each pinned project no live session is
-// rooted in, MRU-first. Matching is by path throughout, so an out-of-band
+// Live projects, in the tmux order of the first session that put each one on
+// screen. Matching is by path throughout, so an out-of-band
 // `tmux rename-session` can't orphan a pin.
 export function projectTree(
   sessions: TmuxSession[],
@@ -214,7 +211,6 @@ export function projectTree(
           cwd: repo.repo,
           label: projectName(repo.repo),
           pinned: pinnedCwds.has(repo.repo),
-          dead: false,
           sessions: [],
           // Every worktree of the repository, including ones with no session
           // — that is how a worktree stays reachable after its session dies,
@@ -257,7 +253,6 @@ export function projectTree(
       cwd: session.path || null,
       label: session.path ? projectName(session.path) : session.name,
       pinned: pinnedCwds.has(session.path),
-      dead: false,
       sessions: [session],
       worktrees: [],
     };
@@ -265,25 +260,5 @@ export function projectTree(
     nodes.push(node);
   }
 
-  // A folder already on screen as a worktree of a live project never also
-  // gets a dead row — the worktree row carries the pin instead, so one folder
-  // is never two rows.
-  const onScreen = new Set<string>();
-  for (const node of nodes) {
-    if (node.cwd) onScreen.add(node.cwd);
-    for (const wt of node.worktrees) onScreen.add(wt.key);
-  }
-  for (const p of [...projects].sort((a, b) => b.lastOpened - a.lastOpened)) {
-    if (!p.pinned || onScreen.has(p.cwd)) continue;
-    nodes.push({
-      key: p.cwd,
-      cwd: p.cwd,
-      label: projectName(p.cwd),
-      pinned: true,
-      dead: true,
-      sessions: [],
-      worktrees: [],
-    });
-  }
   return nodes;
 }

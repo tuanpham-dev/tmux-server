@@ -5,6 +5,7 @@ import {
   bumpRecent,
   isLinkedWorktreePath,
   projectName,
+  projectTree,
   sessionNameForBranch,
   sessionNameForProject,
   type ProjectNode,
@@ -48,7 +49,7 @@ async function sendTextWithRetries(
 
 // Session/window CRUD, project open/close/pin/recents (the projects
 // registry — see plans/projects-not-sessions.md), and the context menus
-// built on top of them (sessionMenuItems/deadProjectMenuItems/
+// built on top of them (sessionMenuItems/projectMenuItems/
 // windowMenuItems/tabMenuItems/recentProjectMenuItems). Takes the
 // tab-closing primitives (closeTab/closeOtherTabs) and
 // openWindowTab/openAllWindows/projects state as explicit parameters rather
@@ -462,18 +463,10 @@ export function useSessionActions(
     [confirmDialog, refresh, showError],
   );
 
-  // Menu for a project row: a plain folder, a repository header, or a dead
-  // pinned project. Pin state is the registry's flag for the row's folder.
+  // Menu for a project row: a plain folder or a repository header. Pin state
+  // is the registry's flag for the row's folder.
   const projectMenuItems = useCallback(
     (node: ProjectNode): MenuItem[] => {
-      if (node.dead) {
-        const cwd = node.cwd ?? node.key;
-        return [
-          { label: "Open Project", onClick: () => openProject(cwd) },
-          { label: "Unpin Project", onClick: () => unpinProject(cwd) },
-          { label: "Remove from Recent", onClick: () => removeRecentProject(cwd) },
-        ];
-      }
       const all = sessionsUnder(node);
       const items: MenuItem[] = [];
       if (node.sessions.length > 0) {
@@ -502,8 +495,6 @@ export function useSessionActions(
     [
       cleanUpWorktrees,
       openProject,
-      unpinProject,
-      removeRecentProject,
       openAllWindows,
       newTerminalInProject,
       togglePinProject,
@@ -648,23 +639,36 @@ export function useSessionActions(
     [openWorktree, newTerminalInWorktree, togglePinProject, closeSessions, removeWorktree],
   );
 
-  // The recent-projects header dropdown: every registered folder MRU-first,
-  // each row opening its project and carrying a trailing "forget" action;
-  // footer offers the folder picker and the bulk clear (which keeps pins).
+  // The recent-projects header dropdown: pinned folders first, then the rest,
+  // each group MRU-first. A pinned folder already in the sidebar (a project or
+  // worktree row) is left out: it is one click away there. A row opens its
+  // project; its trailing action unpins a pinned folder and forgets any other.
+  // Footer offers the folder picker and the bulk clear (which keeps pins).
   const recentProjectMenuItems = useCallback(
     (openFolderPicker: () => void): MenuItem[] => {
-      const items: MenuItem[] = [...projects]
-        .sort((a, b) => b.lastOpened - a.lastOpened)
-        .map((p) => ({
+      const onScreen = new Set<string>();
+      for (const node of projectTree(sessions, projects, repoIndex)) {
+        if (node.cwd) onScreen.add(node.cwd);
+        for (const wt of node.worktrees) onScreen.add(wt.key);
+      }
+      const sorted = [...projects].sort((a, b) => b.lastOpened - a.lastOpened);
+      const pinned = sorted.filter((p) => p.pinned && !onScreen.has(p.cwd));
+      const recent = sorted.filter((p) => !p.pinned);
+      const items: MenuItem[] = [
+        ...pinned.map((p) => ({
           label: `${projectName(p.cwd)} - ${p.cwd}`,
-          icon: p.pinned ? "pinned" : "folder",
+          icon: "pinned",
           onClick: () => openProject(p.cwd),
-          trailing: {
-            icon: "close",
-            title: "Remove from Recent",
-            onClick: () => removeRecentProject(p.cwd),
-          },
-        }));
+          trailing: { icon: "close", title: "Unpin Project", onClick: () => unpinProject(p.cwd) },
+        })),
+        ...(pinned.length > 0 && recent.length > 0 ? [{ label: "", separator: true, onClick: () => {} }] : []),
+        ...recent.map((p) => ({
+          label: `${projectName(p.cwd)} - ${p.cwd}`,
+          icon: "folder",
+          onClick: () => openProject(p.cwd),
+          trailing: { icon: "close", title: "Remove from Recent", onClick: () => removeRecentProject(p.cwd) },
+        })),
+      ];
       if (items.length === 0) {
         items.push({ label: "No recent projects", disabled: true, onClick: () => {} });
       }
@@ -675,7 +679,7 @@ export function useSessionActions(
       }
       return items;
     },
-    [projects, openProject, removeRecentProject, clearRecentProjects],
+    [sessions, projects, repoIndex, openProject, unpinProject, removeRecentProject, clearRecentProjects],
   );
 
   const windowMenuItems = useCallback(

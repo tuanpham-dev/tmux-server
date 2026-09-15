@@ -1480,20 +1480,6 @@ body.resizing-row {
   font-size: 10px;
 }
 
-/* A pinned session with no live tmux session behind it — no chevron/window
-   list/kill affordances (nothing to expand or kill), dimmed to read as
-   inactive, restored via its own click/context-menu actions instead. */
-.dead-session-item {
-  opacity: 0.55;
-  /* No padding override: now that every project row is a caption, they all
-     start at the same left edge. This row's pin icon fills the slot a live
-     row spends on its chevron. */
-}
-
-.dead-session-item:hover {
-  opacity: 0.85;
-}
-
 /* ---- Files panel content ---- */
 
 /* Focusable (tabIndex -1) purely so it can receive paste events when the click

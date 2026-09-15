@@ -284,7 +284,6 @@ describe("projectTree", () => {
         cwd: "~/notes",
         label: "notes",
         pinned: false,
-        dead: false,
         sessions: [session],
         worktrees: [],
       },
@@ -329,32 +328,9 @@ describe("projectTree", () => {
     expect(nodes[0].worktrees.map((w) => w.pinned)).toEqual([false, true]);
   });
 
-  it("emits a dead row for a pinned project with no live session", () => {
+  it("gives pinned projects with no live session no row", () => {
     const nodes = projectTree([], [makeProject({ cwd: "~/works/gone", pinned: true })], new Map());
-    expect(nodes).toEqual([
-      {
-        key: "~/works/gone",
-        cwd: "~/works/gone",
-        label: "gone",
-        pinned: true,
-        dead: true,
-        sessions: [],
-        worktrees: [],
-      },
-    ]);
-  });
-
-  it("orders dead rows MRU-first and skips unpinned projects", () => {
-    const nodes = projectTree(
-      [],
-      [
-        makeProject({ cwd: "~/older", pinned: true, lastOpened: 10 }),
-        makeProject({ cwd: "~/newer", pinned: true, lastOpened: 20 }),
-        makeProject({ cwd: "~/recent-only", pinned: false, lastOpened: 30 }),
-      ],
-      new Map(),
-    );
-    expect(nodes.map((n) => n.key)).toEqual(["~/newer", "~/older"]);
+    expect(nodes).toEqual([]);
   });
 
   it("never doubles a folder that is already a worktree row", () => {
