@@ -1,9 +1,10 @@
 // The OS service that keeps tmux-server running: a systemd user unit on
-// Linux, a launchd agent on macOS (Task Scheduler on Windows arrives with the
-// Windows stage). Commands talk to this interface, never to systemctl or
-// launchctl directly.
+// Linux, a launchd agent on macOS, a Task Scheduler logon task on Windows.
+// Commands talk to this interface, never to systemctl, launchctl or schtasks
+// directly.
 import { launchd } from './launchd.ts';
 import { systemd } from './systemd.ts';
+import { taskScheduler } from './taskScheduler.ts';
 
 export interface ServiceManager {
   /** "systemd" or "launchd", for messages. */
@@ -35,6 +36,7 @@ export interface ServiceManager {
 export function pickServiceManager(): ServiceManager | null {
   if (process.platform === 'linux') return systemd;
   if (process.platform === 'darwin') return launchd;
+  if (process.platform === 'win32') return taskScheduler;
   return null;
 }
 

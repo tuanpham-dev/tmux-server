@@ -1,13 +1,7 @@
 import type { Platform } from './types.ts';
 import { posix } from './posix.ts';
+import { windows } from './windows.ts';
 
 export type { Platform } from './types.ts';
 
-function pick(): Platform {
-  if (process.platform === 'win32') {
-    throw new Error('the terminal daemon does not run on Windows yet');
-  }
-  return posix;
-}
-
-export const platform: Platform = pick();
+export const platform: Platform = process.platform === 'win32' ? windows : posix;

@@ -118,4 +118,6 @@ export const posix: Platform = {
   onTerminalResize: (cb) => {
     process.on('SIGWINCH', cb);
   },
+
+  rawReplaySafe: true,
 };

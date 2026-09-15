@@ -28,9 +28,12 @@ export function output(cmd: string, args: string[]): string {
   return r.status === 0 ? r.stdout.trim() : '';
 }
 
+// npm is a .cmd script on Windows, which Node only runs through a shell.
+export const needsShell = (cmd: string) => process.platform === 'win32' && cmd === 'npm';
+
 /** Runs a command with the terminal attached; returns its exit status. */
 export function inherit(cmd: string, args: string[], cwd?: string): number {
-  const r = spawnSync(cmd, args, { stdio: 'inherit', cwd });
+  const r = spawnSync(cmd, args, { stdio: 'inherit', cwd, shell: needsShell(cmd) });
   return r.status ?? 1;
 }
 

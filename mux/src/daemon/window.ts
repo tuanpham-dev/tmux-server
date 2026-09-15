@@ -3,6 +3,7 @@ import { BellDetector } from './bell.ts';
 import { spawnEnv } from '../util/spawn-env.ts';
 import { RawScrollback, RESET_PREFIX } from './raw-scrollback.ts';
 import { platform } from '../platform/index.ts';
+import { directoryFromOsc7 } from '../util/osc7.ts';
 import * as nodePty from 'node-pty';
 import type { IPty } from 'node-pty';
 // CJS packages: named ESM imports fail at runtime, so use default-import interop.
@@ -78,6 +79,8 @@ export class Window {
    *  handler below. */
   #answerQueries = false;
   #lastOutputAt = Date.now();
+  /** The directory the shell last reported (OSC 7), once it's reporting. */
+  #reportedCwd: string | null = null;
   // Starts a beat in the future so the shell's first prompt doesn't flag a
   // window nobody has opened yet as active.
   #lastSeenAt = Date.now() + 1000;
@@ -140,6 +143,12 @@ export class Window {
       this.#pty.write(response);
     });
 
+    // OSC 7 from the live shell. Ignored while restored history is still being
+    // parsed: those reports describe a shell that no longer exists.
+    this.#term.parser.registerOscHandler(7, (payload) => {
+      if (this.#answerQueries) this.#reportedCwd = directoryFromOsc7(payload) ?? this.#reportedCwd;
+      return false;
+    });
     this.#pty.onData((data) => {
       this.#term.write(data);
       // node-pty decodes PTY output as UTF-8, so re-encoding as UTF-8 recovers
@@ -216,6 +225,8 @@ export class Window {
    * byte-exact, so OSC 8 links, OSC 133 marks, and multi-byte UTF-8 glyphs all
    * survive. When an alt-screen app is in front, or there is nothing in the
    * sidecar, fall back to the SerializeAddon (which forces the normal buffer).
+   * Where the pseudo-terminal redraws on its own (platform.rawReplaySafe is
+   * false: Windows' ConPTY) the serialized screen is always used.
    * `refreshPrefix` is the clear/reset prepended for the serialize path.
    *
    * Returns a Buffer, never a string: the raw sidecar holds real bytes, and
@@ -224,7 +235,7 @@ export class Window {
    */
   replayPayload(scrollbackLines: number, refreshPrefix: string): Buffer {
     const raw = this.#raw.bytes();
-    if (raw.length > 0 && !this.#raw.onAltScreen) {
+    if (platform.rawReplaySafe && raw.length > 0 && !this.#raw.onAltScreen) {
       return Buffer.concat([Buffer.from(RESET_PREFIX, 'latin1'), raw]);
     }
     return Buffer.from(refreshPrefix + this.serializeState(scrollbackLines), 'utf8');
@@ -242,9 +253,10 @@ export class Window {
     return lines.join('\n');
   }
 
-  /** The shell's live working directory — what `cd` last set, not where it spawned. */
+  /** The shell's live working directory — what `cd` last set, not where it spawned.
+   *  From the OS where it will say, else the shell's own OSC 7 report. */
   liveCwd(): string {
-    return platform.cwdOf(this.#pty.pid) ?? this.spawnCwd;
+    return platform.cwdOf(this.#pty.pid) ?? this.#reportedCwd ?? this.spawnCwd;
   }
 
   /**

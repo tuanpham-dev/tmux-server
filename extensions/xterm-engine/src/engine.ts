@@ -601,6 +601,9 @@ export async function createXtermEngine(
       }
       term.select(col, index, length);
     },
+    setWindowsPty: (windowsBuild) => {
+      term.options.windowsPty = windowsBuild === null ? {} : { backend: "conpty", buildNumber: windowsBuild };
+    },
     promptLines: () =>
       [...promptMarkers]
         .filter((m) => !m.isDisposed && m.line >= 0)

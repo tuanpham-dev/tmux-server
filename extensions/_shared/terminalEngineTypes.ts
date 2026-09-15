@@ -259,6 +259,10 @@ export interface TerminalEngineHandle {
   // oldest first, kept current as scrollback is trimmed. Optional: without
   // it the prompt-jump commands have nothing to jump to.
   promptLines?(): number[];
+  // Tells the engine the terminals are Windows ConPTY pseudo-terminals (with
+  // the Windows build number), or not, so it can match how they reflow.
+  // Optional: an engine without it renders them as it would any other.
+  setWindowsPty?(windowsBuild: number | null): void;
   // Cell size in CSS pixels, respecting lineHeight/letterSpacing — the
   // same grid both cellFromPoint and the engine's own renderer use.
   getCellMetrics(): { width: number; height: number };

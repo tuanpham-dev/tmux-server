@@ -70,7 +70,7 @@ import { getTunnelablePorts } from "./ports.js";
 import { tunnelStatus } from "./wsTunnel.js";
 import { addSubscription, getVapidPublicKey, removeSubscription } from "./push.js";
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
-import { shellIntegrationPath, shellIntegrationSourceLine } from "./shellIntegration.js";
+import { shellIntegrationPath, shellIntegrationProfile, shellIntegrationSourceLine } from "./shellIntegration.js";
 import { applyTerminalSettings } from "./terminalSettings.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
 import { resolveLinkPath } from "./pathLinks.js";
@@ -1633,6 +1633,7 @@ api.get("/command-events/status", (_req, res) => {
     receivedAny: hasReceivedEvents(),
     path: shellIntegrationPath,
     sourceLine: shellIntegrationSourceLine,
+    profile: shellIntegrationProfile,
   });
 });
 

@@ -73,7 +73,7 @@ function PushNotificationToggle() {
 // report — the cheapest honest "is it working" signal, since the server
 // can't see inside the user's rc files.
 function ShellIntegrationCard() {
-  const [status, setStatus] = useState<{ receivedAny: boolean; sourceLine: string } | null>(null);
+  const [status, setStatus] = useState<{ receivedAny: boolean; sourceLine: string; profile?: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -103,7 +103,7 @@ function ShellIntegrationCard() {
       </span>
       <div className="settings-hint">
         Enables jump-to-previous-command, command history, and finished-command notifications.
-        Add this line to your ~/.zshrc or ~/.bashrc, then open a new shell:
+        Add this line to {status.profile ?? "your ~/.zshrc or ~/.bashrc"}, then open a new shell:
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap", userSelect: "all" }}>

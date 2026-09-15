@@ -25,15 +25,21 @@ import { enableLinger } from './systemd.ts';
  */
 export function cmdRun(): Promise<never> {
   return new Promise(() => {
-    const child = spawn('npm', ['start'], { cwd: REPO_DIR, stdio: 'inherit', detached: true });
+    const windows = process.platform === 'win32';
+    // Windows has no process groups to signal: npm runs through a shell (it's
+    // a .cmd there) and the tree is ended with taskkill instead.
+    const child = spawn('npm', ['start'], { cwd: REPO_DIR, stdio: 'inherit', detached: !windows, shell: windows });
     let stopping = false;
+    const killTree = (signal: NodeJS.Signals) => {
+      if (!child.pid) return;
+      if (windows) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      else try { process.kill(-child.pid, signal); } catch { /* already gone */ }
+    };
     const stop = (signal: NodeJS.Signals) => {
       if (stopping || !child.pid) return;
       stopping = true;
-      try { process.kill(-child.pid, signal); } catch { /* already gone */ }
-      const escalate = setTimeout(() => {
-        try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* already gone */ }
-      }, 10_000);
+      killTree(signal);
+      const escalate = setTimeout(() => killTree('SIGKILL'), 10_000);
       escalate.unref();
     };
     process.on('SIGTERM', () => stop('SIGTERM'));

@@ -1,12 +1,12 @@
-// Shell integration (plans/warp-features.md Phase 1): a generated rc snippet
-// the user sources from .zshrc/.bashrc. Inside tmux panes it emits OSC 133
-// prompt marks — tmux (>= 3.4) tracks these natively, which is what powers
-// copy-mode previous-prompt/next-prompt and the app's prompt-jump keys — and
-// reports command start/end (command line, cwd, exit code) to
-// POST /api/command-events/report for the command-history UI and
-// finished-command notifications. Reports are fire-and-forget background
-// curls that never block the prompt; with the server down they do nothing.
-import { mkdir, writeFile } from "node:fs/promises";
+// Shell integration (plans/warp-features.md Phase 1): a generated snippet the
+// user sources from their shell's startup file — shell-integration.sh for
+// zsh and bash, shell-integration.ps1 for PowerShell. Inside the app's
+// terminals it emits OSC 133 prompt marks (the app's prompt jumps) and OSC 7
+// (the working directory), and reports command start/end (command line, cwd,
+// exit code) to POST /api/command-events/report for the command-history UI
+// and finished-command notifications. Reports are fire-and-forget and never
+// block the prompt; with the server down they do nothing.
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { configDir } from "./configDir.js";
@@ -22,9 +22,16 @@ function shortHome(p: string): string {
   return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
-// The snippet users add to their rc — surfaced by the Settings card and the
-// README so both render the exact same line.
-export const shellIntegrationSourceLine = `[ -f ${shortHome(shellIntegrationPath)} ] && . ${shortHome(shellIntegrationPath)}`;
+export const powershellIntegrationPath = path.join(configDir, "shell-integration.ps1");
+
+const posixSourceLine = `[ -f ${shortHome(shellIntegrationPath)} ] && . ${shortHome(shellIntegrationPath)}`;
+const powershellSourceLine = `if (Test-Path '${powershellIntegrationPath}') { . '${powershellIntegrationPath}' }`;
+
+// The line users add, and where — surfaced by the Settings card and the
+// README so both render the exact same line. On Windows the shell is
+// PowerShell; elsewhere zsh or bash.
+export const shellIntegrationSourceLine = process.platform === "win32" ? powershellSourceLine : posixSourceLine;
+export const shellIntegrationProfile = process.platform === "win32" ? "your PowerShell profile ($PROFILE)" : "your ~/.zshrc or ~/.bashrc";
 
 // Every reference to a possibly-unset variable uses the \${VAR-} default
 // form: the snippet runs inside arbitrary user rc environments, including
@@ -33,7 +40,7 @@ export const shellIntegrationSourceLine = `[ -f ${shortHome(shellIntegrationPath
 function scriptBody(port: number): string {
   return `# tmux-server shell integration — written by tmux-server at startup; edits
 # are overwritten. Source it from your shell rc (zsh or bash):
-#   ${shellIntegrationSourceLine}
+#   ${posixSourceLine}
 #
 # Inside tmux-server's terminals this emits OSC 133 prompt marks (for jumping
 # between prompts), reports the working directory (OSC 7) and reports command
@@ -178,5 +185,13 @@ fi
 export async function ensureShellIntegration(port: number): Promise<string> {
   await mkdir(configDir, { recursive: true });
   await writeFile(shellIntegrationPath, scriptBody(port));
+  await writeFile(powershellIntegrationPath, await powershellScriptBody(port));
   return shellIntegrationPath;
+}
+
+// The PowerShell script lives beside this file as a template: it is full of
+// backslashes and dollar signs that would all need escaping in a string here.
+export async function powershellScriptBody(port: number): Promise<string> {
+  const template = await readFile(path.join(import.meta.dirname, "shell-integration.ps1"), "utf8");
+  return template.replaceAll("__PORT__", String(port)).replaceAll("__SOURCE_LINE__", powershellSourceLine);
 }

@@ -820,6 +820,8 @@ export function fetchShellIntegrationStatus(): Promise<{
   receivedAny: boolean;
   path: string;
   sourceLine: string;
+  // Where the line goes, e.g. "~/.zshrc or ~/.bashrc".
+  profile?: string;
 }> {
   return request("/api/command-events/status");
 }

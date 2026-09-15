@@ -45,4 +45,12 @@ export interface Platform {
   defaultShell(): string;
   /** Calls `cb` when the attached terminal changes size. */
   onTerminalResize(cb: () => void): void;
+
+  /**
+   * Whether a window's raw output can be replayed byte for byte on attach.
+   * False where the pseudo-terminal itself redraws the screen (Windows'
+   * ConPTY), so replaying its bytes into a fresh terminal can land mid-redraw;
+   * there the rebuilt screen is sent instead.
+   */
+  rawReplaySafe: boolean;
 }

@@ -5,22 +5,26 @@ import { platform } from '../platform/index.ts';
 
 // All paths resolve lazily so tests can point TMUX_SERVER_STATE_DIR / TMUX_SERVER_CONFIG_DIR
 // at throwaway directories per process.
+// On Windows: %LOCALAPPDATA% for state (machine-local, regenerable) and
+// %APPDATA% for config, where Windows programs keep each.
 export function stateDir(): string {
-  return (
-    process.env.TMUX_SERVER_STATE_DIR ??
-    (process.env.XDG_STATE_HOME
-      ? join(process.env.XDG_STATE_HOME, 'tmux-server')
-      : join(homedir(), '.local', 'state', 'tmux-server'))
-  );
+  if (process.env.TMUX_SERVER_STATE_DIR) return process.env.TMUX_SERVER_STATE_DIR;
+  if (process.platform === 'win32') {
+    return join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'tmux-server');
+  }
+  return process.env.XDG_STATE_HOME
+    ? join(process.env.XDG_STATE_HOME, 'tmux-server')
+    : join(homedir(), '.local', 'state', 'tmux-server');
 }
 
 export function configDir(): string {
-  return (
-    process.env.TMUX_SERVER_CONFIG_DIR ??
-    (process.env.XDG_CONFIG_HOME
-      ? join(process.env.XDG_CONFIG_HOME, 'tmux-server')
-      : join(homedir(), '.config', 'tmux-server'))
-  );
+  if (process.env.TMUX_SERVER_CONFIG_DIR) return process.env.TMUX_SERVER_CONFIG_DIR;
+  if (process.platform === 'win32') {
+    return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'tmux-server');
+  }
+  return process.env.XDG_CONFIG_HOME
+    ? join(process.env.XDG_CONFIG_HOME, 'tmux-server')
+    : join(homedir(), '.config', 'tmux-server');
 }
 
 export function socketPath(): string { return platform.socketAddress(stateDir()); }

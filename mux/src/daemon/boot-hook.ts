@@ -106,6 +106,11 @@ function installCrontab(): InstallResult {
 }
 
 export function installBootHook(): InstallResult {
+  // On Windows the app's own logon task starts the server, which starts the
+  // daemon; there is nothing separate to install for it.
+  if (process.platform === 'win32') {
+    throw new Error('on Windows, run `tmux-server enable` instead: the logon task it adds starts the daemon too');
+  }
   if (systemdAvailable()) return installSystemd();
   if (crontabAvailable()) return installCrontab();
   throw new Error(

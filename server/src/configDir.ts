@@ -7,6 +7,10 @@
 import { homedir } from "node:os";
 import path from "node:path";
 
+// Must agree with the terminal daemon's (mux/src/util/paths.ts): the server
+// writes the daemon's mux.json here.
 export const configDir =
   process.env.TMUX_SERVER_CONFIG_DIR ||
-  path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "tmux-server");
+  (process.platform === "win32"
+    ? path.join(process.env.APPDATA || path.join(homedir(), "AppData", "Roaming"), "tmux-server")
+    : path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "tmux-server"));

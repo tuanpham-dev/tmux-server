@@ -920,7 +920,9 @@ export default function TerminalView({
             return;
           }
           const msg = JSON.parse(ev.data);
-          if (msg.type === "replayed") {
+          if (msg.type === "host" && msg.platform === "win32") {
+            engine.setWindowsPty?.(Number.isFinite(msg.windowsBuild) ? msg.windowsBuild : 0);
+          } else if (msg.type === "replayed") {
             replayDone = true;
             for (const data of heldInput.splice(0)) ws.send(JSON.stringify({ type: "input", data }));
           } else if (msg.type === "windowSwitched" && Number.isFinite(msg.windowIndex)) {

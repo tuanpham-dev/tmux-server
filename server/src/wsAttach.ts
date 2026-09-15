@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { release } from "node:os";
 import { WebSocket } from "ws";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import { scrollHorizontal } from "./editor.js";
@@ -48,6 +49,13 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
   const send = (payload: object) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
   };
+
+  // The terminals run on this machine. On Windows they're ConPTY
+  // pseudo-terminals, which reflow and redraw differently, and the browser's
+  // terminal needs to know that (and the Windows build) to match them.
+  if (process.platform === "win32") {
+    send({ type: "host", platform: "win32", windowsBuild: Number(release().split(".")[2]) || 0 });
+  }
 
   let peerAlive = true;
   ws.on("pong", () => {
