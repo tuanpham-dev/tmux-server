@@ -113,6 +113,14 @@ test('resizing a viewer claims the window and reflows to it', async () => {
     a.resize(140, 45);
     await waitForMatch('resizing claimed the window for A', () => ptySize(env), /45 140/);
 
+    // B re-sends the size it already had, as a browser does when it merely
+    // re-measures (reconnect, settings sync). That is not using the view: A
+    // keeps the window.
+    b.resize(60, 20);
+    b.resize(60, 20);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.match(ptySize(env), /45 140/, 'an unchanged resize does not claim the window');
+
     a.close(); b.close();
   } finally {
     killDaemons(env);

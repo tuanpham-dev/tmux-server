@@ -789,6 +789,11 @@ export default function TerminalView({
         else localEcho?.setComposing(text);
       });
 
+      // The size last reported on the current connection. Only a change is
+      // sent: the backend treats a resize as this view being used (the window
+      // reflows to it), and the terminal re-measures for plenty of idle
+      // reasons (a settings sync, a reconnect, a phone's address bar).
+      let sentSize = "";
       const refit = () => {
         // fit() itself no-ops (returns null) on a disposed/zero-size
         // terminal; a ResizeObserver callback can still fire after cleanup
@@ -805,7 +810,9 @@ export default function TerminalView({
           // pixel row/column even though findAnchor's own row/col math is
           // correct.
           localEcho?.refreshFont();
-          if (ws.readyState === WebSocket.OPEN) {
+          const size = `${result.cols}x${result.rows}`;
+          if (ws.readyState === WebSocket.OPEN && size !== sentSize) {
+            sentSize = size;
             ws.send(JSON.stringify({ type: "resize", cols: result.cols, rows: result.rows }));
           }
         }
@@ -904,6 +911,7 @@ export default function TerminalView({
           reconnectAttempt = 0;
           lastFrameAt = Date.now();
           container.classList.remove("reconnecting");
+          sentSize = "";
           refit();
         };
 
@@ -1845,8 +1853,15 @@ export default function TerminalView({
       // both focus targets (the screen div via engine.focus(), the hidden
       // textarea via presses); transitions between the two stay inside
       // `screen` and are filtered out via relatedTarget.
+      // Using a pane makes it the view its window is sized for, the way tmux's
+      // window-size latest treats a click or keypress: focus, a click or a tap
+      // tells the backend (typing and a real resize already do).
+      const activate = () => {
+        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "activate" }));
+      };
       const onFocusIn = (e: FocusEvent) => {
         if (e.relatedTarget instanceof Node && screen.contains(e.relatedTarget)) return;
+        activate();
         if (engine.getMode(1004)) sendReport(focusReport(true));
       };
       const onFocusOut = (e: FocusEvent) => {
@@ -1856,6 +1871,7 @@ export default function TerminalView({
       };
       screen.addEventListener("focusin", onFocusIn);
       screen.addEventListener("focusout", onFocusOut);
+      screen.addEventListener("pointerdown", activate, true);
 
       // Image paste/drop (plans/codeman-mobile-features.md Phase 3): upload
       // to settings.pasteDropUploadDir and type the resulting path. Capture phase on
@@ -1991,6 +2007,7 @@ export default function TerminalView({
         screen.removeEventListener("touchcancel", onTouchEnd, true);
         screen.removeEventListener("focusin", onFocusIn);
         screen.removeEventListener("focusout", onFocusOut);
+        screen.removeEventListener("pointerdown", activate, true);
         screen.removeEventListener("paste", onPaste, true);
         terminalBodyRef.current?.removeEventListener("dragover", onDragOver);
         terminalBodyRef.current?.removeEventListener("drop", onDrop);

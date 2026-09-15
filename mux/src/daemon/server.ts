@@ -376,9 +376,15 @@ export class DaemonServer {
         return {};
       }
       case 'resize': {
+        // Only a size that actually changed is the user doing something with
+        // this view. Browsers re-measure and re-send the same size for all
+        // sorts of idle reasons (a reconnect, a settings sync, a phone's
+        // address bar), and letting those claim the window handed it to
+        // whichever idle viewer re-measured last, usually the small one.
+        const changed = conn.cols !== req.cols || conn.rows !== req.rows;
         conn.cols = req.cols;
         conn.rows = req.rows;
-        if (conn.attachedSession) {
+        if (changed && conn.attachedSession) {
           const session = this.store.sessions.get(conn.attachedSession);
           if (session && session.windows.length > 0) {
             // Resizing a view IS using it: the user dragged that window or
