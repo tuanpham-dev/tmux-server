@@ -98,6 +98,11 @@
   cursor: pointer;
 }
 
+/* A lone package has no header to sit under. */
+.tasks-scripts.flat .tasks-item {
+  padding-left: 8px;
+}
+
 .tasks-item:focus-visible {
   outline: 1px solid var(--focus-border);
   outline-offset: -1px;

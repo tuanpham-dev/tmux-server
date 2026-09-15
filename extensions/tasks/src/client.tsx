@@ -207,10 +207,17 @@ function TasksPanel({ actionsTarget, showMenu }: PanelProps) {
     };
   }, [refreshKey, loadScripts]);
 
-  const packages = data.packages;
+  // When only one package has scripts it needs no group: its scripts are
+  // listed on their own, always expanded, and script-less packages are left
+  // out.
+  const { packages, flat } = useMemo(() => {
+    const withScripts = data.packages.filter((pkg) => pkg.scripts.length > 0);
+    if (withScripts.length === 1) return { packages: withScripts, flat: true };
+    return { packages: data.packages, flat: data.packages.length === 1 };
+  }, [data.packages]);
   const pm = data.packageManager ?? "npm";
 
-  const isCollapsed = (pkg: TaskPackage) => collapseOverrides.get(pkg.dir) ?? !pkg.active;
+  const isCollapsed = (pkg: TaskPackage) => !flat && (collapseOverrides.get(pkg.dir) ?? !pkg.active);
 
   const toggleGroup = (pkg: TaskPackage) => {
     setCollapseOverrides((prev) => {
@@ -251,13 +258,13 @@ function TasksPanel({ actionsTarget, showMenu }: PanelProps) {
   const visibleRows = useMemo(() => {
     const rows: { pkg: TaskPackage; script: TaskScript; key: string }[] = [];
     for (const pkg of packages) {
-      if (collapseOverrides.get(pkg.dir) ?? !pkg.active) continue;
+      if (!flat && (collapseOverrides.get(pkg.dir) ?? !pkg.active)) continue;
       for (const script of pkg.scripts) {
         rows.push({ pkg, script, key: rowKey(pkg.dir, script.name) });
       }
     }
     return rows;
-  }, [packages, collapseOverrides]);
+  }, [packages, flat, collapseOverrides]);
   const rowIds = useMemo(() => visibleRows.map((row) => row.key), [visibleRows]);
   const rowsByKey = useMemo(() => new Map(visibleRows.map((row) => [row.key, row])), [visibleRows]);
 
@@ -307,17 +314,19 @@ function TasksPanel({ actionsTarget, showMenu }: PanelProps) {
           const collapsed = isCollapsed(pkg);
           return (
             <div className="tasks-group" key={pkg.dir}>
-              <button
-                className={`tasks-group-header${pkg.active ? " active" : ""}`}
-                title={pkg.dir}
-                onClick={() => toggleGroup(pkg)}
-              >
-                <Icon name={collapsed ? "chevron-right" : "chevron-down"} />
-                <span className="tasks-group-name">{pkg.name}</span>
-                {pkg.relDir !== "." && <span className="tasks-group-dir">{pkg.relDir}</span>}
-              </button>
+              {!flat && (
+                <button
+                  className={`tasks-group-header${pkg.active ? " active" : ""}`}
+                  title={pkg.dir}
+                  onClick={() => toggleGroup(pkg)}
+                >
+                  <Icon name={collapsed ? "chevron-right" : "chevron-down"} />
+                  <span className="tasks-group-name">{pkg.name}</span>
+                  {pkg.relDir !== "." && <span className="tasks-group-dir">{pkg.relDir}</span>}
+                </button>
+              )}
               {!collapsed && (
-                <ul className="tasks-scripts">
+                <ul className={`tasks-scripts${flat ? " flat" : ""}`}>
                   {pkg.scripts.map((script) => {
                     const key = rowKey(pkg.dir, script.name);
                     const rowProps = nav.getRowProps(key);
