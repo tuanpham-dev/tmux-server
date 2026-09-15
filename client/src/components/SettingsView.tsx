@@ -5,7 +5,6 @@ import type { ExtensionInfo } from "../types";
 import AiProvidersSection from "./settings/AiProvidersSection";
 import BehaviorSection from "./settings/BehaviorSection";
 import BackendSection from "./settings/BackendSection";
-import DaemonSection from "./settings/DaemonSection";
 import { SettingsProvider } from "./settings/context";
 import ExtensionConfigSection from "./settings/ExtensionConfigSection";
 import EditorSection from "./settings/EditorSection";
@@ -33,12 +32,11 @@ interface Props {
 // installing, and managing extensions themselves lives in the sidebar's
 // Extensions tab (ExtensionsPanel), not here — see
 // plans/extension-registry-and-extensions-tab.md.
-type Section = "terminal" | "backend" | "daemon" | "editor" | "behavior" | "ui" | "ai" | `ext:${string}`;
+type Section = "terminal" | "backend" | "editor" | "behavior" | "ui" | "ai" | `ext:${string}`;
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "backend", label: "Terminal Backend" },
-  { id: "daemon", label: "Terminal Daemon" },
   { id: "editor", label: "Editor" },
   { id: "behavior", label: "Behavior" },
   { id: "ui", label: "UI" },
@@ -144,7 +142,6 @@ export default function SettingsView({
         <div className="settings-content">
           {section === "terminal" && <TerminalSection />}
           {section === "backend" && <BackendSection />}
-          {section === "daemon" && <DaemonSection />}
           {section === "editor" && <EditorSection />}
           {section === "behavior" && <BehaviorSection />}
           {section === "ui" && <UiSection />}

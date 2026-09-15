@@ -1,8 +1,10 @@
 import { useSettingsContext } from "./context";
+import DaemonSettings from "./DaemonSettings";
 import { useTerminalBackends } from "./useTerminalBackends";
 
 // Where terminals run: the bundled daemon, or an engine an extension
 // registers (host.terminalEngines). The server reads the choice at startup.
+// The daemon's own settings follow the picker while it is the chosen one.
 export default function BackendSection() {
   const { settings, set, extensions } = useSettingsContext();
 
@@ -37,6 +39,8 @@ export default function BackendSection() {
       </div>
       {chosen?.description && <div className="settings-hint">{chosen.description}</div>}
       <div className="settings-hint">Extensions can add more backends, for example tmux Terminal Backend.</div>
+
+      {settings.terminalBackend === "daemon" && <DaemonSettings />}
     </>
   );
 }

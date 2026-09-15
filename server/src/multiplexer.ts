@@ -141,7 +141,7 @@ export interface EngineRegistration {
 }
 
 const DAEMON_DESCRIPTION =
-  "Terminals run in a background process that comes with the app. They keep running when the server restarts and come back after a reboot. Its settings are under Terminal Daemon.";
+  "Terminals run in a background process that comes with the app. They keep running when the server restarts and come back after a reboot. Its settings are below.";
 
 const registered = new Map<
   string,
