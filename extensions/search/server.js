@@ -5,10 +5,12 @@
 // local dev tool gated on Host/Origin (see server/src/security.ts), client
 // always supplies cwd from its own already-trusted active context.
 //
-// Two engines: ripgrep (preferred — respects .gitignore, real glob support,
-// reports columns natively) and grep (fallback — no .gitignore awareness,
+// Three engines: ripgrep (preferred — respects .gitignore, real glob support,
+// reports columns natively), grep (fallback — no .gitignore awareness,
 // simpler --include/--exclude globs, columns computed here with a JS
-// RegExp). GET /capabilities tells the client which engine is live so it
+// RegExp), and a built-in JavaScript search for systems with neither
+// (Windows, usually): files come from git when the folder is a repository,
+// so .gitignore still applies, and matching uses the same RegExp as replace. GET /capabilities tells the client which engine is live so it
 // can grey out unsupported affordances. Both engines exclude binary files
 // unconditionally (rg's default detection; grep's -I) — there is no toggle
 // to include them, on either engine or in replace.
@@ -44,7 +46,7 @@ async function detectEngine() {
   } else if (await commandAvailable("grep", ["--version"])) {
     engineCache = { engine: "grep", respectsGitignore: false, globSupport: "basic" };
   } else {
-    engineCache = { engine: "none", respectsGitignore: false, globSupport: "none" };
+    engineCache = { engine: "builtin", respectsGitignore: true, globSupport: "basic" };
   }
   return engineCache;
 }
@@ -284,6 +286,114 @@ function searchWithGrep(cwd, opts) {
   });
 }
 
+// ---- built-in search ----
+
+const BUILTIN_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const WALK_SKIP = new Set([".git", "node_modules"]);
+
+// A simple glob ("*.ts", "src/**", "dist") as a RegExp over forward-slash
+// relative paths. A pattern without "/" matches any path segment, the way
+// grep's --include/--exclude-dir read a bare name.
+export function globToRegExp(glob) {
+  let out = "";
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === "*" && glob[i + 1] === "*") {
+      out += ".*";
+      i++;
+      if (glob[i + 1] === "/") i++;
+    } else if (ch === "*") out += "[^/]*";
+    else if (ch === "?") out += "[^/]";
+    else out += escapeRegExp(ch);
+  }
+  return glob.includes("/") ? new RegExp(`^${out}(?:/.*)?$`) : new RegExp(`(?:^|/)${out}(?:/.*)?$`);
+}
+
+async function builtinFileList(cwd, respectGitignore) {
+  if (respectGitignore) {
+    try {
+      const { stdout } = await execFileP("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+        cwd,
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 10000,
+      });
+      return stdout.split("\0").filter(Boolean);
+    } catch {
+      // Not a repository, or no git: walk instead.
+    }
+  }
+  const files = [];
+  const walk = async (rel) => {
+    let entries;
+    try {
+      entries = await fs.readdir(path.join(cwd, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!WALK_SKIP.has(entry.name)) await walk(childRel);
+      } else if (entry.isFile()) {
+        files.push(childRel);
+      }
+    }
+  };
+  await walk("");
+  return files;
+}
+
+export async function searchWithBuiltin(cwd, opts) {
+  const { query, isRegex, caseSensitive, wholeWord, include, exclude, maxResults, respectGitignore } = opts;
+  let jsRegex;
+  try {
+    jsRegex = buildJsRegex(query, isRegex, caseSensitive, wholeWord, true);
+  } catch (err) {
+    throw new Error(`Invalid pattern: ${err.message}`);
+  }
+  const includes = include.map(globToRegExp);
+  const excludes = exclude.map(globToRegExp);
+  const deadline = Date.now() + SEARCH_TIMEOUT;
+  const byFile = new Map();
+  let total = 0;
+
+  const files = (await builtinFileList(cwd, respectGitignore)).map((f) => f.replace(/\\/g, "/")).sort();
+  for (const file of files) {
+    if (includes.length > 0 && !includes.some((re) => re.test(file))) continue;
+    if (excludes.some((re) => re.test(file))) continue;
+    if (Date.now() > deadline) throw new Error("Search timed out.");
+    let buf;
+    try {
+      const info = await fs.stat(path.join(cwd, file));
+      if (!info.isFile() || info.size > BUILTIN_MAX_FILE_BYTES) continue;
+      buf = await fs.readFile(path.join(cwd, file));
+    } catch {
+      continue;
+    }
+    if (looksBinary(buf)) continue;
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const rawLineText = lines[i].replace(/\r$/, "");
+      jsRegex.lastIndex = 0;
+      const submatchesRaw = [];
+      let match;
+      while ((match = jsRegex.exec(rawLineText)) && submatchesRaw.length < MAX_SUBMATCHES_PER_LINE) {
+        submatchesRaw.push({ start: match.index, end: match.index + match[0].length });
+        if (match[0].length === 0) jsRegex.lastIndex++;
+      }
+      if (submatchesRaw.length === 0) continue;
+      const trimmed = trimLeadingWhitespace(rawLineText, submatchesRaw);
+      const { lineText, submatches } = truncateLine(trimmed.lineText, trimmed.submatches);
+      if (submatches.length === 0) continue;
+      if (!byFile.has(file)) byFile.set(file, []);
+      byFile.get(file).push({ line: i + 1, column: submatches[0].start + 1, lineText, submatches });
+      total++;
+      if (total >= maxResults) return { results: toResultArray(byFile), limitHit: true };
+    }
+  }
+  return { results: toResultArray(byFile), limitHit: false };
+}
+
 // ---- Replace ----
 
 // Rejects absolute paths and any ".." segment so a target can't escape cwd.
@@ -424,7 +534,7 @@ export function activate({ router, log, getSettings }) {
     const maxResults = Math.min(Math.max(Number(settings["search.maxResults"]) || 2000, 1), 20000);
 
     try {
-      const searchFn = caps.engine === "ripgrep" ? searchWithRg : searchWithGrep;
+      const searchFn = caps.engine === "ripgrep" ? searchWithRg : caps.engine === "grep" ? searchWithGrep : searchWithBuiltin;
       const { results, limitHit } = await searchFn(cwd, {
         query,
         isRegex,

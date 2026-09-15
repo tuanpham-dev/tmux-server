@@ -370,6 +370,7 @@ whether or not your extension has a client or server entry.
       "label": "OpenCode",
       "program": "opencode",
       "command": "opencode",
+      "resume": "opencode --continue",
       "skipPermissionsArgs": "--yolo",
       "docsUrl": "https://example.com/opencode",
       "icon": "hubot",
@@ -385,9 +386,10 @@ whether or not your extension has a client or server entry.
 | Field | Meaning |
 | --- | --- |
 | `id` | Required. Namespaced with your extension id when merged (`<publisher>.<name>.<id>`), so two extensions cannot collide. |
-| `program` | tmux's `pane_current_command` for a pane running it — how a pane is recognised as this agent. Omit for launch-only. |
+| `program` | The foreground command a window running it reports — how a window is recognised as this agent. Omit for launch-only. |
 | `command` | The full launch line. Omit for detection-only. An entry with neither is dropped. |
-| `skipPermissionsArgs` | Appended for the agent's no-prompts mode. Empty means it has none, and no "skip permissions" choice is offered for it. |
+| `resume` | The line that picks the agent back up in the same folder (`claude --continue`). Typed into a window that was running the agent when terminals are restored after a restart, if **Resume agents** is on. Omit and a restored window stays at its shell prompt. |
+| `skipPermissionsArgs` | Appended for the agent's no-prompts mode (also to `resume`). Empty means it has none, and no "skip permissions" choice is offered for it. |
 | `hooks` | How the app should write this agent's hook config — see **The hooks descriptor** below. Omit it for an agent whose CLI has none; a malformed one costs the agent its hooks, not its row. |
 | `oneShot` | How to run this CLI for a single prompt — see **The one-shot form** below. Declaring it also lists this agent as an AI provider under Settings → AI Providers. |
 | `docsUrl` | Where to read about it, or how to install it — the row's link, and the only useful action for an agent whose CLI is absent. |
@@ -1046,18 +1048,20 @@ export function activate({ router, log, getSettings, host, ai, secrets }) {
 | `router` | An Express router mounted at `/api/ext/<extensionId>` while the extension is enabled. JSON bodies are parsed (`req.body`); send errors as `res.status(4xx/5xx).json({ error: "…" })` — client helpers surface the `error` field. Routes 404 immediately on disable/uninstall. |
 | `log(...args)` | `console.log` prefixed with `[ext:<id>]`. |
 | `getSettings()` | `Promise<Record<string, unknown>>` — this extension's current configuration values (defaults + user overrides), read fresh per call. |
-| `host.ports.list()` | `Promise<ListeningPort[]>` — listening ports attributed to tmux sessions (`{ port, address, process?, pid?, session }`). The same attribution data the WS tunnel's security gate uses; consume it rather than re-scanning `/proc`. |
+| `host.ports.list()` | `Promise<ListeningPort[]>` — listening ports attributed to terminal sessions (`{ port, address, process?, pid?, session }`). The same attribution data the WS tunnel's security gate uses; consume it rather than re-scanning `/proc`. |
 | `host.ports.find(port)` | `Promise<ListeningPort \| null>` — one port's fresh attribution (kill-confirmation flows). |
 | `ai.run(prompt, opts?)` | `Promise<string>` — prompt in, text out, through whatever the user configured in **Settings → AI Providers** (an agent that answers a single prompt, a keyed API, a custom command). Your extension never sees a provider, a binary or a key. `opts.profileId` picks one configured AI (see `listProfiles`, and the `"ai-profile"` config format above); `opts.model` overrides that profile's model for one call; `opts.cwd` is the directory a CLI provider runs in — pass the project, since some CLIs refuse to run outside a trusted directory. Rejects with an `AiError` whose `code` separates "not configured yet" (`missing-binary`/`missing-key`/`missing-model`/`missing-command`) from a real failure (`provider-failed`/`empty-reply`), so the first can be surfaced as guidance instead of an error. |
 | `ai.listProfiles()` | `Promise<{ id, label, provider, model, isDefault }[]>` — the AIs the user has configured and enabled, for an extension that builds its own picker. Prefer the `"ai-profile"` config property, which renders one for you. |
-| `host.agents.list()` | `Promise<AgentSummary[]>` — the AI agents the user has configured and enabled, in their own order, from the one core registry behind **Settings → AI Providers**. Each entry is `{ id, label, program, command, hooks }`: `program` is the foreground command tmux reports for a pane running it (match `pane_current_command` against it to find the agent's window), `command` is the full launch line (offer it as a "start work with" preset), and `hooks` is a boolean — whether core can install hooks for it at all (the descriptor itself stays in core, since it names a file in the user's home). Read this instead of declaring an agent-programs or agent-presets setting of your own. |
-| `host.agents.launchCommand(id)` | `Promise<string \| null>` - the line that starts one enabled agent (ids are `<extensionId>.<agentId>`, e.g. `tmux-server.agents.claude`), with the user's global Yolo/Manual choice from **Settings → AI Providers** already applied: the agent's `skipPermissionsArgs` is appended only under Yolo. `null` for an unknown or disabled id, or an agent with no launch command. Use this, not `list()`'s `command`, whenever a server hook types an agent into a pane itself - it is the same rule the client-side launch presets apply, and there is no other place a server hook can read the global choice from. |
-| `host.sessions.list()` | `Promise<TmuxSession[]>` - every tmux session with its windows, the same listing as `GET /api/sessions` (paths `~`-shortened). |
-| `host.sessions.create(name?, cwd?, exactCwd?)` | `Promise<TmuxSession>` - starts a detached session. tmux picks a name when `name` is omitted. `cwd` may be `~`-shortened; the session starts at the git root containing it unless `exactCwd` is true. Rejects when the name is taken. |
-| `host.sessions.createWindow(session, cwd?)` | `Promise<number>` - opens a window in `session` and returns its index. Without `cwd`, the session's own path. |
-| `host.sessions.sendText(session, text, submit, windowIndex?)` | `Promise<void>` - types `text` literally into the session's active pane, then presses Enter when `submit` is true (after a short settle, so Ink-based TUIs do not drop it). **Without `windowIndex` it targets tmux's current window for the session** - whichever window last had focus, not necessarily the one you created - so pass it whenever you know which window you mean. |
+| `host.agents.list()` | `Promise<AgentSummary[]>` — the AI agents the user has configured and enabled, in their own order, from the one core registry behind **Settings → AI Providers**. Each entry is `{ id, label, program, command, hooks }`: `program` is the foreground command a window running it reports (match a window's `command` against it to find the agent's window), `command` is the full launch line (offer it as a "start work with" preset), and `hooks` is a boolean — whether core can install hooks for it at all (the descriptor itself stays in core, since it names a file in the user's home). Read this instead of declaring an agent-programs or agent-presets setting of your own. |
+| `host.agents.launchCommand(id)` | `Promise<string \| null>` - the line that starts one enabled agent (ids are `<extensionId>.<agentId>`, e.g. `tmux-server.agents.claude`), with the user's global Yolo/Manual choice from **Settings → AI Providers** already applied: the agent's `skipPermissionsArgs` is appended only under Yolo. `null` for an unknown or disabled id, or an agent with no launch command. Use this, not `list()`'s `command`, whenever a server hook types an agent into a window itself - it is the same rule the client-side launch presets apply, and there is no other place a server hook can read the global choice from. |
+| `host.sessions.list()` | `Promise<TmuxSession[]>` - every terminal session with its windows, the same listing as `GET /api/sessions` (paths `~`-shortened). Each window carries a stable `id`. |
+| `host.sessions.create(name?, cwd?, exactCwd?)` | `Promise<TmuxSession>` - starts a session. It is named after its folder when `name` is omitted. `cwd` may be `~`-shortened; the session starts at the git root containing it unless `exactCwd` is true. Rejects when the name is taken. |
+| `host.sessions.createWindow(session, cwd?, name?)` | `Promise<number>` - opens a window in `session`, makes it current, and returns its index. Without `cwd`, the session's own path. A `name` is kept as given; without one the window is named after what runs in it. |
+| `host.sessions.selectWindow(session, index)` | `Promise<void>` - makes a window the session's current one. |
+| `host.sessions.sendText(session, text, submit, windowIndex?)` | `Promise<void>` - types `text` literally into the session's window, then presses Enter when `submit` is true (after a short settle, so Ink-based TUIs do not drop it). **Without `windowIndex` it targets the session's current window** - whichever window last had focus, not necessarily the one you created - so pass it whenever you know which window you mean. |
+| `host.sessions.sendTextToWindow(windowId, text, submit)` | `Promise<void>` - the same, addressed by window id, which survives renumbering and renames. |
 | `host.sessions.kill(name)` | `Promise<void>` - kills the session by exact name. **No confirmation of any kind runs**; a panel that offers it should ask first (`confirmDialog`). A session that is already gone is not an error. |
-| `host.sessions.listPanes(session)` | `Promise<SessionPane[]>` - every pane across every window of `session`: `{ windowIndex, paneIndex, paneActive, active, id, command, pid, title }`. `id` is tmux's stable `%`-prefixed pane id, which survives session and window renames and is what `host.agentHooks` events carry as `paneId`. Rejects when the session does not exist. |
+| `host.sessions.listPanes(session)` | `Promise<SessionPane[]>` - one entry per window of `session` (a window is one terminal): `{ windowIndex, paneIndex, paneActive, active, id, command, pid, title }`. `id` is the window's stable id, the same value its shell sees as `$TMUX_SERVER_WINDOW` and `host.agentHooks` events carry as `paneId`; `title` is the window's name; `paneIndex` is always 0. Rejects when the session does not exist. |
 | `host.worktrees.list(dir, opts?)` | `Promise<{ repo, worktrees, branches }>` - the worktrees of the repository containing `dir` (`~` expanded). `repo` is the main worktree's path, `null` outside a repository. `opts.dirty` adds per-worktree uncommitted-changes state and `opts.branches` the local branch list; both cost extra git calls. Paths are absolute. |
 | `host.worktrees.create({ cwd, branch, base?, mode, location? })` | `Promise<{ path, branch }>` - `mode: "new"` creates `branch` off `base` (default HEAD), `"existing"` checks an existing branch out. `location` is a template over `{repo}` and `{branch}`, default `{repo}/.worktrees/{branch}`; an in-repo location is added to `.git/info/exclude`. Stops at the checkout - no session is created. Refusals reject with an error whose `status` is 400 (not a repo, no branch) or 409 (the target already exists). |
 | `host.worktrees.remove({ cwd, path, force? })` | `Promise<{ removed }>` - removes a worktree's checkout and keeps its branch. Only a path git reports as a worktree of that repository, never the main one (404/400 otherwise). Kill any session inside it first. |
@@ -1065,6 +1069,7 @@ export function activate({ router, log, getSettings, host, ai, secrets }) {
 | `secrets.get(name)` | `Promise<string \| null>` — one of this extension's stored credentials, or null. Also on `host.secrets`. |
 | `secrets.set(name, value)` | `Promise<void>` — stores a credential under `name` (1-64 chars of `[A-Za-z0-9._-]`); a null or blank `value` clears it. |
 | `secrets.list()` | `Promise<string[]>` — the names this extension has stored, **never** the values. The shape a "set / not set" UI needs, and the one that's safe to send to a client. |
+| `host.terminalEngines.register({ id, label, description?, create })` | Adds a terminal engine: another implementation of the multiplexer interface (`server/src/multiplexer.ts`) that the user can pick in **Settings → Terminal → Backend**. The choice takes effect on the next server start; `description` (a sentence or two) is shown under the picker when the engine is chosen. `create({ port, env })` runs the first time the engine is needed and returns the engine; `env` is the environment new terminals should start with. Throwing from `create` keeps the server on the bundled daemon. Window ids must be unique and stable for a window's life; a shell finds its own id in `$TMUX_SERVER_WINDOW`, or for the tmux backend `tmux-<n>` derived from `$TMUX_PANE`. Returns an unregister; an engine is also dropped when its hook unmounts, and a server running on it falls back to the daemon. Reference: `tmux-engine` in the [tmux-server-extensions](https://github.com/tuanpham-dev/tmux-server-extensions) registry. |
 | `host.events.onApiMutation(cb)` | Fires after **any** mutating (non-GET/HEAD) core API request finishes — the signal that on-disk state probably changed. Use it to invalidate caches that mirror the filesystem (git-scm drops its status-scan cache here). Returns an unsubscribe; all of an extension's subscriptions are dropped when its hook unmounts. |
 
 The `host` object is the **only** sanctioned way to reach core services —
@@ -1192,8 +1197,8 @@ Each `onEvent` receives:
 | `event` | One of the names above, or **`null`** for a raw event core has no mapping for. A `null` event is delivered, not dropped — with `rawEvent` intact, so an extension that knows what it means can act on it and core never has to guess. Antigravity's `PostInvocation` is the live example: it fires when the model's tool calls finish, which is neither `tool-end` nor `stop`. |
 | `rawEvent` | What the agent called it (`"Stop"`, `"PreInvocation"`). Always present. |
 | `agent` | The registry id of the agent whose hook fired. Informational: hooks live in one config file per CLI, so two presets sharing a CLI share one installed hook, and this names whichever of them was installed last. **Correlate by `paneId`, not by this.** |
-| `paneId` | The tmux pane id (`"%3"`) the agent is running in, from `$TMUX_PANE` in its own environment. The correlation key: it is the one identifier every agent's hook can supply, which is why keying on the agent's own session id only ever worked for Claude Code. Empty when the hook did not run under tmux. |
-| `sessionName` | The tmux session that pane belongs to, resolved per event, or `null` if the pane is gone. |
+| `paneId` | The id of the window the agent is running in, from `$TMUX_SERVER_WINDOW` in its own environment. The correlation key: it is the one identifier every agent's hook can supply, which is why keying on the agent's own session id only ever worked for Claude Code. Empty when the hook did not run in one of the app's terminals. |
+| `sessionName` | The session that window belongs to, resolved per event, or `null` if the window is gone. |
 | `payload` | The agent's own event JSON, verbatim, or `null` if it sent something that was not JSON. |
 | `receivedAt` | `Date.now()` when core received it. |
 
@@ -1283,3 +1288,17 @@ Treat every field of `event.payload` as unvalidated: never interpolate one
 into a shell command, a path, or SQL, and do not assume a field is present or
 of the type the vendor documents. The trustworthy parts are the ones core
 derives itself: `event.event`, `paneId` and `sessionName`.
+
+## Terminals without tmux
+
+Terminals are no longer tmux sessions: the app runs its own terminal daemon, and a
+window is one terminal (splits are editor groups in the UI, not panes). An extension
+written against tmux changes in four places:
+
+- **Don't run `tmux`.** Use `host.sessions` from a server hook: `list`, `createWindow`,
+  `selectWindow`, `sendText`, `sendTextToWindow`, `listPanes`.
+- **`$TMUX_PANE` is now `$TMUX_SERVER_WINDOW`**, a uuid rather than `%3`. It is in every
+  process started in a window, and it is what `paneId` and `listPanes()[].id` carry.
+- **Window names can contain spaces and brackets**, but not `:`, a leading `@`, or only
+  digits.
+- **There is no copy mode.** Scrollback lives in the browser's terminal.

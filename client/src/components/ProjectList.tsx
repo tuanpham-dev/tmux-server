@@ -663,7 +663,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
     const isActive = activeSessionName !== null && members.some((m) => m.name === activeSessionName);
     const anyAttached = members.some((m) => m.attached > 0);
     const tmuxNames = members.map((m) => m.name).join(", ");
-    const tooltip = `${node.cwd ?? node.label}${tmuxNames ? ` (tmux: ${tmuxNames})` : ""}`;
+    const tooltip = `${node.cwd ?? node.label}${tmuxNames ? ` (session: ${tmuxNames})` : ""}`;
     return (
       <div className={`session-row${isActive ? " active" : ""}`}>
         <button
@@ -837,7 +837,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       <div className={`session-row${isActive ? " active" : ""}`}>
         <button
           className={`session-item worktree-item${isActive ? " active" : ""}`}
-          title={`${wt.path}${tmuxNames ? ` (tmux: ${tmuxNames})` : " (no session)"}`}
+          title={`${wt.path}${tmuxNames ? ` (session: ${tmuxNames})` : " (no session)"}`}
           onClick={() => onOpenWorktree(node)}
           {...menuBindings(row)}
           tabIndex={rowProps.tabIndex}
@@ -876,7 +876,7 @@ const ProjectList = forwardRef<ProjectListHandle, ProjectListProps>(function Pro
       <div
         role="button"
         className={`window-item${isActive ? " active-window" : ""}`}
-        title={`${s.name} · ${w.name} - ${w.cwd}${w.activity ? " (new output)" : ""} (tmux: ${s.name}:${w.index})`}
+        title={`${s.name} · ${w.name} - ${w.cwd}${w.activity ? " (new output)" : ""} (${s.name}:${w.index})`}
         onClick={() => onOpenWindow(s.name, w.index)}
         {...menuBindings(row)}
         tabIndex={rowProps.tabIndex}

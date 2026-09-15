@@ -1072,7 +1072,7 @@ function PortsPanel({ actionsTarget, showMenu, confirmDialog }: PanelProps) {
           );
         })}
         {ports.length === 0 && !error && (
-          <li className="session-empty">No listening ports in tmux sessions</li>
+          <li className="session-empty">No listening ports in your terminals</li>
         )}
       </ul>
     </div>
@@ -1266,7 +1266,7 @@ function PortsStatusPopover({ context }: StatusItemProps) {
             </div>
           </li>
         ))}
-        {ports.length === 0 && <li className="session-empty">No listening ports in tmux sessions</li>}
+        {ports.length === 0 && <li className="session-empty">No listening ports in your terminals</li>}
       </ul>
       <div className="ports-status-popover-footer">
         <span className="ports-status-hint">
@@ -1299,7 +1299,7 @@ function PortsStatusItem({ context }: StatusItemProps) {
       title={
         tunnel.allForwarded
           ? `${ports.length} listening port${ports.length === 1 ? "" : "s"}, all forwarded to this machine`
-          : `${ports.length} listening port${ports.length === 1 ? "" : "s"} in tmux sessions`
+          : `${ports.length} listening port${ports.length === 1 ? "" : "s"} in your terminals`
       }
       // openPopover toggles: the host keys it on this item's id.
       onClick={(e) =>

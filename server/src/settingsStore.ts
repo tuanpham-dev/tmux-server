@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
+import { configDir } from "./configDir.js";
 
 // The settings document is client-owned and opaque to the server: the client
 // defines the schema (settings + keybinding overrides) and merges over its
@@ -29,14 +30,21 @@ const AI_SECRETS_KEY = "aiSecrets";
 const EXTENSION_SECRETS_KEY = "extensionSecrets";
 const SERVER_OWNED_KEYS = [AI_SECRETS_KEY, EXTENSION_SECRETS_KEY] as const;
 
-const configDir = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
-  "tmux-server",
-);
 const settingsPath = path.join(configDir, "settings.json");
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// One user setting, read synchronously — for the few choices the server has
+// to make at startup before anything else runs. undefined when unset.
+export function readSettingSync(key: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf8"));
+    return isPlainObject(parsed) && isPlainObject(parsed.settings) ? parsed.settings[key] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function readSettingsDoc(): Promise<Record<string, unknown>> {

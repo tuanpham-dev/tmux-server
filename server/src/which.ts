@@ -14,13 +14,25 @@ import path from "node:path";
 
 export async function isOnPath(bin: string): Promise<boolean> {
   const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const names = candidateNames(bin);
   for (const dir of dirs) {
-    try {
-      await access(path.join(dir, bin), constants.X_OK);
-      return true;
-    } catch {
-      // Not here (or not executable) — keep looking.
+    for (const name of names) {
+      try {
+        await access(path.join(dir, name), constants.X_OK);
+        return true;
+      } catch {
+        // Not here (or not executable) — keep looking.
+      }
     }
   }
   return false;
+}
+
+// On Windows a command is found by trying each PATHEXT extension ("claude"
+// is claude.cmd, "node" is node.exe); a name that already has one is tried
+// as it is too.
+export function candidateNames(bin: string, platform: NodeJS.Platform = process.platform, pathext = process.env.PATHEXT): string[] {
+  if (platform !== "win32") return [bin];
+  const exts = (pathext || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  return [bin, ...exts.map((ext) => bin + ext.toLowerCase())];
 }

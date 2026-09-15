@@ -1,3 +1,5 @@
+import { isLauncherContextVar } from "tmux-server-mux/spawn-env";
+
 // The tmux *server* inherits the full environment of whichever process's
 // tmux command happens to spawn it — and when that's this node process (the
 // usual case on a fresh boot: createSession/attach run before the user ever
@@ -26,9 +28,14 @@ const SERVER_CONFIG_VARS = new Set([
 // Deliberately NOT stripped: vars from the surrounding login/container
 // environment (PATH, LANG, SHOPIFY_CLI_DEVICE_AUTH, ...) — those aren't ours
 // to police, and a user's plain shell would have them anyway.
+//
+// Also stripped: what the process that started this server knows about its
+// own terminal (tmux's TMUX/TMUX_PANE, Claude Code's session markers). A new
+// terminal is none of those; see isLauncherContextVar.
 export function isServerOnlyVar(name: string): boolean {
   return (
     SERVER_CONFIG_VARS.has(name) ||
+    isLauncherContextVar(name) ||
     name.startsWith("npm_") ||
     name === "INIT_CWD" ||
     name === "NODE"

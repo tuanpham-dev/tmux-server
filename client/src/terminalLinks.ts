@@ -3,6 +3,9 @@
 // so a trailing ":line[:col]" suffix (matched separately below) isn't eaten
 // into the path itself.
 const PREFIXED_PATH = /(?:~\/|\.{1,2}\/|\/)[^\s"'`<>|:]+/;
+// Windows forms, just as unambiguous: a drive path ("C:\\src\\app.ts",
+// "C:/src") or a dot-relative one with backslashes (".\\src\\app.ts").
+const WINDOWS_PATH = /(?:\b[A-Za-z]:[\\/]|\.{1,2}\\)[^\s"'`<>|:]+/;
 // Bare relative path with at least one "/" (e.g. "src/app.ts").
 const SLASHED_PATH = /\b[\w.-]+\/[\w./-]+/;
 // Bare filename with an extension (e.g. "README.md"). The extension must
@@ -30,7 +33,7 @@ const KNOWN_FILE = new RegExp(
 
 // KNOWN_FILE is last so the :line[:col] group (m[1]) stays shared by all.
 const PATH_RE = new RegExp(
-  `(?:${PREFIXED_PATH.source}|${SLASHED_PATH.source}|${NAMED_FILE.source}|${KNOWN_FILE.source})(?::(\\d+)(?::\\d+)?)?`,
+  `(?:${WINDOWS_PATH.source}|${PREFIXED_PATH.source}|${SLASHED_PATH.source}|${NAMED_FILE.source}|${KNOWN_FILE.source})(?::(\\d+)(?::\\d+)?)?`,
   "g",
 );
 

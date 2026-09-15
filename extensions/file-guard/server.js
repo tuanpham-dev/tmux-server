@@ -3,6 +3,7 @@
 // editor ever touches the file. Read-only — the only route is a stat.
 
 import { open, stat } from "node:fs/promises";
+import path from "node:path";
 
 // A NUL byte anywhere in the first chunk is git's own "binary" heuristic —
 // same check as git-scm's conflict viewer (see its looksBinary).
@@ -18,7 +19,7 @@ function looksBinary(buf, len) {
 export function activate({ router }) {
   router.get("/stat", async (req, res) => {
     const target = typeof req.query.path === "string" ? req.query.path : "";
-    if (!target.startsWith("/")) {
+    if (!path.isAbsolute(target)) {
       res.status(400).json({ error: "an absolute path is required" });
       return;
     }

@@ -2376,9 +2376,13 @@ body.tab-dragging .split-content-host {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
-/* Overlay scrollbar mirroring tmux copy-mode scroll state (tmux keeps
-   scrollback internally, so the terminal's local scrollbar never shows). Draggable,
-   like code-server's Monaco-based scrollbar. */
+/* The app's own overlay scrollbar over the terminal's history. Draggable, like
+   code-server's Monaco-based scrollbar; themed and present on touch devices,
+   which the engine's own scrollbar is not, so that one is hidden. */
+.terminal .xterm-scrollable-element > .scrollbar {
+  display: none;
+}
+
 .tmux-scrollbar {
   position: absolute;
   top: 0;

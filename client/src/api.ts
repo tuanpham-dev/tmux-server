@@ -91,7 +91,7 @@ export function putSettingsDoc(doc: SettingsDoc): Promise<void> {
 export interface AgentSummaryDto {
   id: string;
   label: string;
-  // tmux's pane_current_command for a pane running this agent (detection).
+  // the foreground command a window running this agent reports (detection).
   program: string;
   // The full launch line (launch presets).
   command: string;
@@ -271,6 +271,22 @@ export interface AiProfileOption {
   program: string;
   // Which one answers when a caller names no profile at all.
   isDefault: boolean;
+}
+
+// Where terminals run: the bundled daemon or an engine an extension provides
+// (tmux). `selected` is the saved choice, `active` the one this server runs on;
+// they differ until the server restarts, or when the chosen one is missing.
+export interface TerminalBackendOption {
+  id: string;
+  label: string;
+  description: string;
+  selected: boolean;
+  active: boolean;
+}
+
+export async function fetchTerminalBackends(): Promise<TerminalBackendOption[]> {
+  const body = await request<{ engines?: TerminalBackendOption[] }>("/api/terminal-engines");
+  return body.engines ?? [];
 }
 
 export async function fetchAiProfiles(): Promise<AiProfileOption[]> {
@@ -543,19 +559,6 @@ export function resolvePaths(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(cells ? { paths, cells } : { paths }),
-  });
-}
-
-// Rejoined wrapped lines per side-by-side pane under a screen row — see the
-// pane-lines server route.
-export function paneLines(
-  session: string,
-  row: number,
-): Promise<{ lines: { left: number; width: number; startRow: number; text: string }[] }> {
-  return request(`/api/sessions/${encodeURIComponent(session)}/pane-lines`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ row }),
   });
 }
 
@@ -833,6 +836,8 @@ export function fetchShellIntegrationStatus(): Promise<{
   receivedAny: boolean;
   path: string;
   sourceLine: string;
+  // Where the line goes, e.g. "~/.zshrc or ~/.bashrc".
+  profile?: string;
 }> {
   return request("/api/command-events/status");
 }

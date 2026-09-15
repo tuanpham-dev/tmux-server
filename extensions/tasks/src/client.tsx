@@ -224,7 +224,7 @@ function TasksPanel({ actionsTarget, showMenu }: PanelProps) {
     const key = rowKey(pkg.dir, script.name);
     if (starting.has(key)) return;
     if (!sessionName) {
-      setError("No active tmux session to run this task in");
+      setError("Open a terminal session to run this task in");
       return;
     }
     setStarting((prev) => new Set(prev).add(key));

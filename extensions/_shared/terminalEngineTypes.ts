@@ -46,6 +46,8 @@ export interface TerminalEngineSettings {
   letterSpacing: number;
   minimumContrastRatio: number;
   textThickness: number;
+  // Lines of history kept in the browser. Optional; engines default it.
+  scrollback?: number;
   // Join soft-wrapped rows when extracting selection text for copy — see
   // client/src/selectionText.ts (shared via @tmux-server/engine-support).
   // Derived from copySelection below (it is `copySelection !== "raw"`) and
@@ -94,7 +96,7 @@ export interface ScreenCell {
   col: number;
 }
 
-// A tmux pane's logical line that tmux wrapped across rows — see readPaneLines.
+// A logical line wrapped across rows by a split pane — see readPaneLines.
 export interface PaneLine {
   left: number;
   width: number;
@@ -233,10 +235,34 @@ export interface TerminalEngineHandle {
   // The cursor's screen-relative position (0-based, matches readLine's row
   // numbering).
   getCursor(): ScreenPosition;
-  // True when the local viewport isn't pinned to the bottom of the
-  // engine's own buffer — tmux owns real scrollback, so this only ever
-  // reflects a momentary local scroll, not tmux copy-mode.
+  // True when the viewport isn't pinned to the bottom of the buffer (the
+  // user has scrolled back into history).
   isScrolledUp(): boolean;
+  // Where the viewport sits in the buffer. Lines are absolute: 0 is the
+  // oldest line of scrollback, `length` counts scrollback plus the screen,
+  // `baseY` is the first line of the bottom page and `viewportY` the first
+  // line currently shown (equal to baseY when pinned to the bottom).
+  getScrollState(): { viewportY: number; baseY: number; length: number; rows: number };
+  // Scrolls so absolute `line` is the top visible line (clamped).
+  scrollToLine(line: number): void;
+  scrollToBottom(): void;
+  // Fires when the viewport moves or the buffer grows; returns an
+  // unsubscribe. What a scroll thumb redraws from.
+  onScrollChange(cb: () => void): () => void;
+  // One absolute buffer line's text, right-trimmed. Optional: an engine
+  // without buffer access gets no scrollback search.
+  readBufferLine?(line: number): string;
+  // Selects `length` cells starting at absolute (col, line), scrolling it
+  // into view.
+  selectBufferRange?(col: number, line: number, length: number): void;
+  // Absolute lines where a prompt began (OSC 133;A from shell integration),
+  // oldest first, kept current as scrollback is trimmed. Optional: without
+  // it the prompt-jump commands have nothing to jump to.
+  promptLines?(): number[];
+  // Tells the engine the terminals are Windows ConPTY pseudo-terminals (with
+  // the Windows build number), or not, so it can match how they reflow.
+  // Optional: an engine without it renders them as it would any other.
+  setWindowsPty?(windowsBuild: number | null): void;
   // Cell size in CSS pixels, respecting lineHeight/letterSpacing — the
   // same grid both cellFromPoint and the engine's own renderer use.
   getCellMetrics(): { width: number; height: number };

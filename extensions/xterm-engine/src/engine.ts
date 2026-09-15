@@ -72,6 +72,10 @@ export async function createXtermEngine(
     // Native option — no shim needed, unlike ghostty. Default (4.5) mirrors
     // VS Code/code-server (terminal.integrated.minimumContrastRatio).
     minimumContrastRatio: initialSettings.minimumContrastRatio,
+    // History lives here, in the browser: the terminal daemon replays a
+    // window's output on attach, and scrolling, search and prompt jumps all
+    // read this buffer.
+    scrollback: initialSettings.scrollback ?? 10_000,
     // xterm's SelectionService only force-starts local selection for
     // Option+click/drag on Mac (shouldForceSelection branches on
     // Browser.isMac) — irrelevant here since this engine's local selection
@@ -237,6 +241,31 @@ export async function createXtermEngine(
     return true;
   });
 
+  // Prompt marks (OSC 133;A from the shell integration). The OSC handler runs
+  // mid-parse, at the exact byte the mark arrives, so a marker registered here
+  // lands on the prompt's own line even when a replay delivers hundreds of
+  // prompts in one write. Markers follow their line as scrollback is trimmed
+  // and dispose themselves when it's discarded. Returning false lets any
+  // other OSC 133 handler see the sequence too.
+  const promptMarkers = new Set<{ line: number; isDisposed: boolean; dispose(): void }>();
+  const promptHandlerDisposable = term.parser.registerOscHandler(133, (data) => {
+    if (data === "A" || data.startsWith("A;")) {
+      const marker = term.registerMarker(0);
+      if (marker) {
+        promptMarkers.add(marker);
+        marker.onDispose(() => promptMarkers.delete(marker));
+      }
+    }
+    return false;
+  });
+
+  const scrollListeners = new Set<() => void>();
+  const notifyScroll = () => {
+    for (const cb of scrollListeners) cb();
+  };
+  const scrollSub = term.onScroll(notifyScroll);
+  const writeParsedSub = term.onWriteParsed(notifyScroll);
+
   // Predictive keyboards (Gboard etc.) deliver nothing through onData at
   // all until a word actually commits (space, punctuation, a suggestion
   // tap) — xterm.js's own textarea still fires the standard Composition
@@ -393,6 +422,7 @@ export async function createXtermEngine(
       return term.rows;
     },
     write: (data) => term.write(data),
+    whenWritten: (done) => term.write("", done),
     focus: () => term.focus(),
     focusInput: () => term.textarea?.focus(),
     setSoftKeyboardSuppressed: (suppressed) => {
@@ -548,6 +578,38 @@ export async function createXtermEngine(
     // baseY: top of the bottom page when fully scrolled down. viewportY:
     // top of what's currently shown. Equal means pinned to the bottom.
     isScrolledUp: () => term.buffer.active.viewportY !== term.buffer.active.baseY,
+    getScrollState: () => ({
+      viewportY: term.buffer.active.viewportY,
+      baseY: term.buffer.active.baseY,
+      length: term.buffer.active.length,
+      rows: term.rows,
+    }),
+    scrollToLine: (line) => term.scrollToLine(Math.max(0, Math.min(term.buffer.active.baseY, Math.round(line)))),
+    scrollToBottom: () => term.scrollToBottom(),
+    onScrollChange: (cb) => {
+      scrollListeners.add(cb);
+      return () => scrollListeners.delete(cb);
+    },
+    readBufferLine: (index) => {
+      if (index < 0 || index >= term.buffer.active.length) return "";
+      return term.buffer.active.getLine(index)?.translateToString(true) ?? "";
+    },
+    selectBufferRange: (col, index, length) => {
+      // Keep the match off the very top edge, so there's context above it.
+      const buf = term.buffer.active;
+      if (index < buf.viewportY || index >= buf.viewportY + term.rows) {
+        term.scrollToLine(Math.max(0, Math.min(buf.baseY, index - Math.floor(term.rows / 3))));
+      }
+      term.select(col, index, length);
+    },
+    setWindowsPty: (windowsBuild) => {
+      term.options.windowsPty = windowsBuild === null ? {} : { backend: "conpty", buildNumber: windowsBuild };
+    },
+    promptLines: () =>
+      [...promptMarkers]
+        .filter((m) => !m.isDisposed && m.line >= 0)
+        .map((m) => m.line)
+        .sort((a, b) => a - b),
     // Prefers xterm's own measured cell box (same value its renderer draws
     // glyphs with, on the same private path ecosystem addons already lean
     // on for pixel-accurate overlays — there's no public equivalent) over
@@ -575,6 +637,10 @@ export async function createXtermEngine(
       term.textarea?.removeEventListener("beforeinput", onBeforeInput as EventListener);
       dataSub.dispose();
       oscHandlerDisposable.dispose();
+      promptHandlerDisposable.dispose();
+      scrollSub.dispose();
+      writeParsedSub.dispose();
+      scrollListeners.clear();
       renderSub.dispose();
       renderListeners.clear();
       linkProviderDisposable.dispose();

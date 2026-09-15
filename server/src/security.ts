@@ -192,15 +192,14 @@ export function tokenFromRequest(
 }
 
 // Routes that must stay reachable without the auth cookie even when the gate
-// is on: the Origin-exempt /public/ routes (see its module comment), plus
-// /api/push/bell — called by tmux's own `run-shell curl` alert-bell hook
-// (server/src/tmux.ts's applyTmuxOptions), a plain local process with no way
-// to carry a cookie or token. That handler enforces its own loopback-only
-// check instead (isLoopbackAddress below) — this exemption alone would
-// otherwise open it to anyone who can reach the port.
+// is on: the Origin-exempt /public/ routes (see its module comment), plus the
+// report routes below, each called by a plain local process with no way to
+// carry a cookie or token. Each handler enforces its own loopback-only check
+// (isLoopbackAddress below) — this exemption alone would otherwise open it to
+// anyone who can reach the port.
 export function isAuthExemptPath(path: string): boolean {
-  // /api/open-url follows the bell pattern exactly (local curl from the
-  // $BROWSER shim, loopback + custom-header checks in its handler); its
+  // /api/open-url is a local curl from the $BROWSER shim, with loopback and
+  // custom-header checks in its handler; its
   // /events SSE sibling is deliberately NOT exempt — exact match only.
   // /api/open-target is the same pattern again, this time for the CLI's
   // `tmux-server open` (plans/cli-open-command.md).
@@ -215,7 +214,6 @@ export function isAuthExemptPath(path: string): boolean {
   // stay gated, which is why report has its own subpath.
   return (
     isOriginExemptPath(path) ||
-    path === "/api/push/bell" ||
     path === "/api/open-url" ||
     path === "/api/open-target" ||
     path === "/api/command-events/report" ||

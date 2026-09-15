@@ -1,6 +1,7 @@
 import type { AppSettings } from "../../settings";
 import { useSettingsContext } from "./context";
 import { FontFamilyPicker, NumberField } from "./controls";
+import { useTerminalBackends } from "./useTerminalBackends";
 
 // ghostty-web has no native options for line height, letter spacing, bold
 // weight, or minimum contrast ratio — the ghostty engine implements them
@@ -22,6 +23,13 @@ export default function TerminalSection() {
   const engineOptions = extensions
     .filter((ext) => ext.enabled)
     .flatMap((ext) => ext.terminalEngines.map((e) => ({ id: `ext.${ext.id}.${e.id}`, label: e.label })));
+
+  const backends = useTerminalBackends(extensions);
+  const running = backends.find((b) => b.active);
+  const backendOptions = backends.some((b) => b.id === settings.terminalBackend)
+    ? backends
+    : [...backends, { id: settings.terminalBackend, label: `${settings.terminalBackend} (not installed)`, description: "", selected: true, active: false }];
+  const chosen = backendOptions.find((b) => b.id === settings.terminalBackend);
 
   return (
     <>
@@ -213,9 +221,29 @@ export default function TerminalSection() {
       </label>
       <div className="settings-hint">
         Scrolled back and then type, and the pane returns to the live output first, like a normal terminal
-        emulator, instead of the key acting as a tmux copy-mode command. PageUp and PageDown still move
-        through the scrollback, and Find and the prompt jumps still work while scrolled.
+        emulator. PageUp and PageDown still move through the scrollback, and Find and the prompt jumps still
+        work while scrolled.
       </div>
+
+      <label className="settings-row">
+        <span className="settings-label">Backend</span>
+        <select
+          className="dialog-input settings-select"
+          value={settings.terminalBackend}
+          onChange={(e) => set("terminalBackend", e.target.value)}
+        >
+          {backendOptions.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="settings-hint">
+        Where terminals run. Changing this takes effect when the server restarts
+        {running && running.id !== settings.terminalBackend ? ` - running on ${running.label} now` : ""}.
+      </div>
+      {chosen?.description && <div className="settings-hint">{chosen.description}</div>}
 
       <label className="settings-row">
         <span className="settings-label">Local echo when</span>

@@ -74,14 +74,16 @@ function isExternalHref(href: string): boolean {
 // relative link targets.
 function resolveRelativePath(markdownFilePath: string, relPath: string): string {
   const dir = markdownFilePath.slice(0, markdownFilePath.lastIndexOf("/"));
-  const full = relPath.startsWith("/") ? relPath : `${dir}/${relPath}`;
+  const full = relPath.startsWith("/") || /^[A-Za-z]:\//.test(relPath) ? relPath : `${dir}/${relPath}`;
+  // A Windows drive ("C:") is the root to keep; everything else joins under "/".
+  const drive = /^([A-Za-z]:)\//.exec(full)?.[1];
   const parts: string[] = [];
-  for (const part of full.split("/")) {
+  for (const part of (drive ? full.slice(drive.length) : full).split("/")) {
     if (part === "" || part === ".") continue;
     if (part === "..") parts.pop();
     else parts.push(part);
   }
-  return `/${parts.join("/")}`;
+  return `${drive ?? ""}/${parts.join("/")}`;
 }
 
 // react-markdown renders an image's `src` verbatim, so a relative path like

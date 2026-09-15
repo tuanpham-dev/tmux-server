@@ -68,6 +68,7 @@ import { leaves } from "./lib/splits";
 import { emitPollTick } from "./lib/pollTick";
 import { rewriteLocalUrl } from "./lib/openUrlRewrite";
 import { compareVersions } from "./lib/version";
+import { isAbsolutePath, parentPath } from "./lib/paths";
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 500;
@@ -890,7 +891,7 @@ export default function App() {
     [projectKeyForSession],
   );
   const groupLabelForKey = useCallback(
-    (key: string) => (key.startsWith("/") || key.startsWith("~") ? projectName(key) : key),
+    (key: string) => (isAbsolutePath(key) ? projectName(key) : key),
     [],
   );
 
@@ -1157,7 +1158,7 @@ export default function App() {
           const listing = await api.listDir(folder);
           await handleOpenTarget({ kind: "dir", path: listing.path, projectCwd: listing.path });
         } else if (file) {
-          const dirname = file.slice(0, file.lastIndexOf("/")) || "/";
+          const dirname = parentPath(file) ?? file;
           const gitRoot = await api.getGitRoot(dirname);
           await handleOpenTarget({ kind: "file", path: file, projectCwd: gitRoot.root, line, action });
         }
@@ -1235,7 +1236,7 @@ export default function App() {
           if (activeIndex !== undefined) await openWindowTab(created.name, activeIndex);
           return;
         }
-        showError(new Error(`No tmux session named "${sessionName}"`));
+        showError(new Error(`No session named "${sessionName}"`));
       })();
     });
     setKillSessionHandler((sessionName) => {

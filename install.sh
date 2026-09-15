@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# tmux-server installer — clones the repo, builds it, and (on systemd
-# systems) installs it as a user service. No sudo; everything lives under
+# tmux-server installer — clones the repo, builds it, and installs it as a
+# user service (systemd on Linux, launchd on macOS). No sudo; everything lives under
 # $HOME. Safe to re-run: it updates an existing install instead of failing.
 #
 #   curl -fsSL https://raw.githubusercontent.com/tuanpham-dev/tmux-server/main/install.sh | bash
@@ -28,13 +28,10 @@ heading "Checking dependencies"
 command -v git >/dev/null 2>&1 || die "git not found — install it via your package manager"
 ok "git found"
 
-command -v tmux >/dev/null 2>&1 || die "tmux not found — install it via your package manager (e.g. apt install tmux, brew install tmux)"
-ok "tmux found"
-
-command -v node >/dev/null 2>&1 || die "node not found — install Node.js 20+ (https://nodejs.org)"
+command -v node >/dev/null 2>&1 || die "node not found - install Node.js 23+ (https://nodejs.org)"
 NODE_VERSION="$(node --version)"
 NODE_MAJOR="$(echo "$NODE_VERSION" | sed -E 's/^v([0-9]+).*/\1/')"
-[ "$NODE_MAJOR" -ge 20 ] 2>/dev/null || die "node $NODE_VERSION found, but 20+ is required — install Node.js 20+ (https://nodejs.org)"
+[ "$NODE_MAJOR" -ge 23 ] 2>/dev/null || die "node $NODE_VERSION found, but 23+ is required - install Node.js 23+ (https://nodejs.org)"
 ok "node $NODE_VERSION"
 
 TOOLCHAIN_OK=1
@@ -68,10 +65,10 @@ chmod +x "$INSTALL_DIR/bin/tmux-server"
 ok "linked $BIN_DIR/tmux-server -> $INSTALL_DIR/bin/tmux-server"
 
 heading "Service"
-if command -v systemctl >/dev/null 2>&1 && systemctl --user list-units >/dev/null 2>&1; then
+if { command -v systemctl >/dev/null 2>&1 && systemctl --user list-units >/dev/null 2>&1; } || command -v launchctl >/dev/null 2>&1; then
   "$INSTALL_DIR/bin/tmux-server" enable
 else
-  warn "no systemd user session available — start it manually with: tmux-server start"
+  warn "no systemd user session or launchd available - start it manually with: tmux-server start"
 fi
 
 heading "Done"

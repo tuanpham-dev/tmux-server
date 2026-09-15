@@ -22,6 +22,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { isOnPath } from "./which.js";
 import { readSettingsDoc } from "./settingsStore.js";
+import { configDir } from "./configDir.js";
 
 // How one agent's CLI wants its hooks written, as data rather than as code.
 // Core used to carry three hard-coded flavours (claude / codex / agy); it now
@@ -145,7 +146,7 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
 // it that decides which file core writes.
 function resolveHookFile(raw: string): string | null {
   const home = homedir();
-  const expanded = raw === "~" ? home : raw.startsWith("~/") ? path.join(home, raw.slice(2)) : raw;
+  const expanded = raw === "~" ? home : raw.startsWith("~/") || raw.startsWith("~\\") ? path.join(home, raw.slice(2)) : raw;
   if (!path.isAbsolute(expanded)) return null;
   const resolved = path.resolve(expanded);
   if (resolved !== home && !resolved.startsWith(`${home}${path.sep}`)) return null;
@@ -215,11 +216,16 @@ export interface AgentPreset {
   // what the hook routes address. Safe as a plain object key.
   id: string;
   label: string;
-  // tmux's pane_current_command for a pane running this agent. Empty means
+  // The foreground command a window running this agent reports. Empty means
   // "launch preset only" — nothing will ever be detected as this agent.
   program: string;
   // The full command line that starts it. Empty means "detection only".
   command: string;
+  // The command line that picks up where the agent left off in the same
+  // folder ("claude --continue"), typed into a window that was running it
+  // when the terminals come back after a restart. Empty means it isn't
+  // resumed: the restored window is left at a shell prompt.
+  resume: string;
   // The argument(s) appended to `command` to start this agent with its
   // permission prompts off - its "yolo mode". A parameter rather than a
   // second registry entry, because every agent has one and the pair only
@@ -284,6 +290,7 @@ function parseAgent(raw: unknown): AgentPreset | null {
     program,
     command,
     skipPermissionsArgs: readString(source, "skipPermissionsArgs"),
+    resume: readString(source, "resume"),
     // Never taken from the settings document. A descriptor says which file in
     // the user's home core may write, and in what shape, so it comes only
     // from the manifest that declared the agent — a document the user can
@@ -380,6 +387,8 @@ export interface AgentSummary {
   // Appended to `command` when the caller offers a "skip permissions" choice
   // and the user takes it. Empty means this agent has no such mode.
   skipPermissionsArgs: string;
+  // How to resume it after a restart; empty when it isn't resumed.
+  resume: string;
   // Whether core can install hooks for this agent at all. The descriptor
   // itself is deliberately not published: it names a file in the user's home
   // and only core's writer has any business with it.
@@ -394,12 +403,13 @@ export async function listAgents(): Promise<AgentSummary[]> {
   const agents = await resolveAgents();
   return agents
     .filter((a) => a.enabled)
-    .map(({ id, label, program, command, skipPermissionsArgs, hooks, oneShot }) => ({
+    .map(({ id, label, program, command, skipPermissionsArgs, resume, hooks, oneShot }) => ({
       id,
       label,
       program,
       command,
       skipPermissionsArgs,
+      resume,
       hooks: hooks !== null,
       oneShot,
     }));
@@ -417,10 +427,23 @@ export async function listAgents(): Promise<AgentSummary[]> {
 export async function launchCommand(id: string): Promise<string | null> {
   const agent = (await listAgents()).find((a) => a.id === id);
   if (!agent || !agent.command) return null;
+  return withPermissions(agent, agent.command);
+}
+
+// The line that resumes an enabled agent after a restart, under the same
+// Yolo/Manual rule as launchCommand. Null for an unknown or disabled id, or
+// an agent that declares no resume command.
+export async function resumeCommand(id: string): Promise<string | null> {
+  const agent = (await listAgents()).find((a) => a.id === id);
+  if (!agent || !agent.resume) return null;
+  return withPermissions(agent, agent.resume);
+}
+
+async function withPermissions(agent: AgentSummary, line: string): Promise<string> {
   const doc = await readSettingsDoc();
   const settings = (doc.settings ?? {}) as Record<string, unknown>;
   const yolo = settings.agentPermissions === "yolo";
-  return yolo && agent.skipPermissionsArgs ? `${agent.command} ${agent.skipPermissionsArgs}` : agent.command;
+  return yolo && agent.skipPermissionsArgs ? `${line} ${agent.skipPermissionsArgs}` : line;
 }
 
 // One agent by id, disabled ones included — the hook routes address an agent
@@ -480,11 +503,14 @@ const HOOK_TIMEOUT_SECONDS = 5;
 // recognizes its own entries by this path and nothing else, which is what
 // keeps a hand-written hook from ever being read, rewritten or removed.
 export const agentHookShimPath = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
-  "tmux-server",
+  configDir,
   "bin",
-  "agent-hook",
+  process.platform === "win32" ? "agent-hook.cmd" : "agent-hook",
 );
+
+// How the shim path is written in a hook command: quoted on Windows, where
+// the path usually contains the user's name and may contain spaces.
+const shimInCommand = process.platform === "win32" ? `"${agentHookShimPath}"` : agentHookShimPath;
 
 // An id safe to put in a hook command's argument list, and safe as a plain
 // object key. Ids come from a user-editable settings document, and the
@@ -501,7 +527,7 @@ export function isSafeAgentId(id: string): boolean {
 // and $TMUX_PANE is read from the pane's environment — nothing about the
 // event is interpolated here.
 export function hookCommandFor(agentId: string, rawEvent: string): string {
-  return `${agentHookShimPath} ${agentId} ${rawEvent}`;
+  return `${shimInCommand} ${agentId} ${rawEvent}`;
 }
 
 // Which of `events` this agent can actually deliver, as its own raw names,
@@ -616,7 +642,7 @@ export function snippetFor(agent: AgentPreset, events: readonly AgentEvent[]): H
 // with core's shim path. Nothing else in a file is ever read, rewritten or
 // removed, whatever it points at.
 function isCoreHookCommand(command: unknown): boolean {
-  return typeof command === "string" && command.startsWith(`${agentHookShimPath} `);
+  return typeof command === "string" && command.startsWith(`${shimInCommand} `);
 }
 
 // The agent id core's own command was installed for. Hooks are per config
@@ -624,7 +650,7 @@ function isCoreHookCommand(command: unknown): boolean {
 // and this is whichever of them was installed last - see hookStateFor's stale
 // check.
 function coreHookAgentId(command: string): string {
-  return command.slice(agentHookShimPath.length + 1).split(" ")[0] ?? "";
+  return command.slice(shimInCommand.length + 1).split(" ")[0] ?? "";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,3 +1,4 @@
+import { stripTerminalReplies } from "../lib/terminalReplies";
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import { createPathResolver } from "../pathResolver";
@@ -24,6 +25,9 @@ import { LocalEcho, normalizeSpaces, wrapModeForCommand } from "../localEcho";
 import { inputDebug } from "../inputDebug";
 import type { AppSettings } from "../settings";
 import { whenMatches } from "../lib/terminalInput";
+import { jumpTarget } from "../lib/promptJump";
+import { lineForThumbTop, thumbGeometry } from "../lib/scrollThumb";
+import { findMatches, stepMatch, type Match } from "../lib/terminalSearch";
 import { unwrapParagraphs } from "../selectionText";
 import { rangeAt } from "../touchSelect";
 import SearchBar from "./SearchBar";
@@ -125,9 +129,8 @@ interface Props {
   bindings: Record<string, Keybinding[]>;
   onExit: () => void;
   onError: (err: unknown) => void;
-  // tmux-native navigation inside this attach, reported (and already
-  // reverted) by the server's attach watcher: a window switch within a
-  // window tab, or a cross-session switch from any tab.
+  // The session this attach follows moved to another window (a session tab
+  // follows its session's current window), reported by the server.
   onWindowSwitch?: (windowIndex: number) => void;
   onSessionSwitch?: (session: string, windowIndex: number) => void;
   // Ctrl+click / Ctrl+Shift+click (Cmd+click / Cmd+Shift+click on mac) on a
@@ -220,8 +223,8 @@ export default function TerminalView({
   // effect below) to the currently-hovered link's own activation call, or
   // null when nothing's hovered. Read from onCapture's mouse-mode
   // interception so a ctrl+click on a link is activated directly and never
-  // reaches tmux (which would e.g. re-trigger nvim's own <C-LeftMouse>
-  // tag-jump binding).
+  // reaches the program in the terminal (which would e.g. re-trigger nvim's
+  // own <C-LeftMouse> tag-jump binding).
   const linkActivateRef = useRef<((e: MouseEvent) => void) | null>(null);
   // What that hovered link points at, when the engine reports it (optional
   // in the seam, so an engine built against the older contract leaves this
@@ -497,10 +500,22 @@ export default function TerminalView({
       // echo fork) below, and the engine's own onData (real typed/pasted/
       // composed input) additionally goes through sticky-Ctrl via
       // forwardInput.
+      // False from each (re)connect until the server's "replayed" frame has
+      // arrived and the engine has parsed every replayed byte; input meanwhile
+      // waits in heldInput (see connect below). What the terminal answers on
+      // its own to queries in the replayed history is dropped rather than
+      // held: those answers were for a program that is gone, and delivered
+      // they land in the shell as typed junk (and garble a resume command).
+      let replayDone = false;
+      const heldInput: string[] = [];
       const sendInput = (data: string) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "input", data }));
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (!replayDone) {
+          const typed = stripTerminalReplies(data);
+          if (typed) heldInput.push(typed);
+          return;
         }
+        ws.send(JSON.stringify({ type: "input", data }));
       };
 
       // Assigned once the engine (LocalEcho's adapter) exists below;
@@ -729,7 +744,6 @@ export default function TerminalView({
         isVisible: () => visibleRef.current,
         onData: forwardInput,
         resolvePaths: (paths, cells) => resolvePathsRef.current(paths, cells),
-        readPaneLines: (row) => api.paneLines(attachNameRef.current, row).then((r) => r.lines),
         onOpenUrl: openUrl,
         onOpenFile: (path, line) => onOpenFileRef.current?.(path, line),
         onOpenFileSecondary: (path, line) => onOpenFileSecondaryRef.current?.(path, line),
@@ -781,6 +795,11 @@ export default function TerminalView({
         else localEcho?.setComposing(text);
       });
 
+      // The size last reported on the current connection. Only a change is
+      // sent: the backend treats a resize as this view being used (the window
+      // reflows to it), and the terminal re-measures for plenty of idle
+      // reasons (a settings sync, a reconnect, a phone's address bar).
+      let sentSize = "";
       const refit = () => {
         // fit() itself no-ops (returns null) on a disposed/zero-size
         // terminal; a ResizeObserver callback can still fire after cleanup
@@ -797,56 +816,43 @@ export default function TerminalView({
           // pixel row/column even though findAnchor's own row/col math is
           // correct.
           localEcho?.refreshFont();
-          if (ws.readyState === WebSocket.OPEN) {
+          const size = `${result.cols}x${result.rows}`;
+          if (ws.readyState === WebSocket.OPEN && size !== sentSize) {
+            sentSize = size;
             ws.send(JSON.stringify({ type: "resize", cols: result.cols, rows: result.rows }));
           }
         }
       };
       refitRef.current = refit;
 
-      // tmux keeps scrollback internally, so the terminal never scrolls
-      // locally and the engine's own scrollbar (if any) stays dormant.
-      // Instead, after each output burst we ask tmux for its copy-mode
-      // scroll state and drive an overlay thumb from it. In-flight
-      // coalescing (not a fixed debounce) keeps this snappy: a burst of
-      // "data" messages during continuous scrolling would otherwise keep
-      // resetting a timer and compound into visible lag. A hard 250ms floor
-      // on top caps the rate during sustained heavy output (e.g. `yes`) —
-      // each query spawns a tmux subprocess server-side, so an unthrottled
-      // per-chunk query flood burns real CPU for no visible benefit; a
-      // trailing timer guarantees the final position still lands.
-      const SCROLL_QUERY_FLOOR_MS = 250;
-      let queryInFlight = false;
-      let queryDirty = false;
-      let lastQuerySentAt = 0;
-      let queryThrottleTimer: number | undefined;
-      const sendScrollQuery = () => {
-        queryInFlight = true;
-        lastQuerySentAt = Date.now();
-        ws.send(JSON.stringify({ type: "scrollQuery" }));
-      };
-      const requestScrollState = () => {
-        if (ws.readyState !== WebSocket.OPEN) return;
-        // Nothing can observe the answer unless this terminal is on screen:
-        // its tab must be the active one in its editor group (visibleRef) AND
-        // the browser tab itself must be in the foreground (document.hidden).
-        if (!visibleRef.current || document.hidden) return;
-        if (queryInFlight) {
-          queryDirty = true;
+      // History lives in the engine's own buffer (the terminal daemon replays a
+      // window's output on attach), so the overlay thumb is drawn from the
+      // buffer and redrawn whenever the viewport moves or the buffer grows —
+      // at most once a frame, however much output arrives.
+      const renderThumb = () => {
+        const track = scrollTrackRef.current;
+        if (!track || !visibleRef.current || document.hidden) return;
+        const { viewportY, length, rows } = engine.getScrollState();
+        const geometry = thumbGeometry({ total: length, rows, viewportY, trackHeight: track.clientHeight });
+        if (!geometry) {
+          track.classList.remove("visible");
           return;
         }
-        if (queryThrottleTimer !== undefined) return;
-        const elapsed = Date.now() - lastQuerySentAt;
-        if (elapsed >= SCROLL_QUERY_FLOOR_MS) {
-          sendScrollQuery();
-          return;
-        }
-        queryThrottleTimer = window.setTimeout(() => {
-          queryThrottleTimer = undefined;
-          if (ws.readyState === WebSocket.OPEN && !queryInFlight) sendScrollQuery();
-        }, SCROLL_QUERY_FLOOR_MS - elapsed);
+        track.classList.add("visible");
+        const thumb = track.firstElementChild as HTMLElement;
+        thumb.style.height = `${geometry.height}px`;
+        thumb.style.top = `${geometry.top}px`;
       };
-      scrollQueryRef.current = requestScrollState;
+      let thumbRaf = 0;
+      const scheduleThumb = () => {
+        if (thumbRaf) return;
+        thumbRaf = requestAnimationFrame(() => {
+          thumbRaf = 0;
+          renderThumb();
+        });
+      };
+      const unsubScrollChange = engine.onScrollChange(scheduleThumb);
+      scrollQueryRef.current = scheduleThumb;
 
       revealRef.current = () => {
         if (disposed) return;
@@ -855,81 +861,26 @@ export default function TerminalView({
         scrollQueryRef.current?.();
       };
 
-      // Last known state, kept for drag math; updated by server replies and,
-      // optimistically, by drag moves so the thumb never waits on a round trip.
-      // `inMode` is tmux's pane_in_mode — true for copy-mode at any position,
-      // including pinned to the bottom, where keys are still copy-mode
-      // commands rather than shell input; it's what snapToBottomIfScrolled
-      // below tests, not position.
-      const lastState = { inMode: false, position: 0, history: 0, height: 0 };
-
-      const renderThumb = (position: number, history: number, height: number) => {
-        const track = scrollTrackRef.current;
-        if (!track) return;
-        const total = history + height;
-        if (total <= height) {
-          track.classList.remove("visible");
-          return;
-        }
-        track.classList.add("visible");
-        const thumb = track.firstElementChild as HTMLElement;
-        thumb.style.height = `${Math.max(6, (height / total) * 100)}%`;
-        thumb.style.top = `${((history - position) / total) * 100}%`;
-      };
-
-      const applyScrollState = (s: {
-        inMode: boolean;
-        position: number;
-        history: number;
-        height: number;
-      }) => {
-        lastState.inMode = s.inMode;
-        lastState.position = s.position;
-        lastState.history = s.history;
-        lastState.height = s.height;
-        renderThumb(s.position, s.history, s.height);
-      };
-
       // Keys that move within the scrollback, so they must NOT snap it away:
       // PageUp/PageDown, with or without modifiers (CSI 5~ / 6~, and the
       // CSI 5;<mods>~ form a shifted or ctrl'd press produces).
       const SCROLLBACK_KEY_RE = /^\x1b\[[56](;\d+)?~$/;
 
-      // Scrollback here is tmux copy-mode (see requestScrollState above), so
-      // while a pane is scrolled back every key is a copy-mode command rather
-      // than shell input — type "l" in a scrolled pane and tmux moves its
-      // cursor instead. A normal terminal emulator snaps to the live tail on
-      // the first keypress and lets the key through, so that's what every
-      // typed/pasted byte does here: request the exit, then send as usual.
-      // Ordering is the server's job (wsAttach's writeInput queues input
-      // behind an in-flight exit) — leaving copy-mode costs a tmux round trip
-      // while input is a direct PTY write, so a keystroke sent alongside it
-      // would otherwise overtake it.
-      //
-      // Deliberately NOT routed through here: mouse/wheel/focus reports,
-      // which call sendInput directly (a wheel tick is how you scroll in the
-      // first place), and this app's own terminal.* keybindings, which the
-      // key handler claims before the engine ever emits data — so find, copy
-      // and the prompt jumps all stay usable while scrolled.
+      // A normal terminal snaps back to the live tail on the first keypress
+      // while you're reading history, and lets the key through. Deliberately
+      // NOT routed through here: mouse/wheel/focus reports, which call
+      // sendInput directly (a wheel tick is how you scroll in the first
+      // place), and this app's own terminal.* keybindings, which the key
+      // handler claims before the engine ever emits data — so find, copy and
+      // the prompt jumps all stay usable while scrolled.
       const snapToBottomIfScrolled = (data: string) => {
-        if (!snapToBottomRef.current || !lastState.inMode) return;
+        if (!snapToBottomRef.current || !engine.isScrolledUp()) return;
         if (SCROLLBACK_KEY_RE.test(data)) return;
-        if (ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ type: "exitCopyMode" }));
-        // Optimistic, like the scrollbar drag's: the server sends a fresh
-        // scroll frame once the exit lands, but the thumb shouldn't sit at a
-        // stale position for the round trip — and clearing inMode here keeps
-        // the rest of a fast burst of typing from re-sending the request.
-        applyScrollState({
-          inMode: false,
-          position: 0,
-          history: lastState.history,
-          height: lastState.height,
-        });
+        engine.scrollToBottom();
       };
 
-      // A close preceded by an "exit" message means tmux itself is gone
-      // (session/window killed) — close the tab, same as before. A close
+      // A close preceded by an "exit" message means the terminal itself is
+      // gone (session/window killed) — close the tab. A close
       // with no "exit" first means something broke the pipe underneath
       // (server restart, sleep/wake, network blip) — reconnect instead of
       // losing the tab. Retrying is safe even if the session really did die
@@ -938,10 +889,15 @@ export default function TerminalView({
       let receivedExit = false;
 
       const connect = () => {
-        // Send the real grid size along so the server spawns the attach PTY
-        // at it (see wsAttach.ts): a fresh attach at the default 80x24
-        // bounces the tmux window to 80x24 until the post-open resize
-        // message lands, reflowing every full-screen TUI twice — after a
+        // Input is held until the server says the replay is done: replayed
+        // history can contain capability queries, and a terminal answers
+        // those — answers that must not reach the shell as typed keys, and
+        // real keystrokes that must not interleave with them.
+        replayDone = false;
+        // Send the real grid size along so the attach starts at it (see
+        // wsAttach.ts): a fresh attach at the default 80x24 would size the
+        // window to 80x24 until the post-open resize message lands,
+        // reflowing every full-screen TUI twice — after a
         // long disconnect on a slow link that reflow storm left panes
         // visibly garbled. fit() is recomputed per attempt since the layout
         // can change while disconnected (rotation, keyboard); it returns
@@ -961,6 +917,7 @@ export default function TerminalView({
           reconnectAttempt = 0;
           lastFrameAt = Date.now();
           container.classList.remove("reconnecting");
+          sentSize = "";
           refit();
         };
 
@@ -974,17 +931,20 @@ export default function TerminalView({
           }
           if (ev.data instanceof ArrayBuffer) {
             engine.write(new Uint8Array(ev.data));
-            requestScrollState();
             return;
           }
           const msg = JSON.parse(ev.data);
-          if (msg.type === "scroll") {
-            queryInFlight = false;
-            applyScrollState(msg);
-            if (queryDirty) {
-              queryDirty = false;
-              requestScrollState();
-            }
+          if (msg.type === "host" && msg.platform === "win32") {
+            engine.setWindowsPty?.(Number.isFinite(msg.windowsBuild) ? msg.windowsBuild : 0);
+          } else if (msg.type === "replayed") {
+            const socket = ws;
+            const release = () => {
+              if (ws !== socket || replayDone) return;
+              replayDone = true;
+              for (const data of heldInput.splice(0)) ws.send(JSON.stringify({ type: "input", data }));
+            };
+            if (engine.whenWritten) engine.whenWritten(release);
+            else release();
           } else if (msg.type === "windowSwitched" && Number.isFinite(msg.windowIndex)) {
             onWindowSwitchRef.current?.(msg.windowIndex);
           } else if (
@@ -1080,113 +1040,79 @@ export default function TerminalView({
       document.addEventListener("visibilitychange", onConnectivityResume);
       window.addEventListener("online", onConnectivityResume);
 
-      // Closure over the outer `let ws`, which connect() reassigns on every
-      // reconnect — always reaches whichever socket is currently live. The
-      // server replies to a "search" message with a "scroll" message, same
-      // as scrollTo, so the existing scroll handler above already updates
-      // the scrollbar thumb to track matches with no extra message type.
+      // Scrollback search runs over the buffer in the browser. Enter steps to
+      // older matches (the way a terminal search reads back through output),
+      // Shift+Enter to newer; a fresh query starts at the newest match.
+      let searchMatches: Match[] = [];
+      let searchIndex = -1;
       sendSearchRef.current = (action, query) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "search", action, query }));
+        if (action === "cancel") {
+          engine.clearSelection();
+          searchMatches = [];
+          searchIndex = -1;
+          return;
         }
+        const read = engine.readBufferLine;
+        const select = engine.selectBufferRange;
+        if (!read || !select) return;
+        if (action === "start") {
+          const { length } = engine.getScrollState();
+          const lines: string[] = [];
+          for (let i = 0; i < length; i++) lines.push(read(i));
+          searchMatches = findMatches(lines, query ?? "");
+          searchIndex = -1;
+        }
+        searchIndex = stepMatch(searchIndex, searchMatches.length, action === "prev" ? 1 : -1);
+        const match = searchMatches[searchIndex];
+        if (match) select(match.column, match.line, match.length);
+        else engine.clearSelection();
       };
 
-      // Dragging/clicking the overlay bar jumps tmux's copy-mode scroll
-      // position directly (goto-line), rather than emulating wheel ticks.
+      // Dragging the thumb, or pressing the bare track, scrolls the buffer
+      // directly; the engine's scroll event redraws the thumb.
       const track = scrollTrackRef.current!;
-      let dragging = false;
       let dragOffsetPx = 0;
-      let rafPending = false;
-
-      const positionFromClientY = (clientY: number) => {
-        const trackRect = track.getBoundingClientRect();
-        const total = lastState.history + lastState.height;
-        const thumbHeightPx = Math.max(
-          6,
-          (lastState.height / total) * trackRect.height,
-        );
-        const draggableRangePx = Math.max(1, trackRect.height - thumbHeightPx);
-        const thumbTopPx = Math.min(
-          draggableRangePx,
-          Math.max(0, clientY - trackRect.top - dragOffsetPx),
-        );
-        const topFraction = thumbTopPx / trackRect.height;
-        const target = lastState.history - topFraction * total;
-        return Math.round(Math.min(lastState.history, Math.max(0, target)));
+      const lineAtPointer = (clientY: number) => {
+        const rect = track.getBoundingClientRect();
+        const { length, rows } = engine.getScrollState();
+        return lineForThumbTop(clientY - rect.top - dragOffsetPx, { total: length, rows, trackHeight: rect.height });
       };
 
-      // Coalesce-to-latest: if several mousemoves land in one animation
-      // frame, the most recent target line always wins — an earlier
-      // "if pending, drop" version could send a stale position and leave
-      // the drag short of where the cursor actually ended up.
-      let pendingLine = 0;
-      const sendScrollTo = (line: number) => {
-        pendingLine = line;
-        if (rafPending) return;
-        rafPending = true;
-        requestAnimationFrame(() => {
-          rafPending = false;
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "scrollTo", line: pendingLine }));
-          }
-        });
-      };
-
-      // Pointer Events (not mouse-only) so dragging works with touch and pen,
-      // not just a mouse — a plain mousedown/mousemove/mouseup pair never
-      // fires from a touchscreen. Pointer capture keeps events targeting the
-      // track even if a finger slides off the narrow 14px hit area.
-      const onDragMove = (e: PointerEvent) => {
-        const line = positionFromClientY(e.clientY);
-        // Optimistic redraw: don't wait for the server round trip to move
-        // the thumb, or dragging feels laggy even though it isn't anymore.
-        renderThumb(line, lastState.history, lastState.height);
-        sendScrollTo(line);
-      };
-
-      const onDragEnd = (e?: PointerEvent) => {
-        dragging = false;
+      // Pointer Events (not mouse-only) so dragging works with touch and pen.
+      // Pointer capture keeps events targeting the track even if a finger
+      // slides off the narrow hit area.
+      const onDragMove = (e: PointerEvent) => engine.scrollToLine(lineAtPointer(e.clientY));
+      const onDragEnd = () => {
         document.body.classList.remove("scrollbar-dragging");
         track.removeEventListener("pointermove", onDragMove);
         track.removeEventListener("pointerup", onDragEnd);
         track.removeEventListener("pointercancel", onDragEnd);
-        // Send the exact release position directly, bypassing the rAF
-        // throttle — guarantees the final spot lands even if the last
-        // in-flight frame got skipped.
-        if (e && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "scrollTo", line: positionFromClientY(e.clientY) }));
-        }
       };
-
-      const onThumbPointerDown = (e: PointerEvent) => {
+      track.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         e.stopPropagation();
         const thumb = track.firstElementChild as HTMLElement;
-        dragOffsetPx = e.clientY - thumb.getBoundingClientRect().top;
-        dragging = true;
+        const thumbRect = thumb.getBoundingClientRect();
+        // Grabbing the thumb keeps it under the same point of the finger;
+        // pressing the bare track centres the thumb there.
+        dragOffsetPx = e.target === thumb ? e.clientY - thumbRect.top : thumbRect.height / 2;
+        engine.scrollToLine(lineAtPointer(e.clientY));
         document.body.classList.add("scrollbar-dragging");
         track.setPointerCapture(e.pointerId);
         track.addEventListener("pointermove", onDragMove);
         track.addEventListener("pointerup", onDragEnd);
         track.addEventListener("pointercancel", onDragEnd);
-      };
-
-      const onTrackPointerDown = (e: PointerEvent) => {
-        if (dragging) return;
-        // Click/tap on the bare track: jump directly under the cursor.
-        dragOffsetPx = 0;
-        const line = positionFromClientY(e.clientY);
-        renderThumb(line, lastState.history, lastState.height);
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "scrollTo", line }));
-        }
-      };
-
-      track.addEventListener("pointerdown", (e) => {
-        const thumb = track.firstElementChild as HTMLElement;
-        if (e.target === thumb) onThumbPointerDown(e);
-        else onTrackPointerDown(e);
       });
+
+      // Prompt jumps: the engine records a marker at every OSC 133;A prompt
+      // mark the shell integration emits. Without it sourced there are no
+      // marks and nothing moves.
+      const jumpToPrompt = (direction: 1 | -1) => {
+        const lines = engine.promptLines?.();
+        if (!lines) return;
+        const target = jumpTarget(lines, engine.getScrollState().viewportY, direction);
+        if (target !== null) engine.scrollToLine(target);
+      };
 
       // ghostty-web's custom key handler semantics are INVERTED from
       // xterm.js: a truthy return means "handled — preventDefault and skip
@@ -1250,44 +1176,33 @@ export default function TerminalView({
         }
         if (bindingMatches(b["terminal.scrollToBottom"], combo, get)) {
           e.preventDefault();
-          // tmux owns scrollback here (see requestScrollState above), not
-          // the terminal's own buffer. Exiting copy-mode via the same
-          // "cancel" the search overlay already uses on close is what
-          // actually returns the pane to its live tail.
-          sendSearchRef.current("cancel");
+          engine.scrollToBottom();
           return true;
         }
-        // Prompt jumps (plans/warp-features.md): tmux moves between OSC 133
-        // prompt marks server-side; the reply is a "scroll" frame, so the
-        // scrollbar thumb tracks the jump like scrollTo/search do. Without
-        // shell integration sourced there are no marks and nothing moves.
+        // Prompt jumps (plans/warp-features.md), see jumpToPrompt above.
         if (bindingMatches(b["terminal.previousCommand"], combo, get)) {
           e.preventDefault();
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "promptJump", dir: "prev" }));
-          }
+          jumpToPrompt(-1);
           return true;
         }
         if (bindingMatches(b["terminal.nextCommand"], combo, get)) {
           e.preventDefault();
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "promptJump", dir: "next" }));
-          }
+          jumpToPrompt(1);
           return true;
         }
         return false;
       });
 
-      // tmux runs with mouse on, and the engine sends no mouse reports of
-      // its own (its own selection mechanism only ever selects locally), so
-      // this layer encodes SGR reports itself (mouseReports.ts) and ships
-      // them over the attach socket — the same bytes a native terminal
-      // would write to tmux's tty. The app's gesture policy: plain click =
-      // tmux click; long-press = tmux press with live motion; plain drag =
-      // LOCAL browser selection; Shift+gesture = forwarded to tmux with the
-      // shift bit stripped (Shift is this app's "force forward" modifier,
-      // not one tmux should see); middle/right = tmux press/release
-      // directly. Wheel is handled separately below (Shift+wheel keeps
+      // When the program in the terminal turns mouse reporting on (vim,
+      // htop), the engine sends no mouse reports of its own (its own
+      // selection mechanism only ever selects locally), so this layer
+      // encodes SGR reports itself (mouseReports.ts) and ships them over the
+      // attach socket — the same bytes a native terminal would write. The
+      // app's gesture policy: plain click = program click; long-press =
+      // program press with live motion; plain drag = LOCAL browser
+      // selection; Shift+gesture = forwarded with the shift bit stripped
+      // (Shift is this app's "force forward" modifier, not one the program
+      // should see); middle/right = press/release directly. Wheel is handled separately below (Shift+wheel keeps
       // meaning horizontal scroll).
       const DRAG_THRESHOLD_PX = 4;
       const LONG_PRESS_MS = 500;
@@ -1300,7 +1215,7 @@ export default function TerminalView({
 
       let pending: { startX: number; startY: number; source: MouseEvent } | null = null;
       let longPressTimer: number | undefined;
-      // Button currently held-and-reported to tmux (long-press or
+      // Button currently held-and-reported to the program (long-press or
       // shift/middle/right press). While set, the document-level listeners
       // below stream motion reports and the terminating release — document-
       // level so a release outside the terminal still ends the gesture.
@@ -1336,7 +1251,7 @@ export default function TerminalView({
         document.addEventListener("mouseup", onHeldUp, true);
       };
       // Always reports the release (at the last known cell) — a press must
-      // never be left dangling in tmux, even when the gesture ends
+      // never be left dangling in the program, even when the gesture ends
       // abnormally (a new press superseding it, or unmount mid-drag).
       function endHeld() {
         if (heldButton === null) return;
@@ -1367,7 +1282,7 @@ export default function TerminalView({
         // Click: clear any leftover highlight from a prior local drag (the
         // swallowed mousedown never reached the engine's own selection
         // mechanism, so it had no chance to clear stale selection itself),
-        // then report press+release at the press cell so tmux gets a
+        // then report press+release at the press cell so the program gets a
         // normal click.
         engine.clearSelection();
         const { col, row } = cellOf(source);
@@ -1429,12 +1344,12 @@ export default function TerminalView({
 
         // Ctrl+click / Ctrl+Shift+click (Cmd equivalents on mac) on a
         // hovered link: swallow the whole press-to-release gesture so
-        // nothing reaches tmux or the engine (a forwarded ctrl+click would
+        // nothing reaches the program or the engine (a forwarded ctrl+click would
         // e.g. re-trigger nvim's own <C-LeftMouse> tag-jump binding), and
         // activate the link directly on release. Deliberately ahead of the
         // tracking() check: the engine's own unmodified-click activation is
         // suppressed wholesale, making this the only activation path
-        // whether or not tmux is mouse-reporting.
+        // whether or not the program is mouse-reporting.
         if (linkPressArmedRef.current) {
           if (e.type === "mouseup" || e.type === "mousemove") {
             e.preventDefault();
@@ -1490,7 +1405,7 @@ export default function TerminalView({
           if (!pending) return;
           const source = pending.source;
           endPending();
-          // Held without moving: start a real tmux press now; the held
+          // Held without moving: start a real press now; the held
           // listeners stream the rest live.
           beginHeld(0, source);
         }, LONG_PRESS_MS);
@@ -1509,10 +1424,10 @@ export default function TerminalView({
       };
       screen.addEventListener("click", onClickCapture, true);
 
-      // Horizontal scroll: tmux has no concept of horizontal wheel — it
-      // maps any wheel button other than "up" to WheelDown, so forwarding
-      // one through the PTY would scroll vertically instead. Detect the
-      // gesture here and ask the server to deliver <ScrollWheelLeft>/
+      // Horizontal scroll: there's no horizontal wheel report programs
+      // reliably understand, so forwarding one through the terminal would
+      // scroll vertically or do nothing. Detect the gesture here and ask the
+      // server to deliver <ScrollWheelLeft>/
       // <ScrollWheelRight> straight to nvim over RPC, which handles the
       // actual scrolling itself.
       const HSCROLL_PX_PER_TICK = 50;
@@ -1559,13 +1474,13 @@ export default function TerminalView({
           return true;
         }
 
-        // Vertical wheel while tmux is mouse-reporting: one SGR wheel
+        // Vertical wheel while the program is mouse-reporting: one SGR wheel
         // report per DOM event, gated by xterm.js's line-accumulation math
         // (ported in WheelLineAccumulator) so sub-line trackpad deltas
         // accumulate until a full line's worth arrived instead of each
         // micro-event firing a report. Without tracking, fall through
-        // (return false): the engine's own wheel path already sends arrow
-        // keys in the alternate screen.
+        // (return false): the engine's own wheel path scrolls the history,
+        // or sends arrow keys in the alternate screen.
         if (!tracking()) return false;
         const lines = wheelAcc.linesFor(e, engine.getCharHeight(), engine.rows);
         if (lines !== 0) {
@@ -1727,7 +1642,7 @@ export default function TerminalView({
       }
       touchHandleBeginRef.current = beginHandleDrag;
 
-      // Dismisses a shown selection if tmux output redrew over it and wiped
+      // Dismisses a shown selection if new output redrew over it and wiped
       // the engine's own highlight out from under us (T6).
       const unsubTouchSelRenderCheck = engine.onRender(() => {
         if (activeSel && !engine.getSelection()) dismissTouchSelection();
@@ -1778,6 +1693,8 @@ export default function TerminalView({
       const TOUCH_SCROLL_THRESHOLD_PX = 8;
       let touchLast: { x: number; y: number } | null = null;
       let touchScrolling = false;
+      // Finger travel not yet turned into whole lines of buffer scroll.
+      let touchScrollPx = 0;
       let longPressTouchTimer: number | undefined;
       // True once this press's long-press timer has actually started (or
       // extended) the selection currently shown — onTouchEnd reads this to
@@ -1823,6 +1740,7 @@ export default function TerminalView({
         }
         touchLast = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         touchScrolling = false;
+        touchScrollPx = 0;
         const startX = touchLast.x;
         const startY = touchLast.y;
         longPressTouchTimer = window.setTimeout(() => {
@@ -1879,6 +1797,23 @@ export default function TerminalView({
         // Dominant axis only: the wheel handler treats mixed deltas as
         // vertical, which would swallow slightly-diagonal horizontal swipes.
         const [deltaX, deltaY] = Math.abs(dx) > Math.abs(dy) ? [dx, 0] : [0, dy];
+        // A vertical swipe with history to read and no program asking for the
+        // mouse scrolls the buffer itself, a line per row of finger travel.
+        // Everything else (mouse-reporting programs, the alternate screen,
+        // horizontal scroll) keeps going through the wheel policy.
+        if (deltaY !== 0 && !tracking()) {
+          const { viewportY, length, rows } = engine.getScrollState();
+          if (length > rows) {
+            touchScrollPx += deltaY;
+            const cell = engine.getCharHeight();
+            const lines = cell > 0 ? Math.trunc(touchScrollPx / cell) : 0;
+            if (lines !== 0) {
+              touchScrollPx -= lines * cell;
+              engine.scrollToLine(viewportY + lines);
+            }
+            return;
+          }
+        }
         engine.dispatchSyntheticWheel({
           deltaX,
           deltaY,
@@ -1930,8 +1865,15 @@ export default function TerminalView({
       // both focus targets (the screen div via engine.focus(), the hidden
       // textarea via presses); transitions between the two stay inside
       // `screen` and are filtered out via relatedTarget.
+      // Using a pane makes it the view its window is sized for, the way tmux's
+      // window-size latest treats a click or keypress: focus, a click or a tap
+      // tells the backend (typing and a real resize already do).
+      const activate = () => {
+        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "activate" }));
+      };
       const onFocusIn = (e: FocusEvent) => {
         if (e.relatedTarget instanceof Node && screen.contains(e.relatedTarget)) return;
+        activate();
         if (engine.getMode(1004)) sendReport(focusReport(true));
       };
       const onFocusOut = (e: FocusEvent) => {
@@ -1941,6 +1883,7 @@ export default function TerminalView({
       };
       screen.addEventListener("focusin", onFocusIn);
       screen.addEventListener("focusout", onFocusOut);
+      screen.addEventListener("pointerdown", activate, true);
 
       // Image paste/drop (plans/codeman-mobile-features.md Phase 3): upload
       // to settings.pasteDropUploadDir and type the resulting path. Capture phase on
@@ -2059,7 +2002,6 @@ export default function TerminalView({
         clearInterval(heartbeatTimer);
         document.removeEventListener("visibilitychange", onConnectivityResume);
         window.removeEventListener("online", onConnectivityResume);
-        clearTimeout(queryThrottleTimer);
         clearTimeout(settleTimer);
         onDragEnd();
         endPending();
@@ -2077,6 +2019,7 @@ export default function TerminalView({
         screen.removeEventListener("touchcancel", onTouchEnd, true);
         screen.removeEventListener("focusin", onFocusIn);
         screen.removeEventListener("focusout", onFocusOut);
+        screen.removeEventListener("pointerdown", activate, true);
         screen.removeEventListener("paste", onPaste, true);
         terminalBodyRef.current?.removeEventListener("dragover", onDragOver);
         terminalBodyRef.current?.removeEventListener("drop", onDrop);
@@ -2090,6 +2033,8 @@ export default function TerminalView({
         engineRef.current = null;
         refitRef.current = null;
         scrollQueryRef.current = null;
+        unsubScrollChange();
+        cancelAnimationFrame(thumbRaf);
         revealRef.current = null;
       };
     });
@@ -2103,8 +2048,8 @@ export default function TerminalView({
     // terminal (ghostty's ANSI palette is baked into its WASM config at
     // construction; this app applies xterm's theme the same remount-based
     // way for uniform behavior across engines), so a theme switch tears the
-    // whole terminal + WS down and rebuilds — tmux redraws the content on
-    // reattach. Theme identity is stable (useThemeAssets), so this only
+    // whole terminal + WS down and rebuilds — the daemon replays the
+    // content on reattach. Theme identity is stable (useThemeAssets), so this only
     // fires on a real theme change. resolvedEngine is also deliberately a
     // dependency: switching engines (directly or via "auto" re-resolving on
     // a device-class change) needs the exact same rebuild-and-reattach.

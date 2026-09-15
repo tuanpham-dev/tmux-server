@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { buildProcessMap, listAllPanePids, type PaneMaps, type ProcInfo } from "./tmux.js";
+import { buildProcessMap, type ProcInfo } from "./processes.js";
+import { listAllWindowPids } from "./terminals.js";
 
 export interface ListeningPort {
   port: number;
@@ -10,7 +11,7 @@ export interface ListeningPort {
   session: string;
 }
 
-interface RawPort {
+export interface RawPort {
   port: number;
   address: string;
   process?: string;
@@ -51,7 +52,68 @@ function parseProcess(line: string): { process?: string; pid?: number } {
   return { process: match[1], pid: Number(match[2]) };
 }
 
+/** `lsof -nP -iTCP -sTCP:LISTEN -Fpcn` output (macOS). */
+export function parseLsofListeners(stdout: string): RawPort[] {
+  const out: RawPort[] = [];
+  let pid: number | undefined;
+  let proc: string | undefined;
+  for (const line of stdout.split("\n")) {
+    const field = line[0];
+    const value = line.slice(1);
+    if (field === "p") pid = Number(value);
+    else if (field === "c") proc = value;
+    else if (field === "n") {
+      const parsed = parseAddress(value);
+      if (parsed) out.push({ port: parsed.port, address: parsed.address, process: proc, pid });
+    }
+  }
+  return out;
+}
+
+/** `Get-NetTCPConnection -State Listen | Select LocalAddress,LocalPort,OwningProcess | ConvertTo-Csv` (Windows). */
+export function parseNetTcpCsv(csv: string, names: Map<number, ProcInfo>): RawPort[] {
+  const out: RawPort[] = [];
+  for (const line of csv.split(/\r?\n/).slice(1)) {
+    const cells = line.split(",").map((c) => c.replace(/^"|"$/g, ""));
+    if (cells.length < 3) continue;
+    const port = Number(cells[1]);
+    const pid = Number(cells[2]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+    out.push({ port, address: cells[0]!, pid: pid > 0 ? pid : undefined, process: names.get(pid)?.comm });
+  }
+  return out;
+}
+
+function runQuiet(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => resolve(err ? "" : stdout));
+  });
+}
+
+/** One entry per port, preferring whichever listener has process info. */
+function byPortWithProcess(entries: RawPort[]): RawPort[] {
+  const byPort = new Map<number, RawPort>();
+  for (const e of entries) {
+    const existing = byPort.get(e.port);
+    if (!existing || (!existing.process && e.process)) byPort.set(e.port, e);
+  }
+  return [...byPort.values()].sort((a, b) => a.port - b.port);
+}
+
 async function listPorts(): Promise<RawPort[]> {
+  if (process.platform === "darwin") {
+    return byPortWithProcess(parseLsofListeners(await runQuiet("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"])));
+  }
+  if (process.platform === "win32") {
+    const [csv, names] = await Promise.all([
+      runQuiet("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess | ConvertTo-Csv -NoTypeInformation",
+      ]),
+      buildProcessMap(),
+    ]);
+    return byPortWithProcess(parseNetTcpCsv(csv, names));
+  }
   const stdout = await ss(["-H", "-ltnp"]);
   const byPort = new Map<number, RawPort>();
 
@@ -108,7 +170,7 @@ function computeOwnAncestors(procMap: Map<number, ProcInfo>, panePids: Map<numbe
 
 // "own": the chain hit tmux-server's own ancestry — hard-excluded, no
 // fallback. "unknown": the chain dead-ended (reparented orphan, exited
-// parent) — eligible for the TMUX_PANE environ fallback below.
+// parent) — eligible for the TMUX_SERVER_WINDOW environ fallback below.
 type Attribution = { session: string } | "own" | "unknown";
 
 // Walks a port's owning pid up its parent chain looking for a tmux pane.
@@ -131,17 +193,25 @@ function attributeToSession(
   return "unknown";
 }
 
-// TMUX_PANE survives reparenting: when the shell/agent that spawned a process
-// exits, the process is reparented to pid 1 and the ppid walk above dead-ends,
-// but the pane id it was spawned in stays in its (immutable) /proc environ.
+// Linux only (other systems have no readable process environment; their
+// orphaned listeners simply go unattributed). TMUX_SERVER_WINDOW survives reparenting: when the shell/agent that spawned a
+// process exits, the process is reparented to pid 1 and the ppid walk above
+// dead-ends, but the window id it was spawned in stays in its (immutable)
+// /proc environ.
 // Same-user readable only — the same constraint ss's process column already
 // imposes, so this can never attribute a port ss couldn't name.
-async function readTmuxPaneFromEnviron(pid: number): Promise<string | null> {
+async function readWindowFromEnviron(pid: number): Promise<string | null> {
   try {
     const raw = await readFile(`/proc/${pid}/environ`, "utf8");
+    let tmuxPane: string | null = null;
     for (const entry of raw.split("\0")) {
-      if (entry.startsWith("TMUX_PANE=")) return entry.slice("TMUX_PANE=".length);
+      if (entry.startsWith("TMUX_SERVER_WINDOW=") && entry.length > "TMUX_SERVER_WINDOW=".length) {
+        return entry.slice("TMUX_SERVER_WINDOW=".length);
+      }
+      // A pane of the tmux backend: its window id comes from tmux's pane id.
+      if (entry.startsWith("TMUX_PANE=%")) tmuxPane = `tmux-${entry.slice("TMUX_PANE=%".length)}`;
     }
+    if (tmuxPane) return tmuxPane;
   } catch {
     // Exited, foreign-user, or no /proc (macOS) — unattributable.
   }
@@ -149,13 +219,13 @@ async function readTmuxPaneFromEnviron(pid: number): Promise<string | null> {
 }
 
 // Listening ports whose owning process lives inside a tmux pane's process
-// tree, by ppid walk or — for orphaned trees — by TMUX_PANE environ.
+// tree, by ppid walk or — for orphaned trees — by TMUX_SERVER_WINDOW environ.
 // Everything else (system services, tmux-server's own server and dev
 // tooling, processes from panes since closed) is excluded.
 async function scanTmuxPorts(): Promise<ListeningPort[]> {
   const [ports, panes, procMap] = await Promise.all([
     listPorts(),
-    listAllPanePids(),
+    listAllWindowPids(),
     buildProcessMap(),
   ]);
   const ownAncestors = computeOwnAncestors(procMap, panes.byPid);
@@ -166,8 +236,8 @@ async function scanTmuxPorts(): Promise<ListeningPort[]> {
       const result = attributeToSession(port.pid, procMap, panes.byPid, ownAncestors);
       if (result === "own") return null;
       if (result !== "unknown") return { ...port, session: result.session };
-      const paneId = await readTmuxPaneFromEnviron(port.pid);
-      const session = paneId ? panes.byPaneId.get(paneId) : undefined;
+      const windowId = await readWindowFromEnviron(port.pid);
+      const session = windowId ? panes.byWindowId.get(windowId) : undefined;
       return session ? { ...port, session } : null;
     }),
   );

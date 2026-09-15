@@ -1,5 +1,5 @@
+import { listEngines } from "./multiplexer.js";
 import { createWriteStream } from "node:fs";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -68,11 +68,12 @@ import { hasReceivedEvents, paneHistory, recordEnd, recordStart } from "./comman
 import { broadcastOpenTarget, broadcastOpenUrl, subscribeOpenUrl } from "./openUrl.js";
 import { getTunnelablePorts } from "./ports.js";
 import { tunnelStatus } from "./wsTunnel.js";
-import { addSubscription, getVapidPublicKey, notifyBell, removeSubscription } from "./push.js";
+import { addSubscription, getVapidPublicKey, removeSubscription } from "./push.js";
 import { getDefaultRegistry, getRegistryCatalog, getRegistryIcon, getRegistryReadme, resolveTsixForInstall } from "./registry.js";
-import { shellIntegrationPath, shellIntegrationSourceLine } from "./shellIntegration.js";
+import { shellIntegrationPath, shellIntegrationProfile, shellIntegrationSourceLine } from "./shellIntegration.js";
+import { applyTerminalSettings } from "./terminalSettings.js";
 import { isLoopbackAddress, primaryProxyDomain } from "./security.js";
-import { paneAtCell, resolveLinkPath, type ScreenCell } from "./pathLinks.js";
+import { resolveLinkPath } from "./pathLinks.js";
 import {
   mergeSettingsDoc,
   readAiSecrets,
@@ -81,31 +82,32 @@ import {
   writeSettingsDoc,
 } from "./settingsStore.js";
 import {
+  openDiffInWindow,
+  openMergeInWindow,
+  openFileInPaneWithKeys,
+  openFileInWindow,
+} from "./editor.js";
+import {
   createSession,
   createWindow,
   createWindowTab,
+  findWindow,
   invalidateSessionsCache,
   killSession,
   killWindow,
   killWindowTab,
   listSessionPanes,
   listSessions,
-  openDiffInWindow,
-  openMergeInWindow,
-  openFileInPaneWithKeys,
-  paneSessionInfo,
   openLazygitWindow,
-  openFileInWindow,
-  listLinkPanes,
   paneCurrentPath,
-  paneLinesAtRow,
   renameSession,
   renameWindow,
   resetWindowName,
   selectWindow,
   sendTextToSession,
   WindowGoneError,
-} from "./tmux.js";
+} from "./terminals.js";
+import { writeZip } from "./zip.js";
 
 export const api = Router();
 
@@ -113,7 +115,7 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// The session listing is cached for a beat (see tmux.ts) so N tabs polling
+// The session listing is cached for a beat (see terminals.ts) so N tabs polling
 // for the same answer don't each pay to recompute it, and extensions keep
 // their own equivalent caches (git-scm's decoration scan). Any mutation we
 // perform can invalidate those, so drop/signal them once the request that
@@ -309,6 +311,7 @@ api.put("/ai-key", async (req, res) => {
 api.put("/settings", async (req, res) => {
   try {
     await writeSettingsDoc(req.body);
+    void applyTerminalSettings().catch((err) => console.error("failed to apply terminal settings:", err));
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
@@ -318,6 +321,7 @@ api.put("/settings", async (req, res) => {
 api.patch("/settings", async (req, res) => {
   try {
     await mergeSettingsDoc(req.body);
+    void applyTerminalSettings().catch((err) => console.error("failed to apply terminal settings:", err));
     res.status(204).end();
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
@@ -507,7 +511,7 @@ api.post("/sessions/:name/send-text", async (req, res) => {
     res.status(204).end();
   } catch (err) {
     const message = errMessage(err);
-    res.status(/can't find session/i.test(message) ? 404 : 400).json({ error: message });
+    res.status(/can't find session|no session named/i.test(message) ? 404 : 400).json({ error: message });
   }
 });
 
@@ -719,27 +723,18 @@ api.post("/sessions/:name/open-merge", async (req, res) => {
 });
 
 // Validates terminal-link file-path candidates for the ctrl+click link
-// provider (see client/src/terminalLinks.ts). Each candidate may carry the
-// 0-based screen cell of its first character (`cells`, index-aligned, null
-// for a candidate in local scrollback); it then resolves against the cwd of
-// the pane under that cell, else the session's active pane. The lookup
-// order past that cwd (git top-level, diff a/ b/ prefixes) lives in
-// resolveLinkPath. Only regular files come back — a path-shaped string in
-// output (a comment, a log line) never turns into a false-positive link.
+// provider (see client/src/terminalLinks.ts), resolving each against the
+// session's current window's cwd. The lookup order past that cwd (git
+// top-level, diff a/ b/ prefixes) lives in resolveLinkPath. Only regular files
+// come back — a path-shaped string in output (a comment, a log line) never
+// turns into a false-positive link. A window is one terminal, so the screen
+// cell a candidate may carry (`cells`) no longer picks between panes.
 api.post("/sessions/:name/resolve-paths", async (req, res) => {
   const candidates = Array.isArray(req.body?.paths)
     ? req.body.paths.filter((p: unknown): p is string => typeof p === "string")
     : [];
-  const rawCells: unknown[] = Array.isArray(req.body?.cells) ? req.body.cells : [];
-  const cellAt = (i: number): ScreenCell | null => {
-    const c = rawCells[i] as { row?: unknown; col?: unknown } | null | undefined;
-    return c && typeof c.row === "number" && typeof c.col === "number" ? { row: c.row, col: c.col } : null;
-  };
   try {
-    const [activeCwd, panes] = await Promise.all([
-      paneCurrentPath(req.params.name),
-      rawCells.length ? listLinkPanes(req.params.name).catch(() => []) : Promise.resolve([]),
-    ]);
+    const activeCwd = await paneCurrentPath(req.params.name);
     const roots = new Map<string, Promise<string | null>>();
     const gitRoot = (dir: string) => {
       let root = roots.get(dir);
@@ -750,32 +745,11 @@ api.post("/sessions/:name/resolve-paths", async (req, res) => {
       return root;
     };
     const results = await Promise.all(
-      candidates.map((raw: string, i: number) => {
-        const cell = cellAt(i);
-        const cwd = (cell && paneAtCell(panes, cell)?.cwd) || activeCwd;
-        return resolveLinkPath(raw, cwd, { isFile, gitRoot });
-      }),
+      candidates.map((raw: string) => resolveLinkPath(raw, activeCwd, { isFile, gitRoot })),
     );
     res.status(200).json({ results });
   } catch (err) {
     res.status(400).json({ error: errMessage(err) });
-  }
-});
-
-// The rejoined logical line under a screen row, per side-by-side pane, when
-// tmux wrapped it across rows (see paneLinesAtRow) — lets the link provider
-// detect a path that a split pane broke with a hard line break. Best-effort:
-// any failure is just "nothing to add".
-api.post("/sessions/:name/pane-lines", async (req, res) => {
-  const row = req.body?.row;
-  if (typeof row !== "number" || !Number.isInteger(row) || row < 0) {
-    res.status(400).json({ error: "row must be a non-negative integer" });
-    return;
-  }
-  try {
-    res.status(200).json({ lines: await paneLinesAtRow(req.params.name, row) });
-  } catch {
-    res.status(200).json({ lines: [] });
   }
 });
 
@@ -784,6 +758,13 @@ api.post("/sessions/:name/pane-lines", async (req, res) => {
 // domain means the panel falls back to /proxy/<port>/ on the app's own
 // origin. Stays core (unlike the extracted /ports list/kill routes, now in
 // extensions/ports/server.js) because it fronts proxy/tunnel infrastructure.
+// The terminal engines Settings -> Terminal can choose from: the bundled
+// daemon plus any an extension registered, which one is saved as the choice
+// and which one this server is actually running on.
+api.get("/terminal-engines", (_req, res) => {
+  res.json({ engines: listEngines() });
+});
+
 api.get("/proxy-config", (_req, res) => {
   res.json({ domain: primaryProxyDomain() });
 });
@@ -1240,17 +1221,16 @@ api.get("/download", async (req, res) => {
       const name = path.basename(targetPath);
       res.setHeader("content-type", "application/zip");
       res.setHeader("content-disposition", `attachment; filename="${name}.zip"`);
-      // "-r - <name>" zips the folder (relative to cwd, so entries inside the
-      // archive are rooted at <name>/) and streams the archive to stdout.
-      const zip = spawn("zip", ["-r", "-", name], {
-        cwd: path.dirname(targetPath),
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      zip.stdout.pipe(res);
-      zip.on("error", (err) => {
-        if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
-      });
-      res.on("close", () => zip.kill());
+      // Streamed as it's built, entries rooted at <name>/. A download the
+      // browser abandons stops the walk.
+      const abort = new AbortController();
+      res.on("close", () => abort.abort());
+      writeZip(targetPath, name, res, abort.signal)
+        .then(() => res.end())
+        .catch((err) => {
+          if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
+          else res.destroy();
+        });
       return;
     }
     if (!(await isFile(targetPath))) {
@@ -1285,7 +1265,9 @@ api.post("/upload", async (req, res) => {
 
   let target: string;
   try {
-    target = resolveDestination(expandHome(dir), relPath);
+    // {tmp}: this machine's temp folder, so a default that works on Linux
+    // (/tmp) doesn't point nowhere on Windows.
+    target = resolveDestination(expandHome(dir.replaceAll("{tmp}", tmpdir())), relPath);
     await ensureDir(path.dirname(target));
     if (conflict === "rename") {
       target = await uniquePath(target);
@@ -1314,12 +1296,9 @@ api.post("/upload", async (req, res) => {
   });
 });
 
-// Web-push notifications (plans/codeman-mobile-features.md Phase 4). Every
-// route below except /push/bell is a normal authenticated /api endpoint;
-// /push/bell is reached by tmux's own alert-bell hook (a local `curl`
-// process, see tmux.ts's applyTmuxOptions) rather than the browser, so it's
-// exempted from the auth-token gate (security.ts's isAuthExemptPath) and
-// instead enforces its own loopback-only check here.
+// Web-push notifications (plans/codeman-mobile-features.md Phase 4). Bells
+// don't come through a route: the server hears them from the terminal engine
+// directly (index.ts).
 
 api.get("/push/vapid-key", async (_req, res) => {
   try {
@@ -1370,26 +1349,8 @@ api.post("/push/unsubscribe", async (req, res) => {
   }
 });
 
-api.post("/push/bell", async (req, res) => {
-  if (!isLoopbackAddress(req.socket.remoteAddress)) {
-    res.status(403).json({ error: "forbidden" });
-    return;
-  }
-  const pane = typeof req.query.pane === "string" ? req.query.pane : "";
-  if (!pane) {
-    res.status(400).json({ error: "pane is required" });
-    return;
-  }
-  try {
-    await notifyBell(pane);
-    res.status(204).end();
-  } catch (err) {
-    res.status(500).json({ error: errMessage(err) });
-  }
-});
-
-// Browser-opener bridge (plans/browser-opener-bridge.md). Like /push/bell,
-// POST /open-url is reached by a local curl (the $BROWSER shim, see
+// Browser-opener bridge (plans/browser-opener-bridge.md). POST /open-url is
+// reached by a local curl (the $BROWSER shim, see
 // server/src/openUrl.ts) — auth-exempt (isAuthExemptPath) with its own
 // loopback check, plus a required custom header: cross-origin browser
 // requests carrying it need a CORS preflight this server never approves, so
@@ -1618,7 +1579,7 @@ api.post("/agent-hooks/report", async (req, res) => {
 });
 
 // Command events (plans/warp-features.md Phase 1). /report follows the
-// /push/bell + /open-url pattern exactly: reached by a local curl (the
+// /open-url pattern exactly: reached by a local curl (the
 // shell-integration snippet, see server/src/shellIntegration.ts) rather than
 // the browser, so it's auth-exempt (isAuthExemptPath) with its own
 // loopback-only check plus the custom-header CSRF guard. The GET sibling is
@@ -1627,6 +1588,10 @@ api.post("/agent-hooks/report", async (req, res) => {
 
 const MAX_COMMAND_LENGTH = 4096;
 const MAX_CWD_LENGTH = 1024;
+
+// A window id, as the shell integration reports it from $TMUX_SERVER_WINDOW:
+// a uuid (the daemon) or tmux-<n> (the tmux backend).
+const WINDOW_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tmux-\d+)$/;
 
 api.post("/command-events/report", urlencoded({ extended: false }), async (req, res) => {
   if (!isLoopbackAddress(req.socket.remoteAddress)) {
@@ -1643,7 +1608,7 @@ api.post("/command-events/report", urlencoded({ extended: false }), async (req, 
   const shellPid = Number.parseInt(typeof body?.shell === "string" ? body.shell : "", 10);
   const seq = Number.parseInt(typeof body?.seq === "string" ? body.seq : "", 10);
   if (
-    !/^%\d{1,10}$/.test(pane) ||
+    !WINDOW_ID.test(pane) ||
     (event !== "start" && event !== "end") ||
     !Number.isFinite(shellPid) ||
     !Number.isFinite(seq)
@@ -1654,21 +1619,19 @@ api.post("/command-events/report", urlencoded({ extended: false }), async (req, 
   const command = (typeof body?.command === "string" ? body.command : "").slice(0, MAX_COMMAND_LENGTH);
   const cwd = (typeof body?.cwd === "string" ? body.cwd : "").slice(0, MAX_CWD_LENGTH);
   const exitCode = Number.parseInt(typeof body?.exit === "string" ? body.exit : "", 10);
-  let session: { name: string; key: string };
-  try {
-    // One fork per report, but it's what routes the event to the right
-    // attach sockets — and it doubles as validation that the pane exists.
-    session = await paneSessionInfo(pane);
-  } catch {
-    // Pane already gone (e.g. the command was `exit`) — nothing to record
+  // Routes the event to the right attach sockets, and doubles as validation
+  // that the window exists.
+  const found = await findWindow(pane).catch(() => null);
+  if (!found) {
+    // Window already gone (e.g. the command was `exit`) — nothing to record
     // against, and nobody attached to receive it.
     res.status(204).end();
     return;
   }
   if (event === "start") {
-    recordStart(pane, session.name, session.key, shellPid, seq, command, cwd);
+    recordStart(pane, found.session, found.session, shellPid, seq, command, cwd);
   } else {
-    recordEnd(pane, session.name, session.key, shellPid, seq, command, Number.isFinite(exitCode) ? exitCode : 0, cwd);
+    recordEnd(pane, found.session, found.session, shellPid, seq, command, Number.isFinite(exitCode) ? exitCode : 0, cwd);
   }
   res.status(204).end();
 });
@@ -1680,6 +1643,7 @@ api.get("/command-events/status", (_req, res) => {
     receivedAny: hasReceivedEvents(),
     path: shellIntegrationPath,
     sourceLine: shellIntegrationSourceLine,
+    profile: shellIntegrationProfile,
   });
 });
 

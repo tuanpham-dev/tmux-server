@@ -1,19 +1,16 @@
-// Shell integration (plans/warp-features.md Phase 1): a generated rc snippet
-// the user sources from .zshrc/.bashrc. Inside tmux panes it emits OSC 133
-// prompt marks — tmux (>= 3.4) tracks these natively, which is what powers
-// copy-mode previous-prompt/next-prompt and the app's prompt-jump keys — and
-// reports command start/end (command line, cwd, exit code) to
-// POST /api/command-events/report for the command-history UI and
-// finished-command notifications. Reports are fire-and-forget background
-// curls that never block the prompt; with the server down they do nothing.
-import { mkdir, writeFile } from "node:fs/promises";
+// Shell integration (plans/warp-features.md Phase 1): a generated snippet the
+// user sources from their shell's startup file — shell-integration.sh for
+// zsh and bash, shell-integration.ps1 for PowerShell. Inside the app's
+// terminals it emits OSC 133 prompt marks (the app's prompt jumps) and OSC 7
+// (the working directory), and reports command start/end (command line, cwd,
+// exit code) to POST /api/command-events/report for the command-history UI
+// and finished-command notifications. Reports are fire-and-forget and never
+// block the prompt; with the server down they do nothing.
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { configDir } from "./configDir.js";
 
-const configDir = path.join(
-  process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"),
-  "tmux-server",
-);
 
 // Canonical path users source. Port-independent path with the port baked
 // into the body, last-boot-wins across instances — same trade-off as
@@ -25,9 +22,16 @@ function shortHome(p: string): string {
   return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
-// The snippet users add to their rc — surfaced by the Settings card and the
-// README so both render the exact same line.
-export const shellIntegrationSourceLine = `[ -f ${shortHome(shellIntegrationPath)} ] && . ${shortHome(shellIntegrationPath)}`;
+export const powershellIntegrationPath = path.join(configDir, "shell-integration.ps1");
+
+const posixSourceLine = `[ -f ${shortHome(shellIntegrationPath)} ] && . ${shortHome(shellIntegrationPath)}`;
+const powershellSourceLine = `if (Test-Path '${powershellIntegrationPath}') { . '${powershellIntegrationPath}' }`;
+
+// The line users add, and where — surfaced by the Settings card and the
+// README so both render the exact same line. On Windows the shell is
+// PowerShell; elsewhere zsh or bash.
+export const shellIntegrationSourceLine = process.platform === "win32" ? powershellSourceLine : posixSourceLine;
+export const shellIntegrationProfile = process.platform === "win32" ? "your PowerShell profile ($PROFILE)" : "your ~/.zshrc or ~/.bashrc";
 
 // Every reference to a possibly-unset variable uses the \${VAR-} default
 // form: the snippet runs inside arbitrary user rc environments, including
@@ -36,16 +40,18 @@ export const shellIntegrationSourceLine = `[ -f ${shortHome(shellIntegrationPath
 function scriptBody(port: number): string {
   return `# tmux-server shell integration — written by tmux-server at startup; edits
 # are overwritten. Source it from your shell rc (zsh or bash):
-#   ${shellIntegrationSourceLine}
+#   ${posixSourceLine}
 #
-# Inside tmux panes this emits OSC 133 prompt marks (tmux >= 3.4 tracks them
-# for copy-mode previous-prompt/next-prompt) and reports command start/end to
-# the local tmux-server for command history and finished-command
-# notifications. Everything is a no-op outside tmux or in non-interactive
-# shells; reports are backgrounded and never block the prompt.
+# Inside tmux-server's terminals this emits OSC 133 prompt marks (for jumping
+# between prompts), reports the working directory (OSC 7) and reports command
+# start/end to the local tmux-server for command history and finished-command
+# notifications. Everything is a no-op in other terminals or in
+# non-interactive shells; reports are backgrounded and never block the prompt.
 
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0 ;; esac
-[ -n "\${TMUX_PANE-}" ] || return 0
+# A pane of the tmux backend has no TMUX_SERVER_WINDOW; its id comes from tmux's.
+[ -z "\${TMUX_SERVER_WINDOW-}" ] && [ -n "\${TMUX_PANE-}" ] && TMUX_SERVER_WINDOW="tmux-\${TMUX_PANE#%}"
+[ -n "\${TMUX_SERVER_WINDOW-}" ] || return 0
 [ -n "\${_TMUX_SERVER_INTEGRATION-}" ] && return 0
 _TMUX_SERVER_INTEGRATION=1
 
@@ -62,7 +68,7 @@ _TMUX_SERVER_INTEGRATION=1
 # it stands alone when it wins that race.
 _tmux_server_report() {
   ( command curl -s -m 1 -X POST -H 'X-Tmux-Server-Events: 1' \\
-      --data-urlencode "pane=$TMUX_PANE" \\
+      --data-urlencode "pane=$TMUX_SERVER_WINDOW" \\
       --data-urlencode "shell=$$" \\
       --data-urlencode "seq=\${_TMUX_SERVER_SEQ-0}" \\
       --data-urlencode "event=$1" \\
@@ -85,7 +91,11 @@ _tmux_server_on_preexec() {
 # gated on _TMUX_SERVER_RAN so the first prompt after sourcing (no preceding
 # command) and empty-line Enters report nothing.
 _tmux_server_on_precmd() {
-  printf '\\033]133;D;%s\\033\\\\\\033]133;A\\033\\\\' "$1"
+  printf '\\033]133;D;%s\\033\\\\\\033]7;file://%s%s\\033\\\\' "$1" "\${HOSTNAME-}" "$PWD"
+  # The prompt-start mark. zsh carries it inside the prompt instead (below):
+  # it draws its PROMPT_SP line after precmd runs, so a mark printed here
+  # would land a line above the prompt it belongs to.
+  [ -n "\${ZSH_VERSION-}" ] || printf '\\033]133;A\\033\\\\'
   if [ -n "\${_TMUX_SERVER_RAN-}" ]; then
     _TMUX_SERVER_RAN=
     _tmux_server_report end "\${_TMUX_SERVER_CMD-}" "$1"
@@ -97,7 +107,16 @@ if [ -n "\${ZSH_VERSION-}" ]; then
   # $? must be captured before anything else runs in the hook body; earlier
   # precmd hooks registered by other tools may still have clobbered it — a
   # known limitation every OSC 133 integration shares.
-  _tmux_server_zsh_precmd() { _tmux_server_on_precmd $?; }
+  # Also (re)prefixes the prompt with the mark: prompt themes rebuild PROMPT
+  # in their own precmd, and ours is registered after theirs, so it runs
+  # last. %{ %} tells zsh the mark takes no width.
+  _tmux_server_zsh_precmd() {
+    _tmux_server_on_precmd $?
+    case "$PROMPT" in
+      *$'\\e]133;A'*) ;;
+      *) PROMPT=$'%{\\e]133;A\\e\\\\%}'"$PROMPT" ;;
+    esac
+  }
   autoload -Uz add-zsh-hook
   add-zsh-hook preexec _tmux_server_zsh_preexec
   add-zsh-hook precmd _tmux_server_zsh_precmd
@@ -168,5 +187,13 @@ fi
 export async function ensureShellIntegration(port: number): Promise<string> {
   await mkdir(configDir, { recursive: true });
   await writeFile(shellIntegrationPath, scriptBody(port));
+  await writeFile(powershellIntegrationPath, await powershellScriptBody(port));
   return shellIntegrationPath;
+}
+
+// The PowerShell script lives beside this file as a template: it is full of
+// backslashes and dollar signs that would all need escaping in a string here.
+export async function powershellScriptBody(port: number): Promise<string> {
+  const template = await readFile(path.join(import.meta.dirname, "shell-integration.ps1"), "utf8");
+  return template.replaceAll("__PORT__", String(port)).replaceAll("__SOURCE_LINE__", powershellSourceLine);
 }

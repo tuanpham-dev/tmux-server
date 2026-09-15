@@ -16,10 +16,11 @@
 //   instead: auth-exempt by exact path, gated on loopback plus a custom
 //   header it can only be reached with.
 //
-//   $TMUX_PANE as the correlation key. It is in every pane's environment, so
-//   the shim can capture it and core can resolve it to a tmux session. Every
-//   consumer used to correlate by the agent's own session id, which only
-//   Claude Code sends — which is why nothing but Claude Code ever worked.
+//   $TMUX_SERVER_WINDOW as the correlation key. It is in every terminal's
+//   environment, so the shim can capture it and core can resolve it to a
+//   session. Every consumer used to correlate by the agent's own session id,
+//   which only Claude Code sends — which is why nothing but Claude Code ever
+//   worked.
 //
 // Events are transient here: core normalizes and fans out, and nothing is
 // stored. Whether anything is remembered is each subscriber's business.
@@ -34,7 +35,7 @@ import {
   type AgentEvent,
 } from "./agents.js";
 import { readSettingsDoc } from "./settingsStore.js";
-import { listAllPanePids } from "./tmux.js";
+import { listAllWindowPids } from "./terminals.js";
 
 // Derived from the one place the shim's location is defined (agents.ts owns
 // that path because it is also core's signature inside an agent's config
@@ -43,8 +44,7 @@ const shimBinDir = path.dirname(agentHookShimPath);
 
 // Everything the agent supplies travels as the request BODY (its own JSON,
 // forwarded byte for byte) or as a header — never spliced into a command
-// line or a URL. $TMUX_PANE is "%3", and a bare % in a query string is an
-// invalid percent-escape, which is the other reason these are headers.
+// line or a URL.
 //
 // Always exits 0: a hook that fails is an agent that reports an error, and
 // for a pre-tool event a non-zero exit can block the tool outright. Core
@@ -57,16 +57,46 @@ function shimScript(port: number): string {
 # on stdin. -m 2 mirrors the bell hook: a slow or dead server must never
 # stall an agent mid-turn.
 [ -n "$1" ] || exit 0
+# A pane of the tmux backend has no TMUX_SERVER_WINDOW; its id comes from tmux's.
+[ -z "\${TMUX_SERVER_WINDOW-}" ] && [ -n "\${TMUX_PANE-}" ] && TMUX_SERVER_WINDOW="tmux-\${TMUX_PANE#%}"
 curl -s -m 2 -X POST \\
   -H 'Content-Type: application/json' \\
   -H 'X-Tmux-Server-Hook: 1' \\
   -H "X-Tmux-Server-Agent: $1" \\
   -H "X-Tmux-Server-Event: $2" \\
-  -H "X-Tmux-Server-Pane: $TMUX_PANE" \\
+  -H "X-Tmux-Server-Pane: $TMUX_SERVER_WINDOW" \\
   --data-binary @- \\
   "http://127.0.0.1:${port}/api/agent-hooks/report" >/dev/null 2>&1
 exit 0
 `;
+}
+
+// The Windows form of the same relay: a Node script (no sh, no curl) behind a
+// .cmd. Reads the event JSON from stdin, always exits 0.
+export function windowsHookShim(port: number, node: string): { script: string; cmd: string } {
+  return {
+    script: `// Written by tmux-server at startup - relays one AI agent hook event to the app.
+const [agent, event] = process.argv.slice(2);
+if (!agent) process.exit(0);
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  fetch("http://127.0.0.1:${port}/api/agent-hooks/report", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Tmux-Server-Hook": "1",
+      "X-Tmux-Server-Agent": agent,
+      "X-Tmux-Server-Event": event ?? "",
+      "X-Tmux-Server-Pane": process.env.TMUX_SERVER_WINDOW ?? "",
+    },
+    body: Buffer.concat(chunks),
+    signal: AbortSignal.timeout(2000),
+  }).catch(() => {}).finally(() => process.exit(0));
+});
+`,
+    cmd: `@echo off\r\n"${node}" "%~dp0agent-hook.mjs" %*\r\n`,
+  };
 }
 
 // Best-effort at boot, like ensureOpenShim: a read-only config dir disables
@@ -76,6 +106,12 @@ exit 0
 // already accepts.
 export async function ensureAgentHookShim(port: number): Promise<string> {
   await mkdir(shimBinDir, { recursive: true });
+  if (process.platform === "win32") {
+    const { script, cmd } = windowsHookShim(port, process.execPath);
+    await writeFile(path.join(shimBinDir, "agent-hook.mjs"), script);
+    await writeFile(agentHookShimPath, cmd);
+    return agentHookShimPath;
+  }
   await writeFile(agentHookShimPath, shimScript(port));
   await chmod(agentHookShimPath, 0o755);
   return agentHookShimPath;
@@ -96,11 +132,12 @@ export interface AgentHookEvent {
   rawEvent: string;
   // The registry id of the agent whose hook fired.
   agent: string;
-  // tmux pane id ("%3") from the pane's own environment — the correlation
-  // key. Empty when the hook did not run under tmux.
+  // The window id ($TMUX_SERVER_WINDOW) from the terminal's own environment:
+  // the correlation key. Called paneId because extensions are built on the
+  // name. Empty when the hook did not run in one of the app's terminals.
   paneId: string;
-  // The tmux session that pane belongs to, or null when the pane is gone or
-  // was never tmux's. Resolved per event: an agent's pane can move.
+  // The session that window belongs to, or null when the window is gone or
+  // was never ours. Resolved per event.
   sessionName: string | null;
   // The agent's own event JSON, verbatim, or null when it sent something
   // that was not JSON. Untrusted input from a process core does not control
@@ -206,10 +243,10 @@ export interface RawHookReport {
   body: string;
 }
 
-// tmux pane ids are "%" plus digits — anything else did not come from tmux,
-// so it is dropped rather than carried as a correlation key that cannot
-// resolve.
-const PANE_ID = /^%\d{1,10}$/;
+// Window ids are uuids (the daemon) or tmux-<n> (the tmux backend) — anything
+// else did not come from one of our terminals, so it is dropped rather than
+// carried as a correlation key that cannot resolve.
+const PANE_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tmux-\d+)$/;
 
 export type ReportOutcome = "delivered" | "unknown-agent" | "no-subscribers";
 
@@ -238,10 +275,10 @@ export async function reportAgentHook(report: RawHookReport): Promise<ReportOutc
   let sessionName: string | null = null;
   if (paneId) {
     try {
-      const { byPaneId } = await listAllPanePids();
-      sessionName = byPaneId.get(paneId) ?? null;
+      const { byWindowId } = await listAllWindowPids();
+      sessionName = byWindowId.get(paneId) ?? null;
     } catch {
-      // No tmux server, or it went away mid-turn: the event is still worth
+      // The terminal engine went away mid-turn: the event is still worth
       // delivering with the pane id the subscriber can match on itself.
     }
   }
