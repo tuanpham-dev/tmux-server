@@ -2,7 +2,7 @@ import { useSettingsContext } from "./context";
 import { useTerminalBackends } from "./useTerminalBackends";
 
 // Settings of the bundled terminal daemon, the default terminal engine. They
-// are read by the daemon only, so another engine (chosen under Terminal ->
+// are read by the daemon only, so another engine (chosen under Terminal
 // Backend) ignores them; they stay editable and apply once the daemon is back.
 export default function DaemonSection() {
   const { settings, set, extensions } = useSettingsContext();
@@ -14,7 +14,7 @@ export default function DaemonSection() {
       {running && running.id !== "daemon" && (
         <div className="settings-hint">
           The server is running on {running.label} now. These settings apply once the backend is the bundled terminal
-          daemon again (Terminal - Backend).
+          daemon again (Terminal Backend).
         </div>
       )}
 
