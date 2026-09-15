@@ -73,3 +73,43 @@ test('an empty chunk is harmless', () => {
 test('ESC ESC does not lose the escape state', () => {
   assert.equal(feed('\x1b\x1b]0;title\x07'), 0);
 });
+
+// The byte-by-byte reading every chunk used to get, kept here as the reference
+// the fast path for BEL-free chunks has to agree with.
+function referenceBells(chunks: Buffer[]): number {
+  let inOsc = false;
+  let afterEsc = false;
+  let bells = 0;
+  for (const chunk of chunks) {
+    for (const byte of chunk) {
+      if (afterEsc) {
+        afterEsc = false;
+        if (byte === 0x5d) { inOsc = true; continue; }
+        if (byte === 0x5c) { inOsc = false; continue; }
+        if (byte === 0x1b) afterEsc = true;
+        continue;
+      }
+      if (byte === 0x1b) { afterEsc = true; continue; }
+      if (byte === 0x07) { if (inOsc) inOsc = false; else bells++; }
+    }
+  }
+  return bells;
+}
+
+test('any split of any stream counts the same bells as a byte-by-byte reading', () => {
+  const alphabet = [0x1b, 0x5d, 0x5c, 0x07, 0x61, 0x30];
+  let seed = 12345;
+  const rand = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2147483648) % n);
+  for (let round = 0; round < 3000; round++) {
+    const bytes = Buffer.from(Array.from({ length: 1 + rand(40) }, () => alphabet[rand(alphabet.length)]!));
+    const chunks: Buffer[] = [];
+    for (let i = 0; i < bytes.length; ) {
+      const n = 1 + rand(8);
+      chunks.push(bytes.subarray(i, i + n));
+      i += n;
+    }
+    const d = new BellDetector();
+    const counted = chunks.reduce((sum, c) => sum + d.feed(c), 0);
+    assert.equal(counted, referenceBells(chunks), `stream ${bytes.toString('hex')} split ${chunks.map((c) => c.length).join(',')}`);
+  }
+});

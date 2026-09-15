@@ -13,6 +13,14 @@ const ESC = 0x1b;
 const BEL = 0x07;
 const OSC = 0x5d; // "]"
 const ST_BACKSLASH = 0x5c; // "\" — the second byte of ESC \, the other terminator
+const OSC_START = Buffer.from([ESC, OSC]);
+const ST = Buffer.from([ESC, ST_BACKSLASH]);
+
+// Whether the byte after this chunk follows an ESC. Every ESC arms it and
+// every other byte clears it, so only the last byte matters.
+function endsInEsc(chunk: Buffer): boolean {
+  return chunk[chunk.length - 1] === ESC;
+}
 
 export class BellDetector {
   /** Inside an OSC string, where BEL is a terminator rather than a bell. */
@@ -28,6 +36,20 @@ export class BellDetector {
    * track there would turn the next title into a false bell.
    */
   feed(chunk: Buffer): number {
+    // Most output rings no bell. Without a BEL the only thing to learn is the
+    // OSC state at the end, which the last ESC ] or ESC \ decides (found with
+    // a native search instead of a loop over every byte).
+    if (chunk.indexOf(BEL) === -1) {
+      if (this.#afterEsc && chunk.length > 0) {
+        if (chunk[0] === OSC) this.#inOsc = true;
+        else if (chunk[0] === ST_BACKSLASH) this.#inOsc = false;
+      }
+      const open = chunk.lastIndexOf(OSC_START);
+      const close = chunk.lastIndexOf(ST);
+      if (open !== -1 || close !== -1) this.#inOsc = open > close;
+      if (chunk.length > 0) this.#afterEsc = endsInEsc(chunk);
+      return 0;
+    }
     let bells = 0;
     for (const byte of chunk) {
       if (this.#afterEsc) {

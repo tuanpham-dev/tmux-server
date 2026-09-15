@@ -16,6 +16,19 @@ export function encodeFrame(type: number, payload: Buffer | string): Buffer {
   return Buffer.concat([head, p]);
 }
 
+// The same frame written as header then payload, without copying the payload
+// into a new buffer: for output, which is most of what the daemon sends.
+export function writeFrame(socket: { cork(): void; uncork(): void; write(chunk: Buffer): boolean }, type: number, payload: Buffer): void {
+  if (payload.length > MAX_PAYLOAD) throw new Error(`frame payload of ${payload.length} bytes exceeds ${MAX_PAYLOAD}`);
+  const head = Buffer.allocUnsafe(5);
+  head.writeUInt32BE(payload.length, 0);
+  head.writeUInt8(type, 4);
+  socket.cork();
+  socket.write(head);
+  socket.write(payload);
+  socket.uncork();
+}
+
 export function encodeControl(msg: unknown): Buffer {
   return encodeFrame(FRAME_CONTROL, JSON.stringify(msg));
 }

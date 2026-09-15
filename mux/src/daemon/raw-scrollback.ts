@@ -32,24 +32,50 @@ export const RESET_PREFIX = '\x1b[!p\x1b[?1049l\x1b[?25h\x1b[0m\x1b[H\x1b[2J\x1b
 
 export class RawScrollback {
   #cap: number;
-  #buf: Buffer;
+  // Chunks as they arrived, joined only when someone reads the bytes: output
+  // arrives in reads of a few KB, and copying the whole retained history on
+  // each one made a busy window cost the daemon far more than parsing it.
+  // Whole chunks are dropped from the front once the rest still fill the cap.
+  #chunks: Buffer[] = [];
+  #length = 0;
+  #joined: Buffer | null = Buffer.alloc(0);
   #alt = false;
 
   constructor(capBytes: number, seed?: Buffer) {
     this.#cap = Math.max(1024, capBytes);
-    this.#buf = seed && seed.length > 0 ? this.#trim(seed) : Buffer.alloc(0);
+    if (seed && seed.length > 0) this.#append(Buffer.from(seed));
   }
 
   /** True if the stream is currently showing the alternate screen buffer. */
   get onAltScreen(): boolean { return this.#alt; }
 
   /** Retained raw bytes — always starting at a safe (post-newline) boundary. */
-  bytes(): Buffer { return this.#buf; }
+  bytes(): Buffer {
+    if (!this.#joined) {
+      const all = Buffer.concat(this.#chunks, this.#length);
+      this.#joined = this.#trim(all);
+      // Keep what was just built as the one chunk, so the next read after a
+      // push joins two buffers rather than hundreds.
+      this.#chunks = [this.#joined];
+      this.#length = this.#joined.length;
+    }
+    return this.#joined;
+  }
 
   /** Append a PTY output chunk, updating alt-screen state and trimming to cap. */
   push(chunk: Buffer): void {
     this.#scanAlt(chunk);
-    this.#buf = this.#trim(Buffer.concat([this.#buf, chunk]));
+    this.#append(chunk);
+  }
+
+  #append(chunk: Buffer): void {
+    if (chunk.length === 0) return;
+    this.#chunks.push(chunk);
+    this.#length += chunk.length;
+    while (this.#chunks.length > 1 && this.#length - this.#chunks[0]!.length >= this.#cap) {
+      this.#length -= this.#chunks.shift()!.length;
+    }
+    this.#joined = null;
   }
 
   // Track alt-screen enter/exit. A mode sequence could in principle be split
@@ -58,6 +84,9 @@ export class RawScrollback {
   // keep a small tail overlap to catch most splits.
   #tail = Buffer.alloc(0);
   #scanAlt(chunk: Buffer): void {
+    // Nothing to find: every pattern starts with ESC, and a split one needs
+    // the tail, which is only ever kept when it holds one.
+    if (this.#tail.length === 0 && chunk.indexOf(0x1b) === -1) return;
     const hay = this.#tail.length > 0 ? Buffer.concat([this.#tail, chunk]) : chunk;
     // Find the last enter/exit in this window and let it win.
     let lastPos = -1;
@@ -72,8 +101,9 @@ export class RawScrollback {
     }
     if (lastPos !== -1) this.#alt = lastVal;
     // Keep the last 7 bytes (longest pattern - 1) to bridge a split next time.
-    const keep = Buffer.concat([this.#tail, chunk]);
-    this.#tail = keep.length <= 7 ? keep : Buffer.from(keep.subarray(keep.length - 7));
+    // Keep only a tail that could begin a pattern (it holds an ESC).
+    const keep = hay.length <= 7 ? hay : hay.subarray(hay.length - 7);
+    this.#tail = keep.indexOf(0x1b) === -1 ? Buffer.alloc(0) : Buffer.from(keep);
   }
 
   // Trim the front to at most #cap bytes, cutting forward to the first newline

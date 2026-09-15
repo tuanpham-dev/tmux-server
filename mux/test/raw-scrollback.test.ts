@@ -39,3 +39,32 @@ test('detects an alt-screen sequence split across two chunks', () => {
 test('RESET_PREFIX leaves the alternate screen so raw replay lands on the normal buffer', () => {
   assert.match(RESET_PREFIX, /\x1b\[\?1049l/);
 });
+
+test('whatever the chunking, the bytes are the stream tail cut at a newline within the cap', () => {
+  let seed = 7;
+  const rand = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2147483648) % n);
+  for (let round = 0; round < 300; round++) {
+    const cap = 1024 + rand(2048);
+    const rb = new RawScrollback(cap);
+    const all: Buffer[] = [];
+    const pushes = 1 + rand(60);
+    for (let i = 0; i < pushes; i++) {
+      const chunk = Buffer.from(Array.from({ length: rand(300) }, () => (rand(20) === 0 ? 0x0a : 0x61 + rand(3))));
+      all.push(chunk);
+      rb.push(chunk);
+      if (rand(5) === 0) rb.bytes(); // reads in between must not change the answer
+    }
+    const stream = Buffer.concat(all);
+    const got = rb.bytes();
+    assert.ok(got.length <= cap, 'within the cap');
+    assert.deepEqual(got, stream.subarray(stream.length - got.length), 'a tail of the stream');
+    if (stream.length > cap) {
+      const overflow = stream.length - cap;
+      const nl = stream.indexOf(0x0a, overflow);
+      const expected = nl === -1 ? stream.subarray(overflow) : stream.subarray(nl + 1);
+      assert.equal(got.length, expected.length, 'cut at the first newline past the overflow');
+    } else {
+      assert.equal(got.length, stream.length);
+    }
+  }
+});

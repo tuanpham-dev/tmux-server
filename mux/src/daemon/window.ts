@@ -54,7 +54,7 @@ export type WindowOpts = {
   restoredCommands?: string[];
 };
 
-export type OutputSink = { writeOutput(data: string): void };
+export type OutputSink = { writeOutput(data: Buffer): void };
 
 export class Window {
   readonly id: string;
@@ -154,15 +154,17 @@ export class Window {
       // node-pty decodes PTY output as UTF-8, so re-encoding as UTF-8 recovers
       // the ORIGINAL byte stream. (latin1 here would clamp every code point to
       // one byte and destroy multi-byte glyphs — box drawing, emoji, CJK.)
-      this.#raw.push(Buffer.from(data, 'utf8'));
+      // Encoded once: the scrollback, the bell check and every viewer share it.
+      const bytes = Buffer.from(data, 'utf8');
+      this.#raw.push(bytes);
       this.#lastOutputAt = Date.now();
       if (this.#subs.size > 0) this.#lastSeenAt = this.#lastOutputAt;
       // A bell is how a program — a coding agent, most usefully — asks for
       // attention. Counted here rather than in the browser, because the browser
       // may well be closed, which is exactly when the signal matters.
-      const bells = this.#bell.feed(Buffer.from(data, 'utf8'));
+      const bells = this.#bell.feed(bytes);
       if (bells > 0) this.onBell?.(this);
-      for (const sub of this.#subs) sub.writeOutput(data);
+      for (const sub of this.#subs) sub.writeOutput(bytes);
       this.onActivity?.();
     });
     this.#pty.onExit(() => {

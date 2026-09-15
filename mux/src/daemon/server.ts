@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import {
   FRAME_CONTROL, FRAME_INPUT, FRAME_OUTPUT,
   FrameReader, encodeControl, encodeFrame,
+  writeFrame,
 } from '../protocol/frames.ts';
 import type { Request, Response, ServerEvent, SessionInfo, StatusInfo, WindowInfo } from '../protocol/messages.ts';
 import { SessionStore, StoreError, type Session } from './session-store.ts';
@@ -111,7 +112,7 @@ export class DaemonServer {
       rows: DEFAULT_ROWS,
       lastActiveAt: 0,
       listening: false,
-      sink: { writeOutput: (data) => socket.write(encodeFrame(FRAME_OUTPUT, data)) },
+      sink: { writeOutput: (data) => writeFrame(socket, FRAME_OUTPUT, data) },
     };
     socket.on('data', (chunk: Buffer) => {
       let frames;
