@@ -57,6 +57,8 @@ function shimScript(port: number): string {
 # on stdin. -m 2 mirrors the bell hook: a slow or dead server must never
 # stall an agent mid-turn.
 [ -n "$1" ] || exit 0
+# A pane of the tmux backend has no TMUX_SERVER_WINDOW; its id comes from tmux's.
+[ -z "\${TMUX_SERVER_WINDOW-}" ] && [ -n "\${TMUX_PANE-}" ] && TMUX_SERVER_WINDOW="tmux-\${TMUX_PANE#%}"
 curl -s -m 2 -X POST \\
   -H 'Content-Type: application/json' \\
   -H 'X-Tmux-Server-Hook: 1' \\
@@ -241,10 +243,10 @@ export interface RawHookReport {
   body: string;
 }
 
-// Window ids are uuids — anything else did not come from one of our
-// terminals, so it is dropped rather than carried as a correlation key that
-// cannot resolve.
-const PANE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// Window ids are uuids (the daemon) or tmux-<n> (the tmux backend) — anything
+// else did not come from one of our terminals, so it is dropped rather than
+// carried as a correlation key that cannot resolve.
+const PANE_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tmux-\d+)$/;
 
 export type ReportOutcome = "delivered" | "unknown-agent" | "no-subscribers";
 

@@ -273,6 +273,22 @@ export interface AiProfileOption {
   isDefault: boolean;
 }
 
+// Where terminals run: the bundled daemon or an engine an extension provides
+// (tmux). `selected` is the saved choice, `active` the one this server runs on;
+// they differ until the server restarts, or when the chosen one is missing.
+export interface TerminalBackendOption {
+  id: string;
+  label: string;
+  description: string;
+  selected: boolean;
+  active: boolean;
+}
+
+export async function fetchTerminalBackends(): Promise<TerminalBackendOption[]> {
+  const body = await request<{ engines?: TerminalBackendOption[] }>("/api/terminal-engines");
+  return body.engines ?? [];
+}
+
 export async function fetchAiProfiles(): Promise<AiProfileOption[]> {
   const body = await request<{ profiles?: AiProfileOption[] }>("/api/ai-profiles");
   return body.profiles ?? [];

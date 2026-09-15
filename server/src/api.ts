@@ -1,3 +1,4 @@
+import { listEngines } from "./multiplexer.js";
 import { createWriteStream } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
@@ -757,6 +758,13 @@ api.post("/sessions/:name/resolve-paths", async (req, res) => {
 // domain means the panel falls back to /proxy/<port>/ on the app's own
 // origin. Stays core (unlike the extracted /ports list/kill routes, now in
 // extensions/ports/server.js) because it fronts proxy/tunnel infrastructure.
+// The terminal engines Settings -> Terminal can choose from: the bundled
+// daemon plus any an extension registered, which one is saved as the choice
+// and which one this server is actually running on.
+api.get("/terminal-engines", (_req, res) => {
+  res.json({ engines: listEngines() });
+});
+
 api.get("/proxy-config", (_req, res) => {
   res.json({ domain: primaryProxyDomain() });
 });
@@ -1581,8 +1589,9 @@ api.post("/agent-hooks/report", async (req, res) => {
 const MAX_COMMAND_LENGTH = 4096;
 const MAX_CWD_LENGTH = 1024;
 
-// A window id, as the shell integration reports it from $TMUX_SERVER_WINDOW.
-const WINDOW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// A window id, as the shell integration reports it from $TMUX_SERVER_WINDOW:
+// a uuid (the daemon) or tmux-<n> (the tmux backend).
+const WINDOW_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|tmux-\d+)$/;
 
 api.post("/command-events/report", urlencoded({ extended: false }), async (req, res) => {
   if (!isLoopbackAddress(req.socket.remoteAddress)) {

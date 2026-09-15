@@ -157,6 +157,9 @@ export interface AppSettings {
   // the app's own terminal.* keybindings (find, copy, prompt jumps), which
   // stay usable while scrolled.
   scrollbackSnapToBottom: boolean;
+  // Where terminals run: "daemon" (bundled) or an engine id an extension
+  // registers ("tmux"). Read by the server when it starts.
+  terminalBackend: string;
   // The shell new terminal windows run; empty means the account's own
   // ($SHELL). Applied to windows created after the change.
   terminalShell: string;
@@ -324,6 +327,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   copySelection: "joinWrapped",
   rightClickBehavior: "menu",
   scrollbackSnapToBottom: true,
+  terminalBackend: "daemon",
   terminalShell: "",
   saveScrollback: true,
   restoreSessionsOnStart: true,

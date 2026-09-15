@@ -57,6 +57,7 @@ import {
 } from "./settingsStore.js";
 import { configDir } from "./configDir.js";
 import { extractZip } from "./zip.js";
+import { registerEngine, type EngineRegistration } from "./multiplexer.js";
 
 export const extensionsDir = path.join(configDir, "extensions");
 const stateFilePath = path.join(configDir, "extensions-state.json");
@@ -645,6 +646,9 @@ const serverHooks = new Map<string, Router>();
 // extension's listener would keep firing into dead code.
 const apiMutationListeners = new Map<string, Set<() => void>>();
 
+// Terminal engines an extension registered, undone when its hook unmounts.
+const engineRegistrations = new Map<string, Set<() => void>>();
+
 // Fired by api.ts's post-mutation middleware after any non-GET/HEAD core
 // API call finishes — the extension-facing generalization of the same
 // "something on disk probably changed" signal the core git cache used to
@@ -788,6 +792,14 @@ export interface ExtensionHostApi {
     // picker for it — and pass the stored id as opts.profileId.
     listProfiles(): Promise<AiProfileSummary[]>;
   };
+  // Terminal engines: another implementation of the multiplexer interface
+  // (server/src/multiplexer.ts) the user can pick in Settings -> Terminal.
+  // The choice takes effect on the next server start; `create` runs the first
+  // time the engine is needed. An engine is dropped when the extension's hook
+  // unmounts, and a server on it falls back to the bundled daemon then.
+  terminalEngines: {
+    register(engine: EngineRegistration): () => void;
+  };
   // This extension's own credential store (settingsStore.ts's
   // extensionSecrets), scoped to its id. A manifest configuration property is
   // the wrong home for a credential: it lands in the settings document, which
@@ -855,6 +867,21 @@ function makeHostApi(id: string): ExtensionHostApi {
       get: (name) => readExtensionSecret(id, name),
       set: (name, value) => writeExtensionSecret(id, name, value),
       list: () => listExtensionSecretNames(id),
+    },
+    terminalEngines: {
+      register(engine) {
+        const undo = registerEngine(engine);
+        let set = engineRegistrations.get(id);
+        if (!set) {
+          set = new Set();
+          engineRegistrations.set(id, set);
+        }
+        set.add(undo);
+        return () => {
+          set.delete(undo);
+          undo();
+        };
+      },
     },
     events: {
       onApiMutation(cb) {
@@ -1019,6 +1046,8 @@ export async function mountServerHookIfNeeded(
 export function unmountServerHook(id: string): void {
   serverHooks.delete(id);
   apiMutationListeners.delete(id);
+  for (const undo of engineRegistrations.get(id) ?? []) undo();
+  engineRegistrations.delete(id);
   dropAgentHookSubscriptions(id);
   dropAgentCompanions(id);
   // Last, so the extension tears down after its routes and subscriptions are

@@ -20,7 +20,12 @@ let serverPort = Number(process.env.PORT ?? 3001);
 // to reach this server — the browser-opener shim and the port `tmux-server
 // open` uses to find the instance that owns the terminal.
 function daemonEnv(): NodeJS.ProcessEnv {
-  return { ...spawnEnv(), BROWSER: openShimPath, TMUX_SERVER_PORT: String(serverPort) };
+  return { ...spawnEnv(), ...terminalEnv(serverPort) };
+}
+
+// What any engine's new terminals get so they can reach this server.
+export function terminalEnv(port: number): Record<string, string> {
+  return { BROWSER: openShimPath, TMUX_SERVER_PORT: String(port) };
 }
 
 function connect(): Promise<ClientConn> {
@@ -256,10 +261,14 @@ const REANNOUNCE_MS = 30_000;
 // The daemon remembers one server; announcing only at startup would let the
 // last server to start keep that slot after it exits, so a live server
 // reclaims it within half a minute of another one going away.
-export function startDaemonLink(port: number): () => void {
+// `inUse` says whether the daemon is the engine in use; while another engine
+// is, announcing would start a daemon nobody needs.
+export function startDaemonLink(port: number, inUse: () => Promise<boolean>): () => void {
   serverPort = port;
   const announce = () =>
-    void request({ kind: "notify.configure", url: `http://127.0.0.1:${port}` }).catch(() => {});
+    void inUse()
+      .then((yes) => (yes ? request({ kind: "notify.configure", url: `http://127.0.0.1:${port}` }) : undefined))
+      .catch(() => {});
   announce();
   const timer = setInterval(announce, REANNOUNCE_MS);
   timer.unref?.();

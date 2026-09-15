@@ -49,6 +49,8 @@ function scriptBody(port: number): string {
 # non-interactive shells; reports are backgrounded and never block the prompt.
 
 case $- in *i*) ;; *) return 0 2>/dev/null || exit 0 ;; esac
+# A pane of the tmux backend has no TMUX_SERVER_WINDOW; its id comes from tmux's.
+[ -z "\${TMUX_SERVER_WINDOW-}" ] && [ -n "\${TMUX_PANE-}" ] && TMUX_SERVER_WINDOW="tmux-\${TMUX_PANE#%}"
 [ -n "\${TMUX_SERVER_WINDOW-}" ] || return 0
 [ -n "\${_TMUX_SERVER_INTEGRATION-}" ] && return 0
 _TMUX_SERVER_INTEGRATION=1

@@ -51,6 +51,10 @@ const LAUNCHER_CONTEXT_VARS = new Set([
   'CLAUDE_CODE_MESSAGING_SOCKET',
 ]);
 
+export function isLauncherContextVar(name: string): boolean {
+  return LAUNCHER_CONTEXT_VARS.has(name);
+}
+
 function isDaemonOnlyVar(name: string): boolean {
   return (
     APP_CONFIG_VARS.has(name) ||

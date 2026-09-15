@@ -203,9 +203,15 @@ function attributeToSession(
 async function readWindowFromEnviron(pid: number): Promise<string | null> {
   try {
     const raw = await readFile(`/proc/${pid}/environ`, "utf8");
+    let tmuxPane: string | null = null;
     for (const entry of raw.split("\0")) {
-      if (entry.startsWith("TMUX_SERVER_WINDOW=")) return entry.slice("TMUX_SERVER_WINDOW=".length);
+      if (entry.startsWith("TMUX_SERVER_WINDOW=") && entry.length > "TMUX_SERVER_WINDOW=".length) {
+        return entry.slice("TMUX_SERVER_WINDOW=".length);
+      }
+      // A pane of the tmux backend: its window id comes from tmux's pane id.
+      if (entry.startsWith("TMUX_PANE=%")) tmuxPane = `tmux-${entry.slice("TMUX_PANE=%".length)}`;
     }
+    if (tmuxPane) return tmuxPane;
   } catch {
     // Exited, foreign-user, or no /proc (macOS) — unattributable.
   }

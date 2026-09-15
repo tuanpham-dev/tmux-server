@@ -13,12 +13,13 @@ import { clientPathsMiddleware } from "./clientPaths.js";
 import { writeInstanceRecord } from "./instanceRecord.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import { loadEnabledServerHooks } from "./extensions.js";
-import { getMultiplexer } from "./multiplexer.js";
-import { startDaemonLink } from "./mux.js";
+import { activeEngineId, DAEMON_ENGINE_ID, enginesSettled, getMultiplexer, selectEngine, whenEngineReady } from "./multiplexer.js";
+import { startDaemonLink, terminalEnv } from "./mux.js";
 import { ensureOpenShim } from "./openUrl.js";
 import { notifyBell, notifyCommandDone } from "./push.js";
-import { readSettingsDoc } from "./settingsStore.js";
+import { readSettingsDoc, readSettingSync } from "./settingsStore.js";
 import { ensureShellIntegration } from "./shellIntegration.js";
+import { spawnEnv } from "./spawnEnv.js";
 import { getTunnelablePorts } from "./ports.js";
 import { windowAddress } from "./terminals.js";
 import {
@@ -347,7 +348,16 @@ server.listen(PORT, HOST, () => {
 // The terminal daemon: tell it which server its shells report to, and turn
 // its bells into push notifications. A bell is keyed "session:index", the
 // address a notification opens.
-startDaemonLink(PORT);
+// The engine chosen in Settings -> Terminal, before anything asks for a
+// terminal; an engine an extension provides registers when hooks load below.
+const backend = readSettingSync("terminalBackend");
+selectEngine(typeof backend === "string" ? backend : DAEMON_ENGINE_ID, {
+  port: PORT,
+  env: Object.fromEntries(
+    Object.entries({ ...spawnEnv(), ...terminalEnv(PORT) }).filter((e): e is [string, string] => e[1] !== undefined),
+  ),
+});
+startDaemonLink(PORT, () => whenEngineReady().then(() => activeEngineId() === DAEMON_ENGINE_ID));
 applyTerminalSettings().catch((err) => console.error("failed to apply terminal settings:", err));
 resumeRestoredAgents();
 getMultiplexer().onEvent((event) => {
@@ -357,9 +367,11 @@ getMultiplexer().onEvent((event) => {
     .then((addr) => (addr ? notifyBell(`${addr.session}:${addr.index}`) : undefined))
     .catch(() => {});
 });
-loadEnabledServerHooks().catch((err) => {
-  console.error("failed to load extension server hooks:", err);
-});
+loadEnabledServerHooks()
+  .catch((err) => {
+    console.error("failed to load extension server hooks:", err);
+  })
+  .finally(enginesSettled);
 // Browser-opener bridge shim ($BROWSER target for tmux panes — see
 // server/src/openUrl.ts). Failure just disables the bridge, never the server.
 ensureOpenShim(PORT).catch((err) => {

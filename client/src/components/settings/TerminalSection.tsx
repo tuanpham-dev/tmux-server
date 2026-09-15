@@ -1,6 +1,7 @@
 import type { AppSettings } from "../../settings";
 import { useSettingsContext } from "./context";
 import { FontFamilyPicker, NumberField } from "./controls";
+import { useTerminalBackends } from "./useTerminalBackends";
 
 // ghostty-web has no native options for line height, letter spacing, bold
 // weight, or minimum contrast ratio — the ghostty engine implements them
@@ -22,6 +23,13 @@ export default function TerminalSection() {
   const engineOptions = extensions
     .filter((ext) => ext.enabled)
     .flatMap((ext) => ext.terminalEngines.map((e) => ({ id: `ext.${ext.id}.${e.id}`, label: e.label })));
+
+  const backends = useTerminalBackends(extensions);
+  const running = backends.find((b) => b.active);
+  const backendOptions = backends.some((b) => b.id === settings.terminalBackend)
+    ? backends
+    : [...backends, { id: settings.terminalBackend, label: `${settings.terminalBackend} (not installed)`, description: "", selected: true, active: false }];
+  const chosen = backendOptions.find((b) => b.id === settings.terminalBackend);
 
   return (
     <>
@@ -218,50 +226,24 @@ export default function TerminalSection() {
       </div>
 
       <label className="settings-row">
-        <span className="settings-label">Shell</span>
-        <input
-          className="dialog-input"
-          placeholder="Your account's shell"
-          value={settings.terminalShell}
-          onChange={(e) => set("terminalShell", e.target.value)}
-        />
+        <span className="settings-label">Backend</span>
+        <select
+          className="dialog-input settings-select"
+          value={settings.terminalBackend}
+          onChange={(e) => set("terminalBackend", e.target.value)}
+        >
+          {backendOptions.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.label}
+            </option>
+          ))}
+        </select>
       </label>
       <div className="settings-hint">
-        The program new terminal windows start, e.g. /bin/zsh. Windows already open keep their shell.
+        Where terminals run. Changing this takes effect when the server restarts
+        {running && running.id !== settings.terminalBackend ? ` - running on ${running.label} now` : ""}.
       </div>
-
-      <label className="settings-row checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.restoreSessionsOnStart}
-          onChange={(e) => set("restoreSessionsOnStart", e.target.checked)}
-        />
-        <span>Bring back sessions after a restart</span>
-      </label>
-      <label className="settings-row checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.saveScrollback}
-          disabled={!settings.restoreSessionsOnStart}
-          onChange={(e) => set("saveScrollback", e.target.checked)}
-        />
-        <span>Include each window's output</span>
-      </label>
-      <label className="settings-row checkbox-row">
-        <input
-          type="checkbox"
-          checked={settings.resumeAgentsOnRestore}
-          disabled={!settings.restoreSessionsOnStart}
-          onChange={(e) => set("resumeAgentsOnRestore", e.target.checked)}
-        />
-        <span>Resume AI agents that were running</span>
-      </label>
-      <div className="settings-hint">
-        Terminals keep running when the server restarts. After a reboot, or if the terminal daemon stops, sessions
-        come back in their folders with their windows and names. Output is kept up to 2,000 lines per window in
-        files only your account can read; turn it off and none is written. Resuming types an agent's resume command
-        (for example claude --continue) into a window that was running it.
-      </div>
+      {chosen?.description && <div className="settings-hint">{chosen.description}</div>}
 
       <label className="settings-row">
         <span className="settings-label">Local echo when</span>
