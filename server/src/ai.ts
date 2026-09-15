@@ -303,12 +303,12 @@ export async function probeCliProviders(): Promise<Record<string, boolean>> {
   return value;
 }
 
-function runCli(bin: string, args: string[], provider: string, cwd?: string): Promise<string> {
+function runCli(bin: string, args: string[], provider: string, cwd?: string, env?: Record<string, string>): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       bin,
       args,
-      { encoding: "utf8", timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, cwd },
+      { encoding: "utf8", timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, cwd, env: env ? { ...process.env, ...env } : undefined },
       (err, stdout, stderr) => {
         if (err) {
           const detail = (stderr || err.message || "").trim().slice(0, 300);
@@ -640,10 +640,20 @@ export async function runAi(prompt: string, opts: AiRunOptions = {}): Promise<st
         `"${profile.label}" needs a command - set one in Settings → AI Providers`,
       );
     }
-    // The user's own command line, run via sh with the prompt appended as its
-    // single argument ($0 of the -c script) — quoting inside the command is
-    // theirs, and the prompt itself never needs any.
-    raw = await runCli("/bin/sh", ["-c", `${profile.customCommand} "$0"`, prompt], "custom", opts.cwd);
+    // The user's own command line, with the prompt appended as its single
+    // argument — quoting inside the command is theirs, and the prompt itself
+    // never needs any. Via sh ($0 of the -c script); on Windows via
+    // PowerShell, where the prompt rides in an environment variable so
+    // nothing in it is ever parsed as PowerShell.
+    raw = process.platform === "win32"
+      ? await runCli(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", `${profile.customCommand} $env:TMUX_SERVER_PROMPT`],
+          "custom",
+          opts.cwd,
+          { TMUX_SERVER_PROMPT: prompt },
+        )
+      : await runCli("/bin/sh", ["-c", `${profile.customCommand} "$0"`, prompt], "custom", opts.cwd);
   } else {
     // Any provider that is not an API kind names an agent. Its manifest says
     // how to run one prompt; core fills the template in and spawns it.

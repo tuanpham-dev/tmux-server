@@ -26,8 +26,14 @@ export async function cmdDoctor(): Promise<void> {
   need(git !== null, `git found (${git})`, 'git not found - install it via your package manager');
   const cc = which('cc') ?? which('gcc') ?? which('clang');
   const toolchain = cc !== null && which('make') !== null && (which('python3') ?? which('python')) !== null;
-  need(toolchain, "C/C++ toolchain found (needed to build node-pty's native addon)",
-    "missing C/C++ toolchain pieces (need a C compiler, make, and python3) - node-pty won't build. Debian/Ubuntu: apt install build-essential python3. macOS: xcode-select --install");
+  if (process.platform === 'win32') {
+    // node-pty installs prebuilt on Windows; a compiler only matters when it can't.
+    if (toolchain) ok('C/C++ toolchain found');
+    else warn('no C/C++ toolchain on PATH - fine unless node-pty has to be built from source (then install Visual Studio Build Tools)');
+  } else {
+    need(toolchain, "C/C++ toolchain found (needed to build node-pty's native addon)",
+      "missing C/C++ toolchain pieces (need a C compiler, make, and python3) - node-pty won't build. Debian/Ubuntu: apt install build-essential python3. macOS: xcode-select --install");
+  }
 
   heading('Install health');
   need(existsSync(join(REPO_DIR, 'node_modules')), 'dependencies installed',

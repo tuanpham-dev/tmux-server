@@ -16,15 +16,17 @@ import fg from "fast-glob";
 // A window whose foreground process is one of these is sitting at a prompt —
 // the script it was created for has exited, so it can be re-typed into rather
 // than replaced.
-const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "pwsh", "powershell", "cmd"]);
 
 // Script names are typed into a shell, so anything outside this set has to be
 // quoted (see shellQuote in extensions/ports/src/client.tsx for the same idiom).
 const BARE_SCRIPT = /^[A-Za-z0-9_.:-]+$/;
 
 // POSIX single-quoting: close, escape, reopen ('\'') — the only form that is
-// safe for every byte a script name can contain.
+// safe for every byte a script name can contain. On Windows the terminal's
+// shell is PowerShell, whose single quotes escape by doubling.
 function shellQuote(value) {
+  if (process.platform === "win32") return `'${value.replace(/'/g, "''")}'`;
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 

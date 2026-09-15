@@ -6,7 +6,7 @@
 // tool gated on Host/Origin (see server/src/security.ts), and the client
 // always supplies cwd from its own already-trusted active context — no
 // extra path allowlisting is layered on top here.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -511,7 +511,17 @@ export function activate({ router, log, host, getSettings, ai }) {
   // second ask of the same kind for the same host within one op means git
   // rejected the previous pair).
   const relayDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-scm-"));
-  const relaySocket = path.join(relayDir, "askpass.sock");
+  // Windows has no unix sockets: a named pipe, which Node's HTTP server and
+  // client accept in the same place.
+  const relaySocket = process.platform === "win32"
+    ? `\\\\.\\pipe\\git-scm-${randomBytes(8).toString("hex")}`
+    : path.join(relayDir, "askpass.sock");
+  // git and ssh exec the askpass program directly. askpass.cjs runs by its
+  // #! line elsewhere; Windows needs a .cmd that starts it with node.
+  const askpassProgram = process.platform === "win32" ? path.join(relayDir, "askpass.cmd") : ASKPASS_PATH;
+  if (process.platform === "win32") {
+    fs.writeFileSync(askpassProgram, `@echo off\r\n"${process.execPath}" "${ASKPASS_PATH}" %*\r\n`);
+  }
   const relayToken = randomBytes(32).toString("hex");
   const ops = new Map();
   // In-memory per-origin credentials, populated on every interactive
@@ -522,8 +532,8 @@ export function activate({ router, log, host, getSettings, ai }) {
 
   function relayEnv(opId) {
     return {
-      GIT_ASKPASS: ASKPASS_PATH,
-      SSH_ASKPASS: ASKPASS_PATH,
+      GIT_ASKPASS: askpassProgram,
+      SSH_ASKPASS: askpassProgram,
       // OpenSSH ≥ 8.4 routes passphrase AND host-key confirmation through
       // SSH_ASKPASS when forced; DISPLAY is the pre-8.4 precondition, set
       // to a dummy only when the server itself has none.
@@ -566,10 +576,14 @@ export function activate({ router, log, host, getSettings, ai }) {
       // so the panel hears about the timeout at 30s, not at pipe close.
       const child = op.child;
       if (child) {
-        try {
-          process.kill(-child.pid, "SIGTERM");
-        } catch {
-          child.kill("SIGTERM");
+        if (process.platform === "win32") {
+          spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+        } else {
+          try {
+            process.kill(-child.pid, "SIGTERM");
+          } catch {
+            child.kill("SIGTERM");
+          }
         }
       }
       op.abort?.();
@@ -1045,7 +1059,10 @@ export function activate({ router, log, host, getSettings, ai }) {
           maxBuffer: 8 * 1024 * 1024,
           // detached puts git and its transport helpers in their own
           // process group so the watchdog can kill the whole tree at once.
-          detached: true,
+          // Not on Windows, where it opens a console window instead (the
+          // watchdog uses taskkill /T there).
+          detached: process.platform !== "win32",
+          windowsHide: true,
           env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...relayEnv(op.id) },
         },
         (err, stdout, stderr) => {
@@ -1276,7 +1293,8 @@ export function activate({ router, log, host, getSettings, ai }) {
         const pathArgs = origPath ? [origPath, filePath] : [filePath];
         diff = await git(["diff", "--cached", "--", ...pathArgs], root);
       } else if (untracked) {
-        diff = await git(["diff", "--no-index", "--", "/dev/null", filePath], root, {
+        // An untracked file diffs against the null device, which Windows calls NUL.
+        diff = await git(["diff", "--no-index", "--", process.platform === "win32" ? "NUL" : "/dev/null", filePath], root, {
           allowNonZeroExit: true,
         });
       } else {

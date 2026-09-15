@@ -146,7 +146,7 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
 // it that decides which file core writes.
 function resolveHookFile(raw: string): string | null {
   const home = homedir();
-  const expanded = raw === "~" ? home : raw.startsWith("~/") ? path.join(home, raw.slice(2)) : raw;
+  const expanded = raw === "~" ? home : raw.startsWith("~/") || raw.startsWith("~\\") ? path.join(home, raw.slice(2)) : raw;
   if (!path.isAbsolute(expanded)) return null;
   const resolved = path.resolve(expanded);
   if (resolved !== home && !resolved.startsWith(`${home}${path.sep}`)) return null;
@@ -505,8 +505,12 @@ const HOOK_TIMEOUT_SECONDS = 5;
 export const agentHookShimPath = path.join(
   configDir,
   "bin",
-  "agent-hook",
+  process.platform === "win32" ? "agent-hook.cmd" : "agent-hook",
 );
+
+// How the shim path is written in a hook command: quoted on Windows, where
+// the path usually contains the user's name and may contain spaces.
+const shimInCommand = process.platform === "win32" ? `"${agentHookShimPath}"` : agentHookShimPath;
 
 // An id safe to put in a hook command's argument list, and safe as a plain
 // object key. Ids come from a user-editable settings document, and the
@@ -523,7 +527,7 @@ export function isSafeAgentId(id: string): boolean {
 // and $TMUX_PANE is read from the pane's environment — nothing about the
 // event is interpolated here.
 export function hookCommandFor(agentId: string, rawEvent: string): string {
-  return `${agentHookShimPath} ${agentId} ${rawEvent}`;
+  return `${shimInCommand} ${agentId} ${rawEvent}`;
 }
 
 // Which of `events` this agent can actually deliver, as its own raw names,
@@ -638,7 +642,7 @@ export function snippetFor(agent: AgentPreset, events: readonly AgentEvent[]): H
 // with core's shim path. Nothing else in a file is ever read, rewritten or
 // removed, whatever it points at.
 function isCoreHookCommand(command: unknown): boolean {
-  return typeof command === "string" && command.startsWith(`${agentHookShimPath} `);
+  return typeof command === "string" && command.startsWith(`${shimInCommand} `);
 }
 
 // The agent id core's own command was installed for. Hooks are per config
@@ -646,7 +650,7 @@ function isCoreHookCommand(command: unknown): boolean {
 // and this is whichever of them was installed last - see hookStateFor's stale
 // check.
 function coreHookAgentId(command: string): string {
-  return command.slice(agentHookShimPath.length + 1).split(" ")[0] ?? "";
+  return command.slice(shimInCommand.length + 1).split(" ")[0] ?? "";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

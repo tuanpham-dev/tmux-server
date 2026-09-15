@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { release } from "node:os";
 import { WebSocket } from "ws";
+import { toClientPath } from "./clientPaths.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import { scrollHorizontal } from "./editor.js";
 import { getMultiplexer, type AttachHandle } from "./multiplexer.js";
@@ -91,7 +92,7 @@ export function handleAttach(ws: WebSocket, req: IncomingMessage): void {
 
   const unsubscribeEvents = subscribeCommandEvents((frame) => {
     if (sessionName !== null && frame.sessionKey === sessionName) {
-      send({ type: "commandEvent", ...frame });
+      send({ type: "commandEvent", ...frame, cwd: toClientPath(frame.cwd) });
     }
   });
 

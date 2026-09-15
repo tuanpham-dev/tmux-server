@@ -1,4 +1,5 @@
 import type { Project, RepoInfo, TmuxSession, WorktreeInfo } from "../types";
+import { isAbsolutePath } from "./paths";
 
 // A project's display name is always derived from its folder — never stored,
 // so renaming the folder is renaming the project. Works on the `~`-shortened
@@ -45,7 +46,7 @@ export function worktreeContainer(template: string, repo: string): string | null
   let dir = t.slice(0, -suffix.length);
   if (dir.includes("{branch}")) return null;
   dir = dir.replaceAll("{repo}", repo);
-  if (!dir.startsWith("/") && !dir.startsWith("~")) dir = `${repo}/${dir}`;
+  if (!isAbsolutePath(dir)) dir = `${repo}/${dir}`;
   const segments: string[] = [];
   for (const seg of dir.split("/")) {
     if (seg === "." || (seg === "" && segments.length > 0)) continue;

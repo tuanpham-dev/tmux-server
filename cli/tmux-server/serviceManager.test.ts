@@ -32,7 +32,7 @@ test('the Windows task starts at logon, headless, logging, and never times out',
   assert.equal(TASK_NAME, 'tmux-server');
   assert.match(text, /<LogonTrigger>[\s\S]*<UserId>PC\\me<\/UserId>/);
   assert.match(text, /<Command>conhost\.exe<\/Command>/);
-  assert.match(text, /<Arguments>--headless cmd\.exe \/d \/c &quot;&quot;C:\\Program Files\\nodejs\\node\.exe&quot; &quot;C:\\Users\\me\\tmux-server\\bin\\tmux-server&quot; run &gt;&gt; &quot;C:\\Users\\me\\AppData\\Local\\tmux-server\\tmux-server\.log&quot; 2&gt;&amp;1&quot;<\/Arguments>/);
+  assert.match(text, /<Arguments>--headless cmd\.exe \/d \/c &quot;set TMUX_SERVER_LAUNCHER=service&amp;&amp; &quot;C:\\Program Files\\nodejs\\node\.exe&quot; &quot;C:\\Users\\me\\tmux-server\\bin\\tmux-server&quot; run &gt;&gt; &quot;C:\\Users\\me\\AppData\\Local\\tmux-server\\tmux-server\.log&quot; 2&gt;&amp;1&quot;<\/Arguments>/);
   assert.match(text, /<ExecutionTimeLimit>PT0S<\/ExecutionTimeLimit>/);
   assert.match(text, /<MultipleInstancesPolicy>IgnoreNew<\/MultipleInstancesPolicy>/);
 });

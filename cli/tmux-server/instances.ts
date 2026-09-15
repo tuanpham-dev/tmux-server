@@ -2,7 +2,8 @@
 // service manager is in charge.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
 import { LOG_FILE, PID_FILE, REPO_DIR, RUNTIME_DIR, SELF } from './paths.ts';
 import { fail, info, ok } from './output.ts';
 import { alive, responding, sleep } from './run.ts';
@@ -82,7 +83,46 @@ function trackedPids(): Map<number, string> {
   return out;
 }
 
+interface InstanceRecord { pid: number; port: number; appName: string; repoDir: string; launcher: string }
+
+/**
+ * Windows: the records running servers write to the temp folder
+ * (server/src/instanceRecord.ts), since another process's command line and
+ * environment aren't readable there. A record whose pid is gone is stale.
+ */
+function recordedInstances(): Instance[] {
+  const dir = join(tmpdir(), 'tmux-server-instances');
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: Instance[] = [];
+  for (const name of names) {
+    let record: InstanceRecord;
+    try {
+      record = JSON.parse(readFileSync(join(dir, name), 'utf8')) as InstanceRecord;
+    } catch {
+      continue;
+    }
+    if (!alive(record.pid)) {
+      rmSync(join(dir, name), { force: true });
+      continue;
+    }
+    if (resolve(record.repoDir).toLowerCase() !== resolve(REPO_DIR).toLowerCase()) continue;
+    out.push({
+      pid: record.pid,
+      port: String(record.port),
+      appName: record.appName || '-',
+      managedBy: record.launcher === 'service' ? 'service' : record.launcher === 'cli' ? 'fallback' : 'external',
+    });
+  }
+  return out;
+}
+
 export function listInstances(): Instance[] {
+  if (process.platform === 'win32') return recordedInstances();
   const servers = serverProcesses();
   if (servers.length === 0) return [];
   const manager = usableServiceManager();
@@ -122,12 +162,18 @@ export function instanceOnPort(port: string): Instance | null {
 }
 
 function pgidOf(pid: number): number | null {
+  if (process.platform === 'win32') return null;
   const r = spawnSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' });
   const pgid = Number(r.stdout.trim());
   return pgid > 0 ? pgid : null;
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === 'win32') {
+    // No process groups or signals: end the tree.
+    spawnSync('taskkill', ['/PID', String(pid), '/T', ...(signal === 'SIGKILL' ? ['/F'] : [])], { stdio: 'ignore', windowsHide: true });
+    return;
+  }
   const pgid = pgidOf(pid);
   try {
     if (pgid) process.kill(-pgid, signal);
@@ -185,7 +231,8 @@ export async function backgroundStart(port: string, pidFile = PID_FILE, logFile 
   const child = spawn(process.execPath, [SELF, 'run'], {
     detached: true,
     stdio: ['ignore', log, log],
-    env: { ...process.env, ...env },
+    env: { ...process.env, TMUX_SERVER_LAUNCHER: 'cli', ...env },
+    windowsHide: true,
   });
   child.unref();
   const pid = child.pid!;

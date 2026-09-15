@@ -1,5 +1,4 @@
 import { createWriteStream } from "node:fs";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -107,6 +106,7 @@ import {
   sendTextToSession,
   WindowGoneError,
 } from "./terminals.js";
+import { writeZip } from "./zip.js";
 
 export const api = Router();
 
@@ -1213,17 +1213,16 @@ api.get("/download", async (req, res) => {
       const name = path.basename(targetPath);
       res.setHeader("content-type", "application/zip");
       res.setHeader("content-disposition", `attachment; filename="${name}.zip"`);
-      // "-r - <name>" zips the folder (relative to cwd, so entries inside the
-      // archive are rooted at <name>/) and streams the archive to stdout.
-      const zip = spawn("zip", ["-r", "-", name], {
-        cwd: path.dirname(targetPath),
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      zip.stdout.pipe(res);
-      zip.on("error", (err) => {
-        if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
-      });
-      res.on("close", () => zip.kill());
+      // Streamed as it's built, entries rooted at <name>/. A download the
+      // browser abandons stops the walk.
+      const abort = new AbortController();
+      res.on("close", () => abort.abort());
+      writeZip(targetPath, name, res, abort.signal)
+        .then(() => res.end())
+        .catch((err) => {
+          if (!res.headersSent) res.status(500).json({ error: errMessage(err) });
+          else res.destroy();
+        });
       return;
     }
     if (!(await isFile(targetPath))) {
@@ -1258,7 +1257,9 @@ api.post("/upload", async (req, res) => {
 
   let target: string;
   try {
-    target = resolveDestination(expandHome(dir), relPath);
+    // {tmp}: this machine's temp folder, so a default that works on Linux
+    // (/tmp) doesn't point nowhere on Windows.
+    target = resolveDestination(expandHome(dir.replaceAll("{tmp}", tmpdir())), relPath);
     await ensureDir(path.dirname(target));
     if (conflict === "rename") {
       target = await uniquePath(target);

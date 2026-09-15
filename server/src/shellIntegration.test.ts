@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { powershellScriptBody } from "./shellIntegration";
+import { powershellScriptBody } from "./shellIntegration.js";
 
 describe("PowerShell integration script", () => {
   it("reports to the right port and names its own source line", async () => {

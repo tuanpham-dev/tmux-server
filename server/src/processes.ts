@@ -1,17 +1,45 @@
 // The host's process tree, for questions the terminal engine can't answer on
 // its own: which window owns a listening port (ports.ts), and where a running
 // nvim is listening (editor.ts).
+import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
+import { parseProcessCsv } from "tmux-server-mux/windows";
 
 export interface ProcInfo {
   ppid: number;
   comm: string;
 }
 
-// Scans /proc once for a ppid+comm map of every process on the host. Linux
-// only — callers must treat a failure (missing /proc, e.g. on macOS) as
-// "unknown" and fall back to the keystroke-injection path.
+function run(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (err, stdout) =>
+      resolve(err ? "" : stdout),
+    );
+  });
+}
+
+/** `ps -axo pid=,ppid=,comm=` output (macOS), as a process map. */
+export function parsePsOutput(stdout: string): Map<number, ProcInfo> {
+  const map = new Map<number, ProcInfo>();
+  for (const line of stdout.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+    if (m) map.set(Number(m[1]), { ppid: Number(m[2]), comm: m[3]!.trim().split("/").pop()!.replace(/^-/, "") });
+  }
+  return map;
+}
+
+// A ppid+comm map of every process on the host: /proc on Linux, ps on macOS,
+// the CIM process list on Windows. Callers treat an empty map as "unknown"
+// (and fall back to the keystroke-injection path, for the editor).
 export async function buildProcessMap(): Promise<Map<number, ProcInfo>> {
+  if (process.platform === "darwin") return parsePsOutput(await run("ps", ["-axo", "pid=,ppid=,comm="]));
+  if (process.platform === "win32") {
+    const csv = await run("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Csv -NoTypeInformation",
+    ]);
+    return new Map(parseProcessCsv(csv).map((e) => [e.pid, { ppid: e.ppid, comm: e.name }]));
+  }
   const map = new Map<number, ProcInfo>();
   let entries: string[];
   try {

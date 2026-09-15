@@ -291,7 +291,8 @@ function ProfileEditor({
           />
           <div className="settings-hint">
             Run as <code>sh -c &apos;&lt;command&gt; &quot;$0&quot;&apos;</code> with the prompt as the
-            single trailing argument, so your own quoting is preserved.
+            single trailing argument, so your own quoting is preserved. On Windows it runs in PowerShell
+            the same way.
           </div>
         </div>
       )}

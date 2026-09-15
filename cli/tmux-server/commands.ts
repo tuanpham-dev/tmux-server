@@ -242,7 +242,8 @@ export function cmdLogs(): void {
   const manager = usableServiceManager();
   if (manager?.installed()) return manager.followLogs();
   if (existsSync(LOG_FILE)) {
-    inherit('tail', ['-n', '50', '-f', LOG_FILE]);
+    if (process.platform === 'win32') inherit('powershell.exe', ['-NoProfile', '-Command', `Get-Content -Tail 50 -Wait -Path '${LOG_FILE}'`]);
+    else inherit('tail', ['-n', '50', '-f', LOG_FILE]);
     return;
   }
   info('no logs yet - nothing has been started in the background');

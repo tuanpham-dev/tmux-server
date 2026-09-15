@@ -30,14 +30,15 @@ const ACTIVE_THRESHOLD_MS = 15_000;
 // naming is keyed off the real absolute path.
 function expandHome(p) {
   if (p === "~") return homedir();
-  if (p.startsWith("~/")) return path.join(homedir(), p.slice(2));
+  if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(homedir(), p.slice(2));
   return p;
 }
 
 function cwdToProjectDirName(cwd) {
   // Claude Code's own convention, confirmed against real directories: every
-  // "/" and "." in the absolute path becomes "-" (nothing else does).
-  return cwd.replace(/[/.]/g, "-");
+  // "/" and "." in the absolute path becomes "-" (nothing else does). On
+  // Windows the drive colon and backslashes do too: C:\\Users\\me -> C--Users-me.
+  return cwd.replace(/[\\/:.]/g, "-");
 }
 
 // The most recently active session directory for a project — the flat

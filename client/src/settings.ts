@@ -333,7 +333,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   commandCenterAction: "quickSwitcher",
   uploadConflict: "rename",
   uploadMaxSizeMb: 0,
-  pasteDropUploadDir: "/tmp",
+  // {tmp} is the server's temp folder (/tmp, or %TEMP% on Windows).
+  pasteDropUploadDir: "{tmp}",
   localEchoWhen: "claude",
   worktreeLocation: "{repo}/.worktrees/{branch}",
   aiProfiles: [],

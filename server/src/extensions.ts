@@ -5,7 +5,6 @@
 // enabled state, handles .tsix install/uninstall, and mounts/unmounts
 // per-extension server hooks. See README's Extensions section for the
 // manifest format.
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -57,6 +56,7 @@ import {
   writeExtensionSecret,
 } from "./settingsStore.js";
 import { configDir } from "./configDir.js";
+import { extractZip } from "./zip.js";
 
 export const extensionsDir = path.join(configDir, "extensions");
 const stateFilePath = path.join(configDir, "extensions-state.json");
@@ -537,34 +537,13 @@ export async function resolveExtensionFile(id: string, relPath: string): Promise
   return resolved;
 }
 
-function runUnzip(zipPath: string, destDir: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("unzip", ["-q", "-o", zipPath, "-d", destDir]);
-    let stderr = "";
-    proc.stderr.on("data", (d: Buffer) => {
-      stderr += d.toString();
-    });
-    proc.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "ENOENT") {
-        reject(new Error('installing .tsix extensions requires the "unzip" command, which was not found on PATH'));
-      } else {
-        reject(err);
-      }
-    });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(stderr.trim() || `unzip exited with code ${code}`));
-    });
-  });
-}
-
 // tsixPath is a temp file (already written by the caller); this consumes
 // and removes it either way.
 export async function installFromTsixFile(tsixPath: string): Promise<ExtensionInfo> {
   const workDir = path.join(tmpdir(), `tmux-server-ext-${randomUUID()}`);
   try {
     await mkdir(workDir, { recursive: true });
-    await runUnzip(tsixPath, workDir);
+    await extractZip(tsixPath, workDir);
     // A .tsix is a zip with the extension's actual contents under extension/.
     const extractedRoot = path.join(workDir, "extension");
     const manifest = await readManifest(extractedRoot);

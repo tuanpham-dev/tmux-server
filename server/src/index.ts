@@ -9,6 +9,8 @@ import { agentHookBodyParser, ensureAgentHookShim } from "./agentHooks.js";
 import { resumeRestoredAgents } from "./agentResume.js";
 import { applyTerminalSettings } from "./terminalSettings.js";
 import { api } from "./api.js";
+import { clientPathsMiddleware } from "./clientPaths.js";
+import { writeInstanceRecord } from "./instanceRecord.js";
 import { subscribeCommandEvents } from "./commandEvents.js";
 import { loadEnabledServerHooks } from "./extensions.js";
 import { getMultiplexer } from "./multiplexer.js";
@@ -185,6 +187,7 @@ app.use((req, res, next) => {
 // stream.
 app.use("/api/agent-hooks/report", agentHookBodyParser);
 app.use(express.json());
+app.use(clientPathsMiddleware);
 app.use("/api", api);
 
 const tunnelCli = path.resolve(import.meta.dirname, "../../cli/tunnel.mjs");
@@ -338,6 +341,7 @@ server.on("error", (err) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`tmux-server server listening on http://${HOST}:${PORT}`);
+  writeInstanceRecord(PORT, path.resolve(import.meta.dirname, "../.."));
 });
 
 // The terminal daemon: tell it which server its shells report to, and turn

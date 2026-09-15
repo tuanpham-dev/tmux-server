@@ -11,7 +11,7 @@ export interface ListeningPort {
   session: string;
 }
 
-interface RawPort {
+export interface RawPort {
   port: number;
   address: string;
   process?: string;
@@ -52,7 +52,68 @@ function parseProcess(line: string): { process?: string; pid?: number } {
   return { process: match[1], pid: Number(match[2]) };
 }
 
+/** `lsof -nP -iTCP -sTCP:LISTEN -Fpcn` output (macOS). */
+export function parseLsofListeners(stdout: string): RawPort[] {
+  const out: RawPort[] = [];
+  let pid: number | undefined;
+  let proc: string | undefined;
+  for (const line of stdout.split("\n")) {
+    const field = line[0];
+    const value = line.slice(1);
+    if (field === "p") pid = Number(value);
+    else if (field === "c") proc = value;
+    else if (field === "n") {
+      const parsed = parseAddress(value);
+      if (parsed) out.push({ port: parsed.port, address: parsed.address, process: proc, pid });
+    }
+  }
+  return out;
+}
+
+/** `Get-NetTCPConnection -State Listen | Select LocalAddress,LocalPort,OwningProcess | ConvertTo-Csv` (Windows). */
+export function parseNetTcpCsv(csv: string, names: Map<number, ProcInfo>): RawPort[] {
+  const out: RawPort[] = [];
+  for (const line of csv.split(/\r?\n/).slice(1)) {
+    const cells = line.split(",").map((c) => c.replace(/^"|"$/g, ""));
+    if (cells.length < 3) continue;
+    const port = Number(cells[1]);
+    const pid = Number(cells[2]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+    out.push({ port, address: cells[0]!, pid: pid > 0 ? pid : undefined, process: names.get(pid)?.comm });
+  }
+  return out;
+}
+
+function runQuiet(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => resolve(err ? "" : stdout));
+  });
+}
+
+/** One entry per port, preferring whichever listener has process info. */
+function byPortWithProcess(entries: RawPort[]): RawPort[] {
+  const byPort = new Map<number, RawPort>();
+  for (const e of entries) {
+    const existing = byPort.get(e.port);
+    if (!existing || (!existing.process && e.process)) byPort.set(e.port, e);
+  }
+  return [...byPort.values()].sort((a, b) => a.port - b.port);
+}
+
 async function listPorts(): Promise<RawPort[]> {
+  if (process.platform === "darwin") {
+    return byPortWithProcess(parseLsofListeners(await runQuiet("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"])));
+  }
+  if (process.platform === "win32") {
+    const [csv, names] = await Promise.all([
+      runQuiet("powershell.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "Get-NetTCPConnection -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess | ConvertTo-Csv -NoTypeInformation",
+      ]),
+      buildProcessMap(),
+    ]);
+    return byPortWithProcess(parseNetTcpCsv(csv, names));
+  }
   const stdout = await ss(["-H", "-ltnp"]);
   const byPort = new Map<number, RawPort>();
 
@@ -132,7 +193,8 @@ function attributeToSession(
   return "unknown";
 }
 
-// TMUX_SERVER_WINDOW survives reparenting: when the shell/agent that spawned a
+// Linux only (other systems have no readable process environment; their
+// orphaned listeners simply go unattributed). TMUX_SERVER_WINDOW survives reparenting: when the shell/agent that spawned a
 // process exits, the process is reparented to pid 1 and the ppid walk above
 // dead-ends, but the window id it was spawned in stays in its (immutable)
 // /proc environ.

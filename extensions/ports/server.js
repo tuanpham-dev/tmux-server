@@ -2,8 +2,14 @@
 // port-attribution engine itself (tmux pane pids + /proc walk + ss) stays
 // in core server/src/ports.ts — it also feeds the WS tunnel's security
 // gate, so this extension consumes the same data rather than re-scanning.
+import { spawnSync } from "node:child_process";
 
 const KILL_GRACE_MS = 5_000;
+
+function endTree(pid, force) {
+  const r = spawnSync("taskkill", ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])], { stdio: "ignore", windowsHide: true });
+  if (r.error) throw r.error;
+}
 
 export function activate({ router, host }) {
   router.get("/list", async (_req, res) => {
@@ -27,7 +33,10 @@ export function activate({ router, host }) {
     }
     const pid = entry.pid;
     try {
-      process.kill(pid, "SIGTERM");
+      // Windows has no SIGTERM; taskkill without /F asks the process tree to
+      // close, the escalation below forces it.
+      if (process.platform === "win32") endTree(pid, false);
+      else process.kill(pid, "SIGTERM");
     } catch (err) {
       res.status(500).json({ error: err.message });
       return;
@@ -40,7 +49,9 @@ export function activate({ router, host }) {
       host.ports
         .find(port)
         .then((stillThere) => {
-          if (stillThere?.pid === pid) process.kill(pid, "SIGKILL");
+          if (stillThere?.pid !== pid) return;
+          if (process.platform === "win32") endTree(pid, true);
+          else process.kill(pid, "SIGKILL");
         })
         .catch(() => {});
     }, KILL_GRACE_MS).unref();

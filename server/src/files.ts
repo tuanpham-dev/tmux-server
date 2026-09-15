@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, cp, mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 // Thrown by renamePath/createEmptyFile when the destination already exists,
@@ -12,11 +13,12 @@ export class ConflictError extends Error {
   }
 }
 
-const HOME = process.env.HOME ?? "";
+// os.homedir(), not $HOME: Windows has USERPROFILE instead.
+const HOME = homedir();
 
 export function expandHome(p: string): string {
   if (p === "~") return HOME;
-  if (p.startsWith("~/")) return path.join(HOME, p.slice(2));
+  if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(HOME, p.slice(2));
   return p;
 }
 

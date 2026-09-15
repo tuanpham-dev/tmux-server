@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import Icon from "./Icon";
+import { childPath, parentPath as parentOf } from "../lib/paths";
 
 interface Props {
   // Seed path — the "default new session dir" setting when set, else "~".
@@ -81,12 +82,7 @@ export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Pr
   // /api/fs). "~" itself gets no ".." row: the picker treats home as its
   // effective root; anywhere outside is reachable by typing an absolute
   // path.
-  const parentPath = (() => {
-    if (listedPath === null || listedPath === "/" || listedPath === "~") return null;
-    const idx = listedPath.lastIndexOf("/");
-    if (idx === -1) return null;
-    return idx === 0 ? "/" : listedPath.slice(0, idx);
-  })();
+  const parentPath = listedPath === null || listedPath === "~" ? null : parentOf(listedPath);
   // Index offset of the first dir entry in the combined selection list —
   // 1 when a ".." row is showing, else 0.
   const parentOffset = parentPath !== null ? 1 : 0;
@@ -94,7 +90,7 @@ export default function FolderPickerDialog({ initialPath, onPick, onCancel }: Pr
 
   const descend = (name: string) => {
     if (listedPath === null) return;
-    setRequestPath(listedPath === "/" ? `/${name}` : `${listedPath}/${name}`);
+    setRequestPath(childPath(listedPath, name));
   };
 
   const activateEntryAt = (index: number) => {

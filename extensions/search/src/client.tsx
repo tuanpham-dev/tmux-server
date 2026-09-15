@@ -63,7 +63,7 @@ interface SearchResponse {
   engine: string;
 }
 interface Capabilities {
-  engine: "ripgrep" | "grep" | "none";
+  engine: "ripgrep" | "grep" | "builtin" | "none";
   respectsGitignore: boolean;
   globSupport: "full" | "basic" | "none";
 }
@@ -636,7 +636,7 @@ function SearchPanel({ actionsTarget, showMenu }: PanelProps) {
 
   const matchCount = useMemo(() => (results ? totalMatchCount(results) : 0), [results]);
   const globPlaceholderHint =
-    caps?.engine === "grep" ? "e.g. *.js (simple wildcards only)" : "e.g. *.ts, src/**";
+    caps?.engine === "ripgrep" || !caps ? "e.g. *.ts, src/**" : "e.g. *.js, src/** (simple wildcards only)";
 
   const headerActions = (
     <>
@@ -926,6 +926,12 @@ function SearchPanel({ actionsTarget, showMenu }: PanelProps) {
       {caps?.engine === "grep" && (
         <div className="search-footer-notice">
           Using grep (ripgrep not found) — search is slower, ignores .gitignore, and file globs are simpler than
+          ripgrep's. Install ripgrep (rg) for full functionality.
+        </div>
+      )}
+      {caps?.engine === "builtin" && (
+        <div className="search-footer-notice">
+          Using the built-in search (ripgrep not found) - slower on large folders, and file globs are simpler than
           ripgrep's. Install ripgrep (rg) for full functionality.
         </div>
       )}

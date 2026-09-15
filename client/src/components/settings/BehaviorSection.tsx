@@ -159,7 +159,7 @@ export default function BehaviorSection() {
       <label className="settings-row">
         <span className="settings-label">Image paste/drop upload directory</span>
         <div className="settings-hint">
-          {"{cwd} expands to the pane's directory, {gitroot} to its git repo root; empty means {cwd}/uploads"}
+          {"{tmp} is this machine's temp folder, {cwd} the terminal's folder, {gitroot} its git repo root; empty means {cwd}/uploads"}
         </div>
         <input
           className="dialog-input"

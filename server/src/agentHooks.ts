@@ -69,6 +69,34 @@ exit 0
 `;
 }
 
+// The Windows form of the same relay: a Node script (no sh, no curl) behind a
+// .cmd. Reads the event JSON from stdin, always exits 0.
+export function windowsHookShim(port: number, node: string): { script: string; cmd: string } {
+  return {
+    script: `// Written by tmux-server at startup - relays one AI agent hook event to the app.
+const [agent, event] = process.argv.slice(2);
+if (!agent) process.exit(0);
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  fetch("http://127.0.0.1:${port}/api/agent-hooks/report", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Tmux-Server-Hook": "1",
+      "X-Tmux-Server-Agent": agent,
+      "X-Tmux-Server-Event": event ?? "",
+      "X-Tmux-Server-Pane": process.env.TMUX_SERVER_WINDOW ?? "",
+    },
+    body: Buffer.concat(chunks),
+    signal: AbortSignal.timeout(2000),
+  }).catch(() => {}).finally(() => process.exit(0));
+});
+`,
+    cmd: `@echo off\r\n"${node}" "%~dp0agent-hook.mjs" %*\r\n`,
+  };
+}
+
 // Best-effort at boot, like ensureOpenShim: a read-only config dir disables
 // the feature (index.ts logs and carries on), it does not stop the server.
 // Port-independent path with the port baked into the body, so several
@@ -76,6 +104,12 @@ exit 0
 // already accepts.
 export async function ensureAgentHookShim(port: number): Promise<string> {
   await mkdir(shimBinDir, { recursive: true });
+  if (process.platform === "win32") {
+    const { script, cmd } = windowsHookShim(port, process.execPath);
+    await writeFile(path.join(shimBinDir, "agent-hook.mjs"), script);
+    await writeFile(agentHookShimPath, cmd);
+    return agentHookShimPath;
+  }
   await writeFile(agentHookShimPath, shimScript(port));
   await chmod(agentHookShimPath, 0o755);
   return agentHookShimPath;

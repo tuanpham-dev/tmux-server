@@ -20,7 +20,7 @@ const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
  * and keeps running on battery.
  */
 export function taskXml(opts: { user: string; node: string; self: string; logPath: string }): string {
-  const command = `"${opts.node}" "${opts.self}" run >> "${opts.logPath}" 2>&1`;
+  const command = `set TMUX_SERVER_LAUNCHER=service&& "${opts.node}" "${opts.self}" run >> "${opts.logPath}" 2>&1`;
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>

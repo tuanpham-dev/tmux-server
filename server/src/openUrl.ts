@@ -7,13 +7,15 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Response } from "express";
 import { configDir } from "./configDir.js";
+import { toClientPaths } from "./clientPaths.js";
 
 const shimBinDir = path.join(configDir, "bin");
 
-// The canonical shim path — what applyTmuxOptions points tmux's global
-// BROWSER at. Port-independent (the port is baked into the script body), so
-// multiple instances share it last-boot-wins (accepted in the plan).
-export const openShimPath = path.join(shimBinDir, "open-in-browser");
+// The canonical shim path — what every terminal's BROWSER points at (see
+// mux.ts's daemon environment). Port-independent (the port is baked into the
+// script body). On Windows it's a .cmd that runs a small Node script, since
+// there's no sh or (reliably) curl.
+export const openShimPath = path.join(shimBinDir, process.platform === "win32" ? "open-in-browser.cmd" : "open-in-browser");
 
 // $BROWSER/xdg-open convention: the URL arrives as $1. The custom header is
 // the CSRF guard — a cross-origin browser request carrying it needs a CORS
@@ -29,10 +31,34 @@ exec curl -s -m 2 -X POST -H 'X-Tmux-Server-Open: 1' --data-urlencode "url=$1" "
 `;
 }
 
+// The Windows form: a Node script doing what the sh one does with curl, and a
+// .cmd that runs it with the node that runs this server.
+export function windowsOpenShim(port: number, node: string): { script: string; cmd: string } {
+  return {
+    script: `// Written by tmux-server at startup - relays a URL open to the app's browser tab.
+const url = process.argv[2];
+if (!url) process.exit(1);
+fetch("http://127.0.0.1:${port}/api/open-url", {
+  method: "POST",
+  headers: { "X-Tmux-Server-Open": "1" },
+  body: new URLSearchParams({ url }),
+  signal: AbortSignal.timeout(2000),
+}).catch(() => process.exit(1));
+`,
+    cmd: `@echo off\r\n"${node}" "%~dp0open-in-browser.mjs" %*\r\n`,
+  };
+}
+
 // Best-effort at boot: a read-only config dir shouldn't stop the server, it
 // just disables the bridge (index.ts logs and continues).
 export async function ensureOpenShim(port: number): Promise<string> {
   await mkdir(shimBinDir, { recursive: true });
+  if (process.platform === "win32") {
+    const { script, cmd } = windowsOpenShim(port, process.execPath);
+    await writeFile(path.join(shimBinDir, "open-in-browser.mjs"), script);
+    await writeFile(openShimPath, cmd);
+    return openShimPath;
+  }
   const script = shimScript(port);
   for (const file of [openShimPath, path.join(shimBinDir, "xdg-open")]) {
     await writeFile(file, script);
@@ -86,7 +112,7 @@ export interface OpenTargetPayload {
 }
 
 export function broadcastOpenTarget(payload: OpenTargetPayload): number {
-  const frame = `event: open-target\ndata: ${JSON.stringify(payload)}\n\n`;
+  const frame = `event: open-target\ndata: ${JSON.stringify(toClientPaths(payload))}\n\n`;
   for (const res of subscribers) res.write(frame);
   return subscribers.size;
 }

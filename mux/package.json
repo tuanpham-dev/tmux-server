@@ -10,7 +10,8 @@
   "exports": {
     "./client": "./src/client/connection.ts",
     "./protocol": "./src/protocol/messages.ts",
-    "./config": "./src/util/config.ts"
+    "./config": "./src/util/config.ts",
+    "./windows": "./src/platform/windows.ts"
   },
   "engines": {
     "node": ">=23"

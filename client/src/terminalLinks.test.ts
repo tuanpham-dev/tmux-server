@@ -67,3 +67,20 @@ describe("findCandidates: existing forms", () => {
     expect(urls.map((c) => c.target)).toEqual(["https://x.y/z"]);
   });
 });
+
+describe("findCandidates: Windows paths", () => {
+  it("matches a drive path with a line number", () => {
+    expect(paths("error in C:\\Users\\me\\src\\app.ts:12")).toEqual([
+      { target: "C:\\Users\\me\\src\\app.ts", line: 12, text: "C:\\Users\\me\\src\\app.ts:12" },
+    ]);
+  });
+
+  it("matches a forward-slash drive path and a dot-backslash path", () => {
+    expect(paths("see D:/work/notes.md").map((p) => p.target)).toEqual(["D:/work/notes.md"]);
+    expect(paths("at .\\src\\index.ts").map((p) => p.target)).toEqual([".\\src\\index.ts"]);
+  });
+
+  it("does not read a URL's scheme as a drive", () => {
+    expect(paths("open https://x.y/z now").filter((p) => /^[A-Za-z]:/.test(p.target))).toEqual([]);
+  });
+});

@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, readlink, writeFile } from "node:fs/promises";
 import net from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import { getMultiplexer, type MuxWindow } from "./multiplexer.js";
 import { buildProcessMap, findDescendants } from "./processes.js";
@@ -87,12 +87,28 @@ function isSocketAlive(socket: string): Promise<boolean> {
   });
 }
 
+// Where nvim's default server for `pid` lives when it can't be read from
+// /proc: a named pipe on Windows, a socket under $TMPDIR/nvim.<user>/ on macOS.
+async function nvimSocketCandidates(pid: number): Promise<string[]> {
+  if (process.platform === "win32") return [`\\\\.\\pipe\\nvim.${pid}.0`];
+  const base = path.join(process.env.TMPDIR || tmpdir(), `nvim.${userInfo().username}`);
+  let dirs: string[] = [];
+  try {
+    dirs = await readdir(base);
+  } catch {
+    return [];
+  }
+  return dirs.map((d) => path.join(base, d, `nvim.${pid}.0`));
+}
+
 async function findNvimSocket(shellPid: number): Promise<string | null> {
   const map = await buildProcessMap();
   const nvimPids = findDescendants(shellPid, map, (comm) => comm === "nvim");
   for (const pid of nvimPids) {
-    const socket = await readNvimSocketPath(pid);
-    if (socket && (await isSocketAlive(socket))) return socket;
+    const candidates = process.platform === "linux" ? [await readNvimSocketPath(pid)] : await nvimSocketCandidates(pid);
+    for (const socket of candidates) {
+      if (socket && (await isSocketAlive(socket))) return socket;
+    }
   }
   return null;
 }
@@ -129,18 +145,23 @@ function escapeForVimCmdline(p: string): string {
   return p.replace(/([ \\%#|"!<])/g, "\\$1");
 }
 
+// Quoting for a command typed into the window's shell: POSIX single quotes, or
+// PowerShell's (which escape by doubling) on Windows.
 function shellQuote(p: string): string {
+  if (process.platform === "win32") return `'${p.replace(/'/g, "''")}'`;
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
 // ":tabe [+cmd] file" — the Ex-command "+cmd" argument does jump the cursor.
+// Vim on Windows takes forward slashes, which spares escaping every backslash.
 function vimTabeCmd(filePath: string, line?: number): string {
   const cmd = line ? `+${line} ` : "";
-  return `:tabe ${cmd}${escapeForVimCmdline(filePath)}`;
+  const file = process.platform === "win32" ? filePath.replace(/\\/g, "/") : filePath;
+  return `:tabe ${cmd}${escapeForVimCmdline(file)}`;
 }
 
 const EDITOR_COMMANDS = new Set(["nvim", "vim"]);
-const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"]);
+const SHELL_COMMANDS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "pwsh", "powershell"]);
 
 // RPC-only nvim open: true if `pid`'s nvim has a reachable socket and the
 // file was opened as a new tab through it. Never falls back to keystrokes.

@@ -2,6 +2,7 @@
 // project, or a file in the editor, in every connected browser tab.
 import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { sep } from 'node:path';
 import { listInstances } from './instances.ts';
 import { ask, die, Exit, heading, info, interactive, ok, table, warn } from './output.ts';
 import { instanceSummary } from './commands.ts';
@@ -107,7 +108,7 @@ export async function cmdOpen(args: string[]): Promise<void> {
   if (Number(delivered) > 0) return ok(`opened in ${delivered} connected client(s)`);
 
   const home = homedir();
-  const display = abs === home ? '~' : abs.startsWith(home + '/') ? `~${abs.slice(home.length)}` : abs;
+  const display = (abs === home ? '~' : abs.startsWith(home + sep) ? `~${abs.slice(home.length)}` : abs).replace(/\\/g, '/');
   let link = `http://127.0.0.1:${port}`;
   if (statSync(abs).isDirectory()) link += `/?folder=${encodeURIComponent(display)}`;
   else {
