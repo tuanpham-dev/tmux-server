@@ -74,7 +74,12 @@ function forwardedHeaders(req: IncomingMessage, port: number): http.OutgoingHttp
   headers["x-forwarded-for"] = socket.remoteAddress ?? "";
   headers["x-forwarded-proto"] = "http";
   headers["x-forwarded-host"] = req.headers.host ?? "";
-  void port;
+  // The upstream is a local dev server, which is asked for by its local
+  // address, as the WebSocket path below already does. Passing the browser's
+  // Host through makes dev servers that check it (Vite's allowedHosts,
+  // webpack-dev-server's allowedHosts) refuse the request as an unknown host.
+  // The original stays in X-Forwarded-Host for apps that want it.
+  headers.host = `127.0.0.1:${port}`;
   return headers;
 }
 
